@@ -813,3 +813,146 @@ impl ChaosPrimitive for ClockSkew {
         }
     }
 }
+
+/// `slow_link` — restart target node with `RAFKA_LINK_SLOW_MS` env so node-base
+/// sleeps that many ms before each outbound frame send (substrate-level latency
+/// injection). Detection: new subprocess appears in `/api/spawned`.
+pub struct SlowLink {
+    pub target: Option<String>,
+    pub latency_ms: u64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for SlowLink {
+    fn name(&self) -> &str {
+        "slow_link"
+    }
+
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        respawn_with_env(ctx, self.target.as_deref(), "slow_link", &[
+            ("RAFKA_LINK_SLOW_MS", self.latency_ms.to_string()),
+        ]).await
+    }
+
+    async fn detect(&self, ctx: &ChaosContext, outcome: &ChaosOutcome, deadline_ms: u64) -> Result<DetectionResult, ChaosError> {
+        detect_respawned(ctx, outcome, deadline_ms, "slow_link").await
+    }
+}
+
+/// `lossy_link` — restart target node with `RAFKA_LINK_LOSS_PCT` env so node-base
+/// drops that percentage of outbound frames. Detection: new subprocess appears in
+/// `/api/spawned`.
+pub struct LossyLink {
+    pub target: Option<String>,
+    pub loss_pct: u8,
+}
+
+#[async_trait]
+impl ChaosPrimitive for LossyLink {
+    fn name(&self) -> &str {
+        "lossy_link"
+    }
+
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        respawn_with_env(ctx, self.target.as_deref(), "lossy_link", &[
+            ("RAFKA_LINK_LOSS_PCT", self.loss_pct.to_string()),
+        ]).await
+    }
+
+    async fn detect(&self, ctx: &ChaosContext, outcome: &ChaosOutcome, deadline_ms: u64) -> Result<DetectionResult, ChaosError> {
+        detect_respawned(ctx, outcome, deadline_ms, "lossy_link").await
+    }
+}
+
+/// Shared helper: kill `target` and respawn the same node_type via topology-ui
+/// with the provided extra_env. Returns ChaosOutcome with targets=[old, new].
+async fn respawn_with_env(
+    ctx: &ChaosContext,
+    target: Option<&str>,
+    primitive_name: &'static str,
+    extra_env: &[(&str, String)],
+) -> Result<ChaosOutcome, ChaosError> {
+    let target = match target {
+        Some(t) => t.to_string(),
+        None => pick_random_spawned(ctx).await?,
+    };
+    let node_type = NODE_TYPES
+        .iter()
+        .find(|t| target.starts_with(*t))
+        .copied()
+        .ok_or_else(|| ChaosError::InvalidTarget(format!("cannot derive node_type from {target}")))?;
+    let span = info_span!(
+        "rafka.chaos.primitive.executed",
+        name = primitive_name,
+        target = %target,
+        node_type = node_type,
+        "otel.kind" = "internal",
+    );
+    let _enter = span.enter();
+
+    let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+    let _ = ctx.http.delete(&kill_url).send().await;
+
+    let mut env_map = serde_json::Map::new();
+    for (k, v) in extra_env {
+        env_map.insert((*k).to_string(), json!(v));
+    }
+    let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+    let resp = ctx
+        .http
+        .post(&spawn_url)
+        .json(&json!({"node_type": node_type, "extra_env": env_map}))
+        .send()
+        .await
+        .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(ChaosError::Execution(format!("respawn returned {}", resp.status())));
+    }
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
+    let new_name = body["node_name"].as_str()
+        .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
+        .to_string();
+    Ok(ChaosOutcome {
+        primitive_name: primitive_name.into(),
+        targets: vec![target.clone(), new_name.clone()],
+        state: json!({"old": target, "new": new_name, "extra_env": env_map}),
+    })
+}
+
+async fn detect_respawned(
+    ctx: &ChaosContext,
+    outcome: &ChaosOutcome,
+    deadline_ms: u64,
+    primitive_name: &'static str,
+) -> Result<DetectionResult, ChaosError> {
+    let new_name = &outcome.targets[1];
+    let start = Instant::now();
+    loop {
+        let waited_ms = start.elapsed().as_millis() as u64;
+        if waited_ms > deadline_ms {
+            return Ok(DetectionResult::FailedTimeout { waited_ms });
+        }
+        let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);
+        let resp = ctx.http.get(&url).send().await
+            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("{e}")))?;
+        let body: serde_json::Value = resp.json().await
+            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("{e}")))?;
+        let present = body["spawned"].as_array()
+            .map(|a| a.iter().any(|v| v.as_str() == Some(new_name)))
+            .unwrap_or(false);
+        if present {
+            let span = info_span!(
+                "rafka.chaos.primitive.detected",
+                name = primitive_name,
+                target = %new_name,
+                result = "passed",
+                waited_ms = waited_ms as i64,
+                "otel.kind" = "internal",
+            );
+            drop(span);
+            return Ok(DetectionResult::Passed { waited_ms });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}

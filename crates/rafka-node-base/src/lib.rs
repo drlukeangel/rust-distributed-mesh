@@ -677,6 +677,17 @@ async fn run_frame_reader(
 #[instrument(skip_all)]
 async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
     let mut interval = tokio::time::interval(Duration::from_secs(10));
+    // Link fault-injection envs read once at boot. Chaos primitives slow_link/
+    // lossy_link restart the node with these set; node-base applies them on
+    // outbound ping sends so the substrate behaves as if the link were degraded.
+    let link_slow_ms: u64 = std::env::var("RAFKA_LINK_SLOW_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let link_loss_pct: u8 = std::env::var("RAFKA_LINK_LOSS_PCT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     loop {
         interval.tick().await;
 
@@ -687,6 +698,27 @@ async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
                 Some(c) => c.clone(),
                 None => continue,
             };
+
+            // lossy_link: roll dice; if loss, emit `dropped` span and skip the send.
+            if link_loss_pct > 0 {
+                let roll: u8 = rand::random::<u8>() % 100;
+                if roll < link_loss_pct {
+                    tracing::info_span!(
+                        "rafka.mesh.frame.dropped_by_fault_inject",
+                        node_id = %own_node_id,
+                        peer_id = %peer_id_str,
+                        frame_kind = "ping",
+                        link_loss_pct = link_loss_pct as i64,
+                        otel.kind = "producer",
+                    )
+                    .in_scope(|| info!(peer_id = %peer_id_str, link_loss_pct, "ping dropped by lossy_link fault inject"));
+                    continue;
+                }
+            }
+            // slow_link: sleep before write to simulate latency.
+            if link_slow_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(link_slow_ms)).await;
+            }
 
             let frame = InternalMeshFrame::Ping { org_id: 0 };
 
