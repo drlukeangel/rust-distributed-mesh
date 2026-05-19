@@ -9,7 +9,7 @@ members = [
     "compute",
     "registry",
     "topology-ui",
-    "crates/rfa",
+    "cli/rfa",
 ]
 resolver = "2"
 
