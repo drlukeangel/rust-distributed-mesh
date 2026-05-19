@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 struct SeedNode {
     id: PublicKey,
@@ -370,8 +371,8 @@ async fn start_accept_loop(
     })
 }
 
-/// Reads incoming uni streams from a peer, decodes frames, and replies with Pong on Ping.
-/// Exits when accept_uni returns Err (connection closed) — removes peer from registry.
+/// Reads incoming uni streams, decodes frames, replies to Ping with Pong.
+/// Exits when accept_uni errors (connection closed).
 async fn run_frame_reader(
     own_node_id: String,
     peer_id_str: String,
@@ -389,21 +390,40 @@ async fn run_frame_reader(
                     }
                 };
 
-                match InternalMeshFrame::decode(&bytes) {
-                    Ok(InternalMeshFrame::Ping { org_id }) => {
-                        tracing::info_span!(
+                match InternalMeshFrame::decode_with_context(&bytes) {
+                    Ok((parent_ctx, InternalMeshFrame::Ping { org_id })) => {
+                        // frame.received is a child of the wire-propagated context.
+                        let recv_span = tracing::info_span!(
                             "rafka.mesh.frame.received",
                             node_id = %own_node_id,
                             peer_id = %peer_id_str,
                             frame_kind = "ping",
                             org_id = org_id,
-                        )
-                        .in_scope(|| {
+                            otel.kind = "consumer",
+                        );
+                        recv_span.set_parent(parent_ctx);
+                        recv_span.in_scope(|| {
                             info!(peer_id = %peer_id_str, "ping received");
                         });
 
+                        // Build pong reply. Enter frame.received context so frame.sent
+                        // becomes its child — this chains all 4 spans under one trace_id.
                         let pong = InternalMeshFrame::Pong { org_id };
-                        let encoded = pong.encode();
+                        let sent_span = recv_span.in_scope(|| {
+                            tracing::info_span!(
+                                "rafka.mesh.frame.sent",
+                                node_id = %own_node_id,
+                                peer_id = %peer_id_str,
+                                frame_kind = "pong",
+                                org_id = org_id,
+                                otel.kind = "producer",
+                            )
+                        });
+                        let _enter = sent_span.enter();
+                        let ctx = Span::current().context();
+                        let encoded = pong.encode_with_context(&ctx);
+                        drop(_enter);
+
                         match conn.open_uni().await {
                             Ok(mut send) => {
                                 if let Err(e) = send.write_all(&encoded).await {
@@ -413,6 +433,7 @@ async fn run_frame_reader(
                                         peer_id = %peer_id_str,
                                         frame_kind = "pong",
                                         error = %e,
+                                        otel.kind = "producer",
                                     )
                                     .in_scope(|| info!(peer_id = %peer_id_str, "pong write failed"));
                                     continue;
@@ -424,18 +445,12 @@ async fn run_frame_reader(
                                         peer_id = %peer_id_str,
                                         frame_kind = "pong",
                                         error = %e,
+                                        otel.kind = "producer",
                                     )
                                     .in_scope(|| info!(peer_id = %peer_id_str, "pong finish failed"));
                                     continue;
                                 }
-                                tracing::info_span!(
-                                    "rafka.mesh.frame.sent",
-                                    node_id = %own_node_id,
-                                    peer_id = %peer_id_str,
-                                    frame_kind = "pong",
-                                    org_id = org_id,
-                                )
-                                .in_scope(|| {
+                                sent_span.in_scope(|| {
                                     info!(peer_id = %peer_id_str, "pong sent");
                                 });
                             }
@@ -446,22 +461,30 @@ async fn run_frame_reader(
                                     peer_id = %peer_id_str,
                                     frame_kind = "pong",
                                     error = %e,
+                                    otel.kind = "producer",
                                 )
                                 .in_scope(|| info!(peer_id = %peer_id_str, "open_uni failed for pong"));
                             }
                         }
                     }
-                    Ok(InternalMeshFrame::Pong { org_id }) => {
-                        // Broker doesn't send pings, so receiving a pong is unexpected — log it.
+                    Ok((_, InternalMeshFrame::Pong { org_id })) => {
                         info!(peer_id = %peer_id_str, org_id, "unexpected pong received on broker");
                     }
                     Err(e) => {
-                        info!(peer_id = %peer_id_str, error = %e, "frame decode error");
+                        let byte_len = bytes.len();
+                        tracing::info_span!(
+                            "rafka.mesh.frame.decode_failed",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            error = %e,
+                            byte_len = byte_len,
+                            otel.kind = "consumer",
+                        )
+                        .in_scope(|| info!(peer_id = %peer_id_str, "frame decode failed"));
                     }
                 }
             }
             Err(_) => {
-                // accept_uni error signals connection closed — clean up registry.
                 registry.remove(&peer_id_str);
                 tracing::info_span!(
                     "rafka.mesh.peer.disconnected",

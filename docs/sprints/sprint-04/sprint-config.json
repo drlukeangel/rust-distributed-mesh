@@ -1,34 +1,44 @@
 {
   "sprint_id": "sprint-04",
-  "status": "blocked",
-  "blocked_on": "sprint-03 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "blocked_on": null,
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
   "branch": "sprint-04-frame-ping-pong",
-  "objective": "Send an InternalMeshFrame ping from gateway to broker and back. trace_id propagates across the wire.",
-  "size": "tiny — 2 days",
+  "objective": "Bidirectional ping-pong frame protocol with W3C trace context propagation across iroh uni streams. Single trace_id spans gateway→broker→gateway. Producer/consumer OTel SpanKinds reflect messaging semantics.",
+  "size": "tiny — 1 day (3 baby chunks)",
   "in_scope": [
-    "Define InternalMeshFrame struct in crates/rafka-mesh-ops (org_id mandatory in for_op constructor)",
-    "Gateway sends a Ping frame every 10s after a broker peer is connected",
-    "Broker echoes back a Pong frame",
-    "Both sides emit rafka.mesh.frame.sent / rafka.mesh.frame.received with the same trace_id"
+    "crates/rafka-mesh-ops: InternalMeshFrame{Ping,Pong{org_id}} with bincode 2 serde encode/decode",
+    "32-byte wire header: trace_id[16] + span_id[8] + trace_flags[1] + padding[7] + bincode frame",
+    "encode_with_context(&otel::Context) + decode_with_context() helpers for W3C traceparent propagation",
+    "Arc<DashMap<String,Connection>> peer registry in both gateway and broker",
+    "mdns dedup guard: registry.contains_key before re-dial (fixes Sprint 03 re-publish storm)",
+    "Gateway run_ping_sender: every 10s, encode Ping with context, open_uni, emit rafka.mesh.frame.sent{otel.kind=producer}",
+    "Broker run_frame_reader: accept_uni loop, decode_with_context, emit rafka.mesh.frame.received{otel.kind=consumer}, reply Pong",
+    "Gateway run_frame_reader: accept_uni loop, decode_with_context, emit rafka.mesh.frame.received{otel.kind=consumer} on Pong",
+    "Broker frame.sent (pong) is a child of frame.received — chains all 4 spans under one trace_id",
+    "rafka.mesh.frame.sent_failed{otel.kind=producer} on open_uni/write_all/finish errors (all 6 sites)",
+    "rafka.mesh.frame.decode_failed{node_id,peer_id,error,byte_len,otel.kind=consumer} — orphan span, no set_parent"
   ],
   "out_of_scope": [
-    "Multiple op codes — just Ping/Pong",
+    "Multiple op codes beyond Ping/Pong",
     "Authorization, encryption beyond iroh's default",
-    "Any persistence"
+    "Any persistence",
+    "HTTP/2 or gRPC metadata injection — wire-level binary header only"
   ],
   "exit_criteria": [
-    "Jaeger shows a single trace spanning both services: gateway frame.sent → broker frame.received → broker frame.sent (pong) → gateway frame.received",
-    "trace_id is identical across all 4 spans (trace propagation works)",
-    "Decode failures emit rafka.mesh.frame.decode_failed",
-    "Jaeger URL pre-filtered to a representative ping-pong trace"
+    "4 spans under single trace_id in Jaeger: gateway frame.sent + broker frame.received + broker frame.sent + gateway frame.received DONE",
+    "span.kind=producer on frame.sent, span.kind=consumer on frame.received DONE",
+    "rafka.mesh.frame.decode_failed span defined and wired at both receive sites DONE",
+    "Workspace gate cargo check --workspace --tests --no-default-features = 0/0 DONE",
+    "deliverable_url trace confirmed: http://localhost:16686/trace/64245d045f1960547977176803460ceb"
   ],
   "spans_to_emit": [
-    "rafka.mesh.frame.sent",
-    "rafka.mesh.frame.received",
-    "rafka.mesh.frame.decode_failed"
+    "rafka.mesh.frame.sent (node_id, peer_id, frame_kind, org_id, otel.kind=producer)",
+    "rafka.mesh.frame.received (node_id, peer_id, frame_kind, org_id, otel.kind=consumer)",
+    "rafka.mesh.frame.sent_failed (node_id, peer_id, frame_kind, error, otel.kind=producer)",
+    "rafka.mesh.frame.decode_failed (node_id, peer_id, error, byte_len, otel.kind=consumer)"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-gateway&operation=rafka.mesh.frame.sent&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=data-gateway&operation=rafka.mesh.frame.sent&lookback=1h"
 }

@@ -2815,6 +2815,7 @@ dependencies = [
  "dashmap",
  "hex",
  "iroh",
+ "opentelemetry",
  "rafka-mesh-ops",
  "rafka-mesh-transport",
  "rafka-telemetry",
@@ -2823,6 +2824,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2833,6 +2835,7 @@ dependencies = [
  "dashmap",
  "hex",
  "iroh",
+ "opentelemetry",
  "rafka-mesh-ops",
  "rafka-mesh-transport",
  "rafka-telemetry",
@@ -2841,6 +2844,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2849,6 +2853,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "opentelemetry",
  "serde",
 ]
 

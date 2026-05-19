@@ -13,6 +13,8 @@ rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
 rafka-mesh-ops = { path = "../crates/rafka-mesh-ops" }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
 iroh = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
