@@ -572,9 +572,59 @@ When v2's chaos harness sprint (sprint-09+) ships, sign-off requires ALL of:
 
 ---
 
+## D-030 — Repo layout: products at top level, libraries in `crates/`, CLIs in `cli/`
+**Date:** 2026-05-19
+**Status:** Locked
+
+v2's workspace layout follows a strict product/library/CLI split. Every directory at the repo root has a single, predictable role.
+
+### Layout
+
+```
+rafka-V2-new-mesh/
+├── gateway/         ← product binary (node)
+├── broker/          ← product binary (node)
+├── compute/         ← product binary (node)
+├── registry/        ← product binary (node)
+├── topology-ui/     ← product binary (operator observability surface)
+├── cli/             ← CLI binaries directory
+│   ├── rfa/         ← operator CLI (admin + observability)
+│   └── rf/          ← consumer CLI (produce/fetch/etc. — future, sprint-12+)
+├── crates/          ← LIBRARY crates (shared code, not directly shipped)
+│   ├── rafka-telemetry/
+│   ├── rafka-mesh-transport/
+│   ├── rafka-mesh-ops/
+│   └── rafka-node-base/
+├── docs/            ← documentation
+└── deployment/      ← compose files etc.
+```
+
+### Rules
+
+1. **Top-level directory = a shipped product.** If `cargo build -p <name>` produces a binary that gets distributed (released, installed, run by operators or customers), the directory is at the top level. gateway, broker, compute, registry, topology-ui all qualify. CLIs are in `cli/<name>/` (one level nested for grouping, but still "product").
+2. **`crates/` is library-only.** Things in `crates/` are `[lib]` crates that other crates depend on. They're never `cargo install`-ed standalone. They have no `[[bin]]` section.
+3. **CLIs are products too — `cli/<name>/`.** Operator-facing and consumer-facing CLIs both live under `cli/`. Each is its own crate with `[[bin]]`. They depend on shared library crates from `crates/`.
+4. **Two CLIs by audience:**
+   - **`cli/rfa/`** — operator CLI. Admin commands (mesh topology, node management, health, cluster ops). Talks to `topology-ui`'s internal API surface. Ships with the cluster deployment.
+   - **`cli/rf/`** — consumer CLI (future, when sprint-09+ external API exists). Produce/fetch/admin from customer perspective. Talks to gateway's external API surface. Ships standalone (homebrew, cargo install, debian package).
+
+### Rationale
+
+- Different audiences = different release cadence, distribution, security model. Mixing rfa + rf into one crate would force version coupling that hurts both.
+- Splitting now (zero cost — single mv at sprint-09 mid-build) avoids painful split later when commands diverge.
+- v1 had a similar `cli/` directory for operator tools; v2 carries that convention forward but adds explicit consumer/operator split that v1 hadn't formalized.
+- `crates/` as library-only matches Rust ecosystem convention (look at any large Rust workspace — `crates/` is libraries; binaries live elsewhere).
+
+### Implementation note
+
+Sprint-09 originally scaffolded `crates/rfa/`; corrected mid-build to `cli/rfa/` per this decision. Future CLI work (`cli/rf/` for consumer surface) follows the same pattern automatically.
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
+- **D-XXX:** OpenAPI-driven codegen for rfa/rf (utoipa server-side + progenitor or other client-side). Likely lands sprint-10 as a half-sprint scaffold.
 - **D-XXX:** Choice of graph rendering lib for UI (`vis-network` vs `cytoscape.js`)
 - **D-XXX:** Whether topology-ui process binary lives in `topology-ui/` (sibling to gateway/broker) or `crates/rafka-topology-ui/`
 - **D-XXX:** OTLP collector deployment shape for local dev (sidecar process vs in-tree library)
