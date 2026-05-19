@@ -30,7 +30,7 @@ impl Drop for TelemetryGuard {
 /// to ensure all spans are exported before process exit.
 pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     let otlp_endpoint = std::env::var("RAFKA_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4327".to_string());
+        .unwrap_or_else(|_| "http://localhost:4317".to_string());
 
     let exporter = SpanExporter::builder()
         .with_tonic()

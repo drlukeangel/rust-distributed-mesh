@@ -13,7 +13,7 @@ struct NodeIdentity {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = rafka_telemetry::init_telemetry("rafka-gateway");
+    let _guard = rafka_telemetry::init_telemetry("rafkav2-gateway");
 
     let data_dir = std::env::var("RAFKA_DATA_DIR")
         .map(PathBuf::from)
