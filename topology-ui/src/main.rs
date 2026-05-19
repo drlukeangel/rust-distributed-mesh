@@ -1,17 +1,17 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Json, Query, Request, State},
+    extract::{Json, Path, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use dashmap::DashMap;
 use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -133,6 +133,7 @@ const HTML: &str = r#"<!DOCTYPE html>
     <option value="">select a node</option>
   </select>
   <button id="refresh">Refresh</button>
+  <button id="kill-btn" disabled style="border-color:#f85149;color:#f85149;display:none">Kill selected</button>
 </div>
 
 <div id="waterfall">
@@ -141,11 +142,15 @@ const HTML: &str = r#"<!DOCTYPE html>
 
 <script>
 (function() {
-  var dot   = document.getElementById('status-dot');
-  var txt   = document.getElementById('status-text');
-  var sel   = document.getElementById('node-selector');
-  var wf    = document.getElementById('waterfall');
-  var toast = document.getElementById('toast');
+  var dot      = document.getElementById('status-dot');
+  var txt      = document.getElementById('status-text');
+  var sel      = document.getElementById('node-selector');
+  var wf       = document.getElementById('waterfall');
+  var toast    = document.getElementById('toast');
+  var killBtn  = document.getElementById('kill-btn');
+
+  // node_name → node_type for subprocesses spawned by this UI session
+  var uiSpawned = {};
 
   var COLORS = {
     'rafka.mesh.node.ready':              '#1f6feb',
@@ -271,6 +276,18 @@ const HTML: &str = r#"<!DOCTYPE html>
       });
   }
 
+  function updateKillBtn() {
+    var svc = sel.value;
+    if (svc && uiSpawned[svc]) {
+      killBtn.style.display = '';
+      killBtn.disabled = false;
+      killBtn.textContent = 'Kill ' + svc;
+    } else {
+      killBtn.style.display = 'none';
+      killBtn.disabled = true;
+    }
+  }
+
   function spawnNode(nodeType, btn) {
     btn.disabled = true;
     fetch('/api/nodes/spawn', {
@@ -282,6 +299,7 @@ const HTML: &str = r#"<!DOCTYPE html>
       .then(function(res) {
         btn.disabled = false;
         if (res.ok) {
+          uiSpawned[res.d.node_name] = nodeType;
           showToast(true, 'Spawned ' + res.d.node_name + ' (pid=' + res.d.pid + ')');
           setTimeout(loadNodes, 5000);
         } else {
@@ -294,11 +312,37 @@ const HTML: &str = r#"<!DOCTYPE html>
       });
   }
 
+  function killSelected() {
+    var svc = sel.value;
+    if (!svc || !uiSpawned[svc]) return;
+    killBtn.disabled = true;
+    fetch('/api/nodes/' + encodeURIComponent(svc), { method: 'DELETE' })
+      .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+      .then(function(res) {
+        if (res.ok) {
+          delete uiSpawned[res.d.node_name];
+          showToast(true, 'Killed ' + res.d.node_name + ' (' + res.d.reason + ')');
+          loadNodes();
+          updateKillBtn();
+          wf.innerHTML = '<div class="wf-empty">select a node to view its boot waterfall</div>';
+        } else {
+          showToast(false, 'Kill failed: ' + (res.d.error || 'unknown error'));
+          killBtn.disabled = false;
+        }
+      })
+      .catch(function() {
+        showToast(false, 'Kill request failed');
+        killBtn.disabled = false;
+      });
+  }
+
+  killBtn.addEventListener('click', killSelected);
+
   document.querySelectorAll('.spawn-btn').forEach(function(btn) {
     btn.addEventListener('click', function() { spawnNode(btn.dataset.type, btn); });
   });
 
-  sel.addEventListener('change', function() { loadTrace(sel.value); });
+  sel.addEventListener('change', function() { loadTrace(sel.value); updateKillBtn(); });
 
   document.getElementById('refresh').addEventListener('click', function() {
     pollHealth();
@@ -507,6 +551,58 @@ async fn handle_spawn(
     }
 }
 
+async fn handle_kill(
+    State(state): State<AppState>,
+    Path(node_name): Path<String>,
+) -> impl IntoResponse {
+    let entry = state.processes.remove(&node_name);
+    let (_, mutex_child) = match entry {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({"error": format!("no subprocess named {node_name}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let mut child = mutex_child.into_inner();
+    let pid = child.id().unwrap_or(0);
+
+    // Phase 1: start_kill (Windows terminate-process; SIGTERM-equivalent on Unix)
+    let _ = child.start_kill();
+
+    let reason = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(_) => "graceful",
+        Err(_) => {
+            // Timeout — force kill and wait
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            "forced"
+        }
+    };
+
+    // Best-effort data dir cleanup — don't fail response if this errors
+    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+    if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
+        tracing::warn!(dir = %spawn_dir, error = %e, "failed to remove subprocess data dir");
+    }
+
+    let span = info_span!(
+        "rafka.ui.subprocess.killed",
+        node_name = %node_name,
+        pid = pid,
+        reason = reason,
+        "otel.kind" = "internal",
+    );
+    span.in_scope(|| {
+        info!(node_name = %node_name, pid, reason, "subprocess killed");
+    });
+
+    (StatusCode::OK, axum::Json(json!({"node_name": node_name, "reason": reason}))).into_response()
+}
+
 async fn trace_middleware(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
@@ -547,6 +643,7 @@ async fn main() -> Result<()> {
         .route("/api/nodes", get(handle_nodes))
         .route("/api/boot-trace", get(handle_boot_trace))
         .route("/api/nodes/spawn", post(handle_spawn))
+        .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
 
