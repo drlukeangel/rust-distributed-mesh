@@ -106,7 +106,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 
 **`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
 
-**`node_type` enum (locked):** `"gateway"`, `"broker"`, `"compute"`, `"schema"`. Future node types append.
+**`node_type` enum (locked):** `"data-gateway"`, `"broker"`, `"compute"`, `"schema"`. Future node types append.
 
 **Substrate metric contract (locked):**
 
@@ -167,7 +167,7 @@ No TOML, YAML, or JSON config files for substrate-layer settings (transport, ide
 - `OTEL_RESOURCE_ATTRIBUTES` — extra k=v pairs
 
 **Rafka-specific env vars** (prefix `RAFKA_*`, every one with a default):
-- `RAFKA_NODE_TYPE` — gateway / broker / compute / schema
+- `RAFKA_NODE_TYPE` — data-gateway / broker / compute / schema
 - `RAFKA_DATA_DIR` — where identity + state lives (default `./data/node-${random}`)
 - `RAFKA_NODE_BIND_ADDR` — iroh endpoint bind (default `0.0.0.0:0` ephemeral)
 - `RAFKA_SEED_NODES` — CSV of `<endpoint_id>@<host>:<port>` for bootstrap discovery

@@ -6,7 +6,7 @@ use std::{net::SocketAddrV4, path::PathBuf, time::Duration};
 use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
 
-const NODE_TYPE: &str = "gateway";
+const NODE_TYPE: &str = "data-gateway";
 
 #[derive(Serialize, Deserialize)]
 struct NodeIdentity {
