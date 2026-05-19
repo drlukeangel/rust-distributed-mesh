@@ -415,7 +415,16 @@ const HTML: &str = r##"<!DOCTYPE html>
   var topoRefresh = document.getElementById('topology-refresh');
   var topoTimer = null;
 
-  var TYPE_COLOR = {gateway:'#58a6ff', broker:'#f0883e', compute:'#3fb950', registry:'#a371f7'};
+  var TYPE_COLOR = {gateway:'#58a6ff', broker:'#f0883e', compute:'#3fb950', registry:'#a371f7', bridge:'#e3b341'};
+
+  // Stable per-mesh-id ring color (string → palette index).
+  var MESH_RING_PALETTE = ['#58a6ff', '#3fb950', '#f0883e', '#a371f7', '#e3b341', '#ff7b72'];
+  function meshRingColor(meshId) {
+    if (!meshId || meshId === 'default') return '#30363d';
+    var h = 0;
+    for (var i = 0; i < meshId.length; i++) h = (h * 31 + meshId.charCodeAt(i)) | 0;
+    return MESH_RING_PALETTE[Math.abs(h) % MESH_RING_PALETTE.length];
+  }
 
   function renderTopology(data) {
     var W = 800, H = 480, cx = W/2, cy = H/2, R = 170;
@@ -426,32 +435,54 @@ const HTML: &str = r##"<!DOCTYPE html>
       topoSvg.innerHTML = '<text x="' + cx + '" y="' + cy + '" fill="#8b949e" text-anchor="middle">no nodes — start some via Spawn buttons</text>';
       return;
     }
+
+    // Group nodes by mesh_id so each mesh gets its own arc on the ring + a ring
+    // background highlighting the mesh boundary.
+    var byMesh = {};
+    nodes.forEach(function(n) {
+      var m = n.mesh_id || 'default';
+      (byMesh[m] = byMesh[m] || []).push(n);
+    });
+    var meshes = Object.keys(byMesh).sort();
     var pos = {};
-    nodes.forEach(function(n, i) {
-      var ang = 2 * Math.PI * i / nodes.length - Math.PI/2;
-      pos[n.id] = { x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang) };
+    var meshArcs = [];
+    var arcStart = -Math.PI/2;
+    meshes.forEach(function(m) {
+      var members = byMesh[m];
+      var span = 2 * Math.PI * (members.length / nodes.length);
+      var ringColor = meshRingColor(m);
+      // Draw a faint background arc for each mesh — visually groups its members.
+      var midAng = arcStart + span/2;
+      meshArcs.push('<text x="' + (cx + (R + 30) * Math.cos(midAng)) + '" y="' + (cy + (R + 30) * Math.sin(midAng)) + '" fill="' + ringColor + '" font-size="11" text-anchor="middle">' + m + '</text>');
+      members.forEach(function(n, i) {
+        var slot = members.length === 1 ? 0.5 : i / (members.length - 1);
+        var ang = arcStart + span * slot * 0.85 + span * 0.075; // 0.075 padding each side
+        pos[n.id] = { x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang), mesh: m };
+      });
+      arcStart += span;
     });
 
-    var svgParts = [];
+    var svgParts = meshArcs.slice();
     edges.forEach(function(e) {
       var a = pos[e.from], b = pos[e.to];
       if (!a || !b) return;
-      svgParts.push('<line class="topo-edge" x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '"/>');
-      var mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-      var label = e.frame_count ? (e.frame_count + ' frames') : 'peer';
-      svgParts.push('<text class="topo-edge-label" x="' + mx + '" y="' + my + '">' + label + '</text>');
+      var isCross = e.kind === 'cross';
+      var style = isCross ? 'stroke-dasharray:5,4;stroke:#e3b341;stroke-opacity:0.7' : '';
+      svgParts.push('<line class="topo-edge" x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '" style="' + style + '"/>');
     });
     nodes.forEach(function(n) {
       var p = pos[n.id];
-      var color = TYPE_COLOR[n.type] || '#888';
+      var typeColor = TYPE_COLOR[n.type] || '#888';
+      var meshColor = meshRingColor(n.mesh_id || 'default');
       svgParts.push('<g class="topo-node">' +
-        '<circle cx="' + p.x + '" cy="' + p.y + '" r="22" fill="' + color + '" fill-opacity="0.65"/>' +
+        '<circle cx="' + p.x + '" cy="' + p.y + '" r="26" fill="none" stroke="' + meshColor + '" stroke-width="3" stroke-opacity="0.8"/>' +
+        '<circle cx="' + p.x + '" cy="' + p.y + '" r="22" fill="' + typeColor + '" fill-opacity="0.65"/>' +
         '<text x="' + p.x + '" y="' + (p.y + 4) + '">' + (n.id.length > 12 ? n.id.slice(0,10) + '…' : n.id) + '</text>' +
-        (typeof n.peer_count === 'number' ? '<text x="' + p.x + '" y="' + (p.y + 38) + '" style="fill:#8b949e;font-size:9px">peers=' + n.peer_count + '</text>' : '') +
+        '<text x="' + p.x + '" y="' + (p.y + 38) + '" style="fill:#8b949e;font-size:9px">' + (n.mesh_id || 'default') + '</text>' +
         '</g>');
     });
     topoSvg.innerHTML = svgParts.join('');
-    topoStatus.textContent = nodes.length + ' nodes, ' + edges.length + ' edges';
+    topoStatus.textContent = nodes.length + ' nodes, ' + edges.length + ' edges, ' + meshes.length + ' mesh' + (meshes.length === 1 ? '' : 'es');
   }
 
   function loadTopology() {
@@ -709,7 +740,33 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         for v in arr {
             if let Some(s) = v.as_str() {
                 if KNOWN_NODE_TYPES.contains(&s) {
-                    nodes.push(json!({"id": s, "type": s}));
+                    // Query for most-recent heartbeat to extract mesh_id. Falls back
+                    // to "default" if no heartbeat found (service may have spans but
+                    // not a heartbeat yet — pre-boot or non-node service).
+                    let hb_url = format!(
+                        "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m",
+                        state.jaeger_url, s
+                    );
+                    let mesh_id = match state.http.get(&hb_url).send().await {
+                        Ok(resp) => match resp.json::<Value>().await {
+                            Ok(body) => body["data"]
+                                .as_array()
+                                .and_then(|a| a.first())
+                                .and_then(|t| t["spans"].as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|sp| sp["tags"].as_array())
+                                .and_then(|tags| {
+                                    tags.iter()
+                                        .find(|t| t["key"] == "mesh_id")
+                                        .and_then(|t| t["value"].as_str())
+                                        .map(String::from)
+                                })
+                                .unwrap_or_else(|| "default".to_string()),
+                            Err(_) => "default".to_string(),
+                        },
+                        Err(_) => "default".to_string(),
+                    };
+                    nodes.push(json!({"id": s, "type": s, "mesh_id": mesh_id}));
                 }
             }
         }
@@ -727,13 +784,19 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     //    edges by resolving peer_id back to a service name.
     let mut edges: Vec<Value> = Vec::new();
 
-    // For now: render a full mesh among known node types whose services are present.
-    // (Real edge weighting from Jaeger traffic comes in a later iteration.)
+    // Edges: render within-mesh full mesh + explicit cross-mesh edges. Within-mesh:
+    // any two nodes with the same mesh_id get a "within" edge (frame_count=0 as
+    // placeholder until traffic weighting lands). Cross-mesh: pairs whose mesh_ids
+    // differ are flagged so the UI can draw them with a distinct style.
     for (i, a) in nodes.iter().enumerate() {
         for b in nodes.iter().skip(i + 1) {
+            let mesh_a = a["mesh_id"].as_str().unwrap_or("default");
+            let mesh_b = b["mesh_id"].as_str().unwrap_or("default");
+            let kind = if mesh_a == mesh_b { "within" } else { "cross" };
             edges.push(json!({
                 "from": a["id"].as_str().unwrap_or(""),
                 "to": b["id"].as_str().unwrap_or(""),
+                "kind": kind,
                 "frame_count": 0
             }));
         }
