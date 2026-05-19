@@ -641,16 +641,20 @@ async fn create_endpoint(
     Ok(transport)
 }
 
-#[instrument(skip_all)]
+// NO #[instrument] here — this is an infinite loop that emits child spans per tick.
+// Wrapping the whole loop in a root span would keep that root open forever; child
+// heartbeat spans pile up in the OTel batch waiting for parent close (which never
+// happens until shutdown), so only the first few export. Each tick must be its own
+// independent root span.
 async fn run_heartbeat(node_id: String, registry: PeerRegistry) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         interval.tick().await;
-        let peer_count = registry.len() as u32;
+        let peer_count = registry.len() as i64;
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
-            peer_count,
+            peer_count = peer_count,
         )
         .in_scope(|| {
             info!("heartbeat");

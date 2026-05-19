@@ -362,6 +362,37 @@ Sprint-09+: each `main.rs` grows with `serve_clients()`, `replicate()`, `dispatc
 
 ---
 
+## D-026 — REST/HTTP interface exists ONLY on `gateway`; all other node binaries are mesh-only
+**Date:** 2026-05-19
+**Status:** Locked
+
+External REST/HTTP traffic (client produce/fetch/admin API, OAuth, /metrics, /health, anything served over TCP+HTTP) lives ONLY in the `gateway` binary. `broker`, `compute`, `registry` (and any future node binaries) communicate **exclusively** over the iroh mesh — no axum, no hyper, no listener on a port.
+
+**The split:**
+- `gateway` — external boundary: client TLS termination, authz, request routing, HTTP API surface. Owns its own port(s) + REST endpoints.
+- `broker`, `compute`, `registry` — internal nodes: iroh mesh in, iroh mesh out. No HTTP server bound to any port. Health/liveness observable via mesh heartbeat span emission (`rafka.mesh.heartbeat`) consumed by gateway/registry/operator telemetry.
+- `topology-ui` — observability surface, NOT a node. Has its own HTTP server (per D-007/D-008) because it's a debug UI, not a mesh participant in the storage/compute/registry sense. Allowed.
+
+**Forbidden patterns** (rejected at review for `broker`, `compute`, `registry`, and `crates/rafka-node-base`):
+- **`axum` as a Cargo.toml dependency** — gateway is the only crate allowed to depend on axum
+- **`hyper`, `tonic`, `actix-web`, or any HTTP server framework** as a Cargo.toml dependency on non-gateway nodes
+- `tokio::net::TcpListener::bind()` calls (or any code that opens a TCP listening socket for HTTP)
+- Any `/health`, `/metrics`, `/ready`, or other HTTP endpoint route definitions
+- Any sidecar HTTP listener for "admin" or "debug"
+- reqwest is OK (outbound HTTP for Jaeger query API in topology-ui only; not for inter-node communication on broker/compute/registry)
+
+**Allowed (gateway only):** axum, tower, tower-http, hyper, rustls/native-tls for TLS termination. These deps land in `gateway/Cargo.toml` when sprint-09+ adds the client-facing REST surface.
+
+**Rationale:**
+- Single trust boundary: gateway is where client identity is established and authz is enforced. If brokers had their own REST surface, the trust boundary fragments — clients could potentially talk to brokers directly, bypassing gateway authz. D-022 (gateway as trust boundary) requires brokers to trust gateway's `org_id` claims; that only works if brokers are unreachable from clients.
+- Single port surface per cluster: only gateway needs port forwarding / NAT / TLS cert management. Brokers/compute/registry are NAT-traversed automatically by iroh.
+- Forces telemetry-as-observability discipline: there's no `/health` endpoint to fall back on — instead the mesh heartbeat span IS the liveness signal, observable in Jaeger.
+- Supersedes/strengthens D-017 (compute zero HTTP) — generalizes to all non-gateway nodes.
+
+**Implementation:** Today's state already conforms (broker/compute/registry have no axum/HTTP). When sprint-09+ adds app logic, this rule prevents accidental drift (e.g., "let me just add a /metrics endpoint to broker for debugging").
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
