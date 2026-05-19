@@ -285,6 +285,83 @@ Current external client already speaks TCP or QUIC (pre-existing). Choice betwee
 
 ---
 
+## D-024 — Sprint exit criteria: telemetry artifact set must prove the full sprint scope
+**Date:** 2026-05-19
+**Status:** Locked
+
+Every sprint's exit criteria include surfaced Jaeger URLs that prove the FULL sprint deliverable — not one trace that proves one corner. The team-lead (QA) clicks each URL and verifies the trace covers the claim before reporting sprint-closed.
+
+**What "telemetry artifact" means:** whatever spans prove the sprint actually did what its PRD said. For substrate sprints, that's mostly control-plane evidence (boot, membership/peer.connected, heartbeat, control frames like ping/pong). For later sprints (produce/fetch, replication, jobs), it'll be mostly data-plane evidence (operation frames, correlation_id round-trips, end-to-end client traces). The PLANE is incidental; the requirement is "every claim has a clickable trace that demonstrates it."
+
+**General rule for enumerating required URLs per sprint:**
+- Compute the deliverable scope (N nodes touched, M operations introduced, K state transitions, etc.)
+- For each unit of scope, require one URL that exhibits it via spans
+- For N-node mesh-membership sprints: N×(N-1)/2 pair URLs (every pair handshakes)
+- For per-node features: N URLs (every node exhibits the new behavior)
+- For cross-service operations: one unified-trace_id URL per operation pair (sender → receiver → sender ack → receiver final)
+- For failure-mode sprints: one URL per failure path, showing the error span fired
+
+**Current sprint examples (substrate era — mostly control-plane):**
+- Sprint-01 (telemetry): 1 boot trace URL per service (1 node × all 6 boot spans)
+- Sprint-03 (peer discovery): N×(N-1)/2 peer.connected URLs + 1 peer.disconnected URL
+- Sprint-04 (frame propagation): 1 unified-trace URL per gateway↔peer pair (3 for 4-node mesh)
+- Sprint-06 (registry): 6 pair URLs (4-node mesh) + 3 ping/pong unified-trace URLs + 4 heartbeat search URLs
+
+**Future sprint examples (app-layer era — mostly data-plane):**
+- Produce sprint: 1 URL per acks-mode (0/1/all) showing client→gateway→broker→ack round trip via trace_id
+- Replication: 1 URL per replication-pair showing primary→follower data-flow under unified trace
+- Jobs: 1 URL per job state transition (claimed/running/completed/failed) with correlation_id
+
+**Rationale:** 2026-05-19 sprint-06 close-out surfaced ONE trace URL proving ONE of six pair-connections. Team-lead (me) forwarded it to user as proof; user clicked, found only 1/6 verifiable from that URL. Result: ambiguity about whether the sprint actually delivered. Lock prevents recurrence by making the required artifact set explicit and computable per sprint scope. Telemetry IS the verification surface (per CLAUDE.md Principle #10) — every sprint must surface enough of it.
+
+**How team-lead enforces:** Before merging engineer's branch, compute the required URL count from the sprint's scope, ensure engineer surfaced at least that count, click each one, verify spans/tags match the claim. Insufficient artifacts → send back to engineer with explicit list of missing URLs. Never accept "the deliverable works, trust me" — the deliverable is the spans plus the URLs that surface them.
+
+---
+
+## D-025 — Shared `rafka-node-base` crate; binaries are thin shells
+**Date:** 2026-05-19
+**Status:** Locked
+
+All node-type binaries (`gateway`, `broker`, `compute`, `registry`, and future types) share a single `crates/rafka-node-base/` crate containing the entire substrate boilerplate: identity load/mint, iroh endpoint creation, mdns + seed discovery, peer registry, accept loop, frame reader, ping sender, heartbeat, shutdown. Each `<node>/src/main.rs` shrinks to ~10 lines that pass a `node_type` string + role config to the shared runtime.
+
+**Shape:**
+```rust
+// gateway/src/main.rs (and equivalents)
+#[tokio::main]
+async fn main() -> Result<()> {
+    rafka_node_base::NodeRuntime::new("gateway")
+        .with_role(Role::Gateway)
+        .run()
+        .await
+}
+```
+
+`Role` enum carries the small per-binary capability differences (e.g., gateway sends pings, others passively respond). Role-specific extensions added as new variants without touching the shared runtime.
+
+**Rationale:** Pre-refactor, all 4 main.rs files were ~575 lines that differed in TWO string literals: `const NODE_TYPE` and `init_telemetry(name)`. ~2300 lines of duplicated code. Sprint-06 boot-chain regression (node.ready + endpoint_created missing) existed BECAUSE 4 copies shared the same bug — fixing it required 4-file edits. New node types in future sprints would compound the duplication (replication will need broker-broker handlers; jobs will need compute-specific frame routing). Extracting now contains the blast radius for every future bug fix and feature.
+
+**Implementation:** Engineer extracts `rafka-node-base` AS PART OF the sprint-06 regression fix (a single commit). The boot-chain regression fix lands IN the new crate, propagating to all 4 binaries by definition. Per-binary main.rs becomes the thin shell shown above. Verification: workspace gate 0/0 + the 17-URL D-024 artifact set passes for all 4 services with the full 6-op boot chain visible.
+
+**The structural intent — thin NOW, fat LATER:**
+
+The binaries are thin shells today (~10 lines each) because they have no application logic yet. They are NOT meant to stay thin. Each binary will grow into its role's actual responsibilities:
+- `gateway/src/main.rs` → TLS termination, authz, client connection management, request routing to brokers, response correlation
+- `broker/src/main.rs` → log segment storage, replication, fetch service, retention policy
+- `compute/src/main.rs` → topic subscription, RSQL/WASM job execution, output emission
+- `registry/src/main.rs` → schema registry, cluster metadata, partition-leader assignment
+
+The shared `rafka-node-base` crate is the SUBSTRATE (mesh transport + control plane + telemetry plumbing) — boilerplate that's identical across all node types and doesn't belong in any individual binary's application code. The binaries SHED that boilerplate so they have room to grow into their actual role.
+
+Today: each `main.rs` ~10 lines (substrate runtime + role).
+Sprint-09+: each `main.rs` grows with `serve_clients()`, `replicate()`, `dispatch_jobs()`, etc. — code that's TRULY per-role and belongs in that binary.
+
+**Future sprints benefit:**
+- Sprint-05 `#[instrument]` retrofit (queued) — touch one file instead of four
+- Sprint-08+ replication, jobs, schema features — substrate stays in node-base; app logic lives in the right binary's main.rs (or sibling modules within that binary)
+- New node types (mirror tailer, etc.) get the substrate for free; their main.rs only contains what's actually new
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
