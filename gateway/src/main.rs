@@ -195,7 +195,10 @@ async fn main() -> Result<()> {
         };
 
         let node_id_hb = node_id.clone();
-        let heartbeat_handle = tokio::spawn(run_heartbeat(node_id_hb));
+        let heartbeat_handle = {
+            let registry = Arc::clone(&peer_registry);
+            tokio::spawn(run_heartbeat(node_id_hb, registry))
+        };
 
         let ping_handle = {
             let node_id_ping = node_id.clone();
@@ -558,14 +561,15 @@ async fn create_endpoint(
 }
 
 #[instrument(skip_all)]
-async fn run_heartbeat(node_id: String) {
+async fn run_heartbeat(node_id: String, registry: PeerRegistry) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         interval.tick().await;
+        let peer_count = registry.len() as u32;
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
-            peer_count = 0u32,
+            peer_count,
         )
         .in_scope(|| {
             info!("heartbeat");
