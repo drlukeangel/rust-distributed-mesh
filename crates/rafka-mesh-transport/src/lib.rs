@@ -1,6 +1,6 @@
 use anyhow::Result;
 use iroh::{Endpoint, RelayMode, SecretKey};
-use std::sync::Arc;
+use std::{net::SocketAddrV4, sync::Arc};
 use tokio::sync::{oneshot, Notify};
 use tracing::instrument;
 
@@ -25,7 +25,7 @@ impl IrohMeshTransport {
     /// `block_on(shutdown_signal)` so iroh's internal tasks (magicsock actor,
     /// relay actor) remain alive for the lifetime of `IrohMeshTransport`.
     #[instrument(skip(secret_key))]
-    pub async fn new(secret_key: SecretKey) -> Result<Self> {
+    pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<Self> {
         let (ep_tx, ep_rx) = oneshot::channel::<anyhow::Result<Endpoint>>();
         let shutdown = Arc::new(Notify::new());
         let shutdown_clone = shutdown.clone();
@@ -43,6 +43,7 @@ impl IrohMeshTransport {
                         .secret_key(secret_key)
                         .alpns(vec![ALPN.to_vec()])
                         .relay_mode(RelayMode::Disabled)
+                        .bind_addr_v4(bind_addr)
                         .bind()
                         .await
                         .map_err(Into::into);

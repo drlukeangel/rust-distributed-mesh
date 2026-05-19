@@ -18,7 +18,7 @@
     "README.md at repo root"
   ],
   "out_of_scope": [
-    "deployment/dev/docker-compose.otlp.yml — DELETED from scope; reusing shared rafka-test-otel-collector + rafka-test-jaeger on localhost:4315/16686",
+    "deployment/dev/docker-compose.otlp.yml — DELETED from scope; reusing shared rafka-test-jaeger OTLP/gRPC on localhost:4316 (OTEL_EXPORTER_OTLP_ENDPOINT) and Jaeger UI on localhost:16686",
     "Second node type (broker/compute/schema) — Sprint 02+",
     "Peer-to-peer connection between nodes — Sprint 03",
     "Topology UI — Sprint 06+",
@@ -61,9 +61,12 @@
     "Sprint closes with engineer surfacing a clickable Jaeger URL — without URL, sprint is not closed."
   ],
   "infrastructure": {
-    "otlp_grpc": "localhost:4317",
+    "otlp_endpoint_default": "http://localhost:4316",
+    "otlp_env_var": "OTEL_EXPORTER_OTLP_ENDPOINT",
     "jaeger_ui": "http://localhost:16686",
-    "note": "Reuses shared rafka-test-otel-collector + rafka-test-jaeger from v1. Service name prefixed rafkav2- to avoid trace name collisions."
+    "service_name_default": "rafkav2-gateway",
+    "service_name_env_var": "OTEL_SERVICE_NAME",
+    "note": "Reuses shared rafka-test-jaeger on port 4316 (OTLP/gRPC). Service name prefixed rafkav2- to avoid collisions with v1 spans. All config via env vars per Principle #8."
   },
   "deliverable_url": "http://localhost:16686/search?service=rafkav2-gateway&operation=rafka.mesh.node.ready&lookback=1h"
 }

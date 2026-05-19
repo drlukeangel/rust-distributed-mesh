@@ -25,12 +25,15 @@ impl Drop for TelemetryGuard {
 /// Initialize OTLP tracing. Call once in `main()` before any other work.
 /// Returns a guard whose `Drop` flushes and shuts down the exporter.
 ///
-/// Uses `BatchSpanProcessor` to avoid blocking tokio worker threads on each
-/// span export. The `TelemetryGuard` drop calls `force_flush()` + `shutdown()`
-/// to ensure all spans are exported before process exit.
+/// Reads OTEL_EXPORTER_OTLP_ENDPOINT (default http://localhost:4316) and
+/// OTEL_SERVICE_NAME (default: the `service_name` parameter) from the environment.
+/// Uses BatchSpanProcessor; TelemetryGuard drop flushes before process exit.
 pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
-    let otlp_endpoint = std::env::var("RAFKA_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4317".to_string());
+    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4316".to_string());
+
+    let resolved_service_name = std::env::var("OTEL_SERVICE_NAME")
+        .unwrap_or_else(|_| service_name.to_string());
 
     let exporter = SpanExporter::builder()
         .with_tonic()
@@ -41,7 +44,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     let resource = opentelemetry_sdk::Resource::new(vec![
         opentelemetry::KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-            service_name.to_string(),
+            resolved_service_name.clone(),
         ),
     ]);
 
@@ -50,7 +53,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
         .with_resource(resource)
         .build();
 
-    let tracer = provider.tracer(service_name.to_string());
+    let tracer = provider.tracer(resolved_service_name);
     let otel_layer = OpenTelemetryLayer::new(tracer);
 
     tracing_subscriber::registry()

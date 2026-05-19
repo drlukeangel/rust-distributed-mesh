@@ -2,7 +2,7 @@ use anyhow::Result;
 use iroh::SecretKey;
 use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, time::Duration};
+use std::{net::SocketAddrV4, path::PathBuf, time::Duration};
 use tokio::signal;
 use tracing::{info, instrument, Instrument};
 
@@ -15,14 +15,35 @@ struct NodeIdentity {
 async fn main() -> Result<()> {
     let _guard = rafka_telemetry::init_telemetry("rafkav2-gateway");
 
+    // All config from env vars — no config files, no magic numbers.
     let data_dir = std::env::var("RAFKA_DATA_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./data/node"));
+        .unwrap_or_else(|_| {
+            let id: u32 = rand::random();
+            PathBuf::from(format!("./data/node-{id:08x}"))
+        });
+
+    let bind_addr: SocketAddrV4 = std::env::var("RAFKA_NODE_BIND_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:0".to_string())
+        .parse()
+        .expect("RAFKA_NODE_BIND_ADDR must be a valid IPv4 socket address (e.g. 0.0.0.0:0)");
+
+    let gossip_interval_ms: u64 = std::env::var("RAFKA_GOSSIP_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
 
     // Root span — all boot child spans nest under this.
     let root_span = tracing::info_span!("rafka.mesh.node.ready");
 
     async {
+        info!(
+            gossip_interval_ms,
+            bind_addr = %bind_addr,
+            data_dir = ?data_dir,
+            "boot config"
+        );
+
         // Child 1: identity — span name reflects load vs mint
         let identity_path = data_dir.join("node-identity.json");
         let secret_key = if identity_path.exists() {
@@ -38,7 +59,7 @@ async fn main() -> Result<()> {
         info!(node_id = %node_id, "identity ready");
 
         // Child 2: endpoint
-        let transport = create_endpoint(secret_key)
+        let transport = create_endpoint(secret_key, bind_addr)
             .instrument(tracing::info_span!("rafka.mesh.boot.endpoint_created"))
             .await?;
 
@@ -49,7 +70,7 @@ async fn main() -> Result<()> {
 
         // Child 4: gossip
         tracing::info_span!("rafka.mesh.boot.gossip_started").in_scope(|| {
-            info!("gossip discovery started via iroh mdns");
+            info!(gossip_interval_ms, "gossip discovery started via iroh mdns");
         });
 
         // Child 5: accept loop
@@ -103,7 +124,6 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
         };
         let json = serde_json::to_string_pretty(&identity)?;
         tokio::fs::write(&identity_path, json).await?;
-        // Rename the span retroactively with an event attribute so Jaeger shows "minted"
         info!(path = ?identity_path, node_id = %secret_key.public(), event = "identity_minted", "minted new identity");
         Ok(secret_key)
     }
@@ -111,8 +131,8 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
 
 /// Create the iroh Endpoint. Caller instruments with the correct boot span name.
 #[instrument(skip_all)]
-async fn create_endpoint(secret_key: SecretKey) -> Result<IrohMeshTransport> {
-    let transport = IrohMeshTransport::new(secret_key).await?;
+async fn create_endpoint(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<IrohMeshTransport> {
+    let transport = IrohMeshTransport::new(secret_key, bind_addr).await?;
     info!(node_id = %transport.endpoint.node_id(), "iroh endpoint bound");
     Ok(transport)
 }
