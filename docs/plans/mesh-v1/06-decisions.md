@@ -426,6 +426,13 @@ For **durable shared state** (e.g., authoritative routing table, the v2 equivale
 - Late-joiner catchup unclear — POC to verify; combine with iroh-docs as backup
 - No publicly cited production deployments at scale — we'll be early adopters; risk mitigated by `MeshGossip` trait abstraction (swap to v1 pattern if needed)
 
+**Implementation strategy — start with one topic, split later:**
+
+- **Now (sprint-09+ initial impl):** ONE gossip topic carrying topology + health (membership signals, broker reachability flips, partition reassignment notifications). All 4 node types subscribe; everyone sees everything. Simple, no per-role gating, HyParView overhead is tolerable at 4-100 nodes.
+- **Later (scale-driven):** Split into multiple topics as fanout cost grows OR per-role subscription patterns emerge (e.g., compute-only job-state topic, registry-only schema-update topic). Each topic = independent HyParView swarm.
+
+Single-topic kickoff keeps the first integration narrow + lets us prove iroh-gossip's late-joiner catchup (Risk #3) before fragmenting state across topics.
+
 **Implementation:** Sprint-09+ when the first cluster-metadata-broadcast use case is implemented (probably broker reachability gossip during initial produce/fetch wiring).
 
 **Sources investigated:**
