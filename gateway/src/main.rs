@@ -146,6 +146,17 @@ async fn run_heartbeat() {
 }
 
 async fn wait_for_signal() {
-    let _ = signal::ctrl_c().await;
-    info!("signal received, shutting down");
+    let timer = std::env::var("RAFKA_AUTO_SHUTDOWN_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+    tokio::select! {
+        _ = signal::ctrl_c() => info!("ctrl_c received, shutting down"),
+        _ = async {
+            match timer {
+                Some(d) => tokio::time::sleep(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        } => info!("auto-shutdown timer fired"),
+    }
 }
