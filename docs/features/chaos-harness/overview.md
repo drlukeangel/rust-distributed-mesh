@@ -20,14 +20,14 @@ Goal: every sprint after sprint-11 inherits the chaos-pass acceptance criterion 
 
 - `partition_pair{a, b, duration_ms}` — Windows `New-NetFirewallRule` blocking outbound UDP for two named programs. **Requires elevated shell** (admin); fails clean with surfaced stderr otherwise. Revert removes the tagged rules.
 - `clock_skew{target, skew_ms}` — restart the target node with `RAFKA_CLOCK_SKEW_MS` env injected via topology-ui's `extra_env` field. `rafka-node-base` reads the var at boot and emits `clock_skew_ms` + `wall_time_ms` attributes on every `rafka.mesh.heartbeat` span. Detection verifies new subprocess appears; substrate detection (Jaeger query for skewed `wall_time_ms`) is a follow-up.
+- `slow_link{target, latency_ms}` — kill + respawn target with `RAFKA_LINK_SLOW_MS` env. `rafka-node-base.run_ping_sender` reads at boot and sleeps that many ms before each outbound `open_uni` so the link appears slow at the app layer.
+- `lossy_link{target, loss_pct}` — kill + respawn with `RAFKA_LINK_LOSS_PCT` env (0-100). Per outbound ping, node-base rolls a u8%100; if < loss_pct, emits a `rafka.mesh.frame.dropped_by_fault_inject` span and skips the write. Telemetry-visible drop signal.
 
 ## Phase 3 (queued) — extended network primitives
 
 - `partition_subset` — partition multiple node-pairs forming disjoint subsets
 - `flap_link` — repeatedly disconnect+reconnect via firewall rule toggle
 - `nat_shift` — force iroh endpoint rebind to new port (mid-run reconfigure)
-- `slow_link` — app-layer latency injection at frame send/recv boundary (env-var hook + node-base frame handler change)
-- `lossy_link` — app-layer drop injection
 - `firewall_inbound` — block all inbound to a target
 
 ## Locked spans
