@@ -289,7 +289,7 @@ All env vars recognized by the Sprint 01 `rafka-gateway` binary. No other config
 | Env var | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4316` | OTLP gRPC collector URL. Port 4316 maps to `rafka-test-jaeger` container's OTLP/gRPC port. Override for any other collector. |
-| `OTEL_SERVICE_NAME` | `rafkav2-gateway` | Service name shown in Jaeger's left-rail filter. Prefixed `rafkav2-` to avoid collisions with v1 spans in the shared Jaeger instance. |
+| `OTEL_SERVICE_NAME` | `rafkav2-data-gateway` | Service name shown in Jaeger's left-rail filter. Prefixed `rafkav2-` to avoid collisions with v1 spans in the shared Jaeger instance. |
 | `RAFKA_DATA_DIR` | `./data/node-<random-hex>` | Directory where `node-identity.json` is stored. Set this to a stable path across restarts to preserve node identity (same `node_id` across reboots). |
 | `RAFKA_NODE_BIND_ADDR` | `0.0.0.0:0` | IPv4 socket address iroh binds the QUIC endpoint to. Port 0 = ephemeral OS-assigned. Override to pin to a specific port for firewall rules. |
 | `RAFKA_GOSSIP_INTERVAL_MS` | `500` | Gossip heartbeat interval in milliseconds. Stub in Sprint 01 — logged as a span attribute but not yet wired to real gossip scheduling. |
