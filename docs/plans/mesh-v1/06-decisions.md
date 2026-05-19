@@ -393,6 +393,48 @@ External REST/HTTP traffic (client produce/fetch/admin API, OAuth, /metrics, /he
 
 ---
 
+## D-027 — Cluster metadata broadcast uses `iroh-gossip` (HyParView + Plumtree)
+**Date:** 2026-05-19
+**Status:** Locked
+
+v1's `topology-metadata-broadcast` feature (gateway↔gateway state propagation via `__system_catalog` tail pattern) is **NOT ported forward** to v2. v2 uses the **`iroh-gossip`** crate (n0-computer first-party, currently v0.99.0, based on HyParView + Plumtree epidemic broadcast tree papers) for:
+
+- TopologyChange broadcasts (broker reachability flips, partition reassignments — when those land in sprint-09+)
+- Membership signals (node-up, node-down)
+- Any future cluster-wide soft state that benefits from eventual consistency
+
+For **durable shared state** (e.g., authoritative routing table, the v2 equivalent of v1's `TOPOLOGY_MAP` — when that lands), pair with `iroh-docs` (CRDT-replicated document store, also first-party). Gossip handles real-time deltas; docs handle "what's the current truth" with replication guarantees.
+
+**Three guardrails (must hold when sprint-09+ implements):**
+
+1. **Thin abstraction layer.** Wrap `iroh_gossip::Gossip` behind a `MeshGossip` trait. Implementations switch in one file if v1.0 breaks the API or we decide to swap libraries. Don't sprinkle `iroh_gossip::*` calls across the codebase.
+
+2. **Pair with `iroh-docs` for durability.** Late-joiner catchup is not explicitly documented in iroh-gossip's API. If a node misses broadcasts while offline, recovery semantics are unclear. Use iroh-docs to store authoritative metadata snapshots; rejoining nodes pull the current document state from docs, then start consuming live deltas from gossip.
+
+3. **POC catchup before relying on gossip for critical paths.** Before any replication or quorum logic depends on gossip delivery semantics, run a 3-node POC: kill node 2, broadcast 10 messages on nodes 1+3, restart node 2, verify node 2 sees all 10. If catchup is broken, design a snapshot+replay layer (or fall back to v1's tail pattern).
+
+**Rationale:**
+
+- iroh-gossip is first-party (same maintainers as iroh transport we already use) — no glue code, no version skew risk between substrate layers
+- HyParView + Plumtree are textbook epidemic broadcast protocols (Leitão et al. 2007, peer-reviewed, well-implemented across many systems) — not novel inventions
+- v1's `__system_catalog` tail pattern required building app-level pub/sub on top of a topic; iroh-gossip is purpose-built for this and removes that boilerplate
+- 8 days since last release (v0.99.0 as of 2026-05-19), active maintenance, 12 releases shipped, 300 commits
+
+**Risks accepted:**
+
+- Pre-1.0 API — wrap behind trait to absorb breaking changes at 1.0
+- Late-joiner catchup unclear — POC to verify; combine with iroh-docs as backup
+- No publicly cited production deployments at scale — we'll be early adopters; risk mitigated by `MeshGossip` trait abstraction (swap to v1 pattern if needed)
+
+**Implementation:** Sprint-09+ when the first cluster-metadata-broadcast use case is implemented (probably broker reachability gossip during initial produce/fetch wiring).
+
+**Sources investigated:**
+- https://docs.rs/iroh-gossip/latest/iroh_gossip/
+- https://crates.io/crates/iroh-gossip
+- https://github.com/n0-computer/iroh-gossip
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
