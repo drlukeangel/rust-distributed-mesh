@@ -1,8 +1,15 @@
 use anyhow::Result;
-use iroh::{NodeAddr, PublicKey, SecretKey};
+use dashmap::DashMap;
+use iroh::{endpoint::Connection, NodeAddr, PublicKey, SecretKey};
 use rafka_mesh_transport::{await_disconnect, IrohMeshTransport, ALPN};
 use serde::{Deserialize, Serialize};
-use std::{net::{SocketAddr, SocketAddrV4}, path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    net::{SocketAddr, SocketAddrV4},
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
 
@@ -18,11 +25,12 @@ struct NodeIdentity {
     secret_key_hex: String,
 }
 
+type PeerRegistry = Arc<DashMap<String, Connection>>;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = rafka_telemetry::init_telemetry("broker");
 
-    // All config from env vars — no config files, no magic numbers.
     let data_dir = std::env::var("RAFKA_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -40,7 +48,6 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
 
-    // Format: <node_id_hex>@<host>:<port> per CLAUDE.md Principle #8 env var table.
     let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
         .unwrap_or_default()
         .split(',')
@@ -56,17 +63,22 @@ async fn main() -> Result<()> {
             };
             let id = match PublicKey::from_str(id_str) {
                 Ok(pk) => pk,
-                Err(e) => { eprintln!("RAFKA_SEED_NODES: bad node_id {:?}: {e}", id_str); return None; }
+                Err(e) => {
+                    eprintln!("RAFKA_SEED_NODES: bad node_id {:?}: {e}", id_str);
+                    return None;
+                }
             };
             let addr = match addr_str.parse::<SocketAddr>() {
                 Ok(a) => a,
-                Err(e) => { eprintln!("RAFKA_SEED_NODES: bad addr {:?}: {e}", addr_str); return None; }
+                Err(e) => {
+                    eprintln!("RAFKA_SEED_NODES: bad addr {:?}: {e}", addr_str);
+                    return None;
+                }
             };
             Some(SeedNode { id, addr })
         })
         .collect();
 
-    // Root span — node_id and bind_addr are late-bound after identity + endpoint creation.
     let root_span = tracing::info_span!(
         "rafka.mesh.node.ready",
         node_id = tracing::field::Empty,
@@ -84,7 +96,6 @@ async fn main() -> Result<()> {
             "boot config"
         );
 
-        // Child 1: identity — span name reflects load vs mint
         let identity_path = data_dir.join("node-identity.json");
         let secret_key = if identity_path.exists() {
             load_or_mint_identity(&data_dir)
@@ -106,10 +117,8 @@ async fn main() -> Result<()> {
         let node_id = secret_key.public().to_string();
         info!(node_id = %node_id, "identity ready");
 
-        // Late-bind node_id onto the root span now that identity is known.
         Span::current().record("node_id", &node_id.as_str());
 
-        // Child 2: endpoint
         let mut transport = create_endpoint(secret_key, bind_addr)
             .instrument(tracing::info_span!(
                 "rafka.mesh.boot.endpoint_created",
@@ -118,38 +127,43 @@ async fn main() -> Result<()> {
             ))
             .await?;
 
-        // Resolve actual bound address and late-bind on root span.
         let sockets = transport.endpoint.bound_sockets();
         let actual_bind_addr = if sockets.is_empty() {
             bind_addr.to_string()
         } else {
-            sockets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+            sockets
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         Span::current().record("bind_addr", &actual_bind_addr.as_str());
 
-        // Child 3: ALPN
         tracing::info_span!(
             "rafka.mesh.boot.alpn_registered",
             node_id = %node_id,
             alpn = "rafka-mesh-v1",
         )
         .in_scope(|| {
-            info!(alpn = ?std::str::from_utf8(ALPN).unwrap_or("<binary>"), "ALPN registered");
+            info!(
+                alpn = ?std::str::from_utf8(ALPN).unwrap_or("<binary>"),
+                "ALPN registered"
+            );
         });
 
-        // Child 4: gossip / mdns
         tracing::info_span!("rafka.mesh.boot.gossip_started", node_id = %node_id).in_scope(|| {
             info!(gossip_interval_ms, "gossip discovery started via iroh mdns");
         });
 
-        // Take ownership of mdns channel before passing transport to accept loop.
+        let peer_registry: PeerRegistry = Arc::new(DashMap::new());
+
         let mdns_rx = std::mem::replace(
             &mut transport.mdns_discovered,
             tokio::sync::mpsc::channel(1).1,
         );
 
-        // Child 5: accept loop
-        let accept_handle = start_accept_loop(&transport, node_id.clone()).await;
+        let accept_handle =
+            start_accept_loop(&transport, node_id.clone(), Arc::clone(&peer_registry)).await;
         tracing::info_span!("rafka.mesh.boot.accept_loop_started", node_id = %node_id)
             .in_scope(|| {
                 info!("accept loop running");
@@ -157,20 +171,25 @@ async fn main() -> Result<()> {
 
         info!(node_id = %node_id, "boot complete, idling");
 
-        // Spawn seed-dial task.
         let dial_handle = if !seed_nodes.is_empty() {
             let node_id_dial = node_id.clone();
             let endpoint = transport.endpoint.clone();
-            Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial)))
+            let registry = Arc::clone(&peer_registry);
+            Some(tokio::spawn(dial_seeds(
+                endpoint,
+                seed_nodes,
+                node_id_dial,
+                registry,
+            )))
         } else {
             None
         };
 
-        // Spawn mdns watcher task — dials peers discovered passively via mdns.
         let mdns_handle = {
             let node_id_mdns = node_id.clone();
             let endpoint = transport.endpoint.clone();
-            tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns))
+            let registry = Arc::clone(&peer_registry);
+            tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, registry))
         };
 
         let node_id_hb = node_id.clone();
@@ -190,7 +209,9 @@ async fn main() -> Result<()> {
         accept_handle.abort();
         heartbeat_handle.abort();
         mdns_handle.abort();
-        if let Some(h) = dial_handle { h.abort(); }
+        if let Some(h) = dial_handle {
+            h.abort();
+        }
 
         anyhow::Ok(())
     }
@@ -200,8 +221,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Dial each seed node by NodeId + direct addr: emit peer.discovered then peer.connected.
-async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id: String) {
+async fn dial_seeds(
+    endpoint: iroh::Endpoint,
+    seeds: Vec<SeedNode>,
+    own_node_id: String,
+    registry: PeerRegistry,
+) {
     for seed in seeds {
         let peer_id_str = seed.id.to_string();
 
@@ -229,9 +254,14 @@ async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id:
                 .in_scope(|| {
                     info!(peer_id = %peer_id_str, "peer connected (outbound)");
                 });
+
+                registry.insert(peer_id_str.clone(), conn.clone());
+
                 let own = own_node_id.clone();
+                let reg = Arc::clone(&registry);
                 tokio::spawn(async move {
                     let reason = await_disconnect(conn).await;
+                    reg.remove(&peer_id_str);
                     tracing::info_span!(
                         "rafka.mesh.peer.disconnected",
                         node_id = %own,
@@ -248,17 +278,21 @@ async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id:
     }
 }
 
-/// Watch the mdns discovery channel and dial newly discovered peers.
 async fn watch_mdns(
     mut rx: tokio::sync::mpsc::Receiver<String>,
     endpoint: iroh::Endpoint,
     own_node_id: String,
+    registry: PeerRegistry,
 ) {
     while let Some(peer_id_str) = rx.recv().await {
         let peer_id = match peer_id_str.parse::<PublicKey>() {
             Ok(pk) => pk,
             Err(_) => continue,
         };
+
+        if registry.contains_key(&peer_id_str) {
+            continue;
+        }
 
         tracing::info_span!(
             "rafka.mesh.peer.discovered",
@@ -273,6 +307,7 @@ async fn watch_mdns(
 
         let endpoint_clone = endpoint.clone();
         let own = own_node_id.clone();
+        let reg = Arc::clone(&registry);
         tokio::spawn(async move {
             match endpoint_clone.connect(peer_id, ALPN).await {
                 Ok(conn) => {
@@ -283,8 +318,14 @@ async fn watch_mdns(
                         peer_node_type = "unknown",
                         direction = "outbound",
                     )
-                    .in_scope(|| info!(peer_id = %peer_id_str, "peer connected via mdns (outbound)"));
+                    .in_scope(|| {
+                        info!(peer_id = %peer_id_str, "peer connected via mdns (outbound)")
+                    });
+
+                    reg.insert(peer_id_str.clone(), conn.clone());
+
                     let reason = await_disconnect(conn).await;
+                    reg.remove(&peer_id_str);
                     tracing::info_span!(
                         "rafka.mesh.peer.disconnected",
                         node_id = %own,
@@ -301,9 +342,60 @@ async fn watch_mdns(
     }
 }
 
-/// Load an existing node identity or mint a new one and persist it.
-/// The caller instruments this with the correct boot span name.
-#[instrument(skip_all, fields(data_dir = ?data_dir))]
+#[instrument(skip_all)]
+async fn start_accept_loop(
+    transport: &IrohMeshTransport,
+    own_node_id: String,
+    registry: PeerRegistry,
+) -> tokio::task::JoinHandle<()> {
+    let endpoint = transport.endpoint.clone();
+    tokio::spawn(async move {
+        loop {
+            match endpoint.accept().await {
+                Some(incoming) => {
+                    let own_id = own_node_id.clone();
+                    let reg = Arc::clone(&registry);
+                    tokio::spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            let peer_id = conn
+                                .remote_node_id()
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|_| "unknown".into());
+                            tracing::info_span!(
+                                "rafka.mesh.peer.connected",
+                                node_id = %own_id,
+                                peer_id = %peer_id,
+                                peer_node_type = "unknown",
+                                direction = "inbound",
+                            )
+                            .in_scope(|| {
+                                info!(peer_id = %peer_id, "peer connected (inbound)");
+                            });
+
+                            reg.insert(peer_id.clone(), conn.clone());
+
+                            let reason = await_disconnect(conn).await;
+                            reg.remove(&peer_id);
+                            tracing::info_span!(
+                                "rafka.mesh.peer.disconnected",
+                                node_id = %own_id,
+                                peer_id = %peer_id,
+                                reason = %reason,
+                            )
+                            .in_scope(|| info!(peer_id = %peer_id, "peer disconnected"));
+                        }
+                    });
+                }
+                None => {
+                    info!("accept loop: endpoint closed");
+                    break;
+                }
+            }
+        }
+    })
+}
+
+#[instrument(skip_all)]
 async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
     tokio::fs::create_dir_all(data_dir).await?;
     let identity_path = data_dir.join("node-identity.json");
@@ -330,56 +422,14 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
     }
 }
 
-/// Create the iroh Endpoint. Caller instruments with the correct boot span name.
 #[instrument(skip_all)]
-async fn create_endpoint(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<IrohMeshTransport> {
+async fn create_endpoint(
+    secret_key: SecretKey,
+    bind_addr: SocketAddrV4,
+) -> Result<IrohMeshTransport> {
     let transport = IrohMeshTransport::new(secret_key, bind_addr).await?;
     info!(node_id = %transport.endpoint.node_id(), "iroh endpoint bound");
     Ok(transport)
-}
-
-/// Accept incoming connections, complete the QUIC handshake, emit peer.connected (inbound) + peer.disconnected.
-#[instrument(skip_all)]
-async fn start_accept_loop(transport: &IrohMeshTransport, own_node_id: String) -> tokio::task::JoinHandle<()> {
-    let endpoint = transport.endpoint.clone();
-    tokio::spawn(async move {
-        loop {
-            match endpoint.accept().await {
-                Some(incoming) => {
-                    let own_id = own_node_id.clone();
-                    tokio::spawn(async move {
-                        if let Ok(conn) = incoming.await {
-                            let peer_id = conn.remote_node_id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|_| "unknown".into());
-                            tracing::info_span!(
-                                "rafka.mesh.peer.connected",
-                                node_id = %own_id,
-                                peer_id = %peer_id,
-                                peer_node_type = "unknown",
-                                direction = "inbound",
-                            )
-                            .in_scope(|| {
-                                info!(peer_id = %peer_id, "peer connected (inbound)");
-                            });
-                            let reason = await_disconnect(conn).await;
-                            tracing::info_span!(
-                                "rafka.mesh.peer.disconnected",
-                                node_id = %own_id,
-                                peer_id = %peer_id,
-                                reason = %reason,
-                            )
-                            .in_scope(|| info!(peer_id = %peer_id, "peer disconnected"));
-                        }
-                    });
-                }
-                None => {
-                    info!("accept loop: endpoint closed");
-                    break;
-                }
-            }
-        }
-    })
 }
 
 #[instrument(skip_all)]

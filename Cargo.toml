@@ -2,6 +2,7 @@
 members = [
     "crates/rafka-telemetry",
     "crates/rafka-mesh-transport",
+    "crates/rafka-mesh-ops",
     "gateway",
     "broker",
 ]
@@ -36,3 +37,5 @@ anyhow = "1"
 # encoding
 hex = "0.4"
 rand = "0.8"
+bincode = { version = "2", features = ["serde"] }
+dashmap = "6"
