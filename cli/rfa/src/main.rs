@@ -21,6 +21,25 @@ enum Format {
     Json,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum NodeType {
+    Gateway,
+    Broker,
+    Compute,
+    Registry,
+}
+
+impl NodeType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            NodeType::Gateway => "gateway",
+            NodeType::Broker => "broker",
+            NodeType::Compute => "compute",
+            NodeType::Registry => "registry",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Mesh-level commands
@@ -47,6 +66,15 @@ enum MeshCmd {
         #[arg(long, value_name = "fmt", default_value = "table")]
         format: Format,
     },
+    /// Wait until mesh has converged to a target node count
+    WaitConverged {
+        /// Target number of node types in {gateway,broker,compute,registry}
+        #[arg(long)]
+        target: usize,
+        /// Timeout (e.g. 30s, 2m, 1h)
+        #[arg(long)]
+        timeout: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -60,6 +88,24 @@ enum NodeCmd {
     Describe {
         /// Service name (gateway|broker|compute|registry)
         name: String,
+        #[arg(long, value_name = "fmt", default_value = "table")]
+        format: Format,
+    },
+    /// Spawn a new node subprocess
+    Add {
+        /// Node type to spawn
+        #[arg(long, value_name = "type")]
+        r#type: NodeType,
+        /// Optional name hint (ignored by server; server generates node_name)
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_name = "fmt", default_value = "table")]
+        format: Format,
+    },
+    /// Kill a running node subprocess
+    Remove {
+        /// node_name to kill (e.g. broker-a1b2c3d4)
+        node_name: String,
         #[arg(long, value_name = "fmt", default_value = "table")]
         format: Format,
     },
@@ -110,6 +156,15 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
             MeshCmd::Node { sub } => match sub {
                 NodeCmd::List { .. } => ("mesh node list".into(), "".into()),
                 NodeCmd::Describe { name, .. } => ("mesh node describe".into(), name.clone()),
+                NodeCmd::Add { r#type, name, .. } => (
+                    "mesh node add".into(),
+                    format!(
+                        "--type {}{}",
+                        r#type.as_str(),
+                        name.as_deref().map(|n| format!(" --name {n}")).unwrap_or_default()
+                    ),
+                ),
+                NodeCmd::Remove { node_name, .. } => ("mesh node remove".into(), node_name.clone()),
             },
             MeshCmd::Topology { sub } => match sub {
                 TopologyCmd::Show { format } => (
@@ -118,6 +173,10 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                 ),
             },
             MeshCmd::Status { .. } => ("mesh status".into(), "".into()),
+            MeshCmd::WaitConverged { target, timeout } => (
+                "mesh wait-converged".into(),
+                format!("--timeout {timeout} --target {target}"),
+            ),
         },
     }
 }
@@ -130,6 +189,12 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 NodeCmd::Describe { name, format } => {
                     cmd_node_describe(client, &cli.api_url, name, format).await
                 }
+                NodeCmd::Add { r#type, format, .. } => {
+                    cmd_node_add(client, &cli.api_url, r#type, format).await
+                }
+                NodeCmd::Remove { node_name, format } => {
+                    cmd_node_remove(client, &cli.api_url, node_name, format).await
+                }
             },
             MeshCmd::Topology { sub } => match sub {
                 TopologyCmd::Show { format } => {
@@ -137,8 +202,54 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 }
             },
             MeshCmd::Status { format } => cmd_status(client, &cli.api_url, format).await,
+            MeshCmd::WaitConverged { target, timeout } => {
+                cmd_wait_converged(client, &cli.api_url, *target, timeout).await
+            }
         },
     }
+}
+
+async fn http_post(client: &reqwest::Client, url: &str, body: &Value) -> Result<(u16, Value)> {
+    let path = reqwest::Url::parse(url)
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| url.to_string());
+    let span = info_span!(
+        "rafka.cli.http.request",
+        method = "POST",
+        path = %path,
+        "otel.kind" = "client",
+    );
+    let resp = client
+        .post(url)
+        .json(body)
+        .send()
+        .instrument(span)
+        .await
+        .map_err(|e| anyhow!("HTTP POST {url}: {e}"))?;
+    let status = resp.status().as_u16();
+    let resp_body: Value = resp.json().await.map_err(|e| anyhow!("parse JSON: {e}"))?;
+    Ok((status, resp_body))
+}
+
+async fn http_delete(client: &reqwest::Client, url: &str) -> Result<(u16, Value)> {
+    let path = reqwest::Url::parse(url)
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| url.to_string());
+    let span = info_span!(
+        "rafka.cli.http.request",
+        method = "DELETE",
+        path = %path,
+        "otel.kind" = "client",
+    );
+    let resp = client
+        .delete(url)
+        .send()
+        .instrument(span)
+        .await
+        .map_err(|e| anyhow!("HTTP DELETE {url}: {e}"))?;
+    let status = resp.status().as_u16();
+    let resp_body: Value = resp.json().await.map_err(|e| anyhow!("parse JSON: {e}"))?;
+    Ok((status, resp_body))
 }
 
 async fn http_get(client: &reqwest::Client, url: &str) -> Result<Value> {
@@ -386,4 +497,119 @@ async fn cmd_status(client: &reqwest::Client, api_url: &str, fmt: &Format) -> Re
         }
     }
     Ok(())
+}
+
+// ── mesh node add ─────────────────────────────────────────────────────────────
+
+async fn cmd_node_add(
+    client: &reqwest::Client,
+    api_url: &str,
+    node_type: &NodeType,
+    fmt: &Format,
+) -> Result<()> {
+    let url = format!("{api_url}/api/nodes/spawn");
+    let req_body = serde_json::json!({"node_type": node_type.as_str()});
+    let (status, body) = http_post(client, &url, &req_body).await?;
+
+    if status == 201 {
+        match fmt {
+            Format::Json => println!("{}", serde_json::to_string_pretty(&body)?),
+            Format::Table => {
+                let name = body["node_name"].as_str().unwrap_or("?");
+                let pid = body["pid"].as_u64().unwrap_or(0);
+                println!("spawned:  {name}");
+                println!("pid:      {pid}");
+            }
+        }
+        Ok(())
+    } else {
+        let err = body["error"].as_str().unwrap_or("unknown error");
+        eprintln!("spawn failed ({status}): {err}");
+        std::process::exit(1);
+    }
+}
+
+// ── mesh node remove ──────────────────────────────────────────────────────────
+
+async fn cmd_node_remove(
+    client: &reqwest::Client,
+    api_url: &str,
+    node_name: &str,
+    fmt: &Format,
+) -> Result<()> {
+    let url = format!("{api_url}/api/nodes/{node_name}");
+    let (status, body) = http_delete(client, &url).await?;
+
+    match status {
+        200 => {
+            match fmt {
+                Format::Json => println!("{}", serde_json::to_string_pretty(&body)?),
+                Format::Table => {
+                    let name = body["node_name"].as_str().unwrap_or(node_name);
+                    let reason = body["reason"].as_str().unwrap_or("?");
+                    println!("killed:  {name}");
+                    println!("reason:  {reason}");
+                }
+            }
+            Ok(())
+        }
+        404 => {
+            eprintln!("node not found: {node_name}");
+            std::process::exit(2);
+        }
+        _ => {
+            let err = body["error"].as_str().unwrap_or("unknown error");
+            eprintln!("kill failed ({status}): {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+// ── mesh wait-converged ───────────────────────────────────────────────────────
+
+async fn cmd_wait_converged(
+    client: &reqwest::Client,
+    api_url: &str,
+    target: usize,
+    timeout_str: &str,
+) -> Result<()> {
+    let timeout_dur = humantime::parse_duration(timeout_str)
+        .map_err(|e| anyhow!("invalid timeout {timeout_str:?}: {e}"))?;
+
+    let deadline = tokio::time::Instant::now() + timeout_dur;
+    let mut poll_count: u64 = 0;
+
+    loop {
+        let url = format!("{api_url}/api/nodes");
+        let result = http_get(client, &url).await;
+        let current = match result {
+            Ok(body) => body["nodes"].as_array().map(|a| a.len()).unwrap_or(0),
+            Err(_) => 0,
+        };
+        poll_count += 1;
+
+        let wait_span = info_span!(
+            "rafka.cli.wait_loop",
+            poll_count,
+            target,
+            current_count = current,
+        );
+        wait_span.in_scope(|| {
+            tracing::info!(poll_count, target, current_count = current, "polling mesh convergence");
+        });
+
+        if current >= target {
+            println!("converged: {current}/{target} nodes ({poll_count} polls)");
+            return Ok(());
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            eprintln!(
+                "timeout after {timeout_str}: {current}/{target} nodes ({poll_count} polls)"
+            );
+            std::process::exit(1);
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
