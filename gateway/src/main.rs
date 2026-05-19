@@ -87,13 +87,14 @@ async fn main() -> Result<()> {
             .await?;
 
         // Resolve actual bound address and late-bind on root span.
-        let actual_bind_addr = transport
-            .endpoint
-            .bound_sockets()
-            .into_iter()
-            .find(|a| a.is_ipv4())
-            .map(|a| a.to_string())
-            .unwrap_or_else(|| bind_addr.to_string());
+        // Join all sockets (IPv4 + IPv6) — on Windows iroh 0.91 often binds IPv6-only,
+        // so an is_ipv4() filter would fall back to the literal "0.0.0.0:0" config string.
+        let sockets = transport.endpoint.bound_sockets();
+        let actual_bind_addr = if sockets.is_empty() {
+            bind_addr.to_string()
+        } else {
+            sockets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+        };
         Span::current().record("bind_addr", &actual_bind_addr.as_str());
 
         // Child 3: ALPN
