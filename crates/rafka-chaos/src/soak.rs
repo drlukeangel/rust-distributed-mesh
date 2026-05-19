@@ -50,6 +50,7 @@ pub async fn run_soak(
     interval: Duration,
     seed: u64,
 ) -> SoakReport {
+    use std::io::Write;
     let started = Instant::now();
     let started_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -60,6 +61,10 @@ pub async fn run_soak(
     let mut passed = 0usize;
     let mut failed_timeout = 0usize;
     let mut failed_assertion = 0usize;
+    // Every 10 events, print a heartbeat line so log readers see progress in real
+    // time. Without this the soak appears hung in stdout-redirected background
+    // runs (block-buffered) even when chaos events are flowing fine via Jaeger.
+    const HEARTBEAT_EVERY: usize = 10;
 
     while started.elapsed() < duration {
         // Top up target pool if it's too thin — keeps long soaks viable.
@@ -124,6 +129,19 @@ pub async fn run_soak(
             detection: label,
             waited_ms,
         });
+        // Heartbeat every N events so background-redirected log files show
+        // forward motion even with block-buffered stdout.
+        if events.len() % HEARTBEAT_EVERY == 0 {
+            let elapsed_s = started.elapsed().as_secs();
+            println!(
+                "soak progress: events={} passed={} failed={}  elapsed={}s",
+                events.len(),
+                passed,
+                failed_timeout + failed_assertion,
+                elapsed_s
+            );
+            let _ = std::io::stdout().flush();
+        }
         tokio::time::sleep(interval).await;
     }
 

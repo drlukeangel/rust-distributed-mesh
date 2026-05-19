@@ -317,19 +317,26 @@ async fn cmd_chaos_restart(api_url: &str, target: Option<String>, deadline_ms: u
 }
 
 async fn cmd_chaos_soak(api_url: &str, duration: &str, interval: &str, seed: u64) -> Result<()> {
+    use std::io::Write;
     let dur = humantime::parse_duration(duration).map_err(|e| anyhow!("parse duration: {e}"))?;
     let iv = humantime::parse_duration(interval).map_err(|e| anyhow!("parse interval: {e}"))?;
     let mut ctx = rafka_chaos::default_context(seed);
     ctx.topology_ui_url = api_url.to_string();
     println!("soak start: duration={dur:?} interval={iv:?} seed={seed}");
+    // When stdout is redirected to a file in the background, it goes block-buffered
+    // and progress lines don't appear until process exit. Flush explicitly so the
+    // log file shows what's happening in real time.
+    let _ = std::io::stdout().flush();
     let report = rafka_chaos::soak::run_soak(&ctx, dur, iv, seed).await;
     println!("soak end: events={} passed={} failed_timeout={} failed_assertion={}",
         report.event_count, report.passed, report.failed_timeout, report.failed_assertion);
+    let _ = std::io::stdout().flush();
     // write report
     let path = format!("E:/tmp/rafka-chaos-soak-{}.json", seed);
     let json = serde_json::to_string_pretty(&report)?;
     std::fs::write(&path, json)?;
     println!("report: {path}");
+    let _ = std::io::stdout().flush();
     if report.failed_timeout > 0 || report.failed_assertion > 0 {
         Err(anyhow!("soak failed: {} timeouts, {} assertion failures", report.failed_timeout, report.failed_assertion))
     } else {
