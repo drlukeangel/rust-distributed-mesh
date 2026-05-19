@@ -77,6 +77,62 @@ Format: `http://localhost:16686/search?service=<service-name>&operation=<root-sp
 
 If multiple services are involved, include one URL per service. If a specific span chain proves the sprint's exit criterion, link directly to a trace ID.
 
+### #10 — Span + metric vocabulary is locked once, not invented per-sprint
+
+The names, attributes, and units of OTLP spans/metrics across the substrate are decided ONCE in CLAUDE.md and treated as a stable contract. Sprints emit against the locked vocabulary; they do not invent new attribute names or rename existing ones.
+
+**Why:** the dynamic throughput viz, the topology UI, the topology log, the OTLP heartbeat panel — all of them consume spans/metrics by name + attribute. If Sprint 04 emits `src=...` and Sprint 11 expects `src_endpoint_id=...`, the viz silently shows zero data. Retro-renaming spans across already-merged sprints is a permanent tax we don't pay.
+
+**Substrate span attribute contract (locked):**
+
+| Span | Required attributes |
+|---|---|
+| `rafka.mesh.node.ready` (root boot) | `node_id`, `node_type`, `bind_addr`, `version` |
+| `rafka.mesh.boot.identity_loaded` | `node_id`, `path` |
+| `rafka.mesh.boot.identity_minted` | `node_id`, `path` |
+| `rafka.mesh.boot.endpoint_created` | `node_id`, `bind_addr` |
+| `rafka.mesh.boot.alpn_registered` | `node_id`, `alpn` (e.g. `"rafka-mesh-v1"`) |
+| `rafka.mesh.boot.gossip_started` | `node_id` |
+| `rafka.mesh.boot.accept_loop_started` | `node_id` |
+| `rafka.mesh.heartbeat` | `node_id`, `peer_count` |
+| `rafka.mesh.node.stopping` | `node_id`, `reason` |
+| `rafka.mesh.peer.discovered` | `node_id` (local), `peer_id` (remote), `peer_node_type` |
+| `rafka.mesh.peer.connected` | `node_id`, `peer_id`, `peer_node_type` |
+| `rafka.mesh.peer.disconnected` | `node_id`, `peer_id`, `reason` |
+| `rafka.mesh.peer.staleness_timeout` | `node_id`, `peer_id`, `last_seen_ms_ago` |
+| `rafka.mesh.frame.sent` | `node_id` (src), `peer_id` (dst), `op_kind`, `bytes`, `trace_id` |
+| `rafka.mesh.frame.received` | `node_id` (dst), `peer_id` (src), `op_kind`, `bytes`, `trace_id` |
+| `rafka.mesh.frame.decode_failed` | `node_id`, `peer_id`, `bytes`, `error` |
+
+**`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
+
+**`node_type` enum (locked):** `"gateway"`, `"broker"`, `"compute"`, `"schema"`. Future node types append.
+
+**Substrate metric contract (locked):**
+
+| Metric | Unit | Labels |
+|---|---|---|
+| `rafka.mesh.bytes_sent_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rafka.mesh.bytes_received_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rafka.mesh.frames_sent_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rafka.mesh.frames_received_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rafka.mesh.frame.decode_error_rate` | errors/sec (gauge) | `src_node_id`, `dst_node_id` |
+| `rafka.mesh.peer.rtt_ms` | milliseconds (histogram) | `node_id`, `peer_id` |
+
+Aggregation window: **5-second sliding** for every per-sec gauge. Locked so the dynamic-throughput viz can divide consistently.
+
+**How to extend:**
+- New span: propose the addition + attribute list in the sprint's `sprint-config.json::spans_to_emit` AND append to this table in the same commit. CLAUDE.md update lands before the emit code.
+- New attribute on an existing span: propose in the sprint config, then update this table. NEVER add silently.
+- Rename: not allowed. Add a new name, deprecate the old in this table, give two sprints of co-emit before removal.
+- New `op_kind` or `node_type` enum value: append-only. Old values are immortal.
+
+**Banned patterns:**
+- ❌ Inventing attribute names mid-sprint (`src` vs `src_id` vs `source_endpoint_id` — pick once, pick `node_id`)
+- ❌ Reusing an existing span name for a different event (use a new name)
+- ❌ Per-sprint metric name drift (`rafka.bytes_per_sec` vs `rafka.bytes/s` vs `rafka.byte_rate`)
+- ❌ Inconsistent units across similar metrics (one in bytes, one in KB — always SI base units)
+
 ### #9 — Latest stable version of every dependency. Always.
 
 Every `Cargo.toml` dep starts at the latest stable version published on crates.io. Every external tool (iroh, opentelemetry-otlp, tracing-opentelemetry, libp2p, axum, quinn, etc.) gets the latest stable on the day the sprint opens. No "let's use 0.35 because that's what an old example showed."
