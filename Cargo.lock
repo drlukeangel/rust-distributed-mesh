@@ -2812,19 +2812,8 @@ name = "rafka-broker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dashmap",
- "hex",
- "iroh",
- "opentelemetry",
- "rafka-mesh-ops",
- "rafka-mesh-transport",
- "rafka-telemetry",
- "rand 0.8.6",
- "serde",
- "serde_json",
+ "rafka-node-base",
  "tokio",
- "tracing",
- "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2832,19 +2821,8 @@ name = "rafka-compute"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dashmap",
- "hex",
- "iroh",
- "opentelemetry",
- "rafka-mesh-ops",
- "rafka-mesh-transport",
- "rafka-telemetry",
- "rand 0.8.6",
- "serde",
- "serde_json",
+ "rafka-node-base",
  "tokio",
- "tracing",
- "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2852,19 +2830,8 @@ name = "rafka-gateway"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dashmap",
- "hex",
- "iroh",
- "opentelemetry",
- "rafka-mesh-ops",
- "rafka-mesh-transport",
- "rafka-telemetry",
- "rand 0.8.6",
- "serde",
- "serde_json",
+ "rafka-node-base",
  "tokio",
- "tracing",
- "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -2891,7 +2858,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-registry"
+name = "rafka-node-base"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2908,6 +2875,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+]
+
+[[package]]
+name = "rafka-registry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rafka-node-base",
+ "tokio",
 ]
 
 [[package]]
