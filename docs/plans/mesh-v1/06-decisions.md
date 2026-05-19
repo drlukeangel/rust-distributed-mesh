@@ -191,6 +191,73 @@ Sprint 0 UI shows a single mesh. Sprint 2 extends to multi-mesh view (panels per
 
 ---
 
+## D-019 — Final node naming: `gateway` / `broker` / `compute` / `registry`
+**Date:** 2026-05-19
+**Status:** Locked
+
+Service names, NODE_TYPE values, and directory names are: `gateway`, `broker`, `compute`, `registry`. NOT `data-gateway`, NOT `compute-gateway`, NOT `schema`. The prefix/suffix patterns explored during sprint-05 brainstorming (data-gateway, compute-gateway, schema-gateway) are formally retired. The locked `node_type` enum (CLAUDE.md Principle #10) is `"gateway"`, `"broker"`, `"compute"`, `"registry"`.
+
+**Rationale:** Each node's name should reflect its function. `gateway` is the only true gateway (external traffic ingress + authz termination). `broker` is storage. `compute` is a worker/engine. `registry` is a state service. Calling all of them `-gateway` would empty the term of meaning. Asymmetric naming that describes function is more honest than symmetric naming that obscures it.
+
+---
+
+## D-020 — Frame classification: control-plane vs data-plane
+**Date:** 2026-05-19
+**Status:** Locked
+
+Every frame on the gateway↔broker (and any node-pair) iroh connection belongs to one of two classes:
+
+- **Control-plane frames** — substrate maintenance: `Heartbeat`, `Ping`, `Pong`, `MembershipUpdate`, `LeaderElection`, future gossip signals. They exist so the mesh stays alive and aware of itself. Sprint-04's ping/pong falls in this class.
+- **Data-plane frames** — application operations: `Produce`, `Fetch`, `Replicate`, `SchemaLookup`, `Admin`. They carry user-triggered work (or its scheduler-triggered cousins like replication). Anything in the locked `op_kind` enum is data-plane.
+
+This is the industry-standard control plane / data plane split used in SDN (OpenFlow), service mesh (Istio: Pilot vs Envoy), Kubernetes (etcd/api-server vs pod traffic), and QUIC literature.
+
+**Naming downstream:**
+- Crate: `rafka-mesh-ops` (unchanged — carries both classes)
+- Frame enum (target shape, future-sprint refactor): `MeshFrame { Control(ControlFrame), Data(DataFrame) }`
+- Span vocabulary: `rafka.mesh.control.<event>` (e.g. `rafka.mesh.control.heartbeat`) and `rafka.mesh.data.<op>.<event>` (e.g. `rafka.mesh.data.produce.sent`). Current `rafka.mesh.frame.sent/received` becomes the catch-all parent; control/data spans nest beneath.
+- Wire-pattern (D-021 below) follows the split: control frames use uni streams (fire-and-forget); data frames use bidi-multiplexed-with-correlation_id (request/response, pipelined).
+
+**Rationale:** "Mesh frame vs data frame" is ambiguous since everything goes over the mesh — both classes share the transport. Control/data is sharper because it's about FUNCTION (what the frame is for), not VENUE (how it travels). Aligns project vocabulary with every major distributed-systems textbook and SDN reference.
+
+**Implementation:** Doc-only lock this sprint. Type-system refactor + span-vocab update is queued for a future sprint.
+
+---
+
+## D-021 — Operation (data-plane) frames use bidi-multiplexed-with-correlation_id
+**Date:** 2026-05-19
+**Status:** Locked
+
+Data-plane frames travel on ONE persistent bidi QUIC stream per gateway↔broker iroh connection. Each request frame is tagged with a monotonically-increasing `correlation_id: u64`; each response references the same correlation_id. Many in-flight requests are pipelined on the single stream.
+
+Control-plane frames stay on uni streams (fire-and-forget, no correlation needed). Sprint-04's ping-pong stays as uni; that's correct for substrate health.
+
+**Rationale:** This is the Kafka wire protocol pattern (correlation_id in every request/response header) and the gRPC bidi-stream pattern. Uni-per-request would force new stream open/close per produce call — wasteful at throughput. Bidi-multiplexed amortizes one stream across thousands of requests. The connection itself (with its mutual NodeId crypto handshake) is established ONCE in sprint-03 and held by `PeerRegistry`; per-request cost is just a stream-write, not a handshake.
+
+**Implementation:** Type-system support + actual produce/fetch land in the protocol sprint (TBD, likely sprint-09 to sprint-12 range). Current ping-pong-over-uni stays as substrate verification.
+
+---
+
+## D-022 — Org↔Broker mapping is N:M; gateway is the trust boundary
+**Date:** 2026-05-19
+**Status:** Locked
+
+Gateway connects to all brokers (full mesh on the gateway side). An org's data is sharded across 1..n brokers (multiple partitions/topics distributed by a hash function). A broker hosts 1..n orgs (no per-org dedicated brokers in the default deployment).
+
+**Routing path for a client request:**
+1. Client → Gateway (TLS + authz, gateway extracts identity, derives `org_id`)
+2. Gateway → Registry: lookup "for (org_id, topic, partition), which broker is leader?" (cluster metadata fetch, cached)
+3. Gateway → Broker: write request to bidi stream with `correlation_id` (per D-021)
+4. Broker trusts gateway's `org_id` claim — no per-message re-authz (gateway is the trust boundary)
+5. Broker → Gateway: response with same `correlation_id` on the same bidi stream
+6. Gateway → Client: response routed by correlation_id → client-connection map
+
+**Rationale:** Standard sharded multi-tenant pattern (Kafka partition-leader model, BigQuery slot model). The N:M mapping is required for horizontal scale: a tenant whose throughput exceeds one broker must shard; a small tenant should share a broker with others to avoid waste. Gateway-as-trust-boundary is the API-gateway / service-mesh pattern — broker stays a dumb backend, no auth code in the data path.
+
+**Open question:** Registry-mediated metadata vs. gossiped-membership broadcast. Defer to registry sprint design.
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
