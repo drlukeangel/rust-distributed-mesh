@@ -1,15 +1,18 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Query, Request, State},
+    extract::{Json, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
+use dashmap::DashMap;
+use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
+use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
 const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
@@ -30,7 +33,13 @@ const HTML: &str = r#"<!DOCTYPE html>
   #status-dot.error { background: #f85149; }
   select, button { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; padding: 0.4rem 0.75rem; font-family: monospace; font-size: 0.85rem; cursor: pointer; border-radius: 4px; }
   button:hover { background: #21262d; }
+  #spawn-row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .spawn-btn { border-color: #3fb950; color: #3fb950; }
+  .spawn-btn:hover { background: #0d2a14; }
+  .spawn-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   #controls { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; align-items: center; }
+  #toast { font-size: 0.8rem; margin-bottom: 1rem; min-height: 1.2em; color: #3fb950; }
+  #toast.error { color: #f85149; }
   #waterfall {
     border: 1px solid #30363d;
     border-radius: 6px;
@@ -110,6 +119,15 @@ const HTML: &str = r#"<!DOCTYPE html>
   <span id="status-text">connecting…</span>
 </div>
 
+<div id="spawn-row">
+  <button class="spawn-btn" data-type="gateway">+ Spawn gateway</button>
+  <button class="spawn-btn" data-type="broker">+ Spawn broker</button>
+  <button class="spawn-btn" data-type="compute">+ Spawn compute</button>
+  <button class="spawn-btn" data-type="registry">+ Spawn registry</button>
+</div>
+
+<div id="toast"></div>
+
 <div id="controls">
   <select id="node-selector">
     <option value="">select a node</option>
@@ -123,31 +141,37 @@ const HTML: &str = r#"<!DOCTYPE html>
 
 <script>
 (function() {
-  var dot = document.getElementById('status-dot');
-  var txt = document.getElementById('status-text');
-  var sel = document.getElementById('node-selector');
-  var wf  = document.getElementById('waterfall');
+  var dot   = document.getElementById('status-dot');
+  var txt   = document.getElementById('status-text');
+  var sel   = document.getElementById('node-selector');
+  var wf    = document.getElementById('waterfall');
+  var toast = document.getElementById('toast');
 
-  // Color map by operation name prefix (D-019 phase buckets)
   var COLORS = {
-    'rafka.mesh.node.ready':              '#1f6feb',  // dark blue — root
-    'rafka.mesh.boot.identity_':          '#3fb950',  // green
-    'rafka.mesh.boot.endpoint_created':   '#e3b341',  // orange/amber
-    'rafka.mesh.boot.alpn_registered':    '#8957e5',  // purple
-    'rafka.mesh.boot.gossip_started':     '#39c5cf',  // teal
-    'rafka.mesh.boot.accept_loop_started':'#f85149',  // red
+    'rafka.mesh.node.ready':              '#1f6feb',
+    'rafka.mesh.boot.identity_':          '#3fb950',
+    'rafka.mesh.boot.endpoint_created':   '#e3b341',
+    'rafka.mesh.boot.alpn_registered':    '#8957e5',
+    'rafka.mesh.boot.gossip_started':     '#39c5cf',
+    'rafka.mesh.boot.accept_loop_started':'#f85149',
   };
 
   function spanColor(opName) {
     for (var prefix in COLORS) {
       if (opName === prefix || opName.indexOf(prefix) === 0) return COLORS[prefix];
     }
-    return '#484f58';  // fallback gray for any other rafka span
+    return '#484f58';
   }
 
   function setStatus(ok, msg) {
     dot.className = ok ? '' : 'error';
     txt.textContent = msg;
+  }
+
+  function showToast(ok, msg) {
+    toast.className = ok ? '' : 'error';
+    toast.textContent = msg;
+    setTimeout(function() { if (toast.textContent === msg) toast.textContent = ''; }, 8000);
   }
 
   function pollHealth() {
@@ -170,17 +194,14 @@ const HTML: &str = r#"<!DOCTYPE html>
           opt.textContent = n;
           sel.appendChild(opt);
         });
-        if (prev && nodes.indexOf(prev) !== -1) {
-          sel.value = prev;
-        }
-        setStatus(true, 'nodes: ' + nodes.join(', '));
+        if (prev && nodes.indexOf(prev) !== -1) sel.value = prev;
+        setStatus(true, 'nodes: ' + (nodes.length ? nodes.join(', ') : '(none in jaeger yet)'));
       })
       .catch(function() { setStatus(false, 'node list unavailable'); });
   }
 
   function renderWaterfall(svc, traceData) {
     var spans = traceData.spans || [];
-    // Filter to rafka.* spans only
     var rafkaSpans = spans.filter(function(s) {
       return s.operationName && s.operationName.indexOf('rafka.') === 0;
     });
@@ -190,29 +211,26 @@ const HTML: &str = r#"<!DOCTYPE html>
       return;
     }
 
-    // Sort by startTime ascending
     rafkaSpans.sort(function(a, b) { return a.startTime - b.startTime; });
 
     var rootTime = rafkaSpans[0].startTime;
     var endTimes = rafkaSpans.map(function(s) { return s.startTime + s.duration; });
-    var maxEnd = Math.max.apply(null, endTimes);
-    var totalUs = maxEnd - rootTime;
+    var maxEnd   = Math.max.apply(null, endTimes);
+    var totalUs  = maxEnd - rootTime;
     if (totalUs <= 0) totalUs = 1;
 
-    // Header: service + ISO timestamp of root span
-    var rootDate = new Date(rootTime / 1000);  // us → ms
+    var rootDate   = new Date(rootTime / 1000);
     var headerText = svc + ' boot @ ' + rootDate.toISOString();
-
-    var html = '<div id="waterfall-header">' + headerText + '</div>';
+    var html       = '<div id="waterfall-header">' + headerText + '</div>';
 
     rafkaSpans.forEach(function(sp) {
-      var name = sp.operationName;
-      var shortName = name.replace('rafka.mesh.', '');
-      var offsetUs = sp.startTime - rootTime;
-      var leftPct  = (offsetUs / totalUs * 100).toFixed(2);
-      var widthPct = (sp.duration / totalUs * 100).toFixed(2);
+      var name       = sp.operationName;
+      var shortName  = name.replace('rafka.mesh.', '');
+      var offsetUs   = sp.startTime - rootTime;
+      var leftPct    = (offsetUs / totalUs * 100).toFixed(2);
+      var widthPct   = (sp.duration / totalUs * 100).toFixed(2);
       var durationMs = (sp.duration / 1000).toFixed(2);
-      var color = spanColor(name);
+      var color      = spanColor(name);
 
       html += '<div class="wf-row">' +
         '<div class="wf-label" title="' + name + '">' + shortName + '</div>' +
@@ -238,13 +256,10 @@ const HTML: &str = r#"<!DOCTYPE html>
         if (d.error) {
           wf.innerHTML = '<div class="wf-error">no boot trace found for <strong>' + svc + '</strong><br>has it run recently? (traces age out after ~10 min)</div>';
           setStatus(false, 'no boot trace: ' + svc);
-          console.log('boot-trace error:', d);
         } else {
           var trace = d.data && d.data[0];
-          if (trace) {
-            renderWaterfall(svc, trace);
-            console.log('boot-trace for', svc, d);
-          } else {
+          if (trace) renderWaterfall(svc, trace);
+          else {
             wf.innerHTML = '<div class="wf-error">empty trace data for ' + svc + '</div>';
             setStatus(false, 'empty trace: ' + svc);
           }
@@ -255,6 +270,33 @@ const HTML: &str = r#"<!DOCTYPE html>
         setStatus(false, 'boot-trace fetch failed');
       });
   }
+
+  function spawnNode(nodeType, btn) {
+    btn.disabled = true;
+    fetch('/api/nodes/spawn', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({node_type: nodeType})
+    })
+      .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+      .then(function(res) {
+        btn.disabled = false;
+        if (res.ok) {
+          showToast(true, 'Spawned ' + res.d.node_name + ' (pid=' + res.d.pid + ')');
+          setTimeout(loadNodes, 5000);
+        } else {
+          showToast(false, 'Spawn failed: ' + (res.d.error || 'unknown error'));
+        }
+      })
+      .catch(function() {
+        btn.disabled = false;
+        showToast(false, 'Spawn request failed');
+      });
+  }
+
+  document.querySelectorAll('.spawn-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() { spawnNode(btn.dataset.type, btn); });
+  });
 
   sel.addEventListener('change', function() { loadTrace(sel.value); });
 
@@ -277,11 +319,18 @@ const HTML: &str = r#"<!DOCTYPE html>
 struct AppState {
     http: reqwest::Client,
     jaeger_url: String,
+    cargo_target_dir: String,
+    processes: Arc<DashMap<String, Mutex<Child>>>,
 }
 
 #[derive(Deserialize)]
 struct BootTraceQuery {
     service: String,
+}
+
+#[derive(Deserialize)]
+struct SpawnRequest {
+    node_type: String,
 }
 
 async fn handle_root() -> Html<&'static str> {
@@ -369,6 +418,95 @@ async fn handle_boot_trace(
     }
 }
 
+async fn handle_spawn(
+    State(state): State<AppState>,
+    Json(body): Json<SpawnRequest>,
+) -> impl IntoResponse {
+    let node_type = body.node_type.as_str();
+    if !KNOWN_NODE_TYPES.contains(&node_type) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": format!("unknown node_type: {node_type}")})),
+        )
+            .into_response();
+    }
+
+    let suffix: String = {
+        let mut rng = rand::thread_rng();
+        (0..8).map(|_| format!("{:x}", rng.gen::<u8>() & 0xf)).collect()
+    };
+    let node_name = format!("{}-{}", node_type, suffix);
+
+    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+    if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({"error": format!("failed to create spawn dir: {e}")})),
+        )
+            .into_response();
+    }
+
+    let binary = format!(
+        "{}/debug/rafka-{}.exe",
+        state.cargo_target_dir, node_type
+    );
+
+    let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4316".to_string());
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+
+    let mut cmd = tokio::process::Command::new(&binary);
+    cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
+        .env("OTEL_SERVICE_NAME", node_type)
+        .env("RAFKA_DATA_DIR", &spawn_dir)
+        .env("RUST_LOG", &rust_log);
+
+    let node_name_c = node_name.clone();
+    let node_type_c = node_type.to_string();
+
+    match cmd.spawn() {
+        Ok(child) => {
+            let pid = child.id().unwrap_or(0);
+            state.processes.insert(node_name.clone(), Mutex::new(child));
+
+            let span = info_span!(
+                "rafka.ui.subprocess.spawned",
+                node_name = %node_name_c,
+                node_type = %node_type_c,
+                pid = pid,
+                "otel.kind" = "internal",
+            );
+            span.in_scope(|| {
+                info!(node_name = %node_name_c, node_type = %node_type_c, pid, "subprocess spawned");
+            });
+
+            (
+                StatusCode::CREATED,
+                axum::Json(json!({"node_name": node_name, "pid": pid})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            let span = info_span!(
+                "rafka.ui.subprocess.spawn_failed",
+                node_name = %node_name_c,
+                node_type = %node_type_c,
+                error = %e,
+                "otel.kind" = "internal",
+            );
+            span.in_scope(|| {
+                tracing::error!(error = %e, binary = %binary, "subprocess spawn failed");
+            });
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": format!("spawn failed: {e}")})),
+            )
+                .into_response()
+        }
+    }
+}
+
 async fn trace_middleware(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
@@ -391,11 +529,16 @@ async fn main() -> Result<()> {
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());
 
+    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR")
+        .unwrap_or_else(|_| "./target".to_string());
+
     let addr: SocketAddr = bind_addr.parse()?;
 
     let state = AppState {
         http: reqwest::Client::new(),
         jaeger_url,
+        cargo_target_dir,
+        processes: Arc::new(DashMap::new()),
     };
 
     let app = Router::new()
@@ -403,6 +546,7 @@ async fn main() -> Result<()> {
         .route("/api/health", get(handle_health))
         .route("/api/nodes", get(handle_nodes))
         .route("/api/boot-trace", get(handle_boot_trace))
+        .route("/api/nodes/spawn", post(handle_spawn))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
 

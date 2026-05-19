@@ -3105,7 +3105,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
+ "dashmap",
  "rafka-telemetry",
+ "rand 0.8.6",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
