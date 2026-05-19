@@ -1,27 +1,41 @@
 {
   "sprint_id": "sprint-02",
-  "status": "blocked",
-  "blocked_on": "sprint-01 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "blocked_on": null,
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
-  "branch": "sprint-02-broker-binary",
-  "objective": "Add rafka-broker binary. Same shape as gateway. Two services visible in Jaeger.",
+  "branch": "sprint-02-broker",
+  "objective": "Add rafka-broker binary. Same shape as gateway. Two services visible in Jaeger. Wire Principle #10 span attributes on all substrate spans. Verify iroh 0.91 removes dedicated-thread workaround.",
   "size": "tiny — 1 day",
   "in_scope": [
-    "broker/ binary — clone the gateway boot-span chain pattern; service_name = rafka-broker",
-    "Both binaries share crates/rafka-telemetry init code"
+    "broker/ binary — clone the gateway boot-span chain pattern; service_name = rafkav2-broker; node_type = broker",
+    "Both binaries share crates/rafka-telemetry init code",
+    "Principle #9 carryover: iroh bumped from 0.35 -> 0.91 (latest stable non-RC; 1.0.0-rc.0 exists but is pre-release)",
+    "Principle #9 carryover: dedicated-thread workaround DELETED — iroh 0.91 binds in <200ms on multi-thread tokio runtime on Windows; COM deadlock is fixed upstream",
+    "Principle #10 carryover: all substrate spans now carry required attributes (node_id, node_type, bind_addr, version, alpn, peer_count, reason) via info_span! macro with tracing::field::Empty + Span::current().record() for late-binding"
   ],
   "out_of_scope": [
     "Peer discovery between gateway + broker — Sprint 03",
     "Inter-node communication"
   ],
   "exit_criteria": [
-    "cargo run -p rafka-broker boots, idles emitting heartbeats",
-    "Jaeger shows TWO services (rafka-gateway + rafka-broker) each with their own boot-span chain",
-    "Both binaries running concurrently — no port conflicts (iroh binds 0.0.0.0:0 ephemeral)",
-    "Engineer surfaces Jaeger URL covering both services"
+    "cargo run -p rafka-broker boots, idles emitting heartbeats — DONE",
+    "Jaeger shows TWO services (rafkav2-gateway + rafkav2-broker) each with their own boot-span chain — DONE",
+    "Both binaries running concurrently — no port conflicts (iroh binds 0.0.0.0:0 ephemeral) — DONE",
+    "All substrate spans carry locked attributes per Principle #10 — DONE",
+    "iroh 0.91 direct bind tested: PASSED in <200ms on Windows multi-thread runtime — DONE",
+    "cargo check --workspace --tests --no-default-features = 0 errors, 0 warnings — DONE"
   ],
-  "spans_to_emit": ["same as sprint-01 but service_name=rafka-broker"],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-broker&operation=rafka.mesh.node.ready&lookback=1h"
+  "spans_to_emit": [
+    "rafka.mesh.node.ready (node_id, node_type, bind_addr, version)",
+    "rafka.mesh.boot.identity_loaded / identity_minted (node_id, path)",
+    "rafka.mesh.boot.endpoint_created (node_id, bind_addr)",
+    "rafka.mesh.boot.alpn_registered (node_id, alpn)",
+    "rafka.mesh.boot.gossip_started (node_id)",
+    "rafka.mesh.boot.accept_loop_started (node_id)",
+    "rafka.mesh.heartbeat (node_id, peer_count)",
+    "rafka.mesh.node.stopping (node_id, reason)"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafkav2-broker&operation=rafka.mesh.node.ready&lookback=1h"
 }

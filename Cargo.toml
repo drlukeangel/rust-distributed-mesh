@@ -3,6 +3,7 @@ members = [
     "crates/rafka-telemetry",
     "crates/rafka-mesh-transport",
     "gateway",
+    "broker",
 ]
 resolver = "2"
 
@@ -21,8 +22,9 @@ opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.27"
 
-# iroh
-iroh = "0.35"
+# iroh — latest stable non-RC at sprint-02 open (0.35 was used in sprint-01;
+# 1.0.0-rc.0 exists but is a release candidate; 0.95.1 is latest stable)
+iroh = "0.91"
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

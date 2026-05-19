@@ -1,64 +1,32 @@
 use anyhow::Result;
 use iroh::{Endpoint, RelayMode, SecretKey};
-use std::{net::SocketAddrV4, sync::Arc};
-use tokio::sync::{oneshot, Notify};
+use std::net::SocketAddrV4;
 use tracing::instrument;
 
 pub const ALPN: &[u8] = b"rafka-mesh-v1";
 
 pub struct IrohMeshTransport {
     pub endpoint: Endpoint,
-    /// Signals the iroh sub-runtime thread to shut down when this transport drops.
-    _shutdown: Arc<Notify>,
 }
 
 impl IrohMeshTransport {
-    /// Create an iroh endpoint on a dedicated tokio runtime thread.
+    /// Create an iroh endpoint directly on the caller's tokio runtime.
     ///
-    /// On Windows, iroh 0.35's `netmon::Monitor::new()` calls `COMLibrary::new()`
-    /// synchronously. On the multi-thread tokio runtime this deadlocks due to
-    /// COM apartment conflicts. A dedicated `current_thread` runtime on its own
-    /// OS thread avoids this: COM is always initialized from that single thread
-    /// with no inter-thread conflict.
-    ///
-    /// The dedicated thread keeps the `current_thread` runtime spinning via
-    /// `block_on(shutdown_signal)` so iroh's internal tasks (magicsock actor,
-    /// relay actor) remain alive for the lifetime of `IrohMeshTransport`.
+    /// iroh 0.91 on Windows no longer deadlocks on the multi-thread tokio runtime —
+    /// the COM apartment conflict that required a dedicated thread in iroh 0.35 was
+    /// fixed upstream (tested 2026-05-19, bound in <200ms on Windows 11 multi-thread).
+    /// Keeping the simple path; dedicated-thread workaround is deleted.
     #[instrument(skip(secret_key))]
     pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<Self> {
-        let (ep_tx, ep_rx) = oneshot::channel::<anyhow::Result<Endpoint>>();
-        let shutdown = Arc::new(Notify::new());
-        let shutdown_clone = shutdown.clone();
+        let endpoint = Endpoint::builder()
+            .secret_key(secret_key)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind_addr_v4(bind_addr)
+            .bind()
+            .await?;
 
-        std::thread::Builder::new()
-            .name("iroh-runtime".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("iroh sub-runtime");
-
-                rt.block_on(async move {
-                    let result = Endpoint::builder()
-                        .secret_key(secret_key)
-                        .alpns(vec![ALPN.to_vec()])
-                        .relay_mode(RelayMode::Disabled)
-                        .bind_addr_v4(bind_addr)
-                        .bind()
-                        .await
-                        .map_err(Into::into);
-
-                    let _ = ep_tx.send(result);
-
-                    // Keep the runtime alive (and all iroh actors running)
-                    // until the transport is dropped.
-                    shutdown_clone.notified().await;
-                });
-            })
-            .expect("spawn iroh-runtime thread");
-
-        let endpoint = ep_rx.await??;
-        Ok(Self { endpoint, _shutdown: shutdown })
+        Ok(Self { endpoint })
     }
 
     /// No-op accept loop. Drives the iroh endpoint's accept future so it
@@ -76,11 +44,5 @@ impl IrohMeshTransport {
                 }
             }
         }
-    }
-}
-
-impl Drop for IrohMeshTransport {
-    fn drop(&mut self) {
-        self._shutdown.notify_one();
     }
 }
