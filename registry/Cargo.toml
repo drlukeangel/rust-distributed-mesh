@@ -1,0 +1,24 @@
+[package]
+name = "rafka-registry"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rafka-registry"
+path = "src/main.rs"
+
+[dependencies]
+rafka-telemetry = { path = "../crates/rafka-telemetry" }
+rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
+rafka-mesh-ops = { path = "../crates/rafka-mesh-ops" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+iroh = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+dashmap = { workspace = true }

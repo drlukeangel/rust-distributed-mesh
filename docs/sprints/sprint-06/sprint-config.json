@@ -1,24 +1,28 @@
 {
   "sprint_id": "sprint-06",
-  "status": "blocked",
-  "blocked_on": "sprint-05 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "blocked_on": null,
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
-  "branch": "sprint-06-schema-binary",
-  "objective": "Add rafka-schema binary. 4 of 4 node types alive in mesh.",
+  "branch": "sprint-06-registry-binary",
+  "objective": "Add rafka-registry binary — 4th and final node type. Joins mesh as passive peer, completes gateway/broker/compute/registry lattice.",
   "size": "tiny — 1 day",
   "in_scope": [
-    "schema/ binary — clone gateway shape; service_name = rafka-schema"
+    "registry/ binary — clone of compute/; name=rafka-registry, bin=rafka-registry",
+    "init_telemetry(\"registry\"), NODE_TYPE=\"registry\"",
+    "4-service Jaeger: broker, compute, gateway, registry all visible",
+    "registry peers with all 3 other nodes (full mesh)"
   ],
   "out_of_scope": [
     "Schema registry app logic",
-    "Schema-specific ALPNs"
+    "Registry-specific ALPNs or wire ops"
   ],
   "exit_criteria": [
-    "All 4 binaries (gateway/broker/compute/schema) run concurrently",
-    "Jaeger shows 4 services, full mesh peer discovery, ping/pong working between all pairs",
-    "Jaeger URL covering all 4 services"
+    "Jaeger services: broker, compute, gateway, registry DONE",
+    "registry emits rafka.mesh.peer.connected for gateway, broker, AND compute peer_ids DONE",
+    "registry emits rafka.mesh.frame.received (pings from gateway) DONE",
+    "Workspace gate cargo check --workspace --tests --no-default-features = 0/0 DONE"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-schema&operation=rafka.mesh.node.ready&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=registry&operation=rafka.mesh.peer.connected&lookback=1h"
 }

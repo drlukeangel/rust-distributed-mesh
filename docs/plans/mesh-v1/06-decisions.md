@@ -258,6 +258,33 @@ Gateway connects to all brokers (full mesh on the gateway side). An org's data i
 
 ---
 
+## D-023a — Internal mesh wire = custom binary on raw QUIC, no gRPC/HTTP layer
+**Date:** 2026-05-19
+**Status:** Locked
+
+Internal mesh traffic (gateway↔broker, broker↔broker replication, any node-pair within a cluster) uses bincode-encoded `MeshFrame` types directly on raw iroh QUIC streams. **NO gRPC, NO HTTP/2, NO tonic** layered between the application code and the QUIC transport.
+
+**Rationale:**
+- iroh exposes raw QUIC streams; layering gRPC requires writing a non-trivial HTTP/2-on-iroh adapter (hundreds of lines, fragile, no prior art in iroh ecosystem)
+- gRPC framing overhead (HTTP/2 headers + gRPC length-prefix + trailers ~100 bytes/msg) exceeds payload size for substrate frames and wastes 1-2% bandwidth at produce throughput
+- bincode beats protobuf on size + speed for our primitive-heavy frame structs (no field tags)
+- gRPC's value (cross-language interop, reflection, service discovery, deadlines/cancellation) doesn't apply internally: we're Rust↔Rust over iroh, iroh handles discovery, QUIC stream-reset gives us cancellation, Jaeger handles debug visibility
+- Pattern matches Kafka (custom binary on TCP), Pulsar, Redpanda — all replace gRPC for the same reasons in hot-path internal traffic
+
+**What the wire actually looks like:** 32-byte trace context header (per sprint-04) + bincode-encoded `MeshFrame` (Control or Data variant per D-020) on raw uni or bidi QUIC streams (per D-021).
+
+**External client API (gateway's client-facing surface) is a SEPARATE decision** — see D-023b (deferred). The "no gRPC" rule applies only to internal mesh.
+
+---
+
+## D-023b — External client API protocol
+**Date:** 2026-05-19
+**Status:** Deferred — to be locked when produce/fetch client SDK requirements are clearer
+
+Current external client already speaks TCP or QUIC (pre-existing). Choice between (a) continuing the existing TCP/QUIC protocol unchanged, (b) tonic gRPC + HTTP/2 for client SDK ergonomics, (c) custom binary Kafka-wire-style remains open. Not adding gRPC at this time. Revisit when produce/fetch on the new substrate is being designed.
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)

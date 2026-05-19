@@ -6,6 +6,7 @@ members = [
     "gateway",
     "broker",
     "compute",
+    "registry",
 ]
 resolver = "2"
 
