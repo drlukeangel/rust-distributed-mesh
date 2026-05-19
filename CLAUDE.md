@@ -77,6 +77,33 @@ Format: `http://localhost:16686/search?service=<service-name>&operation=<root-sp
 
 If multiple services are involved, include one URL per service. If a specific span chain proves the sprint's exit criterion, link directly to a trace ID.
 
+### #8 — All configuration via environment variables. Zero config files for substrate.
+
+No TOML, YAML, or JSON config files for substrate-layer settings (transport, identity, telemetry, peer discovery, gossip, bind addrs, ports). Env vars only, every var has a sane default, every override documented in CLAUDE.md.
+
+**Why:** rafka v1 accumulated 4 different config patterns (env + toml + env-pointing-to-toml + hardcoded magic numbers like port 4315/4316/16686). The result: nobody knew what port the collector was on without reading the running container. v2 doesn't repeat this.
+
+**OpenTelemetry standard env vars** (use these for telemetry; do NOT invent rafka-specific shims):
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — collector URL (e.g. `http://localhost:4316`)
+- `OTEL_SERVICE_NAME` — what shows in Jaeger left-rail filter
+- `OTEL_TRACES_SAMPLER_ARG` — sampling ratio
+- `OTEL_RESOURCE_ATTRIBUTES` — extra k=v pairs
+
+**Rafka-specific env vars** (prefix `RAFKA_*`, every one with a default):
+- `RAFKA_NODE_TYPE` — gateway / broker / compute / schema
+- `RAFKA_DATA_DIR` — where identity + state lives (default `./data/node-${random}`)
+- `RAFKA_NODE_BIND_ADDR` — iroh endpoint bind (default `0.0.0.0:0` ephemeral)
+- `RAFKA_SEED_NODES` — CSV of `<endpoint_id>@<host>:<port>` for bootstrap discovery
+- `RAFKA_GOSSIP_INTERVAL_MS` — heartbeat cadence (default `500`)
+
+Every new env var added in a sprint MUST be documented in CLAUDE.md as part of the close-out commit. Config files are reserved for app-layer customer-facing policy (when the app layer exists in a much-later initiative); never substrate.
+
+**Banned patterns:**
+- ❌ Magic-number ports anywhere in code (`9092`, `4317`, etc.) — env var with default
+- ❌ TOML/YAML/JSON files for node config
+- ❌ Env vars pointing to config-file paths (the `RAFKA_GATEWAY_CONFIG=path/to/toml` pattern from v1)
+- ❌ Hardcoded paths to data dirs / log dirs / cert dirs
+
 ---
 
 ## Agent dispatch discipline (carryovers from rafka v1)
