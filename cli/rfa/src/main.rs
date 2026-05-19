@@ -75,6 +75,43 @@ enum MeshCmd {
         #[arg(long)]
         timeout: String,
     },
+    /// Chaos primitives + soak runner
+    Chaos {
+        #[command(subcommand)]
+        sub: ChaosCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChaosCmd {
+    /// Kill a UI-spawned subprocess (random if not specified). Detection: spawned-list confirms removal.
+    Kill {
+        /// node_name to kill; if omitted, picks a random spawned subprocess
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "30000")]
+        deadline_ms: u64,
+    },
+    /// Kill + immediately re-spawn (same node_type). Detection: new node_name appears in spawned-list.
+    Restart {
+        /// node_name to restart; if omitted, picks a random spawned subprocess
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "30000")]
+        deadline_ms: u64,
+    },
+    /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
+    Soak {
+        /// Total duration (e.g. 5m, 1h, 24h)
+        #[arg(long, default_value = "5m")]
+        duration: String,
+        /// How often to fire a primitive (e.g. 30s)
+        #[arg(long, default_value = "30s")]
+        interval: String,
+        /// Seed for reproducible runs
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -189,6 +226,20 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                 "mesh wait-converged".into(),
                 format!("--timeout {timeout} --target {target}"),
             ),
+            MeshCmd::Chaos { sub } => match sub {
+                ChaosCmd::Kill { target, .. } => (
+                    "mesh chaos kill".into(),
+                    target.clone().unwrap_or_else(|| "<random>".into()),
+                ),
+                ChaosCmd::Restart { target, .. } => (
+                    "mesh chaos restart".into(),
+                    target.clone().unwrap_or_else(|| "<random>".into()),
+                ),
+                ChaosCmd::Soak { duration, interval, seed } => (
+                    "mesh chaos soak".into(),
+                    format!("--duration {duration} --interval {interval} --seed {seed}"),
+                ),
+            },
         },
     }
 }
@@ -217,7 +268,72 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
             MeshCmd::WaitConverged { target, timeout } => {
                 cmd_wait_converged(client, &cli.api_url, *target, timeout).await
             }
+            MeshCmd::Chaos { sub } => match sub {
+                ChaosCmd::Kill { target, deadline_ms } => {
+                    cmd_chaos_kill(&cli.api_url, target.clone(), *deadline_ms).await
+                }
+                ChaosCmd::Restart { target, deadline_ms } => {
+                    cmd_chaos_restart(&cli.api_url, target.clone(), *deadline_ms).await
+                }
+                ChaosCmd::Soak { duration, interval, seed } => {
+                    cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
+                }
+            },
         },
+    }
+}
+
+async fn cmd_chaos_kill(api_url: &str, target: Option<String>, deadline_ms: u64) -> Result<()> {
+    use rafka_chaos::{primitives::KillNode, ChaosPrimitive};
+    let mut ctx = rafka_chaos::default_context(0);
+    ctx.topology_ui_url = api_url.to_string();
+    let prim = KillNode { target };
+    let outcome = prim.execute(&ctx).await.map_err(|e| anyhow!("execute: {e}"))?;
+    let det = prim.detect(&ctx, &outcome, deadline_ms).await.map_err(|e| anyhow!("detect: {e}"))?;
+    println!("primitive: kill_node");
+    println!("target:    {}", outcome.targets[0]);
+    println!("detection: {:?}", det);
+    match det {
+        rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
+        _ => Err(anyhow!("detection failed")),
+    }
+}
+
+async fn cmd_chaos_restart(api_url: &str, target: Option<String>, deadline_ms: u64) -> Result<()> {
+    use rafka_chaos::{primitives::RestartNode, ChaosPrimitive};
+    let mut ctx = rafka_chaos::default_context(0);
+    ctx.topology_ui_url = api_url.to_string();
+    let prim = RestartNode { target };
+    let outcome = prim.execute(&ctx).await.map_err(|e| anyhow!("execute: {e}"))?;
+    let det = prim.detect(&ctx, &outcome, deadline_ms).await.map_err(|e| anyhow!("detect: {e}"))?;
+    println!("primitive: restart_node");
+    println!("old:       {}", outcome.targets[0]);
+    println!("new:       {}", outcome.targets[1]);
+    println!("detection: {:?}", det);
+    match det {
+        rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
+        _ => Err(anyhow!("detection failed")),
+    }
+}
+
+async fn cmd_chaos_soak(api_url: &str, duration: &str, interval: &str, seed: u64) -> Result<()> {
+    let dur = humantime::parse_duration(duration).map_err(|e| anyhow!("parse duration: {e}"))?;
+    let iv = humantime::parse_duration(interval).map_err(|e| anyhow!("parse interval: {e}"))?;
+    let mut ctx = rafka_chaos::default_context(seed);
+    ctx.topology_ui_url = api_url.to_string();
+    println!("soak start: duration={dur:?} interval={iv:?} seed={seed}");
+    let report = rafka_chaos::soak::run_soak(&ctx, dur, iv, seed).await;
+    println!("soak end: events={} passed={} failed_timeout={} failed_assertion={}",
+        report.event_count, report.passed, report.failed_timeout, report.failed_assertion);
+    // write report
+    let path = format!("E:/tmp/rafka-chaos-soak-{}.json", seed);
+    let json = serde_json::to_string_pretty(&report)?;
+    std::fs::write(&path, json)?;
+    println!("report: {path}");
+    if report.failed_timeout > 0 || report.failed_assertion > 0 {
+        Err(anyhow!("soak failed: {} timeouts, {} assertion failures", report.failed_timeout, report.failed_assertion))
+    } else {
+        Ok(())
     }
 }
 

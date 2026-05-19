@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 rafka-telemetry = { path = "../../crates/rafka-telemetry" }
+rafka-chaos = { path = "../../crates/rafka-chaos" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

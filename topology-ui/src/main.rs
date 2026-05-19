@@ -385,6 +385,17 @@ async fn handle_health() -> impl IntoResponse {
     axum::Json(json!({"status": "ok"}))
 }
 
+async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
+    let names: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
+    let span = info_span!(
+        "rafka.ui.spawned_list",
+        count = names.len() as i64,
+        "otel.kind" = "internal",
+    );
+    span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
+    (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
 async fn handle_nodes(State(state): State<AppState>) -> impl IntoResponse {
     let url = format!("{}/api/services", state.jaeger_url);
     let span = info_span!("rafka.ui.jaeger.query", endpoint = "/api/services", "otel.kind" = "client");
@@ -720,6 +731,7 @@ async fn main() -> Result<()> {
         .route("/api/boot-trace", get(handle_boot_trace))
         .route("/api/heartbeat", get(handle_heartbeat))
         .route("/api/nodes/spawn", post(handle_spawn))
+        .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));

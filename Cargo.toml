@@ -4,6 +4,7 @@ members = [
     "crates/rafka-mesh-transport",
     "crates/rafka-mesh-ops",
     "crates/rafka-node-base",
+    "crates/rafka-chaos",
     "gateway",
     "broker",
     "compute",

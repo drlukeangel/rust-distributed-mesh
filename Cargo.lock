@@ -3143,6 +3143,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-chaos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "rafka-compute"
 version = "0.1.0"
 dependencies = [
@@ -3448,6 +3464,7 @@ dependencies = [
  "humantime",
  "opentelemetry",
  "opentelemetry-http",
+ "rafka-chaos",
  "rafka-telemetry",
  "reqwest 0.13.3",
  "serde",
