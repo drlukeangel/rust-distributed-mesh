@@ -413,6 +413,12 @@ For **durable shared state** (e.g., authoritative routing table, the v2 equivale
 
 3. **POC catchup before relying on gossip for critical paths.** Before any replication or quorum logic depends on gossip delivery semantics, run a 3-node POC: kill node 2, broadcast 10 messages on nodes 1+3, restart node 2, verify node 2 sees all 10. If catchup is broken, design a snapshot+replay layer (or fall back to v1's tail pattern).
 
+4. **Backpressure tests are mandatory** (per open issue #47 — "gossip backpressure leads to unresponsive states and/or ∞ discovery cycle"). Before iroh-gossip carries any production traffic, write these tests:
+   - **Sustained high-rate broadcast:** 4-node mesh, broadcast 1000 msgs/sec for 30s, verify (a) no node becomes unresponsive, (b) heartbeat span emission continues uninterrupted, (c) message delivery latency p99 stays bounded.
+   - **Burst recovery:** burst 10000 msgs in 1s, then idle, verify all nodes return to normal heartbeat cadence within 10s and no nodes stuck in "∞ discovery cycle" state (observable as flapping peer.connected/peer.disconnected spans).
+   - **Slow consumer:** one node deliberately throttled (e.g. `tokio::time::sleep(100ms)` between receiver.next() calls), verify slow consumer does NOT block fast publishers and doesn't trigger upstream backpressure that takes down the whole topic.
+   - All three tests gate the gossip integration merge. If any fails, build flow control at OUR `MeshGossip` trait layer (drop-on-overflow with overflow span emission, or token-bucket rate limiting per publisher) before relying on gossip for production traffic.
+
 **Rationale:**
 
 - iroh-gossip is first-party (same maintainers as iroh transport we already use) — no glue code, no version skew risk between substrate layers
