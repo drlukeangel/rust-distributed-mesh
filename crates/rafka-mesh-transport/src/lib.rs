@@ -1,5 +1,5 @@
 use anyhow::Result;
-use iroh::{Endpoint, RelayMode, SecretKey};
+use iroh::{endpoint::Connection, Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddrV4;
 use tracing::instrument;
 
@@ -27,6 +27,14 @@ impl IrohMeshTransport {
             .await?;
 
         Ok(Self { endpoint })
+    }
+
+    /// Dial a peer by its PublicKey (EndpointId). Returns the live Connection.
+    /// Caller is responsible for dropping the connection when done.
+    #[instrument(skip(self), fields(peer_id = %peer_id))]
+    pub async fn connect_seed(&self, peer_id: iroh::PublicKey) -> Result<Connection> {
+        let conn = self.endpoint.connect(peer_id, ALPN).await?;
+        Ok(conn)
     }
 
     /// No-op accept loop. Drives the iroh endpoint's accept future so it

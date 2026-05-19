@@ -282,9 +282,9 @@ If a build fails mysteriously, diagnose via:
 
 ---
 
-## Sprint 01 env vars
+## Env vars (all node binaries)
 
-All env vars recognized by the Sprint 01 `rafka-gateway` binary. No other configuration mechanism exists.
+All env vars recognized by node binaries (`data-gateway`, `broker`, etc.). No other configuration mechanism exists.
 
 | Env var | Default | Description |
 |---|---|---|
@@ -293,7 +293,8 @@ All env vars recognized by the Sprint 01 `rafka-gateway` binary. No other config
 | `RAFKA_DATA_DIR` | `./data/node-<random-hex>` | Directory where `node-identity.json` is stored. Set this to a stable path across restarts to preserve node identity (same `node_id` across reboots). |
 | `RAFKA_NODE_BIND_ADDR` | `0.0.0.0:0` | IPv4 socket address iroh binds the QUIC endpoint to. Port 0 = ephemeral OS-assigned. Override to pin to a specific port for firewall rules. |
 | `RAFKA_GOSSIP_INTERVAL_MS` | `500` | Gossip heartbeat interval in milliseconds. Stub in Sprint 01 — logged as a span attribute but not yet wired to real gossip scheduling. |
-| `RAFKA_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, gateway shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
+| `RAFKA_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rafka.mesh.peer.discovered` + `rafka.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
+| `RAFKA_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, node shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 

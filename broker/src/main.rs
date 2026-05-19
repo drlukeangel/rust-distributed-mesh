@@ -1,10 +1,15 @@
 use anyhow::Result;
-use iroh::SecretKey;
+use iroh::{NodeAddr, PublicKey, SecretKey};
 use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddrV4, path::PathBuf, time::Duration};
+use std::{net::{SocketAddr, SocketAddrV4}, path::PathBuf, str::FromStr, time::Duration};
 use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
+
+struct SeedNode {
+    id: PublicKey,
+    addr: SocketAddr,
+}
 
 const NODE_TYPE: &str = "broker";
 
@@ -35,6 +40,32 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
 
+    // Format: <node_id_hex>@<host>:<port> per CLAUDE.md Principle #8 env var table.
+    let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|s| {
+            let s = s.trim();
+            let (id_str, addr_str) = match s.split_once('@') {
+                Some(parts) => parts,
+                None => {
+                    eprintln!("RAFKA_SEED_NODES: expected <node_id>@<addr>, got {:?}", s);
+                    return None;
+                }
+            };
+            let id = match PublicKey::from_str(id_str) {
+                Ok(pk) => pk,
+                Err(e) => { eprintln!("RAFKA_SEED_NODES: bad node_id {:?}: {e}", id_str); return None; }
+            };
+            let addr = match addr_str.parse::<SocketAddr>() {
+                Ok(a) => a,
+                Err(e) => { eprintln!("RAFKA_SEED_NODES: bad addr {:?}: {e}", addr_str); return None; }
+            };
+            Some(SeedNode { id, addr })
+        })
+        .collect();
+
     // Root span — node_id and bind_addr are late-bound after identity + endpoint creation.
     let root_span = tracing::info_span!(
         "rafka.mesh.node.ready",
@@ -49,6 +80,7 @@ async fn main() -> Result<()> {
             gossip_interval_ms,
             bind_addr = %bind_addr,
             data_dir = ?data_dir,
+            seed_count = seed_nodes.len(),
             "boot config"
         );
 
@@ -121,6 +153,15 @@ async fn main() -> Result<()> {
 
         info!(node_id = %node_id, "boot complete, idling");
 
+        // Spawn seed-dial task — one attempt per seed, peer.discovered + peer.connected spans.
+        let dial_handle = if !seed_nodes.is_empty() {
+            let node_id_dial = node_id.clone();
+            let endpoint = transport.endpoint.clone();
+            Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial)))
+        } else {
+            None
+        };
+
         let node_id_hb = node_id.clone();
         let heartbeat_handle = tokio::spawn(run_heartbeat(node_id_hb));
 
@@ -137,6 +178,7 @@ async fn main() -> Result<()> {
 
         accept_handle.abort();
         heartbeat_handle.abort();
+        if let Some(h) = dial_handle { h.abort(); }
 
         anyhow::Ok(())
     }
@@ -144,6 +186,43 @@ async fn main() -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+/// Dial each seed node by NodeId + direct addr: emit peer.discovered then peer.connected.
+async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id: String) {
+    for seed in seeds {
+        let peer_id_str = seed.id.to_string();
+
+        tracing::info_span!(
+            "rafka.mesh.peer.discovered",
+            node_id = %own_node_id,
+            peer_id = %peer_id_str,
+            peer_node_type = "unknown",
+        )
+        .in_scope(|| {
+            info!(peer_id = %peer_id_str, addr = %seed.addr, source = "seed", "peer discovered via seed list");
+        });
+
+        let endpoint_addr = NodeAddr::new(seed.id).with_direct_addresses([seed.addr]);
+        match endpoint.connect(endpoint_addr, rafka_mesh_transport::ALPN).await {
+            Ok(conn) => {
+                tracing::info_span!(
+                    "rafka.mesh.peer.connected",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                    peer_node_type = "unknown",
+                )
+                .in_scope(|| {
+                    info!(peer_id = %peer_id_str, "peer connected");
+                });
+                // Sprint 03: drop connection immediately — sprint 04 will hold it.
+                drop(conn);
+            }
+            Err(e) => {
+                info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
+            }
+        }
+    }
 }
 
 /// Load an existing node identity or mint a new one and persist it.
@@ -183,14 +262,23 @@ async fn create_endpoint(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Resu
     Ok(transport)
 }
 
-/// Start the no-op accept loop in a background task.
+/// Accept incoming connections and complete the QUIC handshake.
+/// Sprint 03: accept + immediately drop — dialer-side peer.connected needs the handshake to complete.
 #[instrument(skip_all)]
 async fn start_accept_loop(transport: &IrohMeshTransport) -> tokio::task::JoinHandle<()> {
     let endpoint = transport.endpoint.clone();
     tokio::spawn(async move {
         loop {
             match endpoint.accept().await {
-                Some(incoming) => drop(incoming),
+                Some(incoming) => {
+                    tokio::spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            let peer = conn.remote_node_id().map(|id| id.to_string()).unwrap_or_else(|_| "unknown".into());
+                            info!(peer_id = %peer, "accepted connection");
+                            drop(conn);
+                        }
+                    });
+                }
                 None => {
                     info!("accept loop: endpoint closed");
                     break;
