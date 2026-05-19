@@ -422,11 +422,25 @@ async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
             match conn.open_uni().await {
                 Ok(mut send) => {
                     if let Err(e) = send.write_all(&encoded).await {
-                        info!(peer_id = %peer_id_str, error = %e, "ping write failed");
+                        tracing::info_span!(
+                            "rafka.mesh.frame.sent_failed",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            frame_kind = "ping",
+                            error = %e,
+                        )
+                        .in_scope(|| info!(peer_id = %peer_id_str, "ping write failed"));
                         continue;
                     }
                     if let Err(e) = send.finish() {
-                        info!(peer_id = %peer_id_str, error = %e, "ping finish failed");
+                        tracing::info_span!(
+                            "rafka.mesh.frame.sent_failed",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            frame_kind = "ping",
+                            error = %e,
+                        )
+                        .in_scope(|| info!(peer_id = %peer_id_str, "ping finish failed"));
                         continue;
                     }
                     tracing::info_span!(
@@ -441,7 +455,14 @@ async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
                     });
                 }
                 Err(e) => {
-                    info!(peer_id = %peer_id_str, error = %e, "open_uni failed for ping");
+                    tracing::info_span!(
+                        "rafka.mesh.frame.sent_failed",
+                        node_id = %own_node_id,
+                        peer_id = %peer_id_str,
+                        frame_kind = "ping",
+                        error = %e,
+                    )
+                    .in_scope(|| info!(peer_id = %peer_id_str, "open_uni failed for ping"));
                 }
             }
         }
