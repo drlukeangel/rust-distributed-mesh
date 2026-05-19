@@ -1,7 +1,7 @@
 //! Soak runner — picks a random primitive every N seconds, executes, detects, records.
 //! Per chaos PRD §3. Sprint 11 phase 1 ships a smoke variant (5min run with 10 events).
 
-use crate::primitives::{KillNode, RestartNode};
+use crate::primitives::{BurstKill, DiskFull, KillNode, RestartNode};
 use crate::{ChaosContext, ChaosOutcome, ChaosPrimitive, DetectionResult};
 use rand::Rng;
 use serde::Serialize;
@@ -57,11 +57,13 @@ pub async fn run_soak(
         // pick a primitive
         let pick: u8 = {
             let mut rng = ctx.rng.lock().await;
-            rng.gen_range(0..2)
+            rng.gen_range(0..4)
         };
         let primitive: Box<dyn ChaosPrimitive> = match pick {
             0 => Box::new(KillNode { target: None }),
-            _ => Box::new(RestartNode { target: None }),
+            1 => Box::new(RestartNode { target: None }),
+            2 => Box::new(BurstKill { count: 2 }),
+            _ => Box::new(DiskFull { target: None, max_bytes: 4 * 1024 * 1024 }),
         };
 
         let exec_started = Instant::now();
