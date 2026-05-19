@@ -500,6 +500,78 @@ D-028 stops at "which nodes are alive in the mesh and how do we know that."
 
 ---
 
+## D-029 — E2E test harness design rules (harvested from v1 i34-phase6 catalog)
+**Date:** 2026-05-19
+**Status:** Locked (load-bearing when sprint-09+ chaos harness lands; no current harness in v2)
+**Source:** v1 `E:/dev/rafka/docs/plans/i34-phase6-harness-consolidation.md` (2026-05-18)
+**Scope:** Test/observability infrastructure only. Data-plane test concerns out of scope until a separate decision when produce/fetch lands.
+
+v1's `BaseTreeBuilder` accumulated 16 `.with_X()` methods + 15 env-var contracts that composed "by accident." Three concurrent failure modes (cross-mesh substrate, HLC canaries, B02 subprocess hang) traced to the same root: no compositional contract. v1 spent ~6 months fixing symptoms with 7+ bandaid commits that didn't unblock the underlying compositional problem. v2's chaos harness must not repeat this.
+
+### Rule 1 — Test harness composition is type-state, not runtime
+
+When v2 builds its e2e harness (sprint-09+), every composition axis (process mode, telemetry mode, mesh shape, bootstrap mode, auth mode) is a phantom-type parameter on the builder. Incompatible combinations fail to **compile**, not at runtime. Pattern:
+
+```rust
+pub struct Harness<Process, Telemetry, Mesh, Bootstrap> { ... }
+impl Harness<InProcess, NoTelemetry, SingleMesh, NoBootstrap> {
+    pub fn new() -> Self { ... }
+}
+impl<M, B> Harness<InProcess, NoTelemetry, M, B> {
+    pub fn with_subprocess(self) -> Harness<Subprocess, OtlpCaptureSimple, M, B> { ... }
+    // .with_subprocess() FORCES telemetry to Simple — no env-var dance
+}
+// `.with_subprocess().with_subprocess_three()` doesn't compile (no impl for that type-state)
+```
+
+Required: a `compile_fail` (trybuild) suite that demonstrates 5+ illegal compositions are rejected at compile time.
+
+### Rule 2 — Env vars are SET by the harness, not READ by it
+
+The harness owns the env-var contract for subprocess children. Test authors set test identity ONCE via a typed method (`with_test_identity(name, feature, sprint)`); the harness internally exports the env vars subprocess children read. The harness itself reads at most 2 env vars: `CARGO_TARGET_DIR` (per-worktree binary location) and the OTLP collector URL.
+
+Forbidden: harness code that calls `std::env::var(...)` for test identity (name/feature/sprint/agent/run_id). Those values come from typed builder methods, then the harness writes them into subprocess env. v1's reading the same var in two paths caused race-condition-shaped bugs.
+
+### Rule 3 — Telemetry mode is a type, not an env-var fork
+
+The gateway/broker/compute/registry binaries today install `BatchSpanProcessor` unconditionally via `rafka_telemetry::init_telemetry()`. **Do not** add a runtime fork that picks Simple vs Batch based on env state. If subprocess tests need synchronous flushing, add a `RAFKA_TELEMETRY_MODE=simple` env var the production binaries read AT STARTUP — but the test author sees the choice as a typed builder state (`OtlpCaptureSimple` vs `OtlpCaptureBatch`), and the harness sets the env var when spawning the subprocess. Mode is a NON-LOCAL fact only at the binary's startup; everywhere else it's a TYPE.
+
+### Rule 4 — No shared OnceLock<Runtime>; per-test runtime ownership
+
+v1's `HARNESS_RUNTIME: OnceLock<Runtime>` survived across tests in the same binary, causing stale-handle bugs (second-test-in-binary saw first-test's runtime state). v2's harness must spawn a fresh tokio runtime per test instance, drop on test end. Tradeoff: marginal startup overhead. Reward: no cross-test state survival.
+
+Forbidden grep result: `OnceLock<.*Runtime>` in `tests/` should return zero hits.
+
+### Rule 5 — Subprocess and in-process expose the SAME interface
+
+v1's gateway URL side-channel (subprocess can't `.gateway_url()` directly) was a hack to bridge interface drift. v2: the harness struct returned from `.build()` has fields populated during build, regardless of process mode. `BaseTree.gateway_url` is set in `.build()` after subprocess spawn returns its bound address (or via in-process publisher in the in-process case). Same field, two write paths, NO global state. Topology-ui's spawn endpoint (sprint-08) already follows this — returns `{node_name, pid}` from POST.
+
+### Rule 6 — Binary prereq is pre-flight verified, not implicit
+
+When a typed harness state requires real binaries (subprocess modes), the harness's `.build()` MUST verify the binaries exist on disk at the resolved `CARGO_TARGET_DIR` path BEFORE attempting to spawn. Fail-fast with a clear error pointing at the build command, not a confusing runtime spawn error.
+
+### Rule 7 — When 3+ bandaid fixes don't unblock, the problem is compositional
+
+v1 shipped 7 commits trying to unblock B02 substrate hang (RRN format, span flush, env var precedence, gossip timeout, broadcast filter, hash_secret blocking). None worked because the underlying problem was the lack of a synchronization contract between subprocess and in-process state — a compositional issue invisible to per-symptom fixes.
+
+v2 discipline: if a sprint-NN engineer ships 2 fixes for the same test failure without unblocking, the team-lead STOPS the per-symptom path and forces a compositional audit of the relevant axes (process × telemetry × mesh × bootstrap). Pairs with [[feedback_telemetry_validates_at_each_layer]] (after fix N, instrument target code path + re-run + verify span fired before writing fix N+1).
+
+### Acceptance bar for the eventual harness sprint
+
+When v2's chaos harness sprint (sprint-09+) ships, sign-off requires ALL of:
+
+1. Type-state phantom encoding on the harness builder (rules 1, 3)
+2. Trybuild compile_fail suite with 5+ illegal compositions rejected (rule 1)
+3. `std::env::var(` in test infrastructure ≤ 2 hits (rule 2)
+4. Zero `OnceLock<.*Runtime>` in test infrastructure (rule 4)
+5. Subprocess and in-process tests use the SAME harness struct fields, populated via different write paths (rule 5)
+6. Pre-flight binary existence check before subprocess spawn (rule 6)
+7. Fresh-worktree + fresh-CARGO_TARGET_DIR matrix passes the full test suite on first run, no env-var setup beyond the 2 allowed (combination of rules 2 + 4 + 6)
+
+**Rationale:** v1 paid roughly 6 months of throughput tax on harness composition issues. The structural cause (no contract, env-var-driven mode forks, runtime caching, side-channels) is preventable at design time at near-zero cost. Locking these rules now means sprint-09+ engineers reference D-029 instead of rediscovering each lesson the hard way.
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
