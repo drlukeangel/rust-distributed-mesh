@@ -1071,6 +1071,40 @@ async fn trace_middleware(req: Request, next: Next) -> Response {
     next.run(req).instrument(span).await
 }
 
+/// Background task that periodically reaps subprocesses which have already exited
+/// (crashed, panicked, OOM-killed) but whose handle still sits in the DashMap.
+/// Without this, chaos primitives keep picking dead names from /api/nodes/spawned
+/// and DELETE returns 404, polluting the soak report.
+async fn reaper_loop(processes: Arc<DashMap<String, Mutex<tokio::process::Child>>>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+        let names: Vec<String> = processes.iter().map(|e| e.key().clone()).collect();
+        for name in names {
+            // Grab the child briefly to call try_wait; if exited, remove the entry.
+            let exited_status = if let Some(entry) = processes.get(&name) {
+                let mut guard = entry.value().lock().await;
+                match guard.try_wait() {
+                    Ok(Some(status)) => Some(status),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(status) = exited_status {
+                processes.remove(&name);
+                tracing::info_span!(
+                    "rafka.ui.subprocess.reaped",
+                    node_name = %name,
+                    exit_code = status.code().unwrap_or(-1) as i64,
+                    "otel.kind" = "internal",
+                )
+                .in_scope(|| info!(node_name = %name, exit_code = status.code().unwrap_or(-1), "subprocess reaped — exited without DELETE"));
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _guard = rafka_telemetry::init_telemetry("topology-ui");
@@ -1101,6 +1135,12 @@ async fn main() -> Result<()> {
         cargo_target_dir,
         processes: Arc::new(DashMap::new()),
     };
+
+    // Subprocess reaper: every 5s, iterate processes + call try_wait. If a child
+    // has exited (crash, OOM, panic) the DashMap still holds the handle but the
+    // PID is dead. Reaper removes those entries so /api/nodes/spawned reflects
+    // reality. Closes spawned-list runbook Mode 3 ("lists names of dead subprocs").
+    tokio::spawn(reaper_loop(Arc::clone(&state.processes)));
 
     let app = Router::new()
         .route("/", get(handle_root))

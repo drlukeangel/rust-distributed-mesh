@@ -24,7 +24,7 @@ Then re-spawn fresh via `rfa mesh node add`.
 
 **Detection:** `Get-Process -Id <pid>` returns nothing for a name in the spawned list.
 
-**Recovery:** Trigger DELETE on the name; `Child::kill()` will return success (process already dead) and the entry gets cleaned up. Could also add a background reaper that polls `Child::try_wait()` and removes exited subprocesses from the DashMap — queued cleanup.
+**Recovery:** Automatic. `reaper_loop` runs every 5s, calls `Child::try_wait()` on each entry, and removes any that have already exited (emits `rafka.ui.subprocess.reaped{node_name, exit_code}` span for operator visibility). Within ≤5s of a crash, the name disappears from `/api/nodes/spawned`. Manual DELETE on a reaped name returns 404 cleanly.
 
 ## Cross-references
 
