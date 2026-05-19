@@ -1,8 +1,8 @@
 {
   "sprint_id": "sprint-01",
-  "status": "planned",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
   "phase": 0,
   "branch": "sprint-01-telemetry-first-gateway",

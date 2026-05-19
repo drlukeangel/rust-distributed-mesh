@@ -1,0 +1,20 @@
+[package]
+name = "rafka-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rafka-gateway"
+path = "src/main.rs"
+
+[dependencies]
+rafka-telemetry = { path = "../crates/rafka-telemetry" }
+rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+iroh = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
