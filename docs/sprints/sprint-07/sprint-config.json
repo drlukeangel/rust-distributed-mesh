@@ -5,32 +5,49 @@
   "opens": null,
   "closes": null,
   "initiative": "mesh-v1",
-  "branch": "sprint-07-topology-ui-readonly",
-  "objective": "Single-page topology UI on localhost:19090. Read-only. Visualizes current mesh state, polls REST endpoint, NO spawn buttons yet.",
-  "size": "small — 2-3 days",
+  "branch": "sprint-07-boot-waterfall-ui",
+  "objective": "Single-page boot-waterfall UI. Renders the boot-span chain from any node as a horizontal cascade. Vanilla HTML+CSS+JS, no SPA framework, no topology graph, no alerts panel, no heartbeat panel.",
+  "size": "small — 2 days",
+  "design_reference": "docs/design/system-mesh-v1/ — long-term vision. Sprint 07 ships ONLY the boot waterfall slice. Topology graph + alerts + heartbeat + type cards are explicitly deferred (likely never built for v1).",
   "in_scope": [
-    "topology-ui/ binary — axum server on :19090 + axum-otlp instrumentation",
-    "Joins mesh as view-only participant on ALPN rafka-topology-v1",
-    "Serves single-page HTML+JS (vis-network for graph; no SPA framework)",
-    "GET /api/topology returns current peer list (gateway-side cache populated from peer.discovered events)",
-    "WebSocket /ws/topology pushes deltas on peer arrival/departure"
+    "topology-ui/ binary — axum server on http://localhost:19090 (read RAFKA_TOPOLOGY_UI_BIND_ADDR env var, default 127.0.0.1:19090)",
+    "Single HTML page: header + waterfall canvas + node-selector dropdown",
+    "Polls Jaeger query API for traces matching service=rafkav2-* operation=rafka.mesh.node.ready",
+    "Renders trace as horizontal waterfall: each span is a colored div, width = duration, x-offset = start_time relative to root, vertical position by parent-child nesting",
+    "Color-codes by span phase (identity / endpoint / alpn / gossip / accept_loop) per the existing palette in docs/design/system-mesh-v1/project/styles.css",
+    "Node selector dropdown lets user pick which node's most-recent boot trace to view"
   ],
   "out_of_scope": [
-    "Spawn/kill buttons — Sprint 08",
-    "rfa CLI — Sprint 09",
+    "Topology graph (deferred indefinitely; mesh visualization is not v1 scope)",
+    "Active alerts panel (no alert entity exists)",
+    "OTLP heartbeat panel (no gateway-side span-rate aggregation)",
+    "Type-card drill-down (no fleet to drill into)",
+    "Spawn / kill buttons (use rfa CLI)",
+    "WebSocket live updates (polling is fine — boot is a one-shot event)",
+    "Multiple node-types-at-once view",
+    "Any SPA framework, build pipeline, transpilation, node_modules",
     "Authentication"
   ],
   "exit_criteria": [
-    "Boot 4 node binaries + topology-ui",
-    "Browser http://localhost:19090 shows 4 nodes + edges between pairs",
-    "Kill one node externally → graph updates within 10s without page refresh",
-    "All UI HTTP requests instrumented with spans (rafka.ui.http.request)",
-    "Jaeger URL covering rafka-topology-ui service traces"
+    "cargo run -p rafka-topology-ui starts UI on http://localhost:19090",
+    "Boot any rafkav2-* node (gateway/broker/compute/schema)",
+    "Open UI in browser, select node from dropdown",
+    "See the 6-span boot waterfall rendered as horizontal bars with timing labels",
+    "Refresh page → still works",
+    "Boot a SECOND node → it appears in the dropdown within 10s (UI re-polls Jaeger periodically)",
+    "All UI HTTP requests instrumented with spans (service=rafkav2-topology-ui)",
+    "Jaeger URL pre-filtered to the UI's own traces"
   ],
   "spans_to_emit": [
     "rafka.ui.http.request",
-    "rafka.ui.ws.client_connected",
-    "rafka.ui.topology.delta_emitted"
+    "rafka.ui.jaeger.query"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-topology-ui&operation=rafka.ui.topology.delta_emitted&lookback=1h"
+  "discipline": [
+    "NO SPA framework — vanilla HTML + CSS + JS only (Principle #10 KISS)",
+    "NO topology graph in this sprint — that's the scope-creep trap; resist",
+    "Polling, not WebSocket — boot waterfall is a one-shot view, not a live stream",
+    "All config via env vars (Principle #8): RAFKA_TOPOLOGY_UI_BIND_ADDR + JAEGER_QUERY_URL (default http://localhost:16686)",
+    "Closes with Jaeger URL per Principle #7"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafkav2-topology-ui&operation=rafka.ui.jaeger.query&lookback=1h"
 }

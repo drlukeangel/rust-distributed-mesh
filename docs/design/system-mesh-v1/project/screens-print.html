@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Rafka — Screens v0.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="screens.css" />
+<style>
+  html, body { background: #0a0a0a; }
+
+  /* ── Print: each artboard on its own landscape page ───────── */
+  @page { size: 1680px 1700px; margin: 0; }
+  @media print {
+    html, body {
+      background: #0a0a0a !important;
+      width: auto !important; height: auto !important;
+      overflow: visible !important;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+    body { margin: 0 !important; padding: 0 !important; }
+
+    /* Kill canvas viewport + transforms */
+    .design-canvas,
+    .design-canvas > * {
+      width: auto !important; height: auto !important;
+      transform: none !important;
+      position: static !important;
+      overflow: visible !important;
+    }
+    .design-canvas {
+      display: block !important;
+      padding: 0 !important;
+    }
+    /* Hide design-canvas chrome */
+    .dc-toolbar, .dc-zoom, .dc-toolbarstrip, .dc-grip, .dc-kebab, .dc-expand,
+    .dc-btns, .dc-menu, .dc-minimap, .dc-toolbar-print, .twk-fab, .twk-panel,
+    .dc-canvas-bg, .dc-grid, .dc-empty-cta {
+      display: none !important;
+    }
+    /* Section headers print as page intros */
+    .dc-sectionhead {
+      break-before: page;
+      padding: 60px 60px 28px !important;
+      color: #f6efe8 !important;
+    }
+    .dc-sectionhead:first-of-type { break-before: avoid; }
+
+    /* Wrapper around an artboard becomes static, full width */
+    [data-dc-slot] {
+      display: block !important;
+      position: static !important;
+      transform: none !important;
+      margin: 0 0 24px 0 !important;
+      break-inside: avoid;
+      page-break-inside: avoid;
+      break-before: page;
+    }
+    /* Artboard card itself: keep its natural width/height */
+    .dc-card {
+      box-shadow: none !important;
+      border-radius: 0 !important;
+      overflow: hidden !important;
+      margin: 0 auto !important;
+    }
+    /* The label row above each artboard: keep it readable */
+    .dc-header {
+      padding: 16px 60px 8px !important;
+      color: #b8aea4 !important;
+    }
+    .dc-labelrow { gap: 0 !important; }
+    .dc-labeltext { color: #f6efe8 !important; font-size: 13px !important; }
+
+    /* Section row layout becomes column */
+    .dc-section, .dc-row, .dc-sectionrow {
+      display: block !important;
+      gap: 0 !important;
+    }
+  }
+</style>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+    <rect width="100" height="100" fill="#1a1310"/>
+    <rect x="30" y="30" width="40" height="40" rx="9" fill="#c45a3a"/>
+    <text x="50" y="60" font-family="JetBrains Mono, monospace" font-size="26" font-weight="700" fill="#fff" text-anchor="middle">R</text>
+  </svg>
+</template>
+<div id="root"></div>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="cluster-overview-a.jsx"></script>
+<script type="text/babel" src="topic-browser.jsx"></script>
+<script type="text/babel" src="consumer-groups.jsx"></script>
+<script type="text/babel" src="schema-registry.jsx"></script>
+<script type="text/babel" src="connectors.jsx"></script>
+<script type="text/babel" src="flink-jobs.jsx"></script>
+<script type="text/babel" src="sql-editor.jsx"></script>
+<script type="text/babel" src="fuel-screens.jsx"></script>
+<script type="text/babel" src="sql-editor-alts.jsx"></script>
+<script type="text/babel" src="system-overview.jsx"></script>
+<script type="text/babel" src="rafka-cms.jsx"></script>
+<script type="text/babel" src="acls-audit.jsx"></script>
+<script type="text/babel" src="screens-app.jsx"></script>
+
+<script type="text/babel">
+  // Wait for fonts + Babel-transformed React app to mount artboards, then print.
+  (async () => {
+    try { await document.fonts.ready; } catch (_) {}
+    // Poll for artboards to be present (Babel parses async).
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const cards = document.querySelectorAll('.dc-card');
+      if (cards.length >= 5) break;
+      await new Promise(r => setTimeout(r, 200));
+    }
+    // Extra settle for charts/spans.
+    await new Promise(r => setTimeout(r, 800));
+    window.print();
+  })();
+</script>
+</body>
+</html>

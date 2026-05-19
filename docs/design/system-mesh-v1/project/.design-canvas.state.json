@@ -1,0 +1,1 @@
+{"sections":{"cluster":{"labels":{"cluster-a":"Variant A · data-dense, sidebar expanded"}},"sql":{"title":"Streaming SQL editor"},"system":{"labels":{"system-type":"2. Component type — data-plane-gateway (5 instances)","system-mesh":"1. System mesh — live topology + alerts + OTLP heartbeat"}},"connectors":{"title":"Connectors"}}}
