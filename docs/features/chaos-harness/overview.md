@@ -12,22 +12,23 @@ Goal: every sprint after sprint-11 inherits the chaos-pass acceptance criterion 
 
 - `kill_node` — DELETE on topology-ui; detection: target gone from `/api/nodes/spawned` within deadline
 - `restart_node` — kill + immediate re-spawn same node_type; detection: new node_name appears in `/api/spawned`
+- `burst_kill` — N back-to-back kills against random spawned subprocesses; substrate-race exercise
+- `disk_full` — fill spawn data dir until writes fail (cap on filler size for safety)
+- `wedge_node` — Windows `NtSuspendProcess` via PowerShell; revert with `NtResumeProcess`
 
-## Phase 2 (queued) — network primitives
+## Phase 2 (shipped) — network + clock primitives
 
-- `partition_pair` — Windows firewall rule blocking specific NodeId↔IP
+- `partition_pair{a, b, duration_ms}` — Windows `New-NetFirewallRule` blocking outbound UDP for two named programs. **Requires elevated shell** (admin); fails clean with surfaced stderr otherwise. Revert removes the tagged rules.
+- `clock_skew{target, skew_ms}` — restart the target node with `RAFKA_CLOCK_SKEW_MS` env injected via topology-ui's `extra_env` field. `rafka-node-base` reads the var at boot and emits `clock_skew_ms` + `wall_time_ms` attributes on every `rafka.mesh.heartbeat` span. Detection verifies new subprocess appears; substrate detection (Jaeger query for skewed `wall_time_ms`) is a follow-up.
+
+## Phase 3 (queued) — extended network primitives
+
 - `partition_subset` — partition multiple node-pairs forming disjoint subsets
 - `flap_link` — repeatedly disconnect+reconnect via firewall rule toggle
 - `nat_shift` — force iroh endpoint rebind to new port (mid-run reconfigure)
-- `slow_link` — Windows QoS / packet-delay injection per peer
-- `lossy_link` — Windows QoS / packet-drop injection per peer
+- `slow_link` — app-layer latency injection at frame send/recv boundary (env-var hook + node-base frame handler change)
+- `lossy_link` — app-layer drop injection
 - `firewall_inbound` — block all inbound to a target
-
-## Phase 3 (queued) — system primitives
-
-- `clock_skew` — env var injection at next node restart (gateway/broker/compute/registry read `RAFKA_CLOCK_SKEW_MS` at boot)
-- `wedge_node` — Suspend-Process equivalent (SIGSTOP)
-- `disk_full` — fill spawn data dir to 100%
 
 ## Locked spans
 

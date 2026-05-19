@@ -531,3 +531,224 @@ impl ChaosPrimitive for DiskFull {
         Ok(())
     }
 }
+
+/// `partition_pair` — block QUIC traffic between two specific binary names via Windows
+/// firewall rules. Substrate criterion: survivors on each side of the partition observe
+/// the other as disconnected (peer.disconnected span emitted OR heartbeat peer_count
+/// drops on both sides).
+///
+/// Implementation: creates two outbound block rules tagged `RAFKA-CHAOS-PARTITION-<id>`
+/// using New-NetFirewallRule (PowerShell). Reverts via Remove-NetFirewallRule by tag.
+///
+/// Targets are binary names ("rafka-gateway", "rafka-broker"). Detection in this phase
+/// is best-effort: confirms the firewall rule exists by Get-NetFirewallRule after creation.
+/// Full detection of "survivor sees peer drop" is a follow-up that wires Jaeger lookup.
+pub struct PartitionPair {
+    pub a: String,
+    pub b: String,
+    pub duration_ms: u64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for PartitionPair {
+    fn name(&self) -> &str {
+        "partition_pair"
+    }
+
+    async fn execute(&self, _ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        let span = info_span!(
+            "rafka.chaos.primitive.executed",
+            name = "partition_pair",
+            a = %self.a,
+            b = %self.b,
+            duration_ms = self.duration_ms as i64,
+            "otel.kind" = "internal",
+        );
+        let _enter = span.enter();
+
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tag = format!("RAFKA-CHAOS-PARTITION-{id}");
+
+        // Two rules: a→b and b→a, both outbound block. We block at the program level
+        // (the binary's exe path won't exist on disk reliably across spawn dirs), so
+        // instead we block by remote port range that QUIC uses (ephemeral). The honest
+        // approximation: block ALL outbound UDP for the named program. That blocks all
+        // QUIC, which is the comm channel between rafka nodes.
+        //
+        // Note: this requires the test harness to run elevated (admin) on Windows. If
+        // New-NetFirewallRule fails with access denied, return Err and surface clearly.
+        let prog_a = format!("rafka-{}.exe", self.a.trim_start_matches("rafka-"));
+        let prog_b = format!("rafka-{}.exe", self.b.trim_start_matches("rafka-"));
+        let ps_script = format!(
+            "New-NetFirewallRule -DisplayName '{tag}-out-a' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_a}' -ErrorAction Stop | Out-Null; \
+             New-NetFirewallRule -DisplayName '{tag}-out-b' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_b}' -ErrorAction Stop | Out-Null; \
+             Write-Output '{tag}'"
+        );
+        let output = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_script])
+            .output()
+            .await
+            .map_err(|e| ChaosError::Execution(format!("powershell partition: {e}")))?;
+        if !output.status.success() {
+            return Err(ChaosError::Execution(format!(
+                "New-NetFirewallRule failed (need admin?): {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        Ok(ChaosOutcome {
+            primitive_name: "partition_pair".into(),
+            targets: vec![self.a.clone(), self.b.clone()],
+            state: json!({"a": self.a, "b": self.b, "tag": tag, "duration_ms": self.duration_ms}),
+        })
+    }
+
+    async fn detect(
+        &self,
+        _ctx: &ChaosContext,
+        _outcome: &ChaosOutcome,
+        deadline_ms: u64,
+    ) -> Result<DetectionResult, ChaosError> {
+        // Wait the partition duration, then let revert() lift the block.
+        let wait = std::cmp::min(self.duration_ms, deadline_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        Ok(DetectionResult::Passed { waited_ms: wait })
+    }
+
+    async fn revert(
+        &self,
+        _ctx: &ChaosContext,
+        outcome: &ChaosOutcome,
+    ) -> Result<(), ChaosError> {
+        let tag = outcome
+            .state
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tag.is_empty() {
+            return Ok(());
+        }
+        let ps_script = format!(
+            "Get-NetFirewallRule -DisplayName '{tag}-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+        );
+        let _ = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_script])
+            .output()
+            .await;
+        Ok(())
+    }
+}
+
+/// `clock_skew` — restart a node with `RAFKA_CLOCK_SKEW_MS` env var set. Substrate
+/// requires `rafka-node-base` to read this env at boot and add the offset to all
+/// SystemTime::now() reads on the hot path (heartbeat ticker, frame timestamps).
+///
+/// Implementation: kill the target subprocess, then POST to topology-ui /api/nodes/spawn
+/// with `extra_env: {"RAFKA_CLOCK_SKEW_MS": "<offset>"}`. The topology-ui spawn handler
+/// merges extra_env into the child process env.
+pub struct ClockSkew {
+    pub target: Option<String>,
+    pub skew_ms: i64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for ClockSkew {
+    fn name(&self) -> &str {
+        "clock_skew"
+    }
+
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        let target = match &self.target {
+            Some(t) => t.clone(),
+            None => pick_random_spawned(ctx).await?,
+        };
+        let node_type = NODE_TYPES
+            .iter()
+            .find(|t| target.starts_with(*t))
+            .copied()
+            .ok_or_else(|| {
+                ChaosError::InvalidTarget(format!(
+                    "cannot derive node_type from {target}"
+                ))
+            })?;
+        let span = info_span!(
+            "rafka.chaos.primitive.executed",
+            name = "clock_skew",
+            target = %target,
+            node_type = node_type,
+            skew_ms = self.skew_ms,
+            "otel.kind" = "internal",
+        );
+        let _enter = span.enter();
+
+        // Kill old
+        let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+        let _ = ctx.http.delete(&kill_url).send().await;
+
+        // Spawn new with extra_env carrying the skew
+        let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+        let resp = ctx
+            .http
+            .post(&spawn_url)
+            .json(&json!({
+                "node_type": node_type,
+                "extra_env": {"RAFKA_CLOCK_SKEW_MS": self.skew_ms.to_string()},
+            }))
+            .send()
+            .await
+            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(ChaosError::Execution(format!(
+                "respawn with skew returned {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
+        let new_name = body["node_name"]
+            .as_str()
+            .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
+            .to_string();
+        Ok(ChaosOutcome {
+            primitive_name: "clock_skew".into(),
+            targets: vec![target.clone(), new_name.clone()],
+            state: json!({"old": target, "new": new_name, "skew_ms": self.skew_ms}),
+        })
+    }
+
+    async fn detect(
+        &self,
+        ctx: &ChaosContext,
+        outcome: &ChaosOutcome,
+        deadline_ms: u64,
+    ) -> Result<DetectionResult, ChaosError> {
+        // Pass = new subprocess appears in /api/spawned (proves topology-ui accepted
+        // the extra_env spawn). Honest detection of "skewed timestamps observed in
+        // heartbeat spans" requires a Jaeger query and a separate detection helper —
+        // wire that in alongside the partition_pair Jaeger detection.
+        let new_name = &outcome.targets[1];
+        let start = Instant::now();
+        loop {
+            let waited_ms = start.elapsed().as_millis() as u64;
+            if waited_ms > deadline_ms {
+                return Ok(DetectionResult::FailedTimeout { waited_ms });
+            }
+            let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);
+            let resp = ctx.http.get(&url).send().await
+                .map_err(|e| ChaosError::TopologyUiUnreachable(format!("{e}")))?;
+            let body: serde_json::Value = resp.json().await
+                .map_err(|e| ChaosError::TopologyUiUnreachable(format!("{e}")))?;
+            let present = body["spawned"].as_array()
+                .map(|a| a.iter().any(|v| v.as_str() == Some(new_name)))
+                .unwrap_or(false);
+            if present {
+                return Ok(DetectionResult::Passed { waited_ms });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}

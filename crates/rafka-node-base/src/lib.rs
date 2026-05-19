@@ -648,13 +648,27 @@ async fn create_endpoint(
 // independent root span.
 async fn run_heartbeat(node_id: String, registry: PeerRegistry) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
+    // Read clock skew once at boot. Chaos `clock_skew` primitive restarts the
+    // subprocess with this env var; heartbeat surfaces it as an observable
+    // attribute so chaos detection can verify the skew was applied.
+    let skew_ms: i64 = std::env::var("RAFKA_CLOCK_SKEW_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     loop {
         interval.tick().await;
         let peer_count = registry.len() as i64;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let wall_time_ms = now_ms + skew_ms;
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
             peer_count = peer_count,
+            wall_time_ms = wall_time_ms,
+            clock_skew_ms = skew_ms,
         )
         .in_scope(|| {
             info!("heartbeat");

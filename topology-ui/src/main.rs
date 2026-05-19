@@ -150,6 +150,8 @@ const HTML: &str = r##"<!DOCTYPE html>
 <div id="tabs">
   <button class="tab active" data-panel="panel-waterfall">Boot Waterfall</button>
   <button class="tab" data-panel="panel-topology">Topology</button>
+  <button class="tab" data-panel="panel-alerts">Alerts</button>
+  <button class="tab" data-panel="panel-health">Heartbeat</button>
 </div>
 
 <div id="panel-waterfall" class="panel active">
@@ -178,6 +180,22 @@ const HTML: &str = r##"<!DOCTYPE html>
     <span class="lg-compute">compute</span>
     <span class="lg-registry">registry</span>
   </div>
+</div>
+
+<div id="panel-alerts" class="panel">
+  <div id="controls">
+    <button id="alerts-refresh">Refresh alerts</button>
+    <span id="alerts-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
+  </div>
+  <div id="alerts-list" style="border:1px solid #30363d;border-radius:6px;padding:1rem;min-height:200px"></div>
+</div>
+
+<div id="panel-health" class="panel">
+  <div id="controls">
+    <button id="health-refresh">Refresh heartbeats</button>
+    <span id="health-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
+  </div>
+  <div id="health-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem"></div>
 </div>
 
 <script>
@@ -444,6 +462,79 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   topoRefresh.addEventListener('click', loadTopology);
 
+  // ── alerts tab ───────────────────────────────────────────────────────────
+  var alertsList = document.getElementById('alerts-list');
+  var alertsStatus = document.getElementById('alerts-status');
+  var alertsRefresh = document.getElementById('alerts-refresh');
+  var alertsTimer = null;
+
+  function renderAlerts(alerts) {
+    if (!alerts || alerts.length === 0) {
+      alertsList.innerHTML = '<div style="color:#3fb950;font-size:0.85rem">no recent alerts (all chaos events passing)</div>';
+      alertsStatus.textContent = '0 active alerts';
+      return;
+    }
+    var html = '';
+    alerts.forEach(function(a) {
+      html += '<div style="border-left:3px solid #f85149;padding:0.5rem 0.75rem;margin-bottom:0.5rem;background:#161b22;border-radius:4px">' +
+        '<div style="color:#f85149;font-size:0.85rem;font-weight:bold">' + (a.kind || 'failure') + '</div>' +
+        '<div style="color:#c9d1d9;font-size:0.8rem;margin-top:0.25rem">' + (a.message || '') + '</div>' +
+        '<div style="color:#8b949e;font-size:0.7rem;margin-top:0.25rem">trace: <a href="http://localhost:16686/trace/' + a.trace_id + '" target="_blank" style="color:#58a6ff">' + (a.trace_id || '').slice(0,16) + '</a></div>' +
+      '</div>';
+    });
+    alertsList.innerHTML = html;
+    alertsStatus.textContent = alerts.length + ' alerts';
+  }
+
+  function loadAlerts() {
+    fetch('/api/alerts')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderAlerts(d.alerts || []); })
+      .catch(function(e) { alertsStatus.textContent = 'fetch failed: ' + e; });
+  }
+
+  alertsRefresh.addEventListener('click', loadAlerts);
+
+  // ── heartbeat panel ──────────────────────────────────────────────────────
+  var healthCards = document.getElementById('health-cards');
+  var healthStatus = document.getElementById('health-status');
+  var healthRefresh = document.getElementById('health-refresh');
+  var healthTimer = null;
+
+  function renderHealth(services) {
+    if (!services || services.length === 0) {
+      healthCards.innerHTML = '<div style="color:#8b949e">no heartbeat data yet</div>';
+      return;
+    }
+    var html = '';
+    services.forEach(function(s) {
+      var ageSec = (s.age_ms / 1000).toFixed(1);
+      var ageColor = s.age_ms > 30000 ? '#f85149' : (s.age_ms > 10000 ? '#e3b341' : '#3fb950');
+      var typeColor = TYPE_COLOR[s.service] || '#888';
+      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem">' +
+        '<div style="color:' + typeColor + ';font-weight:bold;font-size:0.95rem;margin-bottom:0.5rem">' + s.service + '</div>' +
+        '<div style="color:#8b949e;font-size:0.7rem">node_id: ' + (s.node_id || '').slice(0,16) + '…</div>' +
+        '<div style="font-size:1.4rem;color:#c9d1d9;margin-top:0.5rem">peers: <strong>' + s.peer_count + '</strong></div>' +
+        '<div style="color:' + ageColor + ';font-size:0.75rem;margin-top:0.25rem">last beat: ' + ageSec + 's ago</div>' +
+        '</div>';
+    });
+    healthCards.innerHTML = html;
+    healthStatus.textContent = services.length + ' services tracked';
+  }
+
+  function loadHealth() {
+    var services = ['gateway','broker','compute','registry'];
+    Promise.all(services.map(function(svc) {
+      return fetch('/api/heartbeat?service=' + svc).then(function(r) { return r.json(); }).then(function(d) {
+        return d.error ? null : Object.assign({service: svc}, d);
+      }).catch(function() { return null; });
+    })).then(function(results) {
+      renderHealth(results.filter(function(x) { return x !== null; }));
+    });
+  }
+
+  healthRefresh.addEventListener('click', loadHealth);
+
   // tab switching
   var tabs = document.querySelectorAll('.tab');
   tabs.forEach(function(t) {
@@ -453,12 +544,20 @@ const HTML: &str = r##"<!DOCTYPE html>
       document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
       var target = document.getElementById(t.getAttribute('data-panel'));
       if (target) target.classList.add('active');
-      if (t.getAttribute('data-panel') === 'panel-topology') {
+      // Clear all auto-poll timers, then activate the right one for the chosen tab
+      if (topoTimer) { clearInterval(topoTimer); topoTimer = null; }
+      if (alertsTimer) { clearInterval(alertsTimer); alertsTimer = null; }
+      if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+      var panel = t.getAttribute('data-panel');
+      if (panel === 'panel-topology') {
         loadTopology();
-        if (topoTimer) clearInterval(topoTimer);
         topoTimer = setInterval(loadTopology, 5000);
-      } else {
-        if (topoTimer) { clearInterval(topoTimer); topoTimer = null; }
+      } else if (panel === 'panel-alerts') {
+        loadAlerts();
+        alertsTimer = setInterval(loadAlerts, 10000);
+      } else if (panel === 'panel-health') {
+        loadHealth();
+        healthTimer = setInterval(loadHealth, 5000);
       }
     });
   });
@@ -488,6 +587,10 @@ struct BootTraceQuery {
 #[derive(Deserialize)]
 struct SpawnRequest {
     node_type: String,
+    /// Optional extra env vars to merge into the child process env. Used by chaos
+    /// primitives like clock_skew to inject behavior switches at restart.
+    #[serde(default)]
+    extra_env: Option<std::collections::HashMap<String, String>>,
 }
 
 async fn handle_root() -> Html<&'static str> {
@@ -507,6 +610,62 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/alerts` — query Jaeger for chaos.primitive.detected spans with
+/// non-Passed results in the last 10 minutes; surface them as alerts.
+async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
+    let span = info_span!("rafka.ui.alerts.query", "otel.kind" = "internal");
+    let _enter = span.enter();
+
+    let url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=100&lookback=10m",
+        state.jaeger_url
+    );
+    let body: Value = match state.http.get(&url).send().await {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::OK, axum::Json(json!({"alerts": []}))).into_response(),
+        },
+        Err(_) => return (StatusCode::OK, axum::Json(json!({"alerts": []}))).into_response(),
+    };
+    let mut alerts: Vec<Value> = Vec::new();
+    if let Some(arr) = body["data"].as_array() {
+        for trace in arr {
+            let trace_id = trace["traceID"].as_str().unwrap_or("").to_string();
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.detected" {
+                        continue;
+                    }
+                    let result_tag = s["tags"]
+                        .as_array()
+                        .and_then(|tags| {
+                            tags.iter()
+                                .find(|t| t["key"] == "result")
+                                .and_then(|t| t["value"].as_str())
+                        })
+                        .unwrap_or("");
+                    if result_tag != "passed" && !result_tag.is_empty() {
+                        let name_tag = s["tags"]
+                            .as_array()
+                            .and_then(|tags| {
+                                tags.iter()
+                                    .find(|t| t["key"] == "name")
+                                    .and_then(|t| t["value"].as_str())
+                            })
+                            .unwrap_or("?");
+                        alerts.push(json!({
+                            "kind": format!("chaos:{result_tag}"),
+                            "message": format!("primitive '{name_tag}' did not pass detection"),
+                            "trace_id": trace_id.clone(),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    (StatusCode::OK, axum::Json(json!({"alerts": alerts}))).into_response()
 }
 
 /// `GET /api/topology` — return adjacency for the live mesh.
@@ -767,6 +926,11 @@ async fn handle_spawn(
         .env("OTEL_SERVICE_NAME", node_type)
         .env("RAFKA_DATA_DIR", &spawn_dir)
         .env("RUST_LOG", &rust_log);
+    if let Some(extras) = &body.extra_env {
+        for (k, v) in extras {
+            cmd.env(k, v);
+        }
+    }
 
     let node_name_c = node_name.clone();
     let node_type_c = node_type.to_string();
@@ -903,8 +1067,17 @@ async fn main() -> Result<()> {
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());
 
-    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR")
-        .unwrap_or_else(|_| "./target".to_string());
+    // CARGO_TARGET_DIR env wins. Otherwise: derive from our own exe path so spawned
+    // siblings match the build that produced us. Falls back to "./target" only if exe
+    // path lookup fails.
+    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().and_then(|d| d.parent()).map(|p| p.to_path_buf()))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "./target".to_string())
+    });
+    tracing::info!(cargo_target_dir = %cargo_target_dir, "subprocess binary search root");
 
     let addr: SocketAddr = bind_addr.parse()?;
 
@@ -924,6 +1097,7 @@ async fn main() -> Result<()> {
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
+        .route("/api/alerts", get(handle_alerts))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
