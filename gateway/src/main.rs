@@ -2,7 +2,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use iroh::{endpoint::Connection, NodeAddr, PublicKey, SecretKey};
 use rafka_mesh_ops::InternalMeshFrame;
-use rafka_mesh_transport::{await_disconnect, IrohMeshTransport, ALPN};
+use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 use serde::{Deserialize, Serialize};
 use std::{
     net::{SocketAddr, SocketAddrV4},
@@ -267,17 +267,7 @@ async fn dial_seeds(
 
                 let own = own_node_id.clone();
                 let reg = Arc::clone(&registry);
-                tokio::spawn(async move {
-                    let reason = await_disconnect(conn).await;
-                    reg.remove(&peer_id_str);
-                    tracing::info_span!(
-                        "rafka.mesh.peer.disconnected",
-                        node_id = %own,
-                        peer_id = %peer_id_str,
-                        reason = %reason,
-                    )
-                    .in_scope(|| info!(peer_id = %peer_id_str, "peer disconnected"));
-                });
+                tokio::spawn(run_frame_reader(own, peer_id_str.clone(), conn, reg));
             }
             Err(e) => {
                 info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
@@ -332,15 +322,7 @@ async fn watch_mdns(
 
                     reg.insert(peer_id_str.clone(), conn.clone());
 
-                    let reason = await_disconnect(conn).await;
-                    reg.remove(&peer_id_str);
-                    tracing::info_span!(
-                        "rafka.mesh.peer.disconnected",
-                        node_id = %own,
-                        peer_id = %peer_id_str,
-                        reason = %reason,
-                    )
-                    .in_scope(|| info!(peer_id = %peer_id_str, "peer disconnected"));
+                    run_frame_reader(own, peer_id_str.clone(), conn, reg).await;
                 }
                 Err(e) => {
                     info!(peer_id = %peer_id_str, error = %e, "mdns dial failed");
@@ -382,15 +364,7 @@ async fn start_accept_loop(
 
                             reg.insert(peer_id.clone(), conn.clone());
 
-                            let reason = await_disconnect(conn).await;
-                            reg.remove(&peer_id);
-                            tracing::info_span!(
-                                "rafka.mesh.peer.disconnected",
-                                node_id = %own_id,
-                                peer_id = %peer_id,
-                                reason = %reason,
-                            )
-                            .in_scope(|| info!(peer_id = %peer_id, "peer disconnected"));
+                            run_frame_reader(own_id, peer_id.clone(), conn, reg).await;
                         }
                     });
                 }
@@ -401,6 +375,62 @@ async fn start_accept_loop(
             }
         }
     })
+}
+
+/// Reads incoming uni streams from a peer. On Pong: emits frame.received span, no reply.
+/// Exits when accept_uni returns Err (connection closed) — removes peer from registry.
+async fn run_frame_reader(
+    own_node_id: String,
+    peer_id_str: String,
+    conn: Connection,
+    registry: PeerRegistry,
+) {
+    loop {
+        match conn.accept_uni().await {
+            Ok(mut recv) => {
+                let bytes = match recv.read_to_end(4096).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        info!(peer_id = %peer_id_str, error = %e, "frame read error");
+                        continue;
+                    }
+                };
+
+                match InternalMeshFrame::decode(&bytes) {
+                    Ok(InternalMeshFrame::Pong { org_id }) => {
+                        tracing::info_span!(
+                            "rafka.mesh.frame.received",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            frame_kind = "pong",
+                            org_id = org_id,
+                        )
+                        .in_scope(|| {
+                            info!(peer_id = %peer_id_str, "pong received");
+                        });
+                    }
+                    Ok(InternalMeshFrame::Ping { org_id }) => {
+                        // Gateway doesn't send pings to itself — unexpected.
+                        info!(peer_id = %peer_id_str, org_id, "unexpected ping received on gateway");
+                    }
+                    Err(e) => {
+                        info!(peer_id = %peer_id_str, error = %e, "frame decode error");
+                    }
+                }
+            }
+            Err(_) => {
+                registry.remove(&peer_id_str);
+                tracing::info_span!(
+                    "rafka.mesh.peer.disconnected",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                    reason = "connection_closed",
+                )
+                .in_scope(|| info!(peer_id = %peer_id_str, "peer disconnected"));
+                break;
+            }
+        }
+    }
 }
 
 async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
