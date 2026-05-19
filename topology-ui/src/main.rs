@@ -1,14 +1,18 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::Request,
+    extract::{Query, Request, State},
+    http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tracing::{info, info_span, Instrument};
+
+const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 const HTML: &str = r#"<!DOCTYPE html>
 <html lang="en">
@@ -55,28 +59,81 @@ const HTML: &str = r#"<!DOCTYPE html>
 (function() {
   var dot = document.getElementById('status-dot');
   var txt = document.getElementById('status-text');
+  var sel = document.getElementById('node-selector');
 
-  function poll() {
-    fetch('/api/health')
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        dot.className = '';
-        txt.textContent = 'api: ' + d.status;
-      })
-      .catch(function() {
-        dot.className = 'error';
-        txt.textContent = 'api unreachable';
-      });
+  function setStatus(ok, msg) {
+    dot.className = ok ? '' : 'error';
+    txt.textContent = msg;
   }
 
-  poll();
-  setInterval(poll, 5000);
+  function pollHealth() {
+    fetch('/api/health')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { setStatus(true, 'api: ' + d.status); })
+      .catch(function() { setStatus(false, 'api unreachable'); });
+  }
 
-  document.getElementById('refresh').addEventListener('click', poll);
+  function loadNodes() {
+    fetch('/api/nodes')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var nodes = d.nodes || [];
+        var prev = sel.value;
+        while (sel.options.length > 1) sel.remove(1);
+        nodes.forEach(function(n) {
+          var opt = document.createElement('option');
+          opt.value = n;
+          opt.textContent = n;
+          sel.appendChild(opt);
+        });
+        if (prev && nodes.indexOf(prev) !== -1) sel.value = prev;
+        setStatus(true, 'nodes loaded: ' + nodes.join(', '));
+      })
+      .catch(function() { setStatus(false, 'node list unavailable'); });
+  }
+
+  sel.addEventListener('change', function() {
+    var svc = sel.value;
+    if (!svc) return;
+    setStatus(true, 'fetching boot trace for ' + svc + '…');
+    fetch('/api/boot-trace?service=' + encodeURIComponent(svc))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.error) {
+          setStatus(false, 'no boot trace: ' + svc);
+          console.log('boot-trace error:', d);
+        } else {
+          var spans = (d.data && d.data[0] && d.data[0].spans) ? d.data[0].spans.length : 0;
+          setStatus(true, svc + ': ' + spans + ' spans');
+          console.log('boot-trace for', svc, d);
+        }
+      })
+      .catch(function() { setStatus(false, 'boot-trace fetch failed'); });
+  });
+
+  document.getElementById('refresh').addEventListener('click', function() {
+    pollHealth();
+    loadNodes();
+  });
+
+  pollHealth();
+  loadNodes();
+  setInterval(pollHealth, 5000);
 })();
 </script>
 </body>
 </html>"#;
+
+#[derive(Clone)]
+struct AppState {
+    http: reqwest::Client,
+    jaeger_url: String,
+}
+
+#[derive(Deserialize)]
+struct BootTraceQuery {
+    service: String,
+}
 
 async fn handle_root() -> Html<&'static str> {
     Html(HTML)
@@ -84,6 +141,83 @@ async fn handle_root() -> Html<&'static str> {
 
 async fn handle_health() -> impl IntoResponse {
     axum::Json(json!({"status": "ok"}))
+}
+
+async fn handle_nodes(State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!("{}/api/services", state.jaeger_url);
+    let span = info_span!("rafka.ui.jaeger.query", endpoint = "/api/services", "otel.kind" = "client");
+    let result = state.http.get(&url).send().instrument(span).await;
+
+    match result {
+        Ok(resp) => match resp.json::<Value>().await {
+            Ok(body) => {
+                let nodes: Vec<&str> = body["data"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .filter(|s| KNOWN_NODE_TYPES.contains(s))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (StatusCode::OK, axum::Json(json!({"nodes": nodes}))).into_response()
+            }
+            Err(_) => (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({"error": "invalid response from jaeger"})),
+            )
+                .into_response(),
+        },
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({"error": "jaeger unreachable"})),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_boot_trace(
+    State(state): State<AppState>,
+    Query(params): Query<BootTraceQuery>,
+) -> impl IntoResponse {
+    let svc = &params.service;
+    let url = format!(
+        "{}/api/traces?service={}&operation=rafka.mesh.node.ready&limit=1&lookback=10m",
+        state.jaeger_url, svc
+    );
+    let span = info_span!(
+        "rafka.ui.jaeger.query",
+        endpoint = "/api/traces",
+        service = %svc,
+        "otel.kind" = "client",
+    );
+    let result = state.http.get(&url).send().instrument(span).await;
+
+    match result {
+        Ok(resp) => match resp.json::<Value>().await {
+            Ok(body) => {
+                let traces = body["data"].as_array();
+                match traces.and_then(|arr| arr.first()) {
+                    Some(first) => (StatusCode::OK, axum::Json(json!({"data": [first]}))).into_response(),
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        axum::Json(json!({"error": format!("no boot trace found for service {svc}")})),
+                    )
+                        .into_response(),
+                }
+            }
+            Err(_) => (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({"error": "invalid response from jaeger"})),
+            )
+                .into_response(),
+        },
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({"error": "jaeger unreachable"})),
+        )
+            .into_response(),
+    }
 }
 
 async fn trace_middleware(req: Request, next: Next) -> Response {
@@ -105,14 +239,22 @@ async fn main() -> Result<()> {
     let bind_addr = std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
 
-    let _jaeger_url = std::env::var("JAEGER_QUERY_URL")
+    let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());
 
     let addr: SocketAddr = bind_addr.parse()?;
 
+    let state = AppState {
+        http: reqwest::Client::new(),
+        jaeger_url,
+    };
+
     let app = Router::new()
         .route("/", get(handle_root))
         .route("/api/health", get(handle_health))
+        .route("/api/nodes", get(handle_nodes))
+        .route("/api/boot-trace", get(handle_boot_trace))
+        .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
 
     info!("topology-ui listening on http://{addr}");
