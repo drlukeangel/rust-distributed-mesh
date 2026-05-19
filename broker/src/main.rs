@@ -210,9 +210,10 @@ async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id:
             node_id = %own_node_id,
             peer_id = %peer_id_str,
             peer_node_type = "unknown",
+            source = "seed",
         )
         .in_scope(|| {
-            info!(peer_id = %peer_id_str, addr = %seed.addr, source = "seed", "peer discovered via seed list");
+            info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
         });
 
         let endpoint_addr = NodeAddr::new(seed.id).with_direct_addresses([seed.addr]);
@@ -264,9 +265,10 @@ async fn watch_mdns(
             node_id = %own_node_id,
             peer_id = %peer_id_str,
             peer_node_type = "unknown",
+            source = "mdns",
         )
         .in_scope(|| {
-            info!(peer_id = %peer_id_str, source = "mdns", "peer discovered via mdns");
+            info!(peer_id = %peer_id_str, "peer discovered via mdns");
         });
 
         let endpoint_clone = endpoint.clone();
