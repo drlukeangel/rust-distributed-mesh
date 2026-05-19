@@ -59,6 +59,13 @@ struct NodeIdentity {
 type PeerRegistry = Arc<DashMap<String, Connection>>;
 
 async fn run_node(node_type: String, role: Role) -> Result<()> {
+    // mesh_id is a logical cluster identifier. Multiple physical nodes with the
+    // same mesh_id form one mesh; cross-mesh peering (see feature mesh-to-mesh)
+    // requires a Role::Bridge node that joins multiple mesh_ids. Defaults to
+    // "default" so single-mesh dev/test work uninstrumented.
+    let mesh_id = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "default".to_string());
+    let mesh_id: &'static str = Box::leak(mesh_id.into_boxed_str());
+
     let data_dir = std::env::var("RAFKA_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -149,6 +156,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         "rafka.mesh.node.ready",
         node_id = %node_id,
         node_type = node_type_str,
+        mesh_id = mesh_id,
         bind_addr = %actual_bind_addr,
         version = env!("CARGO_PKG_VERSION"),
     )
@@ -206,7 +214,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
 
     let heartbeat_handle = {
         let registry = Arc::clone(&peer_registry);
-        tokio::spawn(run_heartbeat(node_id.clone(), registry))
+        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, registry))
     };
 
     let ping_handle = match role {
@@ -646,7 +654,7 @@ async fn create_endpoint(
 // heartbeat spans pile up in the OTel batch waiting for parent close (which never
 // happens until shutdown), so only the first few export. Each tick must be its own
 // independent root span.
-async fn run_heartbeat(node_id: String, registry: PeerRegistry) {
+async fn run_heartbeat(node_id: String, mesh_id: &'static str, registry: PeerRegistry) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     // Read clock skew once at boot. Chaos `clock_skew` primitive restarts the
     // subprocess with this env var; heartbeat surfaces it as an observable
@@ -666,6 +674,7 @@ async fn run_heartbeat(node_id: String, registry: PeerRegistry) {
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
+            mesh_id = mesh_id,
             peer_count = peer_count,
             wall_time_ms = wall_time_ms,
             clock_skew_ms = skew_ms,

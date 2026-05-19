@@ -860,10 +860,23 @@ async fn handle_heartbeat(
                         let node_id = tags.get("node_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let peer_count = tags.get("peer_count").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
                         let last_heartbeat_us = sp["startTime"].as_i64().unwrap_or(0);
+                        // Compute age_ms so the heartbeat panel can show a relative "X.X s ago"
+                        // without needing client-side wall-clock arithmetic against Jaeger's
+                        // microsecond timestamps.
+                        let now_us = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_micros() as i64)
+                            .unwrap_or(0);
+                        let age_ms = if last_heartbeat_us > 0 {
+                            ((now_us - last_heartbeat_us).max(0)) / 1000
+                        } else {
+                            0
+                        };
                         (StatusCode::OK, axum::Json(json!({
                             "node_id": node_id,
                             "peer_count": peer_count,
                             "last_heartbeat_us": last_heartbeat_us,
+                            "age_ms": age_ms,
                         }))).into_response()
                     }
                     None => (

@@ -329,6 +329,15 @@ impl ChaosPrimitive for BurstKill {
                 .map(|a| a.iter().filter_map(|v| v.as_str()).filter(|s| targets.iter().any(|t| t == s)).collect())
                 .unwrap_or_default();
             if still.is_empty() {
+                let span = info_span!(
+                    "rafka.chaos.primitive.detected",
+                    name = "burst_kill",
+                    count = targets.len() as i64,
+                    result = "passed",
+                    waited_ms = waited_ms as i64,
+                    "otel.kind" = "internal",
+                );
+                drop(span);
                 return Ok(DetectionResult::Passed { waited_ms });
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -401,10 +410,21 @@ impl ChaosPrimitive for WedgeNode {
         deadline_ms: u64,
     ) -> Result<DetectionResult, ChaosError> {
         // Wait for the wedge duration, then resume.
-        // (Detection of "survivors see it as stale" requires Jaeger query; left as a
-        //  follow-up. For now we just sleep the wedge duration as proof-of-life.)
+        // Honest detection ("survivors see it as stale") requires Jaeger query for
+        // peer_count drop on at least one survivor — that's a follow-up. For now the
+        // pass condition is "we held the wedge for the requested duration without
+        // PowerShell crashing." Telemetry surfaces the event for operator visibility.
         let wait = std::cmp::min(self.duration_ms, deadline_ms);
         tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let span = info_span!(
+            "rafka.chaos.primitive.detected",
+            name = "wedge_node",
+            node_type = %self.target_node_type,
+            result = "passed",
+            waited_ms = wait as i64,
+            "otel.kind" = "internal",
+        );
+        drop(span);
         Ok(DetectionResult::Passed { waited_ms: wait })
     }
 
@@ -509,10 +529,31 @@ impl ChaosPrimitive for DiskFull {
         _deadline_ms: u64,
     ) -> Result<DetectionResult, ChaosError> {
         // Pass = we wrote AT LEAST 1 MB before stopping (proves the path is exercised).
+        let target = outcome.targets.get(0).cloned().unwrap_or_default();
         let bytes = outcome.state.get("bytes_written").and_then(|v| v.as_u64()).unwrap_or(0);
         if bytes >= 1024 * 1024 {
+            let span = info_span!(
+                "rafka.chaos.primitive.detected",
+                name = "disk_full",
+                target = %target,
+                result = "passed",
+                bytes_written = bytes as i64,
+                waited_ms = 0i64,
+                "otel.kind" = "internal",
+            );
+            drop(span);
             Ok(DetectionResult::Passed { waited_ms: 0 })
         } else {
+            let span = info_span!(
+                "rafka.chaos.primitive.detected",
+                name = "disk_full",
+                target = %target,
+                result = "failed_assertion",
+                bytes_written = bytes as i64,
+                waited_ms = 0i64,
+                "otel.kind" = "internal",
+            );
+            drop(span);
             Ok(DetectionResult::FailedAssertion {
                 msg: format!("disk_full wrote only {bytes} bytes — likely fs error before chunk 1"),
                 waited_ms: 0,
@@ -614,6 +655,16 @@ impl ChaosPrimitive for PartitionPair {
         // Wait the partition duration, then let revert() lift the block.
         let wait = std::cmp::min(self.duration_ms, deadline_ms);
         tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let span = info_span!(
+            "rafka.chaos.primitive.detected",
+            name = "partition_pair",
+            a = %self.a,
+            b = %self.b,
+            result = "passed",
+            waited_ms = wait as i64,
+            "otel.kind" = "internal",
+        );
+        drop(span);
         Ok(DetectionResult::Passed { waited_ms: wait })
     }
 
@@ -746,6 +797,16 @@ impl ChaosPrimitive for ClockSkew {
                 .map(|a| a.iter().any(|v| v.as_str() == Some(new_name)))
                 .unwrap_or(false);
             if present {
+                let span = info_span!(
+                    "rafka.chaos.primitive.detected",
+                    name = "clock_skew",
+                    target = %new_name,
+                    result = "passed",
+                    skew_ms = self.skew_ms,
+                    waited_ms = waited_ms as i64,
+                    "otel.kind" = "internal",
+                );
+                drop(span);
                 return Ok(DetectionResult::Passed { waited_ms });
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
