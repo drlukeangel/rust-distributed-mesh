@@ -15,7 +15,7 @@ struct NodeIdentity {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = rafka_telemetry::init_telemetry("rafkav2-broker");
+    let _guard = rafka_telemetry::init_telemetry("broker");
 
     // All config from env vars — no config files, no magic numbers.
     let data_dir = std::env::var("RAFKA_DATA_DIR")

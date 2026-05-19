@@ -9,7 +9,7 @@
   "objective": "Add rafka-broker binary. Same shape as gateway. Two services visible in Jaeger. Wire Principle #10 span attributes on all substrate spans. Verify iroh 0.91 removes dedicated-thread workaround.",
   "size": "tiny — 1 day",
   "in_scope": [
-    "broker/ binary — clone the gateway boot-span chain pattern; service_name = rafkav2-broker; node_type = broker",
+    "broker/ binary — clone the gateway boot-span chain pattern; service_name = broker; node_type = broker",
     "Both binaries share crates/rafka-telemetry init code",
     "Principle #9 carryover: iroh bumped from 0.35 -> 0.91 (latest stable non-RC; 1.0.0-rc.0 exists but is pre-release)",
     "Principle #9 carryover: dedicated-thread workaround DELETED — iroh 0.91 binds in <200ms on multi-thread tokio runtime on Windows; COM deadlock is fixed upstream",
@@ -21,7 +21,7 @@
   ],
   "exit_criteria": [
     "cargo run -p rafka-broker boots, idles emitting heartbeats — DONE",
-    "Jaeger shows TWO services (rafkav2-data-gateway + rafkav2-broker) each with their own boot-span chain — DONE",
+    "Jaeger shows TWO services (data-gateway + broker) each with their own boot-span chain — DONE",
     "Both binaries running concurrently — no port conflicts (iroh binds 0.0.0.0:0 ephemeral) — DONE",
     "All substrate spans carry locked attributes per Principle #10 — DONE",
     "iroh 0.91 direct bind tested: PASSED in <200ms on Windows multi-thread runtime — DONE",
@@ -37,5 +37,5 @@
     "rafka.mesh.heartbeat (node_id, peer_count)",
     "rafka.mesh.node.stopping (node_id, reason)"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafkav2-broker&operation=rafka.mesh.node.ready&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=broker&operation=rafka.mesh.node.ready&lookback=1h"
 }
