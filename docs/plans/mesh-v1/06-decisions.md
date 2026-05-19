@@ -448,6 +448,58 @@ Single-topic kickoff keeps the first integration narrow + lets us prove iroh-gos
 
 ---
 
+## D-028 — Infrastructure topology design rules (Tier 1 only — harvested from v1 post-mortem)
+**Date:** 2026-05-19
+**Status:** Locked
+**Source:** v1 `E:/dev/rafka/docs/plans/_topology-consolidation-amendments.md` (2026-05-14)
+**Scope:** This decision covers **infrastructure topology** only — the layer that tracks which node binaries are alive in the mesh (broker/gateway/compute/registry presence). It does NOT cover **data-plane routing** (which broker owns which partition); that's a separate concern deferred to a later decision when produce/fetch lands.
+
+v1's topology consolidation produced two structural lessons for the infra layer that v2 commits to from day 0. These aren't aspirational — they're "we already paid the cost to learn this, don't pay it again."
+
+### Rule 1 — All peer registries keyed by `NodeId`, never by address string
+
+v1's `GATEWAY_PEERS` was originally keyed by `String` address. From v1's amendment doc: *"this is an accident of the original implementation"*. Wave 2 was a remediation sprint specifically to rekey to `u32 node_id`.
+
+v2 uses iroh's `NodeId` (Ed25519 pubkey, 32 bytes, stable across IP/NAT changes by design — that's iroh's whole value prop). Every peer registry, every span tag referring to a remote node, every gossip recipient list keys by `NodeId`. **No `String` address as primary key, anywhere.** Addresses are routing hints attached to a NodeId; they can change while the NodeId is forever.
+
+Forbidden patterns (rejected at review):
+- `HashMap<String, Connection>` where the String is an IP:port
+- `DashMap<SocketAddr, _>` for tracking peers
+- Span tags like `peer_addr` used as identifier (it's fine as an attribute alongside `peer_id`, but never as the lookup key)
+
+**Current v2 state:** the existing `PeerRegistry: Arc<DashMap<String, Connection>>` in `rafka-node-base` uses the hex-encoded NodeId as its String key — that's effectively a NodeId key but should migrate to typed `DashMap<NodeId, Connection>` for compile-time safety. Queued as a follow-up sprint task.
+
+### Rule 2 — Infra-topology broadcast goes through iroh-gossip on the topology/health topic
+
+The v2 equivalent of v1's `NodeAddressAnnounce` broadcast (which v1 did via `__system_catalog` tail + per-gateway publish) is an iroh-gossip event on the single topology/health topic (per D-027 single-topic strategy) carrying:
+
+```
+NodeInfraEvent {
+    kind: Joined | Left | HealthChange,
+    node_id: NodeId,
+    node_type: Role,
+    version: String,
+    timestamp: u64,
+}
+```
+
+All 4 node types subscribe; each maintains its own local `SystemInfraTopology` cache built from the event stream. This replaces v1's `__system_catalog`-tail pattern entirely — iroh-gossip handles fan-out, we just consume events and update local state.
+
+### Out of scope for D-028 (explicitly)
+
+The following are NOT covered by this decision and will be resolved when sprint-09+ designs the data plane:
+
+- App-level routing (which broker owns which partition for which org/topic) — v1 called this `TOPOLOGY_MAP`. v2 will design separately.
+- Identifier scheme for orgs/topics (slug-hash vs ULID vs other) — depends on data-plane design.
+- Replication / quorum / failover policies — data-plane concern.
+- Bounded LRU caching for routing — data-plane concern.
+
+D-028 stops at "which nodes are alive in the mesh and how do we know that."
+
+**Rationale:** v1 burned multiple sprints on infrastructure-topology rework specifically because of the address-keying mistake and the `__system_catalog`-tail-pattern coupling. Both prevented cleanly here. Cost to adopt: zero (we're designing the layer fresh, not rebuilding existing code).
+
+---
+
 ## Decisions still open (to be locked in future PRs)
 
 - **D-XXX:** Choice of chaos test seed-replay tooling — write our own vs. use a library (`madsim`, `loom`, etc.)
