@@ -32,7 +32,7 @@
 
 2. **4 node binaries minimally functional**
    - `cargo run -p rafka-gateway` boots, mints identity, joins mesh
-   - Same for `rafka-broker`, `rafka-compute`, `rafka-schema`
+   - Same for `rafka-broker`, `rafka-compute`, `rafka-registry`
    - All emit the 14 substrate spans defined in `01-substrate-prd.md §9`
 
 3. **`rafka-topology-ui` binary**

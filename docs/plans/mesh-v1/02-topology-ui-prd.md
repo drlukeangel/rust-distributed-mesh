@@ -14,7 +14,7 @@ From day 1, operators must SEE the mesh. The topology UI is not a "nice to have"
 
 A single-binary web UI process (`rafka-topology-ui`) bound to `http://localhost:19090` that:
 
-1. **Renders a live topology graph.** Nodes drawn by `EndpointId`, colored by `node_type` (gateway / broker / compute / schema). Edges drawn between actively-connected peers.
+1. **Renders a live topology graph.** Nodes drawn by `EndpointId`, colored by `node_type` (gateway / broker / compute / registry). Edges drawn between actively-connected peers.
 2. **Updates in real-time** as nodes join/leave/disconnect — sub-second latency between mesh event and UI redraw.
 3. **Exposes a "Node Actions" panel:**
    - "Spawn node" — launches a new node process of the selected type

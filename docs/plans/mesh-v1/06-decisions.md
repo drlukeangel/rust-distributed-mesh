@@ -105,7 +105,7 @@ The topology UI ships as plain HTML + vanilla JS + a single graph rendering libr
 **Date:** 2026-05-19
 **Status:** Locked
 
-The substrate spike includes `rafka-schema` as the 4th node type from day 1, even though schema-registry app logic doesn't exist yet. The schema binary is a bare mesh participant just like the other three.
+The substrate spike includes `rafka-registry` as the 4th node type from day 1, even though registry app logic doesn't exist yet. The registry binary is a bare mesh participant just like the other three.
 
 **Rationale:** Discovering "we need a 4th node type" mid-feature-work means re-running substrate validation. Better to commit to all known node types now and validate the substrate handles them.
 

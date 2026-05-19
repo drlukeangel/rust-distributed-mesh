@@ -2828,6 +2828,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-compute"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dashmap",
+ "hex",
+ "iroh",
+ "opentelemetry",
+ "rafka-mesh-ops",
+ "rafka-mesh-transport",
+ "rafka-telemetry",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+]
+
+[[package]]
 name = "rafka-gateway"
 version = "0.1.0"
 dependencies = [

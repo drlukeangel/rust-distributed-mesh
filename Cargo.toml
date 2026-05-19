@@ -5,6 +5,7 @@ members = [
     "crates/rafka-mesh-ops",
     "gateway",
     "broker",
+    "compute",
 ]
 resolver = "2"
 

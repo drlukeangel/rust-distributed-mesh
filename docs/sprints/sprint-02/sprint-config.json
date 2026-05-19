@@ -21,7 +21,7 @@
   ],
   "exit_criteria": [
     "cargo run -p rafka-broker boots, idles emitting heartbeats — DONE",
-    "Jaeger shows TWO services (data-gateway + broker) each with their own boot-span chain — DONE",
+    "Jaeger shows TWO services (gateway + broker) each with their own boot-span chain — DONE",
     "Both binaries running concurrently — no port conflicts (iroh binds 0.0.0.0:0 ephemeral) — DONE",
     "All substrate spans carry locked attributes per Principle #10 — DONE",
     "iroh 0.91 direct bind tested: PASSED in <200ms on Windows multi-thread runtime — DONE",

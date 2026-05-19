@@ -49,7 +49,7 @@ Four node-types from day 1:
 | Gateway | `rafka-gateway` | `rafka-mesh-v1` | Customer-facing (when wire protocol returns); mesh-routing brain |
 | Broker | `rafka-broker` | `rafka-mesh-v1` | Storage (SingleWal when WAL returns); mesh participant |
 | Compute | `rafka-compute` | `rafka-mesh-v1` | Job tailer + RSQL + WASM host (when restored); mesh participant |
-| Schema | `rafka-schema` | `rafka-mesh-v1` | Schema registry process (extracted from current gateway-monolithic shape); mesh participant |
+| Registry | `rafka-registry` | `rafka-mesh-v1` | Schema registry process (extracted from current gateway-monolithic shape); mesh participant |
 
 Each binary is a process with:
 - One iroh `Endpoint`

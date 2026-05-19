@@ -33,12 +33,12 @@
     "cargo run -p rafka-gateway boots without panic and stays alive (idles emitting heartbeats)",
     "$RAFKA_DATA_DIR/node-identity.json exists after first boot",
     "Second invocation of the binary reads the SAME identity (no re-mint)",
-    "Jaeger UI search for service=data-gateway shows a trace with: rafka.mesh.node.ready (root) → rafka.mesh.boot.identity_loaded (or .minted) → rafka.mesh.boot.endpoint_created → rafka.mesh.boot.alpn_registered → rafka.mesh.boot.gossip_started → rafka.mesh.boot.accept_loop_started",
+    "Jaeger UI search for service=gateway shows a trace with: rafka.mesh.node.ready (root) → rafka.mesh.boot.identity_loaded (or .minted) → rafka.mesh.boot.endpoint_created → rafka.mesh.boot.alpn_registered → rafka.mesh.boot.gossip_started → rafka.mesh.boot.accept_loop_started",
     "While idle, rafka.mesh.heartbeat span appears every ~5s in Jaeger",
     "Killing the gateway process (Ctrl+C or kill) emits a final rafka.mesh.node.stopping span before exit",
     "CARGO_TARGET_DIR=E:/cargo-target-sprint-01 cargo check --workspace --tests --no-default-features = 0 errors, 0 new warnings",
     "Grep test: zero hand-rolled mesh primitives (no fn.*gossip / fn.*discover_peer / fn.*nat_traverse outside iroh dep)",
-    "Engineer's final SendMessage includes a clickable Jaeger URL pre-filtered to service=data-gateway"
+    "Engineer's final SendMessage includes a clickable Jaeger URL pre-filtered to service=gateway"
   ],
   "spans_to_emit": [
     "rafka.mesh.node.ready",
@@ -64,9 +64,9 @@
     "otlp_endpoint_default": "http://localhost:4316",
     "otlp_env_var": "OTEL_EXPORTER_OTLP_ENDPOINT",
     "jaeger_ui": "http://localhost:16686",
-    "service_name_default": "data-gateway",
+    "service_name_default": "gateway",
     "service_name_env_var": "OTEL_SERVICE_NAME",
     "note": "Reuses shared rafka-test-jaeger on port 4316 (OTLP/gRPC). All config via env vars per Principle #8."
   },
-  "deliverable_url": "http://localhost:16686/search?service=data-gateway&operation=rafka.mesh.node.ready&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=gateway&operation=rafka.mesh.node.ready&lookback=1h"
 }

@@ -40,5 +40,5 @@
     "rafka.mesh.frame.sent_failed (node_id, peer_id, frame_kind, error, otel.kind=producer)",
     "rafka.mesh.frame.decode_failed (node_id, peer_id, error, byte_len, otel.kind=consumer)"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=data-gateway&operation=rafka.mesh.frame.sent&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=gateway&operation=rafka.mesh.frame.sent&lookback=1h"
 }

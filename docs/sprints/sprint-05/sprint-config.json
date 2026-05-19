@@ -1,24 +1,31 @@
 {
   "sprint_id": "sprint-05",
-  "status": "blocked",
-  "blocked_on": "sprint-04 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "blocked_on": null,
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
   "branch": "sprint-05-compute-binary",
-  "objective": "Add rafka-compute binary. Joins mesh, discovers gateway+broker peers, can ping/pong.",
+  "objective": "Naming consolidation (gateway/broker/compute/registry) + compute binary. Joins mesh as passive peer: discovers gateway+broker via mdns, receives pings, replies with pong.",
   "size": "tiny — 1 day",
   "in_scope": [
-    "compute/ binary — clone gateway shape; service_name = rafka-compute",
-    "Participates in same gossip + ping/pong as established peers"
+    "Final node naming: gateway / broker / compute / registry (dropped data- prefix, dropped -gateway suffix)",
+    "gateway/: renamed from data-gateway/; name=rafka-gateway, bin=rafka-gateway, init_telemetry(\"gateway\"), NODE_TYPE=\"gateway\"",
+    "compute/: clone of broker; name=rafka-compute, bin=rafka-compute, init_telemetry(\"compute\"), NODE_TYPE=\"compute\"",
+    "CLAUDE.md node_type enum updated: gateway / broker / compute / registry",
+    "All sprint-config deliverable_urls updated to service=gateway",
+    "3-service Jaeger: broker, compute, gateway all visible"
   ],
   "out_of_scope": [
     "Any compute-specific logic (no jobs, no RSQL, no WASM)",
-    "Compute-only ALPNs or wire ops"
+    "Compute-only ALPNs or wire ops",
+    "registry binary (sprint-06+)"
   ],
   "exit_criteria": [
-    "Run all 3 binaries: 3 services in Jaeger; full peer-discovery mesh between all pairs",
-    "Jaeger URL covering all 3 services"
+    "Jaeger services: broker, compute, gateway (no data-gateway, no compute-gateway) DONE",
+    "compute emits rafka.mesh.peer.connected for both gateway AND broker peer_ids DONE",
+    "compute emits rafka.mesh.frame.received (ping from gateway, parented trace) DONE",
+    "Workspace gate cargo check --workspace --tests --no-default-features = 0/0 DONE"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-compute&operation=rafka.mesh.node.ready&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=compute&operation=rafka.mesh.frame.received&lookback=1h"
 }

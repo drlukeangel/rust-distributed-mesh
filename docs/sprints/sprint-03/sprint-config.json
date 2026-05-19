@@ -33,5 +33,5 @@
     "rafka.mesh.peer.connected (node_id, peer_id, peer_node_type, direction)",
     "rafka.mesh.peer.disconnected (node_id, peer_id, reason)"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=data-gateway&operation=rafka.mesh.peer.connected&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=gateway&operation=rafka.mesh.peer.connected&lookback=1h"
 }
