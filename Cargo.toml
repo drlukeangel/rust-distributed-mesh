@@ -8,6 +8,7 @@ members = [
     "broker",
     "compute",
     "registry",
+    "topology-ui",
 ]
 resolver = "2"
 

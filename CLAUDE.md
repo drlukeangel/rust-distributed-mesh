@@ -295,6 +295,8 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_GOSSIP_INTERVAL_MS` | `500` | Gossip heartbeat interval in milliseconds. Stub in Sprint 01 — logged as a span attribute but not yet wired to real gossip scheduling. |
 | `RAFKA_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rafka.mesh.peer.discovered` + `rafka.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
 | `RAFKA_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, node shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
+| `RAFKA_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the `rafka-topology-ui` HTTP server binds to. Override to expose on a different interface or port. |
+| `JAEGER_QUERY_URL` | `http://localhost:16686` | Base URL of the Jaeger Query API. Used by `rafka-topology-ui` (chunk 2+) to fetch trace data for the boot-waterfall panel. |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 
