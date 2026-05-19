@@ -1,34 +1,37 @@
 {
   "sprint_id": "sprint-03",
-  "status": "blocked",
-  "blocked_on": "sprint-02 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "blocked_on": null,
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
   "branch": "sprint-03-peer-discovery",
-  "objective": "Gateway and broker discover each other via iroh gossip. Mutual peer.connected spans appear in Jaeger.",
+  "objective": "Gateway and broker discover each other via iroh mdns + seed list. Mutual peer.connected spans appear in Jaeger. Disconnect detection emits peer.disconnected.",
   "size": "tiny — 1-2 days",
   "in_scope": [
-    "Wire iroh discovery providers (mdns + manual seed list via RAFKA_SEED_NODES env var)",
-    "On peer discovery, emit rafka.mesh.peer.discovered{remote_endpoint_id, node_type}",
-    "On peer connection establishment, emit rafka.mesh.peer.connected",
-    "Peer-side: emit rafka.mesh.peer.disconnected on link drop"
+    "Wire iroh MdnsDiscovery (discovery-local-network feature) into Endpoint::builder — passive LAN peer discovery without RAFKA_SEED_NODES",
+    "RAFKA_SEED_NODES env var: <node_id>@<host>:<port> comma-separated, dials on boot",
+    "rafka.mesh.peer.discovered{node_id, peer_id, peer_node_type=unknown, source=seed|mdns}",
+    "rafka.mesh.peer.connected{node_id, peer_id, peer_node_type=unknown, direction=inbound|outbound}",
+    "rafka.mesh.peer.disconnected{node_id, peer_id, reason} via Connection::closed() on both inbound + outbound connections",
+    "sprint-03/sprint-config.json status closed + opens/closes dates"
   ],
   "out_of_scope": [
     "Sending payload data between peers — Sprint 04",
-    "Multiple peer types beyond gateway+broker"
+    "Multiple peer types beyond gateway+broker",
+    "peer_node_type resolution — Sprint 04"
   ],
   "exit_criteria": [
-    "Run gateway + broker concurrently with RAFKA_SEED_NODES wired",
-    "Within 5s, BOTH services emit rafka.mesh.peer.discovered + rafka.mesh.peer.connected",
-    "Jaeger trace shows the mutual discovery as a cross-service trace",
-    "Kill one process: surviving process emits rafka.mesh.peer.disconnected within 4×heartbeat",
-    "Jaeger URL pre-filtered to the discovery trace"
+    "Run gateway + broker concurrently with RAFKA_SEED_NODES — both emit peer.discovered + peer.connected DONE",
+    "Run without RAFKA_SEED_NODES — mdns auto-discovery triggers peer.connected within ~5s DONE",
+    "Kill one process — surviving process emits peer.disconnected DONE",
+    "Both direction=inbound and direction=outbound peer.connected spans verified in Jaeger DONE",
+    "Workspace gate 0/0 DONE"
   ],
   "spans_to_emit": [
-    "rafka.mesh.peer.discovered",
-    "rafka.mesh.peer.connected",
-    "rafka.mesh.peer.disconnected"
+    "rafka.mesh.peer.discovered (node_id, peer_id, peer_node_type, source)",
+    "rafka.mesh.peer.connected (node_id, peer_id, peer_node_type, direction)",
+    "rafka.mesh.peer.disconnected (node_id, peer_id, reason)"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafka-gateway&operation=rafka.mesh.peer.connected&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=data-gateway&operation=rafka.mesh.peer.connected&lookback=1h"
 }

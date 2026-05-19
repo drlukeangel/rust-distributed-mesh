@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-stream = "0.1"
 tracing = { workspace = true }
 iroh.workspace = true
 anyhow = { workspace = true }
