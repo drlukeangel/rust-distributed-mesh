@@ -77,6 +77,27 @@ Format: `http://localhost:16686/search?service=<service-name>&operation=<root-sp
 
 If multiple services are involved, include one URL per service. If a specific span chain proves the sprint's exit criterion, link directly to a trace ID.
 
+### #9 — Latest stable version of every dependency. Always.
+
+Every `Cargo.toml` dep starts at the latest stable version published on crates.io. Every external tool (iroh, opentelemetry-otlp, tracing-opentelemetry, libp2p, axum, quinn, etc.) gets the latest stable on the day the sprint opens. No "let's use 0.35 because that's what an old example showed."
+
+**Why:** rafkav2 is greenfield. There is zero installed-base inertia, zero customer-pinned versions, zero data-format compatibility to preserve. Starting on an old version pays the cost of EVERY bug between that version and current — bugs that the upstream team already fixed. The Sprint 01 iroh 0.35 → 0.91 saga is the cautionary tale: a 30-second version bump would have skipped 4+ hours of WMI-COM-init debugging.
+
+**How to apply:**
+- When a sprint adds a new dep, run `cargo add <crate>` (no version pin) — cargo picks latest
+- When a sprint inherits an existing dep, check `cargo outdated -w` before starting; bump if behind
+- When a sprint's pre-reads point at version-specific docs, ALWAYS cross-check the current docs.rs page first
+- When the latest version has an API change vs. older docs, USE THE NEW API; don't pin to old
+- Version pins (`= "X.Y.Z"`) are reserved for two cases: (a) actual external constraint we can prove (rare, document it), (b) workaround for a regression in latest (open the upstream issue + link it in the Cargo.toml comment)
+
+**Banned patterns:**
+- ❌ "I'll just use the version the docs example shows" → docs lag the latest crate by months
+- ❌ "Let's pin to a known-good version for stability" → in a greenfield, the latest IS the known-good
+- ❌ Copy-paste a version number from an older sister project (rafka v1 patterns do NOT carry over)
+- ❌ Compatibility-range pins like `"^0.35"` that silently keep us on old majors — use `cargo add` which writes the current major
+
+If a sprint engineer hits a blocker, ALWAYS test "bump to latest" as the first 15-minute experiment before deeper diagnosis. Saves hours.
+
 ### #8 — All configuration via environment variables. Zero config files for substrate.
 
 No TOML, YAML, or JSON config files for substrate-layer settings (transport, identity, telemetry, peer discovery, gossip, bind addrs, ports). Env vars only, every var has a sane default, every override documented in CLAUDE.md.
