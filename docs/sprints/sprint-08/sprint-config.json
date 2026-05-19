@@ -1,10 +1,48 @@
 {
   "sprint_id": "sprint-08",
-  "status": "deleted",
-  "deleted_on": "2026-05-19",
-  "deleted_reason": "Sprint 07 scoped down to boot-waterfall-only viewer (no spawn/kill buttons). UI is no longer a control surface — it's a read-only observability view. Spawn/kill functionality, if needed, lives in the rfa CLI alone. This sprint's scope (UI spawn/kill buttons) is no longer needed.",
-  "objective": "deleted — see deleted_reason",
-  "in_scope": [],
-  "out_of_scope": ["everything"],
-  "exit_criteria": ["this sprint does not run"]
+  "status": "blocked",
+  "blocked_on": "sprint-07 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-08-ui-spawn-kill",
+  "objective": "Add spawn/kill buttons to the boot-waterfall UI. Subprocess lifecycle owned by topology-ui process. All actions emit spans.",
+  "size": "small — 2 days",
+  "in_scope": [
+    "Add 'Spawn <type>' buttons (4 buttons: gateway/broker/compute/schema) to the UI",
+    "Add 'Kill' button per node in the dropdown list",
+    "POST /api/nodes/spawn { node_type } → forks subprocess with inherited OTEL_* env",
+    "DELETE /api/nodes/{node_name} → SIGTERM, then SIGKILL after 5s grace",
+    "Subprocess data dirs under E:/tmp/rafkav2-ui-nodes/<node_name>/",
+    "Each spawn/kill emits rafka.ui.subprocess.spawned / .killed spans",
+    "The spawned subprocess's own boot-span chain shows up in the UI's waterfall view (closes the loop)"
+  ],
+  "out_of_scope": [
+    "Topology graph (no fleet visualization in v1)",
+    "Active alerts panel",
+    "OTLP heartbeat panel",
+    "Multi-node-spawn-at-once batch buttons",
+    "Persistent data dirs (subprocesses are ephemeral; killing wipes their dir)",
+    "Authentication"
+  ],
+  "exit_criteria": [
+    "Click 'Spawn gateway' in UI → subprocess starts within 5s, appears in node-selector dropdown",
+    "Click 'Kill' on any node → subprocess terminates within 10s, disappears from dropdown",
+    "Spawn 4 different types → all 4 visible in dropdown, can view boot waterfall for each",
+    "rafka.ui.subprocess.spawned / .killed visible in Jaeger",
+    "Spawned subprocess's boot waterfall queryable via UI (proves OTEL_* env propagation)",
+    "Jaeger URL pre-filtered to spawn → boot chain"
+  ],
+  "spans_to_emit": [
+    "rafka.ui.subprocess.spawned",
+    "rafka.ui.subprocess.killed",
+    "rafka.ui.api.spawn_requested",
+    "rafka.ui.api.kill_requested"
+  ],
+  "discipline": [
+    "Still no SPA framework (vanilla HTML+CSS+JS per Principle #10)",
+    "All config via env vars per Principle #8: RAFKAV2_UI_SPAWN_DIR (default E:/tmp/rafkav2-ui-nodes)",
+    "Closes with Jaeger URL per Principle #7"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafkav2-topology-ui&operation=rafka.ui.subprocess.spawned&lookback=1h"
 }
