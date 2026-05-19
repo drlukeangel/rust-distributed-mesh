@@ -1,0 +1,1128 @@
+{
+  "seed": 900,
+  "started_ms": 1779230121160,
+  "ended_ms": 1779231922091,
+  "event_count": 117,
+  "passed": 117,
+  "failed_timeout": 0,
+  "failed_assertion": 0,
+  "events": [
+    {
+      "timestamp_ms": 1779230121575,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-681c027a",
+        "gateway-1346d399"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230137150,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-a2cfba0a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230152395,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-15f54841",
+        "gateway-b6bc21a8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230167471,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ab5f6b7e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230182567,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-b6bc21a8",
+        "gateway-83036cf8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230198175,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-e453f1cd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230213250,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-62f2c479",
+        "gateway-2f288452"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230228318,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-51b7ca9a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230243398,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-65083ee2",
+        "gateway-b1d9ddf2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230259002,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-7743496a",
+        "broker-6bbb48c9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230274066,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-3d24bd84"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230289158,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-cf030e52",
+        "broker-6bbb48c9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230305011,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-e37c5d83",
+        "broker-d6f52aaa"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230320631,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-123fc635",
+        "broker-4bad16d8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230336235,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-1219a6ee"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230351310,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-b8141b5a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230366406,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-b0eda567",
+        "gateway-496f6d41"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230381486,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-f33105bd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230397082,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-af386196"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230412166,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-496f6d41",
+        "gateway-1ebb58d3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230427778,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-88ef53de",
+        "gateway-82fcf415"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230442866,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-ce1d2ee3",
+        "broker-1448129c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230458450,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-6d44d25d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230473526,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ed3ec95e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230488594,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-e9c53936"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230503654,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-36f312c5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230519255,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-36f312c5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230534354,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-36f312c5",
+        "broker-b4a1aad1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230549958,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-4afec834"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230565555,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-72a1e3dd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230581154,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ca443487",
+        "gateway-1b7f98c5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230596218,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-2e24e43f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230611298,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-7da79049",
+        "gateway-4878b932"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230626898,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ebf20c9d",
+        "gateway-74b6fa1c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230641987,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-0badcb82",
+        "broker-2e24e43f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230657590,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-bf39ec69"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230673167,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-0b978af9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230688239,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-80d58379"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230704070,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-c7777951",
+        "gateway-b62ed70b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230720306,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-463fbded",
+        "gateway-06bce025"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230735398,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-677610ba",
+        "broker-cf275dbd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230750982,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-f3aad40e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230766582,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-80d58379",
+        "gateway-0c653dd4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230781662,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-510ae65a",
+        "gateway-9c3f7097"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230797264,
+      "primitive": "kill_node",
+      "targets": [
+        "registry-f52e459a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230813127,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-7ca2014e",
+        "gateway-d3c5f010"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230828727,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-fefd16f2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230844570,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-c87c7edd",
+        "broker-f5652b5a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230859670,
+      "primitive": "burst_kill",
+      "targets": [
+        "compute-7c7e451f",
+        "broker-21cf1d70"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230875502,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-1bbf06cb",
+        "broker-cf88418c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230891091,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-d91fc045"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230906727,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-02dbf9f2",
+        "gateway-013ba8b7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230922303,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-795f66f0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230937379,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-dcd8050b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230952998,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-97db6858",
+        "broker-201f6de3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230968610,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-8e0a4fca",
+        "gateway-0621e9a6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230983698,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-0ad728ef",
+        "gateway-a7d9237b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779230998763,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-71fe5346"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231013830,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-346d345a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231029410,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-0621e9a6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231045019,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-3dfa28f3",
+        "gateway-f52f57b2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231060650,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-86237315",
+        "gateway-7f176118"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231075743,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-545c0d37",
+        "gateway-5629dff8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231090819,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-70b08aef",
+        "compute-8ecbd2a7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231106450,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-8ac345a8",
+        "gateway-534e89cf"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231122058,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-06778f26",
+        "gateway-b340d717"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231137147,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-453209f4",
+        "broker-19680c5f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231152206,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-4c5376bb"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231167806,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-4c5376bb"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231183562,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-d57a675e",
+        "broker-398301f3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231199142,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-86e6c3e2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231214858,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-86e6c3e2",
+        "gateway-d7bfe2a7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231229923,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-d7bfe2a7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231245738,
+      "primitive": "restart_node",
+      "targets": [
+        "registry-c7206a1b",
+        "registry-53dcee17"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231261326,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-63e6a9fb"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231277022,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-c41d5c42"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231292098,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-631df7a0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231307786,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-598c439d",
+        "gateway-2bd47a67"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231322862,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ac158e29"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231338470,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-7a2649eb",
+        "gateway-3580dc57"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231353554,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-203e5ffd",
+        "broker-834aadb9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231368642,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-7f22392f",
+        "broker-f4e454a0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231384235,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-b9834c5c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231399322,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-4294a26b",
+        "broker-9f54aa82"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231414394,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-c5eaea34"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231430022,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-07b29a2c",
+        "gateway-bc775e79"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231445702,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-38c80d23",
+        "gateway-b8d20988"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231460790,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-a6a3e927",
+        "gateway-606ec88c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231475874,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-4b8a21b5",
+        "broker-0b784bb1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231490943,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-fdf3205e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231506015,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-13e9bd6f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231521623,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-8f4c898e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231536702,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-61072657"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231551787,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-48c43e3e",
+        "gateway-319ffefe"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231567398,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-c4dd3201",
+        "broker-8bcfe215"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231583026,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-133e5cb0",
+        "gateway-f494ff54"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231598106,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-7be44950",
+        "gateway-6bd02603"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231613698,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-78cd5f15"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231629542,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-51fda05a",
+        "broker-696dee23"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231645142,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-696dee23"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231660207,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-1cd4f973"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231675279,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-b81d8296"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231690898,
+      "primitive": "restart_node",
+      "targets": [
+        "compute-6a5343de",
+        "compute-8ce2e52e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231706518,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-32fab888",
+        "broker-76778c2c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231721618,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-6ced04b9",
+        "gateway-55673170"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231737202,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-56d79239"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231752811,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-73f6914b",
+        "broker-eec2a058"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231768418,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-35645fbe"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231784015,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-0e8f9189",
+        "gateway-d3dc57c5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231799986,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-468159c4",
+        "gateway-e5d46764"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231815595,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-9e363604",
+        "gateway-e25183f8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231830666,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-dadf5067"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231845742,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-178eacba"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231861354,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-178eacba",
+        "broker-eb83ad7c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231876419,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-179ca2ed"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231892018,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-5ed0e148",
+        "gateway-b1d5d11d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779231907083,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-feb59c01"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    }
+  ]
+}
