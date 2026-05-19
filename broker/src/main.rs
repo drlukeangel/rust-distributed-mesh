@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
         });
 
         // Child 5: accept loop
-        let accept_handle = start_accept_loop(&transport).await;
+        let accept_handle = start_accept_loop(&transport, node_id.clone()).await;
         tracing::info_span!("rafka.mesh.boot.accept_loop_started", node_id = %node_id)
             .in_scope(|| {
                 info!("accept loop running");
@@ -211,9 +211,10 @@ async fn dial_seeds(endpoint: iroh::Endpoint, seeds: Vec<SeedNode>, own_node_id:
                     node_id = %own_node_id,
                     peer_id = %peer_id_str,
                     peer_node_type = "unknown",
+                    direction = "outbound",
                 )
                 .in_scope(|| {
-                    info!(peer_id = %peer_id_str, "peer connected");
+                    info!(peer_id = %peer_id_str, "peer connected (outbound)");
                 });
                 // Sprint 03: drop connection immediately — sprint 04 will hold it.
                 drop(conn);
@@ -262,19 +263,30 @@ async fn create_endpoint(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Resu
     Ok(transport)
 }
 
-/// Accept incoming connections and complete the QUIC handshake.
-/// Sprint 03: accept + immediately drop — dialer-side peer.connected needs the handshake to complete.
+/// Accept incoming connections, complete the QUIC handshake, emit peer.connected (inbound).
 #[instrument(skip_all)]
-async fn start_accept_loop(transport: &IrohMeshTransport) -> tokio::task::JoinHandle<()> {
+async fn start_accept_loop(transport: &IrohMeshTransport, own_node_id: String) -> tokio::task::JoinHandle<()> {
     let endpoint = transport.endpoint.clone();
     tokio::spawn(async move {
         loop {
             match endpoint.accept().await {
                 Some(incoming) => {
+                    let own_id = own_node_id.clone();
                     tokio::spawn(async move {
                         if let Ok(conn) = incoming.await {
-                            let peer = conn.remote_node_id().map(|id| id.to_string()).unwrap_or_else(|_| "unknown".into());
-                            info!(peer_id = %peer, "accepted connection");
+                            let peer_id = conn.remote_node_id()
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|_| "unknown".into());
+                            tracing::info_span!(
+                                "rafka.mesh.peer.connected",
+                                node_id = %own_id,
+                                peer_id = %peer_id,
+                                peer_node_type = "unknown",
+                                direction = "inbound",
+                            )
+                            .in_scope(|| {
+                                info!(peer_id = %peer_id, "peer connected (inbound)");
+                            });
                             drop(conn);
                         }
                     });
