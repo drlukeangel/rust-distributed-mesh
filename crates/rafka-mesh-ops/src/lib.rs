@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 pub enum InternalMeshFrame {
     Ping { org_id: u64 },
     Pong { org_id: u64 },
+    /// First frame sent after a peer connection opens. Carries the sender's mesh_id
+    /// and node_type so the receiver can tag peer.connected with peer_mesh_id and
+    /// emit a cross-mesh peer.connected span when meshes differ. Mesh-to-mesh phase
+    /// 2 substrate per feature `mesh-to-mesh`.
+    Hello { mesh_id: String, node_type: String },
 }
 
 /// Wire layout:

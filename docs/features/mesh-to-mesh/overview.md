@@ -1,7 +1,8 @@
 # mesh-to-mesh — overview
 
 > **Status:** Phase 1 SHIPPED — `mesh_id` tagging in node.ready + heartbeat spans (defaults to "default" so single-mesh deployments work uninstrumented).
-> **Status:** Phase 2 PENDING — Role::Bridge with multi-mesh seed dialing and per-mesh peer registries.
+> **Status:** Phase 2a SHIPPED — `Hello` wire frame exchanged at peer-connect time; `rafka.mesh.peer.hello_received` span carries `peer_mesh_id` + `peer_node_type`; mismatched meshes additionally emit `rafka.mesh.cross.peer_connected` with `own_mesh_id` + `peer_mesh_id`.
+> **Status:** Phase 2b PENDING — Role::Bridge with explicit per-mesh seed lists + per-mesh heartbeats + selective gossip forwarding.
 > **Source:** Cross-mesh peering substrate. Per v1's `i35-cross-mesh-peering` feature; ports forward into v2's iroh substrate.
 
 ## What it is
@@ -30,8 +31,11 @@ Each mesh has its own `mesh_id` (a UUID assigned at cluster creation, propagated
 - `rafka.mesh.node.ready{node_id, node_type, mesh_id, bind_addr, version}` — boot-time mesh association
 - `rafka.mesh.heartbeat{node_id, mesh_id, peer_count, wall_time_ms, clock_skew_ms}` — runtime mesh tagging
 
-**Phase 2 (proposed for bridge implementation):**
-- `rafka.mesh.cross.peer_connected{node_id, peer_id, peer_mesh_id, direction}`
+**Phase 2a (shipped):**
+- `rafka.mesh.peer.hello_received{node_id, peer_id, peer_mesh_id, peer_node_type}` — emitted on every Hello frame; peer_mesh_id may equal own_mesh_id (same mesh) or differ (cross-mesh).
+- `rafka.mesh.cross.peer_connected{node_id, peer_id, own_mesh_id, peer_mesh_id, peer_node_type}` — emitted only when peer_mesh_id != own_mesh_id. The signal for cross-mesh telemetry filtering and Role::Bridge detection.
+
+**Phase 2b (proposed for full bridge implementation):**
 - `rafka.mesh.cross.peer_disconnected{node_id, peer_id, peer_mesh_id, reason}`
 - `rafka.mesh.cross.gossip_forwarded{from_mesh_id, to_mesh_id, topic}`
 

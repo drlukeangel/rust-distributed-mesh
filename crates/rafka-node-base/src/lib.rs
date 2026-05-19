@@ -194,13 +194,13 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     );
 
     let accept_handle =
-        start_accept_loop(&transport, node_id.clone(), Arc::clone(&peer_registry)).await;
+        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry)).await;
 
     let dial_handle = if !seed_nodes.is_empty() {
         let node_id_dial = node_id.clone();
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
-        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, registry)))
+        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, mesh_id, node_type_str, registry)))
     } else {
         None
     };
@@ -209,7 +209,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         let node_id_mdns = node_id.clone();
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
-        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, registry))
+        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, mesh_id, node_type_str, registry))
     };
 
     let heartbeat_handle = {
@@ -254,6 +254,8 @@ async fn dial_seeds(
     endpoint: iroh::Endpoint,
     seeds: Vec<SeedNode>,
     own_node_id: String,
+    own_mesh_id: &'static str,
+    own_node_type: &'static str,
     registry: PeerRegistry,
 ) {
     for seed in seeds {
@@ -286,9 +288,11 @@ async fn dial_seeds(
 
                 registry.insert(peer_id_str.clone(), conn.clone());
 
+                send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
+
                 let own = own_node_id.clone();
                 let reg = Arc::clone(&registry);
-                tokio::spawn(run_frame_reader(own, peer_id_str.clone(), conn, reg));
+                tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg));
             }
             Err(e) => {
                 info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
@@ -302,6 +306,8 @@ async fn watch_mdns(
     mut rx: tokio::sync::mpsc::Receiver<String>,
     endpoint: iroh::Endpoint,
     own_node_id: String,
+    own_mesh_id: &'static str,
+    own_node_type: &'static str,
     registry: PeerRegistry,
 ) {
     while let Some(peer_id_str) = rx.recv().await {
@@ -344,7 +350,9 @@ async fn watch_mdns(
 
                     reg.insert(peer_id_str.clone(), conn.clone());
 
-                    run_frame_reader(own, peer_id_str.clone(), conn, reg).await;
+                    send_hello(&conn, &own, own_mesh_id, own_node_type, &peer_id_str).await;
+
+                    run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg).await;
                 }
                 Err(e) => {
                     info!(peer_id = %peer_id_str, error = %e, "mdns dial failed");
@@ -358,6 +366,8 @@ async fn watch_mdns(
 async fn start_accept_loop(
     transport: &IrohMeshTransport,
     own_node_id: String,
+    own_mesh_id: &'static str,
+    own_node_type: &'static str,
     registry: PeerRegistry,
 ) -> tokio::task::JoinHandle<()> {
     let endpoint = transport.endpoint.clone();
@@ -386,7 +396,9 @@ async fn start_accept_loop(
 
                             reg.insert(peer_id.clone(), conn.clone());
 
-                            run_frame_reader(own_id, peer_id.clone(), conn, reg).await;
+                            send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
+
+                            run_frame_reader(own_id, own_mesh_id, peer_id.clone(), conn, reg).await;
                         }
                     });
                 }
@@ -399,9 +411,67 @@ async fn start_accept_loop(
     })
 }
 
+/// Send a `Hello` frame to a freshly-connected peer carrying our mesh_id + node_type.
+/// Peer's run_frame_reader handles it: emits a `rafka.mesh.peer.hello_received` span,
+/// plus a `rafka.mesh.cross.peer_connected` span if the mesh_ids differ — the substrate
+/// signal for cross-mesh peering per feature `mesh-to-mesh`.
+async fn send_hello(
+    conn: &Connection,
+    own_node_id: &str,
+    own_mesh_id: &str,
+    own_node_type: &str,
+    peer_id_str: &str,
+) {
+    let frame = InternalMeshFrame::Hello {
+        mesh_id: own_mesh_id.to_string(),
+        node_type: own_node_type.to_string(),
+    };
+    let sent_span = tracing::info_span!(
+        "rafka.mesh.frame.sent",
+        node_id = %own_node_id,
+        peer_id = %peer_id_str,
+        frame_kind = "hello",
+        mesh_id = own_mesh_id,
+        otel.kind = "producer",
+    );
+    let _enter = sent_span.enter();
+    let ctx = Span::current().context();
+    let encoded = frame.encode_with_context(&ctx);
+    drop(_enter);
+
+    match conn.open_uni().await {
+        Ok(mut send) => {
+            if send.write_all(&encoded).await.is_err() || send.finish().is_err() {
+                tracing::info_span!(
+                    "rafka.mesh.frame.sent_failed",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                    frame_kind = "hello",
+                    otel.kind = "producer",
+                )
+                .in_scope(|| info!(peer_id = %peer_id_str, "hello write/finish failed"));
+            } else {
+                sent_span.in_scope(|| info!(peer_id = %peer_id_str, "hello sent"));
+            }
+        }
+        Err(e) => {
+            tracing::info_span!(
+                "rafka.mesh.frame.sent_failed",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                frame_kind = "hello",
+                error = %e,
+                otel.kind = "producer",
+            )
+            .in_scope(|| info!(peer_id = %peer_id_str, "open_uni failed for hello"));
+        }
+    }
+}
+
 /// Handles incoming uni streams. Gateway expects Pong; others expect Ping and reply with Pong.
 async fn run_frame_reader(
     own_node_id: String,
+    own_mesh_id: &'static str,
     peer_id_str: String,
     conn: Connection,
     registry: PeerRegistry,
@@ -418,6 +488,35 @@ async fn run_frame_reader(
                 };
 
                 match InternalMeshFrame::decode_with_context(&bytes) {
+                    Ok((parent_ctx, InternalMeshFrame::Hello { mesh_id: peer_mesh_id, node_type: peer_node_type })) => {
+                        let recv_span = tracing::info_span!(
+                            "rafka.mesh.peer.hello_received",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            peer_mesh_id = %peer_mesh_id,
+                            peer_node_type = %peer_node_type,
+                            otel.kind = "consumer",
+                        );
+                        recv_span.set_parent(parent_ctx);
+                        recv_span.in_scope(|| {
+                            info!(peer_id = %peer_id_str, peer_mesh_id = %peer_mesh_id, peer_node_type = %peer_node_type, "hello received");
+                        });
+                        // Cross-mesh: peer is in a different mesh_id than ours. Emit
+                        // dedicated span so operators can filter Jaeger for cross-mesh
+                        // links and Role::Bridge gateway flows.
+                        if peer_mesh_id != own_mesh_id {
+                            tracing::info_span!(
+                                "rafka.mesh.cross.peer_connected",
+                                node_id = %own_node_id,
+                                peer_id = %peer_id_str,
+                                own_mesh_id = own_mesh_id,
+                                peer_mesh_id = %peer_mesh_id,
+                                peer_node_type = %peer_node_type,
+                                otel.kind = "internal",
+                            )
+                            .in_scope(|| info!(peer_id = %peer_id_str, own_mesh_id, peer_mesh_id = %peer_mesh_id, "cross-mesh peer connected"));
+                        }
+                    }
                     Ok((parent_ctx, InternalMeshFrame::Pong { org_id })) => {
                         let span = tracing::info_span!(
                             "rafka.mesh.frame.received",
