@@ -1,0 +1,20 @@
+[package]
+name = "rafka-node-base"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rafka-telemetry = { path = "../rafka-telemetry" }
+rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+rafka-mesh-ops = { path = "../rafka-mesh-ops" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+iroh = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+dashmap = { workspace = true }

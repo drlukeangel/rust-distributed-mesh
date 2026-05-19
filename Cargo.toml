@@ -3,6 +3,7 @@ members = [
     "crates/rafka-telemetry",
     "crates/rafka-mesh-transport",
     "crates/rafka-mesh-ops",
+    "crates/rafka-node-base",
     "gateway",
     "broker",
     "compute",
