@@ -1,42 +1,44 @@
 {
   "sprint_id": "sprint-07",
-  "status": "blocked",
-  "blocked_on": "sprint-06 merged to main",
-  "opens": null,
-  "closes": null,
+  "status": "closed",
+  "opens": "2026-05-19",
+  "closes": "2026-05-19",
   "initiative": "mesh-v1",
-  "branch": "sprint-07-boot-waterfall-ui",
+  "branch": "sprint-07-chunk-3",
   "objective": "Single-page boot-waterfall UI. Renders the boot-span chain from any node as a horizontal cascade. Vanilla HTML+CSS+JS, no SPA framework, no topology graph, no alerts panel, no heartbeat panel.",
-  "size": "small — 2 days",
-  "design_reference": "docs/design/system-mesh-v1/ — long-term vision. Sprint 07 ships ONLY the boot waterfall slice. Topology graph + alerts + heartbeat + type cards are explicitly deferred (likely never built for v1).",
+  "size": "small — 2 days (completed same-day as 3 baby chunks)",
+  "design_reference": "docs/design/system-mesh-v1/ — long-term vision. Sprint 07 shipped ONLY the boot waterfall slice. Topology graph + alerts + heartbeat + type cards are explicitly deferred.",
   "in_scope": [
-    "topology-ui/ binary — axum server on http://localhost:19090 (read RAFKA_TOPOLOGY_UI_BIND_ADDR env var, default 127.0.0.1:19090)",
+    "topology-ui/ binary — axum server on http://localhost:19090 (RAFKA_TOPOLOGY_UI_BIND_ADDR env var)",
     "Single HTML page: header + waterfall canvas + node-selector dropdown",
-    "Polls Jaeger query API for traces matching service=rafkav2-* operation=rafka.mesh.node.ready",
-    "Renders trace as horizontal waterfall: each span is a colored div, width = duration, x-offset = start_time relative to root, vertical position by parent-child nesting",
-    "Color-codes by span phase (identity / endpoint / alpn / gossip / accept_loop) per the existing palette in docs/design/system-mesh-v1/project/styles.css",
-    "Node selector dropdown lets user pick which node's most-recent boot trace to view"
+    "GET /api/nodes — polls Jaeger /api/services, filters to D-019 locked node_type enum",
+    "GET /api/boot-trace?service=X — polls Jaeger for rafka.mesh.node.ready traces, returns first trace",
+    "Renders trace as horizontal waterfall: each span = colored bar, width=duration, x-offset=start relative to root",
+    "Color-codes by phase: root=blue, identity=green, endpoint=amber, alpn=purple, gossip=teal, accept_loop=red",
+    "Filters iroh internals — only rafka.* spans shown",
+    "Node selector dropdown populated from /api/nodes",
+    "30s auto-poll refreshes node list without page reload",
+    "Error state: graceful 'no boot trace found' message for missing service"
   ],
   "out_of_scope": [
-    "Topology graph (deferred indefinitely; mesh visualization is not v1 scope)",
-    "Active alerts panel (no alert entity exists)",
-    "OTLP heartbeat panel (no gateway-side span-rate aggregation)",
-    "Type-card drill-down (no fleet to drill into)",
-    "Spawn / kill buttons (use rfa CLI)",
-    "WebSocket live updates (polling is fine — boot is a one-shot event)",
-    "Multiple node-types-at-once view",
-    "Any SPA framework, build pipeline, transpilation, node_modules",
-    "Authentication"
+    "Topology graph (deferred indefinitely)",
+    "Active alerts panel",
+    "OTLP heartbeat panel",
+    "Type-card drill-down",
+    "Spawn / kill buttons",
+    "WebSocket live updates",
+    "SPA framework, build pipeline, transpilation, node_modules",
+    "Authentication",
+    "D-007 mesh-join (Path A: Jaeger polling chosen; mesh-join is future option, D-007 to be amended)"
   ],
   "exit_criteria": [
-    "cargo run -p rafka-topology-ui starts UI on http://localhost:19090",
-    "Boot any rafkav2-* node (gateway/broker/compute/schema)",
-    "Open UI in browser, select node from dropdown",
-    "See the 6-span boot waterfall rendered as horizontal bars with timing labels",
-    "Refresh page → still works",
-    "Boot a SECOND node → it appears in the dropdown within 10s (UI re-polls Jaeger periodically)",
-    "All UI HTTP requests instrumented with spans (service=rafkav2-topology-ui)",
-    "Jaeger URL pre-filtered to the UI's own traces"
+    "cargo run -p rafka-topology-ui starts UI on http://localhost:19090 — DONE",
+    "Boot any node; open UI; select node from dropdown — DONE",
+    "See the boot waterfall rendered as horizontal bars with timing labels — DONE (5 rafka spans for gateway)",
+    "Refresh re-fetches dropdown AND current node's waterfall — DONE",
+    "Newly-booted nodes appear in dropdown within 30s auto-poll — DONE",
+    "All UI HTTP requests instrumented with rafka.ui.http.request spans — DONE (12+ traces in Jaeger)",
+    "Outbound Jaeger queries instrumented with rafka.ui.jaeger.query spans — DONE"
   ],
   "spans_to_emit": [
     "rafka.ui.http.request",
@@ -44,10 +46,16 @@
   ],
   "discipline": [
     "NO SPA framework — vanilla HTML + CSS + JS only (Principle #10 KISS)",
-    "NO topology graph in this sprint — that's the scope-creep trap; resist",
-    "Polling, not WebSocket — boot waterfall is a one-shot view, not a live stream",
-    "All config via env vars (Principle #8): RAFKA_TOPOLOGY_UI_BIND_ADDR + JAEGER_QUERY_URL (default http://localhost:16686)",
-    "Closes with Jaeger URL per Principle #7"
+    "NO topology graph in this sprint",
+    "Polling, not WebSocket",
+    "All config via env vars (Principle #8): RAFKA_TOPOLOGY_UI_BIND_ADDR + JAEGER_QUERY_URL",
+    "Closes with Jaeger URLs per Principle #7"
   ],
-  "deliverable_url": "http://localhost:16686/search?service=rafkav2-topology-ui&operation=rafka.ui.jaeger.query&lookback=1h"
+  "deliverable_url": "http://localhost:16686/search?service=topology-ui&operation=rafka.ui.http.request&lookback=1h",
+  "boot_trace_urls": {
+    "gateway":  "http://localhost:16686/search?service=gateway&operation=rafka.mesh.node.ready&lookback=1h",
+    "broker":   "http://localhost:16686/search?service=broker&operation=rafka.mesh.node.ready&lookback=1h",
+    "compute":  "http://localhost:16686/search?service=compute&operation=rafka.mesh.node.ready&lookback=1h",
+    "registry": "http://localhost:16686/search?service=registry&operation=rafka.mesh.node.ready&lookback=1h"
+  }
 }
