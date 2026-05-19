@@ -19,3 +19,7 @@ tower-http = { version = "0.6.11", features = ["cors"] }
 reqwest = { version = "0.13.3", features = ["json"] }
 dashmap = { workspace = true }
 rand = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-http = "0.27"
+tracing-opentelemetry = { workspace = true }
+http = "1"

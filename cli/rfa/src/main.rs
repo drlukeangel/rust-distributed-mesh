@@ -129,7 +129,9 @@ enum TopologyFormat {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = rafka_telemetry::init_telemetry("rfa");
+    // Use SimpleSpanProcessor for short-lived CLI — synchronous export on span
+    // close means no flush race vs runtime teardown, no pre-exit sleep needed.
+    let _guard = rafka_telemetry::init_telemetry_for_cli("rfa");
 
     let cli = Cli::parse();
     let client = reqwest::Client::new();
@@ -142,12 +144,22 @@ async fn main() -> Result<()> {
         "otel.kind" = "internal",
     );
 
-    let result = run_command(&cli, &client).instrument(cmd_span).await;
+    run_command(&cli, &client).instrument(cmd_span).await
+}
 
-    // Give BatchSpanProcessor time to export before process exits
-    tokio::time::sleep(Duration::from_millis(400)).await;
+/// Inject the current OTel span context as W3C traceparent headers so the
+/// receiving server (topology-ui) can chain its spans under our trace_id.
+fn current_traceparent_headers() -> reqwest::header::HeaderMap {
+    use opentelemetry::global;
+    use opentelemetry_http::HeaderInjector;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-    result
+    let mut headers = reqwest::header::HeaderMap::new();
+    let ctx = tracing::Span::current().context();
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&ctx, &mut HeaderInjector(&mut headers));
+    });
+    headers
 }
 
 fn describe_command(cmd: &Cmd) -> (String, String) {
@@ -219,13 +231,18 @@ async fn http_post(client: &reqwest::Client, url: &str, body: &Value) -> Result<
         path = %path,
         "otel.kind" = "client",
     );
-    let resp = client
-        .post(url)
-        .json(body)
-        .send()
-        .instrument(span)
-        .await
-        .map_err(|e| anyhow!("HTTP POST {url}: {e}"))?;
+    let resp = async {
+        let headers = current_traceparent_headers();
+        client
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await
+    }
+    .instrument(span)
+    .await
+    .map_err(|e| anyhow!("HTTP POST {url}: {e}"))?;
     let status = resp.status().as_u16();
     let resp_body: Value = resp.json().await.map_err(|e| anyhow!("parse JSON: {e}"))?;
     Ok((status, resp_body))
@@ -241,12 +258,13 @@ async fn http_delete(client: &reqwest::Client, url: &str) -> Result<(u16, Value)
         path = %path,
         "otel.kind" = "client",
     );
-    let resp = client
-        .delete(url)
-        .send()
-        .instrument(span)
-        .await
-        .map_err(|e| anyhow!("HTTP DELETE {url}: {e}"))?;
+    let resp = async {
+        let headers = current_traceparent_headers();
+        client.delete(url).headers(headers).send().await
+    }
+    .instrument(span)
+    .await
+    .map_err(|e| anyhow!("HTTP DELETE {url}: {e}"))?;
     let status = resp.status().as_u16();
     let resp_body: Value = resp.json().await.map_err(|e| anyhow!("parse JSON: {e}"))?;
     Ok((status, resp_body))
@@ -262,12 +280,13 @@ async fn http_get(client: &reqwest::Client, url: &str) -> Result<Value> {
         path = %path,
         "otel.kind" = "client",
     );
-    let resp = client
-        .get(url)
-        .send()
-        .instrument(span)
-        .await
-        .map_err(|e| anyhow!("HTTP GET {url}: {e}"))?;
+    let resp = async {
+        let headers = current_traceparent_headers();
+        client.get(url).headers(headers).send().await
+    }
+    .instrument(span)
+    .await
+    .map_err(|e| anyhow!("HTTP GET {url}: {e}"))?;
     let status = resp.status();
     let body: Value = resp.json().await.map_err(|e| anyhow!("parse JSON: {e}"))?;
     if !status.is_success() {

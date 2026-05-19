@@ -2583,6 +2583,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-http"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a8a7f5f6ba7c1b286c2fbca0454eaba116f63bbe69ed250b642d36fbb04d80"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry",
+]
+
+[[package]]
 name = "opentelemetry-otlp"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3204,7 +3216,9 @@ dependencies = [
 name = "rafka-telemetry"
 version = "0.1.0"
 dependencies = [
+ "http",
  "opentelemetry",
+ "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
@@ -3220,6 +3234,9 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "dashmap",
+ "http",
+ "opentelemetry",
+ "opentelemetry-http",
  "rafka-telemetry",
  "rand 0.8.6",
  "reqwest 0.13.3",
@@ -3228,6 +3245,7 @@ dependencies = [
  "tokio",
  "tower-http",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -3426,13 +3444,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "http",
  "humantime",
+ "opentelemetry",
+ "opentelemetry-http",
  "rafka-telemetry",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
 ]
 
 [[package]]

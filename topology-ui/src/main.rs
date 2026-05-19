@@ -665,14 +665,29 @@ async fn handle_kill(
 }
 
 async fn trace_middleware(req: Request, next: Next) -> Response {
+    use opentelemetry::global;
+    use opentelemetry_http::HeaderExtractor;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
+
+    // Extract incoming W3C traceparent so the rafka.ui.http.request span chains
+    // under the caller's trace (e.g. rfa CLI invocation). When no traceparent
+    // header is present, set_parent on a default context is a no-op and the span
+    // becomes its own root — matches in-browser-fetch behaviour.
+    let parent_ctx = global::get_text_map_propagator(|propagator| {
+        propagator.extract(&HeaderExtractor(req.headers()))
+    });
+
     let span = info_span!(
         "rafka.ui.http.request",
         method = %method,
         path = %path,
         "otel.kind" = "server",
     );
+    span.set_parent(parent_ctx);
+
     next.run(req).instrument(span).await
 }
 
