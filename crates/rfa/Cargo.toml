@@ -1,0 +1,18 @@
+[package]
+name = "rfa"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rfa"
+path = "src/main.rs"
+
+[dependencies]
+rafka-telemetry = { path = "../rafka-telemetry" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+clap = { version = "4.6.1", features = ["derive"] }
+reqwest = { version = "0.13.3", features = ["json"] }

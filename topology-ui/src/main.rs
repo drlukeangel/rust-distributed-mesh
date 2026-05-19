@@ -462,6 +462,67 @@ async fn handle_boot_trace(
     }
 }
 
+async fn handle_heartbeat(
+    State(state): State<AppState>,
+    Query(params): Query<BootTraceQuery>,
+) -> impl IntoResponse {
+    let svc = &params.service;
+    let url = format!(
+        "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=10m",
+        state.jaeger_url, svc
+    );
+    let span = info_span!(
+        "rafka.ui.jaeger.query",
+        endpoint = "/api/traces/heartbeat",
+        service = %svc,
+        "otel.kind" = "client",
+    );
+    let result = state.http.get(&url).send().instrument(span).await;
+
+    match result {
+        Ok(resp) => match resp.json::<Value>().await {
+            Ok(body) => {
+                let first_span = body["data"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|t| t["spans"].as_array())
+                    .and_then(|a| a.first())
+                    .cloned();
+                match first_span {
+                    Some(sp) => {
+                        let tags: std::collections::HashMap<String, Value> = sp["tags"]
+                            .as_array()
+                            .unwrap_or(&vec![])
+                            .iter()
+                            .filter_map(|t| Some((t["key"].as_str()?.to_string(), t["value"].clone())))
+                            .collect();
+                        let node_id = tags.get("node_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let peer_count = tags.get("peer_count").and_then(|v| v.as_i64()).unwrap_or(0) as u64;
+                        let last_heartbeat_us = sp["startTime"].as_i64().unwrap_or(0);
+                        (StatusCode::OK, axum::Json(json!({
+                            "node_id": node_id,
+                            "peer_count": peer_count,
+                            "last_heartbeat_us": last_heartbeat_us,
+                        }))).into_response()
+                    }
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        axum::Json(json!({"error": format!("no heartbeat trace found for {svc}")})),
+                    ).into_response(),
+                }
+            }
+            Err(_) => (
+                StatusCode::BAD_GATEWAY,
+                axum::Json(json!({"error": "invalid response from jaeger"})),
+            ).into_response(),
+        },
+        Err(_) => (
+            StatusCode::BAD_GATEWAY,
+            axum::Json(json!({"error": "jaeger unreachable"})),
+        ).into_response(),
+    }
+}
+
 async fn handle_spawn(
     State(state): State<AppState>,
     Json(body): Json<SpawnRequest>,
@@ -642,6 +703,7 @@ async fn main() -> Result<()> {
         .route("/api/health", get(handle_health))
         .route("/api/nodes", get(handle_nodes))
         .route("/api/boot-trace", get(handle_boot_trace))
+        .route("/api/heartbeat", get(handle_heartbeat))
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
