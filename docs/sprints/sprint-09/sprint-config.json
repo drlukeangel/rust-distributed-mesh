@@ -1,0 +1,34 @@
+{
+  "sprint_id": "sprint-09",
+  "status": "blocked",
+  "blocked_on": "sprint-08 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-09-rfa-cli-readonly",
+  "objective": "rfa CLI binary — read-only commands first. Thin REST client targeting topology-ui.",
+  "size": "small — 1-2 days",
+  "in_scope": [
+    "crates/rfa/ — clap-based CLI; talks to http://localhost:19090",
+    "Commands: mesh node list, mesh node describe, mesh topology show, mesh status",
+    "Every command emits rafka.cli.command span with command name + args attrs",
+    "--format json on every command"
+  ],
+  "out_of_scope": [
+    "Mutation commands (add/remove) — Sprint 10",
+    "Chaos commands — Sprint 11"
+  ],
+  "exit_criteria": [
+    "rfa mesh node list returns 4 nodes when 4 binaries are running",
+    "rfa mesh node describe <id> returns full peer detail",
+    "rfa mesh topology show --format dot pipes to graphviz",
+    "rfa mesh status prints summary table",
+    "CLI invocations visible in Jaeger as parent traces with the underlying HTTP request as child",
+    "Jaeger URL covering rfa CLI traces"
+  ],
+  "spans_to_emit": [
+    "rafka.cli.command",
+    "rafka.cli.http.request"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rfa&operation=rafka.cli.command&lookback=1h"
+}

@@ -1,0 +1,24 @@
+{
+  "sprint_id": "sprint-06",
+  "status": "blocked",
+  "blocked_on": "sprint-05 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-06-schema-binary",
+  "objective": "Add rafka-schema binary. 4 of 4 node types alive in mesh.",
+  "size": "tiny — 1 day",
+  "in_scope": [
+    "schema/ binary — clone gateway shape; service_name = rafka-schema"
+  ],
+  "out_of_scope": [
+    "Schema registry app logic",
+    "Schema-specific ALPNs"
+  ],
+  "exit_criteria": [
+    "All 4 binaries (gateway/broker/compute/schema) run concurrently",
+    "Jaeger shows 4 services, full mesh peer discovery, ping/pong working between all pairs",
+    "Jaeger URL covering all 4 services"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-schema&operation=rafka.mesh.node.ready&lookback=1h"
+}

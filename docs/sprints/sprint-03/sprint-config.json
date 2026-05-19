@@ -1,0 +1,34 @@
+{
+  "sprint_id": "sprint-03",
+  "status": "blocked",
+  "blocked_on": "sprint-02 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-03-peer-discovery",
+  "objective": "Gateway and broker discover each other via iroh gossip. Mutual peer.connected spans appear in Jaeger.",
+  "size": "tiny — 1-2 days",
+  "in_scope": [
+    "Wire iroh discovery providers (mdns + manual seed list via RAFKA_SEED_NODES env var)",
+    "On peer discovery, emit rafka.mesh.peer.discovered{remote_endpoint_id, node_type}",
+    "On peer connection establishment, emit rafka.mesh.peer.connected",
+    "Peer-side: emit rafka.mesh.peer.disconnected on link drop"
+  ],
+  "out_of_scope": [
+    "Sending payload data between peers — Sprint 04",
+    "Multiple peer types beyond gateway+broker"
+  ],
+  "exit_criteria": [
+    "Run gateway + broker concurrently with RAFKA_SEED_NODES wired",
+    "Within 5s, BOTH services emit rafka.mesh.peer.discovered + rafka.mesh.peer.connected",
+    "Jaeger trace shows the mutual discovery as a cross-service trace",
+    "Kill one process: surviving process emits rafka.mesh.peer.disconnected within 4×heartbeat",
+    "Jaeger URL pre-filtered to the discovery trace"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.peer.discovered",
+    "rafka.mesh.peer.connected",
+    "rafka.mesh.peer.disconnected"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-gateway&operation=rafka.mesh.peer.connected&lookback=1h"
+}

@@ -1,0 +1,27 @@
+{
+  "sprint_id": "sprint-02",
+  "status": "blocked",
+  "blocked_on": "sprint-01 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-02-broker-binary",
+  "objective": "Add rafka-broker binary. Same shape as gateway. Two services visible in Jaeger.",
+  "size": "tiny — 1 day",
+  "in_scope": [
+    "broker/ binary — clone the gateway boot-span chain pattern; service_name = rafka-broker",
+    "Both binaries share crates/rafka-telemetry init code"
+  ],
+  "out_of_scope": [
+    "Peer discovery between gateway + broker — Sprint 03",
+    "Inter-node communication"
+  ],
+  "exit_criteria": [
+    "cargo run -p rafka-broker boots, idles emitting heartbeats",
+    "Jaeger shows TWO services (rafka-gateway + rafka-broker) each with their own boot-span chain",
+    "Both binaries running concurrently — no port conflicts (iroh binds 0.0.0.0:0 ephemeral)",
+    "Engineer surfaces Jaeger URL covering both services"
+  ],
+  "spans_to_emit": ["same as sprint-01 but service_name=rafka-broker"],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-broker&operation=rafka.mesh.node.ready&lookback=1h"
+}

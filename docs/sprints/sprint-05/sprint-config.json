@@ -1,0 +1,24 @@
+{
+  "sprint_id": "sprint-05",
+  "status": "blocked",
+  "blocked_on": "sprint-04 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-05-compute-binary",
+  "objective": "Add rafka-compute binary. Joins mesh, discovers gateway+broker peers, can ping/pong.",
+  "size": "tiny — 1 day",
+  "in_scope": [
+    "compute/ binary — clone gateway shape; service_name = rafka-compute",
+    "Participates in same gossip + ping/pong as established peers"
+  ],
+  "out_of_scope": [
+    "Any compute-specific logic (no jobs, no RSQL, no WASM)",
+    "Compute-only ALPNs or wire ops"
+  ],
+  "exit_criteria": [
+    "Run all 3 binaries: 3 services in Jaeger; full peer-discovery mesh between all pairs",
+    "Jaeger URL covering all 3 services"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-compute&operation=rafka.mesh.node.ready&lookback=1h"
+}

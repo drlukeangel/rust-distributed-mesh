@@ -1,0 +1,28 @@
+{
+  "sprint_id": "sprint-10",
+  "status": "blocked",
+  "blocked_on": "sprint-09 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-10-rfa-mutations",
+  "objective": "rfa CLI gains mutation commands. Full parity with topology UI ops.",
+  "size": "small — 1 day",
+  "in_scope": [
+    "rfa mesh node add --type <type> [--name <slug>]",
+    "rfa mesh node remove <name-or-id>",
+    "rfa mesh wait-converged --timeout <duration>",
+    "All mutations emit rafka.cli.command + nested rafka.cli.http.request spans"
+  ],
+  "out_of_scope": [
+    "Chaos primitives — Sprint 11"
+  ],
+  "exit_criteria": [
+    "rfa mesh node add --type broker --name br-test → broker appears in UI within 5s",
+    "rfa mesh node remove br-test → removed within 10s",
+    "rfa mesh wait-converged --timeout 30s exits 0 after spawning 4 nodes",
+    "UI and CLI driving the same backend — no state drift",
+    "Jaeger URL showing CLI-driven mutation chain (cli.command → ui.api.spawn_requested → subprocess.spawned → node.ready)"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rfa&operation=rafka.cli.command&tags=%7B%22command%22%3A%22mesh%20node%20add%22%7D&lookback=1h"
+}

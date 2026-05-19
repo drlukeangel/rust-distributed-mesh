@@ -1,0 +1,34 @@
+{
+  "sprint_id": "sprint-04",
+  "status": "blocked",
+  "blocked_on": "sprint-03 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-04-frame-ping-pong",
+  "objective": "Send an InternalMeshFrame ping from gateway to broker and back. trace_id propagates across the wire.",
+  "size": "tiny — 2 days",
+  "in_scope": [
+    "Define InternalMeshFrame struct in crates/rafka-mesh-ops (org_id mandatory in for_op constructor)",
+    "Gateway sends a Ping frame every 10s after a broker peer is connected",
+    "Broker echoes back a Pong frame",
+    "Both sides emit rafka.mesh.frame.sent / rafka.mesh.frame.received with the same trace_id"
+  ],
+  "out_of_scope": [
+    "Multiple op codes — just Ping/Pong",
+    "Authorization, encryption beyond iroh's default",
+    "Any persistence"
+  ],
+  "exit_criteria": [
+    "Jaeger shows a single trace spanning both services: gateway frame.sent → broker frame.received → broker frame.sent (pong) → gateway frame.received",
+    "trace_id is identical across all 4 spans (trace propagation works)",
+    "Decode failures emit rafka.mesh.frame.decode_failed",
+    "Jaeger URL pre-filtered to a representative ping-pong trace"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.frame.sent",
+    "rafka.mesh.frame.received",
+    "rafka.mesh.frame.decode_failed"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-gateway&operation=rafka.mesh.frame.sent&lookback=1h"
+}

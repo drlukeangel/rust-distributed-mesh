@@ -1,0 +1,36 @@
+{
+  "sprint_id": "sprint-07",
+  "status": "blocked",
+  "blocked_on": "sprint-06 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-07-topology-ui-readonly",
+  "objective": "Single-page topology UI on localhost:19090. Read-only. Visualizes current mesh state, polls REST endpoint, NO spawn buttons yet.",
+  "size": "small — 2-3 days",
+  "in_scope": [
+    "topology-ui/ binary — axum server on :19090 + axum-otlp instrumentation",
+    "Joins mesh as view-only participant on ALPN rafka-topology-v1",
+    "Serves single-page HTML+JS (vis-network for graph; no SPA framework)",
+    "GET /api/topology returns current peer list (gateway-side cache populated from peer.discovered events)",
+    "WebSocket /ws/topology pushes deltas on peer arrival/departure"
+  ],
+  "out_of_scope": [
+    "Spawn/kill buttons — Sprint 08",
+    "rfa CLI — Sprint 09",
+    "Authentication"
+  ],
+  "exit_criteria": [
+    "Boot 4 node binaries + topology-ui",
+    "Browser http://localhost:19090 shows 4 nodes + edges between pairs",
+    "Kill one node externally → graph updates within 10s without page refresh",
+    "All UI HTTP requests instrumented with spans (rafka.ui.http.request)",
+    "Jaeger URL covering rafka-topology-ui service traces"
+  ],
+  "spans_to_emit": [
+    "rafka.ui.http.request",
+    "rafka.ui.ws.client_connected",
+    "rafka.ui.topology.delta_emitted"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-topology-ui&operation=rafka.ui.topology.delta_emitted&lookback=1h"
+}

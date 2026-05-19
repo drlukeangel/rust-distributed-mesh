@@ -1,0 +1,35 @@
+{
+  "sprint_id": "sprint-08",
+  "status": "blocked",
+  "blocked_on": "sprint-07 merged to main",
+  "opens": null,
+  "closes": null,
+  "initiative": "mesh-v1",
+  "branch": "sprint-08-ui-spawn-kill",
+  "objective": "Add spawn/kill buttons to topology UI. Subprocess lifecycle managed by topology-ui process. All actions emit spans.",
+  "size": "small — 2 days",
+  "in_scope": [
+    "POST /api/nodes/spawn { node_type } → forks subprocess; subprocess inherits OTLP env",
+    "DELETE /api/nodes/{endpoint_id} → terminates subprocess (SIGTERM, then SIGKILL after 5s)",
+    "UI buttons (4 spawn + per-node kill)",
+    "Subprocess data dirs under E:/tmp/rafka-ui-nodes/<endpoint_id>/"
+  ],
+  "out_of_scope": [
+    "rfa CLI — Sprint 09",
+    "Chaos primitives — Sprint 10"
+  ],
+  "exit_criteria": [
+    "Click spawn-gateway in UI: blue node appears in graph within 5s",
+    "Click kill on any node: disappears within 10s",
+    "Subprocess spans rafka.ui.subprocess.spawned / .killed visible in Jaeger",
+    "Spawned subprocess's own boot-span chain visible in Jaeger (verifies OTLP env propagation)",
+    "Jaeger URL covering a spawn → boot → discovered chain"
+  ],
+  "spans_to_emit": [
+    "rafka.ui.subprocess.spawned",
+    "rafka.ui.subprocess.killed",
+    "rafka.ui.api.spawn_requested",
+    "rafka.ui.api.kill_requested"
+  ],
+  "deliverable_url": "http://localhost:16686/search?service=rafka-topology-ui&operation=rafka.ui.subprocess.spawned&lookback=1h"
+}
