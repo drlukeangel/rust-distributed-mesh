@@ -56,6 +56,27 @@ Each node binary does exactly one thing: be a mesh participant of its type. Don'
 
 Every feature sprint's test suite must run under the smoke chaos battery from Sprint 02. Steady-state-only passing is insufficient. Reference: D-004, `docs/plans/mesh-v1/04-chaos-harness-prd.md`.
 
+### #6 — Telemetry IS the substrate, not a feature
+
+Telemetry is built FIRST in every sprint, and EVERY code path emits spans. Code that does work without leaving a telemetry trail is rejected at review.
+
+- Every async `fn` is `#[instrument]`-decorated
+- Every state transition is a span
+- Every error is a span attribute or a child error-span
+- Every boot sequence is a chain of nested spans under one parent
+- Every binary calls `rafka_telemetry::init_telemetry(service_name)` in `main()` BEFORE any other work
+- OTLP collector + Jaeger run from day 0 — `deployment/dev/docker-compose.otlp.yml` is the first deliverable of any sprint that needs verification
+
+The pilot phase (now) skips formal test coverage, but telemetry coverage is non-negotiable. You prove behavior via Jaeger queries, not via test assertions.
+
+### #7 — Every sprint closes with a Jaeger URL
+
+The engineer's final SendMessage to team-lead MUST include a clickable Jaeger URL pre-filtered to the sprint's spans. Without the URL, the sprint is not closed. The URL is the user-facing proof of work.
+
+Format: `http://localhost:16686/search?service=<service-name>&operation=<root-span>&lookback=1h`
+
+If multiple services are involved, include one URL per service. If a specific span chain proves the sprint's exit criterion, link directly to a trace ID.
+
 ---
 
 ## Agent dispatch discipline (carryovers from rafka v1)
