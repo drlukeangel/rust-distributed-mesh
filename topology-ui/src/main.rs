@@ -15,7 +15,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
-const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
+const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
 
 const HTML: &str = r##"<!DOCTYPE html>
 <html lang="en">
@@ -143,6 +143,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   <button class="spawn-btn" data-type="broker">+ Spawn broker</button>
   <button class="spawn-btn" data-type="compute">+ Spawn compute</button>
   <button class="spawn-btn" data-type="registry">+ Spawn registry</button>
+  <button class="spawn-btn" data-type="bridge">+ Spawn bridge</button>
 </div>
 
 <div id="toast"></div>

@@ -1,0 +1,13 @@
+[package]
+name = "rafka-bridge"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rafka-bridge"
+path = "src/main.rs"
+
+[dependencies]
+rafka-node-base = { path = "../crates/rafka-node-base" }
+tokio = { workspace = true }
+anyhow = { workspace = true }

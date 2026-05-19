@@ -20,6 +20,11 @@ pub enum Role {
     Broker,
     Compute,
     Registry,
+    /// Bridges multiple mesh_ids. Reads `RAFKA_BRIDGE_TARGET_MESHES` (comma-separated)
+    /// to know which meshes it's expected to peer into. Emits per-mesh aggregate
+    /// heartbeats (one `rafka.mesh.heartbeat` span per observed peer mesh_id) and
+    /// boot-time `rafka.mesh.bridge.boot_announced` listing target meshes.
+    Bridge,
 }
 
 pub struct NodeRuntime {
@@ -57,6 +62,10 @@ struct NodeIdentity {
 }
 
 type PeerRegistry = Arc<DashMap<String, Connection>>;
+/// Parallel registry: peer_id → peer_mesh_id, populated from Hello frames. Used by
+/// Role::Bridge to emit per-mesh aggregate heartbeats; used by all roles to make
+/// peer→mesh associations observable from any code path that has the peer_id.
+type MeshIdRegistry = Arc<DashMap<String, String>>;
 
 async fn run_node(node_type: String, role: Role) -> Result<()> {
     // mesh_id is a logical cluster identifier. Multiple physical nodes with the
@@ -188,19 +197,38 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     // node.ready closes here — tiny span, exports immediately, no iroh internals inside
 
     let peer_registry: PeerRegistry = Arc::new(DashMap::new());
+    let mesh_id_registry: MeshIdRegistry = Arc::new(DashMap::new());
     let mdns_rx = std::mem::replace(
         &mut transport.mdns_discovered,
         tokio::sync::mpsc::channel(1).1,
     );
 
+    // Role::Bridge: emit boot-announced span listing target meshes so operators see
+    // immediately which meshes this bridge is supposed to span.
+    let is_bridge = matches!(role, Role::Bridge);
+    if is_bridge {
+        let target_meshes = std::env::var("RAFKA_BRIDGE_TARGET_MESHES")
+            .unwrap_or_else(|_| "".to_string());
+        tracing::info_span!(
+            "rafka.mesh.bridge.boot_announced",
+            node_id = %node_id,
+            mesh_id = mesh_id,
+            target_meshes = %target_meshes,
+        )
+        .in_scope(|| {
+            info!(target_meshes = %target_meshes, "bridge boot announced");
+        });
+    }
+
     let accept_handle =
-        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry)).await;
+        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry)).await;
 
     let dial_handle = if !seed_nodes.is_empty() {
         let node_id_dial = node_id.clone();
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
-        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, mesh_id, node_type_str, registry)))
+        let mesh_reg = Arc::clone(&mesh_id_registry);
+        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, mesh_id, node_type_str, registry, mesh_reg)))
     } else {
         None
     };
@@ -209,12 +237,14 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         let node_id_mdns = node_id.clone();
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
-        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, mesh_id, node_type_str, registry))
+        let mesh_reg = Arc::clone(&mesh_id_registry);
+        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, mesh_id, node_type_str, registry, mesh_reg))
     };
 
     let heartbeat_handle = {
         let registry = Arc::clone(&peer_registry);
-        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, registry))
+        let mesh_reg = Arc::clone(&mesh_id_registry);
+        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, is_bridge, registry, mesh_reg))
     };
 
     let ping_handle = match role {
@@ -257,6 +287,7 @@ async fn dial_seeds(
     own_mesh_id: &'static str,
     own_node_type: &'static str,
     registry: PeerRegistry,
+    mesh_id_registry: MeshIdRegistry,
 ) {
     for seed in seeds {
         let peer_id_str = seed.id.to_string();
@@ -292,7 +323,8 @@ async fn dial_seeds(
 
                 let own = own_node_id.clone();
                 let reg = Arc::clone(&registry);
-                tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg));
+                let mesh_reg = Arc::clone(&mesh_id_registry);
+                tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
             }
             Err(e) => {
                 info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
@@ -309,6 +341,7 @@ async fn watch_mdns(
     own_mesh_id: &'static str,
     own_node_type: &'static str,
     registry: PeerRegistry,
+    mesh_id_registry: MeshIdRegistry,
 ) {
     while let Some(peer_id_str) = rx.recv().await {
         let peer_id = match peer_id_str.parse::<PublicKey>() {
@@ -334,6 +367,7 @@ async fn watch_mdns(
         let endpoint_clone = endpoint.clone();
         let own = own_node_id.clone();
         let reg = Arc::clone(&registry);
+        let mesh_reg = Arc::clone(&mesh_id_registry);
         tokio::spawn(async move {
             match endpoint_clone.connect(peer_id, ALPN).await {
                 Ok(conn) => {
@@ -352,7 +386,7 @@ async fn watch_mdns(
 
                     send_hello(&conn, &own, own_mesh_id, own_node_type, &peer_id_str).await;
 
-                    run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg).await;
+                    run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg).await;
                 }
                 Err(e) => {
                     info!(peer_id = %peer_id_str, error = %e, "mdns dial failed");
@@ -369,6 +403,7 @@ async fn start_accept_loop(
     own_mesh_id: &'static str,
     own_node_type: &'static str,
     registry: PeerRegistry,
+    mesh_id_registry: MeshIdRegistry,
 ) -> tokio::task::JoinHandle<()> {
     let endpoint = transport.endpoint.clone();
     tokio::spawn(async move {
@@ -377,6 +412,7 @@ async fn start_accept_loop(
                 Some(incoming) => {
                     let own_id = own_node_id.clone();
                     let reg = Arc::clone(&registry);
+                    let mesh_reg = Arc::clone(&mesh_id_registry);
                     tokio::spawn(async move {
                         if let Ok(conn) = incoming.await {
                             let peer_id = conn
@@ -398,7 +434,7 @@ async fn start_accept_loop(
 
                             send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
 
-                            run_frame_reader(own_id, own_mesh_id, peer_id.clone(), conn, reg).await;
+                            run_frame_reader(own_id, own_mesh_id, peer_id.clone(), conn, reg, mesh_reg).await;
                         }
                     });
                 }
@@ -475,6 +511,7 @@ async fn run_frame_reader(
     peer_id_str: String,
     conn: Connection,
     registry: PeerRegistry,
+    mesh_id_registry: MeshIdRegistry,
 ) {
     loop {
         match conn.accept_uni().await {
@@ -489,6 +526,9 @@ async fn run_frame_reader(
 
                 match InternalMeshFrame::decode_with_context(&bytes) {
                     Ok((parent_ctx, InternalMeshFrame::Hello { mesh_id: peer_mesh_id, node_type: peer_node_type })) => {
+                        // Record peer's mesh_id so heartbeat (Role::Bridge especially)
+                        // can aggregate per-mesh peer counts.
+                        mesh_id_registry.insert(peer_id_str.clone(), peer_mesh_id.clone());
                         let recv_span = tracing::info_span!(
                             "rafka.mesh.peer.hello_received",
                             node_id = %own_node_id,
@@ -753,7 +793,13 @@ async fn create_endpoint(
 // heartbeat spans pile up in the OTel batch waiting for parent close (which never
 // happens until shutdown), so only the first few export. Each tick must be its own
 // independent root span.
-async fn run_heartbeat(node_id: String, mesh_id: &'static str, registry: PeerRegistry) {
+async fn run_heartbeat(
+    node_id: String,
+    mesh_id: &'static str,
+    is_bridge: bool,
+    registry: PeerRegistry,
+    mesh_id_registry: MeshIdRegistry,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     // Read clock skew once at boot. Chaos `clock_skew` primitive restarts the
     // subprocess with this env var; heartbeat surfaces it as an observable
@@ -764,23 +810,49 @@ async fn run_heartbeat(node_id: String, mesh_id: &'static str, registry: PeerReg
         .unwrap_or(0);
     loop {
         interval.tick().await;
-        let peer_count = registry.len() as i64;
+        let total_peer_count = registry.len() as i64;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
         let wall_time_ms = now_ms + skew_ms;
+
+        // Always emit the aggregate heartbeat (preserves existing telemetry contract).
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
             mesh_id = mesh_id,
-            peer_count = peer_count,
+            peer_count = total_peer_count,
             wall_time_ms = wall_time_ms,
             clock_skew_ms = skew_ms,
         )
         .in_scope(|| {
             info!("heartbeat");
         });
+
+        // Role::Bridge: also emit per-target-mesh aggregate spans grouped by the
+        // peer_mesh_id observed in each peer's Hello frame. Operators get a
+        // per-mesh peer count for the bridge in a single Jaeger filter.
+        if is_bridge {
+            let mut by_mesh: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            for entry in mesh_id_registry.iter() {
+                *by_mesh.entry(entry.value().clone()).or_insert(0) += 1;
+            }
+            for (target_mesh, count) in by_mesh {
+                tracing::info_span!(
+                    "rafka.mesh.bridge.per_mesh_heartbeat",
+                    node_id = %node_id,
+                    mesh_id = mesh_id,
+                    target_mesh_id = %target_mesh,
+                    peer_count = count,
+                    wall_time_ms = wall_time_ms,
+                )
+                .in_scope(|| {
+                    info!(target_mesh_id = %target_mesh, peer_count = count, "bridge per-mesh heartbeat");
+                });
+            }
+        }
     }
 }
 
