@@ -5,7 +5,15 @@ use crate::primitives::{BurstKill, DiskFull, KillNode, RestartNode};
 use crate::{ChaosContext, ChaosOutcome, ChaosPrimitive, DetectionResult};
 use rand::Rng;
 use serde::Serialize;
+use serde_json::json;
 use std::time::{Duration, Instant};
+
+/// Minimum target pool size — if /api/spawned drops below this, soak tops up by
+/// spawning fresh subprocesses before the next primitive. Keeps long soaks viable
+/// (otherwise kill-heavy primitives drain the pool and remaining events all fail
+/// with InvalidTarget).
+const MIN_POOL_SIZE: usize = 4;
+const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 #[derive(Serialize)]
 pub struct SoakEvent {
@@ -54,6 +62,9 @@ pub async fn run_soak(
     let mut failed_assertion = 0usize;
 
     while started.elapsed() < duration {
+        // Top up target pool if it's too thin — keeps long soaks viable.
+        maintain_pool(ctx).await;
+
         // pick a primitive
         let pick: u8 = {
             let mut rng = ctx.rng.lock().await;
@@ -128,6 +139,36 @@ pub async fn run_soak(
         failed_assertion,
         events,
     }
+}
+
+/// Top up the UI-spawned subprocess pool to MIN_POOL_SIZE if it has dropped lower.
+/// Spawns one subprocess per missing slot, round-robin through NODE_TYPES.
+async fn maintain_pool(ctx: &ChaosContext) {
+    let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);
+    let current: usize = match ctx.http.get(&url).send().await {
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(body) => body["spawned"].as_array().map(|a| a.len()).unwrap_or(0),
+            Err(_) => 0,
+        },
+        Err(_) => return, // topology-ui unreachable; let next primitive raise the error
+    };
+    if current >= MIN_POOL_SIZE {
+        return;
+    }
+    let to_spawn = MIN_POOL_SIZE - current;
+    let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+    for i in 0..to_spawn {
+        let node_type = NODE_TYPES[i % NODE_TYPES.len()];
+        let _ = ctx
+            .http
+            .post(&spawn_url)
+            .json(&json!({"node_type": node_type}))
+            .send()
+            .await;
+    }
+    // Brief wait so the spawned subprocesses appear in /api/spawned before the next
+    // primitive picks targets.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 
 fn timestamp_ms() -> u64 {
