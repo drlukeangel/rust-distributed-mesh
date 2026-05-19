@@ -605,8 +605,15 @@ rafka-V2-new-mesh/
 2. **`crates/` is library-only.** Things in `crates/` are `[lib]` crates that other crates depend on. They're never `cargo install`-ed standalone. They have no `[[bin]]` section.
 3. **CLIs are products too — `cli/<name>/`.** Operator-facing and consumer-facing CLIs both live under `cli/`. Each is its own crate with `[[bin]]`. They depend on shared library crates from `crates/`.
 4. **Two CLIs by audience:**
-   - **`cli/rfa/`** — operator CLI. Admin commands (mesh topology, node management, health, cluster ops). Talks to `topology-ui`'s internal API surface. Ships with the cluster deployment.
-   - **`cli/rf/`** — consumer CLI (future, when sprint-09+ external API exists). Produce/fetch/admin from customer perspective. Talks to gateway's external API surface. Ships standalone (homebrew, cargo install, debian package).
+   - **`cli/rfa/`** — **rafka admin** (operator CLI). Talks to `topology-ui`'s internal API surface. Ships with the cluster deployment.
+   - **`cli/rf/`** — **rafka** (consumer CLI, future when sprint-12+ external API exists). Talks to gateway's external API surface. Ships standalone.
+
+### Naming etymology
+
+- **`rf`** = "rafka" (the product brand; consumer CLI).
+- **`rfa`** = "rafka admin" (operator CLI; the `a` is `admin`).
+
+**Command grammar is NOT locked here** — it's derived from the OpenAPI spec of the backend each CLI targets (topology-ui for rfa, gateway for rf). Grammar surfaces when the respective backend APIs are designed (sprint-10+ for rfa expansion; sprint-12+ for rf).
 
 ### Rationale
 
