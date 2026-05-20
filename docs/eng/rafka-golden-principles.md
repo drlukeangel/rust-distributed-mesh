@@ -2,8 +2,6 @@
 
 This document defines the core, unshakeable architectural tenets of the Rafka streaming engine. Every new feature, pull request, and refactor must be evaluated against these principles. If a design violates one of these rules, it is fundamentally incompatible with the Rafka philosophy.
 
-> **v2 note:** Ported from `rafka/docs/eng/rafka-golden-principles.md`. The principles apply to v2 substrate work as well — most importantly principle #11 (Serialization) which mandates `postcard` for internal mesh RPC, and principle #7 (Per-message observability) which v2 has implemented from day one via the trace-id-embedded `InternalMeshFrame`. v2 has not yet built the broker (#2), unified WAL (#3), WASM compute (#4), or election (#12) layers — those principles are forward-looking spec.
-
 ---
 
 ## 1. The Gateway is Stateless (The Edge)
@@ -50,7 +48,7 @@ Observability is not a bolt-on product or a library operators wire in manually. 
     *   Telemetry spans flow through the same substrate as user data — no separate trace backend, no separate query surface, no separate auth surface.
     *   Self-instrumentation suppression (F-46 D1.1) is enforced via the `FLAG_IS_SYSTEM_TELEMETRY` bitflag at payload construction, never via async context tricks that break across `tokio::spawn`.
     *   Per-message observability extends transparently to connector-sourced records, batch-query operations, compute-stage emits, and derived records.
-*   **v2 status:** SHIPPED. `crates/rafka-mesh-ops/src/lib.rs::InternalMeshFrame` carries the W3C trace context in its wire header (`trace_id` 16 bytes + `span_id` 8 bytes + flags). Every peer.connected, frame.sent, frame.received, heartbeat, and chaos.primitive span propagates the parent trace context across QUIC hops via `set_parent(parent_ctx)`.
+*   **Reference:** [`per-message-observability.md`](per-message-observability.md) — full end-to-end walkthrough.
 
 ## 8. Rafka IS the Substrate; Legacy Brokers Are Migration Bridges, Not Steady-State Peers
 Rafka's value proposition is unified substrate behavior — broker, compute, state, storage, and observability as ONE surface. Legacy messaging brokers (Kafka, NATS, RabbitMQ, ActiveMQ, Kinesis, MQTT, Fluvio) are systems Rafka **replaces over time**, not systems Rafka **integrates with permanently**. External state stores (Redis) and alternate storage backends (direct filesystem as a connector) compete with Rafka's native primitives and ARE rejected.
@@ -96,7 +94,6 @@ When choosing a serialization format for a new subsystem, evaluate who reads it 
     *   **Keep `serde_json` for human-read/external data:** REST APIs, Audit logs (so SREs can pipe `__rafka_audit_log` through `jq`), Theme YAMLs, and config files.
     *   **Use `postcard` for internal data read ONCE:** Gateway↔Broker trusted mesh RPC payloads, `InternalMeshFrame` auxiliary data, control-plane events, and compacted internal topics (e.g., `__system_compiled_acls`).
     *   **Use `rkyv` for internal data read MANY TIMES:** Data that gets heavily queried, enabling zero-copy memory mapping directly from disk.
-*   **v2 status:** SHIPPED. `rafka-mesh-ops::InternalMeshFrame` uses `postcard 1` with `alloc` feature. Encoding via `postcard::to_allocvec` / decode via `postcard::from_bytes`. Verified end-to-end: 14 frame.sent spans (Hello + Ping + Pong) + 3 cross-process hello_received decodes with correct peer_mesh_id + node_type extraction.
 
 ## 12. Election Is QUIC-Mesh-Native; Not Raft
 Rafka does not use Raft for coordinator election or replication consensus. Election is a **QUIC-mesh-native primitive** built on the existing peer-discovery + heartbeat substrate. The coordinator role rotates between gateway peers via heartbeat broadcast over the QUIC mesh; on heartbeat-timeout the lowest-ID surviving peer claims the role with a monotonically-incremented term.
