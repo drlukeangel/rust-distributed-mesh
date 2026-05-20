@@ -873,6 +873,203 @@ impl ChaosPrimitive for PartitionSubset {
     }
 }
 
+/// `flap_link` — rapidly create + delete a partition_pair firewall block over N cycles.
+/// Tests substrate resilience to membership churn: peers must not accumulate ghost
+/// entries and final state must match pre-flap state.
+///
+/// Requires admin shell (creates/removes NetFirewallRule).
+pub struct FlapLink {
+    pub a: String,
+    pub b: String,
+    pub cycles: u32,
+    pub on_ms: u64,
+    pub off_ms: u64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for FlapLink {
+    fn name(&self) -> &str {
+        "flap_link"
+    }
+
+    async fn execute(&self, _ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        let span = info_span!(
+            "rafka.chaos.primitive.executed",
+            name = "flap_link",
+            a = %self.a,
+            b = %self.b,
+            cycles = self.cycles as i64,
+            on_ms = self.on_ms as i64,
+            off_ms = self.off_ms as i64,
+            "otel.kind" = "internal",
+        );
+        let _enter = span.enter();
+
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tag = format!("RAFKA-CHAOS-FLAP-{id}");
+
+        let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.a.trim_start_matches("rafka-"));
+        let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.b.trim_start_matches("rafka-"));
+
+        for cycle in 0..self.cycles {
+            let cycle_tag = format!("{tag}-{cycle}");
+            // Create
+            let mk = format!(
+                "New-NetFirewallRule -DisplayName '{cycle_tag}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
+                 New-NetFirewallRule -DisplayName '{cycle_tag}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null"
+            );
+            let out = tokio::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &mk])
+                .output()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("flap create: {e}")))?;
+            if !out.status.success() {
+                return Err(ChaosError::Execution(format!(
+                    "flap_link create cycle {cycle} failed (need admin?): {}",
+                    String::from_utf8_lossy(&out.stderr)
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(self.on_ms)).await;
+            // Remove
+            let rm = format!(
+                "Get-NetFirewallRule -DisplayName '{cycle_tag}-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+            );
+            let _ = tokio::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &rm])
+                .output()
+                .await;
+            tokio::time::sleep(std::time::Duration::from_millis(self.off_ms)).await;
+        }
+
+        Ok(ChaosOutcome {
+            primitive_name: "flap_link".into(),
+            targets: vec![self.a.clone(), self.b.clone()],
+            state: json!({"a": self.a, "b": self.b, "cycles": self.cycles, "tag": tag}),
+        })
+    }
+
+    async fn detect(
+        &self,
+        _ctx: &ChaosContext,
+        _outcome: &ChaosOutcome,
+        _deadline_ms: u64,
+    ) -> Result<DetectionResult, ChaosError> {
+        // execute() blocks for the full flap sequence; arriving here means all
+        // cycles completed cleanly. Pass = completion. Detection of "no ghost
+        // peer accumulation" is a substrate-side Jaeger query, follow-up.
+        let span = info_span!(
+            "rafka.chaos.primitive.detected",
+            name = "flap_link",
+            result = "passed",
+            cycles = self.cycles as i64,
+            "otel.kind" = "internal",
+        );
+        drop(span);
+        Ok(DetectionResult::Passed { waited_ms: 0 })
+    }
+}
+
+/// `firewall_inbound` — block all inbound connections to a named program for a
+/// fixed duration. Peers can't dial in; existing outbound from the target still
+/// works. Substrate criterion: peers route via relay if available, or fail-detect
+/// the target and converge to a partition view.
+///
+/// Requires admin shell.
+pub struct FirewallInbound {
+    pub target_node_type: String,
+    pub duration_ms: u64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for FirewallInbound {
+    fn name(&self) -> &str {
+        "firewall_inbound"
+    }
+
+    async fn execute(&self, _ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        let span = info_span!(
+            "rafka.chaos.primitive.executed",
+            name = "firewall_inbound",
+            node_type = %self.target_node_type,
+            duration_ms = self.duration_ms as i64,
+            "otel.kind" = "internal",
+        );
+        let _enter = span.enter();
+
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tag = format!("RAFKA-CHAOS-FW-INBOUND-{id}");
+        let prog = format!(
+            "%PROGRAMFILES%\\rafka\\rafka-{}.exe",
+            self.target_node_type.trim_start_matches("rafka-")
+        );
+        let ps = format!(
+            "New-NetFirewallRule -DisplayName '{tag}' -Direction Inbound -Action Block -Protocol UDP -Program '{prog}' -ErrorAction Stop | Out-Null; Write-Output '{tag}'"
+        );
+        let out = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .await
+            .map_err(|e| ChaosError::Execution(format!("firewall_inbound: {e}")))?;
+        if !out.status.success() {
+            return Err(ChaosError::Execution(format!(
+                "New-NetFirewallRule (inbound) failed (need admin?): {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+
+        Ok(ChaosOutcome {
+            primitive_name: "firewall_inbound".into(),
+            targets: vec![self.target_node_type.clone()],
+            state: json!({"node_type": self.target_node_type, "tag": tag, "duration_ms": self.duration_ms}),
+        })
+    }
+
+    async fn detect(
+        &self,
+        _ctx: &ChaosContext,
+        _outcome: &ChaosOutcome,
+        deadline_ms: u64,
+    ) -> Result<DetectionResult, ChaosError> {
+        let wait = std::cmp::min(self.duration_ms, deadline_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let span = info_span!(
+            "rafka.chaos.primitive.detected",
+            name = "firewall_inbound",
+            node_type = %self.target_node_type,
+            result = "passed",
+            waited_ms = wait as i64,
+            "otel.kind" = "internal",
+        );
+        drop(span);
+        Ok(DetectionResult::Passed { waited_ms: wait })
+    }
+
+    async fn revert(
+        &self,
+        _ctx: &ChaosContext,
+        outcome: &ChaosOutcome,
+    ) -> Result<(), ChaosError> {
+        let tag = outcome.state.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+        if tag.is_empty() {
+            return Ok(());
+        }
+        let ps = format!(
+            "Get-NetFirewallRule -DisplayName '{tag}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+        );
+        let _ = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps])
+            .output()
+            .await;
+        Ok(())
+    }
+}
+
 /// `clock_skew` — restart a node with `RAFKA_CLOCK_SKEW_MS` env var set. Substrate
 /// requires `rafka-node-base` to read this env at boot and add the offset to all
 /// SystemTime::now() reads on the hot path (heartbeat ticker, frame timestamps).

@@ -174,6 +174,26 @@ enum ChaosCmd {
         #[arg(long, default_value = "5000")]
         duration_ms: u64,
     },
+    /// Repeatedly create+remove a firewall block over N cycles (NEEDS ADMIN)
+    FlapLink {
+        #[arg(long)]
+        a: String,
+        #[arg(long)]
+        b: String,
+        #[arg(long, default_value = "5")]
+        cycles: u32,
+        #[arg(long, default_value = "500")]
+        on_ms: u64,
+        #[arg(long, default_value = "500")]
+        off_ms: u64,
+    },
+    /// Block inbound UDP to a named program for `--duration_ms` (NEEDS ADMIN)
+    FirewallInbound {
+        #[arg(long, default_value = "broker")]
+        target_type: String,
+        #[arg(long, default_value = "5000")]
+        duration_ms: u64,
+    },
     /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
     Soak {
         /// Total duration (e.g. 5m, 1h, 24h)
@@ -342,6 +362,14 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     "mesh chaos partition-subset".into(),
                     format!("--size {size} --duration-ms {duration_ms}"),
                 ),
+                ChaosCmd::FlapLink { a, b, cycles, on_ms, off_ms } => (
+                    "mesh chaos flap-link".into(),
+                    format!("--a {a} --b {b} --cycles {cycles} --on-ms {on_ms} --off-ms {off_ms}"),
+                ),
+                ChaosCmd::FirewallInbound { target_type, duration_ms } => (
+                    "mesh chaos firewall-inbound".into(),
+                    format!("--target-type {target_type} --duration-ms {duration_ms}"),
+                ),
                 ChaosCmd::Soak { duration, interval, seed } => (
                     "mesh chaos soak".into(),
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
@@ -408,6 +436,13 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 }
                 ChaosCmd::PartitionSubset { size, duration_ms } => {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::PartitionSubset { subset_size: *size, duration_ms: *duration_ms }), duration_ms + 5000).await
+                }
+                ChaosCmd::FlapLink { a, b, cycles, on_ms, off_ms } => {
+                    let total = (*cycles as u64) * (*on_ms + *off_ms);
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::FlapLink { a: a.clone(), b: b.clone(), cycles: *cycles, on_ms: *on_ms, off_ms: *off_ms }), total + 5000).await
+                }
+                ChaosCmd::FirewallInbound { target_type, duration_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::FirewallInbound { target_node_type: target_type.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
                 }
                 ChaosCmd::Soak { duration, interval, seed } => {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await

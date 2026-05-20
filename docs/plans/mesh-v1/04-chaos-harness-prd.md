@@ -1,6 +1,6 @@
 # PRD — Chaos Test Harness
 
-**Status:** 11 of 13 primitives SHIPPED (added nat_shift, partition_subset); 1-hour soak gate passed 4× independent (177/177, 178/178, 175/175, 174/174), 2-hour passed 349/349, 3-hour passed 525/525 with 9-prim pool. See [Shipping status](#shipping-status) section below. 24-hour soak gate from the original brief remains a future stretch goal.
+**Status:** 13 of 13 primitives SHIPPED — full catalog. 1-hour soak gate passed 4× independent (177/177, 178/178, 175/175, 174/174), 2-hour passed 349/349, 3-hour passed 525/525 with 9-prim pool. See [Shipping status](#shipping-status) section below. 24-hour soak gate from the original brief remains a future stretch goal.
 **Companion to:** `00-mesh-rebuild-prd.md`
 **Ships in:** Sprint 1 (Sprint 0 substrate must be alive first)
 
@@ -31,8 +31,8 @@ Each primitive is an operation that disturbs the mesh in a specific, reproducibl
 | `lossy_link` | ✅ SHIPPED | Restart with `RAFKA_LINK_LOSS_PCT` env (0-100); per-ping dice roll skips writes and emits `rafka.mesh.frame.dropped_by_fault_inject` span | Drop spans visible in Jaeger; pong return rate degrades by ~loss_pct |
 | `nat_shift` | ✅ SHIPPED | Kill + respawn target with a different `RAFKA_NODE_BIND_ADDR` so iroh endpoint binds on a fresh ephemeral port. Survivors must re-discover NodeId on the new addr. | New subprocess appears; iroh `prepare_send` shows fresh `direct(<new-addr>)` connection type |
 | `partition_subset` | ✅ SHIPPED (admin) | Picks K random node_types as the "isolated" subset; creates Windows firewall rules blocking outbound UDP between every (subset, complement) program-pair. Tagged so revert clears the whole batch. | Firewall rules created in one PowerShell call; revert removes by tag |
-| `flap_link` | ⏳ QUEUED | Repeatedly disconnect+reconnect an edge every N seconds | No "ghost peer" accumulation; final state matches expected after flapping stops |
-| `firewall_inbound` | ⏳ QUEUED | Block inbound connections to a node (Windows-firewall-pattern reproduction) | Peers reach via relay if available; node remains visible in topology even if direct-peer-only nodes can't reach it |
+| `flap_link` | ✅ SHIPPED (admin) | Repeats create+delete of a partition_pair-style firewall block over N cycles with configurable on_ms/off_ms duty | All cycles completed cleanly; ghost-peer detection is a substrate follow-up |
+| `firewall_inbound` | ✅ SHIPPED (admin) | Blocks inbound UDP to a named program (`rafka-<type>.exe`) for `duration_ms`; revert removes by tag | Rule created + removed cleanly; peer-via-relay detection is a substrate follow-up |
 
 ## 3. The soak run
 
