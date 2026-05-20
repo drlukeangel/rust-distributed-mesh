@@ -1,0 +1,3372 @@
+{
+  "seed": 2200,
+  "started_ms": 1779241715898,
+  "ended_ms": 1779248929504,
+  "event_count": 349,
+  "passed": 349,
+  "failed_timeout": 0,
+  "failed_assertion": 0,
+  "events": [
+    {
+      "timestamp_ms": 1779241720052,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n16680"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779241740126,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-b199d498"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241760730,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-d7293e9b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241781338,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-cc46da95",
+        "gateway-1f12488f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241801426,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-4078821a",
+        "gateway-c1275274"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241821518,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-1f12488f",
+        "gateway-31bf16a7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241841594,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-14704fed",
+        "gateway-2dd03926"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241861663,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-4fd50a66"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241885237,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14500"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779241908847,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14500"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779241929014,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-c1275274",
+        "gateway-93aaf9fb"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241949107,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-93aaf9fb",
+        "gateway-31bf16a7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241969714,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-6901f969"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779241990327,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-99251afa",
+        "broker-2d682951"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242010387,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-2dd03926"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242033967,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14500"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242054047,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-99648fc9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242074835,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-2dd03926"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242094907,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ce8948fe"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242115526,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-2d682951",
+        "broker-8ff5992a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242135623,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-2dd03926",
+        "gateway-e7c5417b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242155690,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-8ff5992a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242176295,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-4fd50a66"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242196906,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-990cd491",
+        "gateway-8e9dc62e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242220489,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n17204"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242240546,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-2b7befd0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242260642,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-e7c5417b",
+        "gateway-47d8c11a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242280718,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-47d8c11a",
+        "gateway-afd6a0d8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242300802,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-2b7befd0",
+        "gateway-c04d19ab"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242320886,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-c04d19ab",
+        "gateway-d2767381"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242340974,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-8e9dc62e",
+        "gateway-d07e5894"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242361062,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-d2767381",
+        "gateway-58dc2a34"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242381118,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-afd6a0d8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242401206,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-a463680a",
+        "gateway-4ae22f8e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242421294,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-4ae22f8e",
+        "gateway-d07e5894"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242442127,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-47b4d947",
+        "gateway-5b634331"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242462210,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-25407336",
+        "broker-3e5b20ea"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242485783,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n41804"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242509334,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n41804"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242529411,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-3e5b20ea"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242549490,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-5b634331",
+        "gateway-5f8af2b4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242573079,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n41804"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242593162,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-5f8af2b4",
+        "gateway-b897b8ed"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242616730,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n41804"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242636814,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-58dc2a34",
+        "gateway-2fb269c5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242656910,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-2fb269c5",
+        "broker-3e5b20ea"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242677535,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-afd6a0d8",
+        "gateway-771452df"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242697642,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-48287fce",
+        "gateway-611234d7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242717726,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-b897b8ed",
+        "gateway-213c6ac6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242737806,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-d6c5e2d4",
+        "broker-4816b94a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242757890,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-213c6ac6",
+        "broker-4816b94a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242778490,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-771452df"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242798558,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-611234d7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242822657,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n7220"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779242842734,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-771452df"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242863319,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-e6f7a332"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242883402,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-e6f7a332",
+        "gateway-6f4440c3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242904130,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-688cb5ff",
+        "broker-96b9bbfe"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242924443,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-96b9bbfe",
+        "broker-8a44b68d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242944523,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-8a44b68d",
+        "broker-aab209d4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242964610,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-190e5b42",
+        "broker-0285eba3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779242984706,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-0285eba3",
+        "broker-e1fc3d1d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243008543,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n15200"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243028615,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-aab209d4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243048703,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-d6459f3a",
+        "gateway-5221855b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243068794,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-e1fc3d1d",
+        "gateway-5221855b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243089411,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-db89a928",
+        "gateway-ac905b83"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243109650,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-c5daee55",
+        "gateway-1c89c286"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243129734,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-1c89c286",
+        "gateway-8a25fc2d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243150046,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-aab209d4",
+        "broker-4841d831"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243170134,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ac905b83",
+        "gateway-09a4357b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243190227,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-09a4357b",
+        "gateway-8a25fc2d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243211054,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-ce039953"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243231675,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-696a3d6d",
+        "gateway-c7ecc702"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243251770,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-5da284e4",
+        "broker-4841d831"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243272370,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-97da4d25"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243292454,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-28d1e220",
+        "gateway-c7cee36a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243312526,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-97da4d25",
+        "gateway-ae6c3268"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243336111,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n59100"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243356211,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-c7cee36a",
+        "gateway-10663022"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243379791,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n32708"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243399859,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-c7ecc702"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243424543,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n56972"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243444635,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-2b97b797",
+        "broker-91e2d2c8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243465239,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-0eeaa8eb",
+        "gateway-077ba5fa"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243485326,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-077ba5fa",
+        "gateway-1441ff03"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243505411,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ae6c3268",
+        "gateway-7f3e0812"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243525502,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-10663022",
+        "gateway-5a2ba9c7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243545579,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-7f3e0812",
+        "gateway-f715993f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243565662,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-b0adddc1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243586270,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-46f3f4d9",
+        "gateway-ed7a07e8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243606338,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ed7a07e8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243626939,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-f715993f",
+        "gateway-22146c82"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243650581,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14700"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243670667,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-22146c82",
+        "gateway-a411e82b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243690738,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-1441ff03"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243710810,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-1441ff03",
+        "gateway-d863fc4b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243730882,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-d863fc4b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243754990,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14700"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243775082,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-5a2ba9c7",
+        "gateway-516874e9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243798710,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14700"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243822262,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14700"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779243842346,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-91a72186",
+        "gateway-e32385ba"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243862446,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-e32385ba",
+        "gateway-cda585bc"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243883067,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-516874e9",
+        "gateway-f910ac46"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243903679,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-d2614cdf",
+        "broker-28a1fd9b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243923762,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-a411e82b",
+        "broker-87caa0b6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243944383,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-4e3db01a",
+        "broker-28a1fd9b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243965002,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-43a63ebb",
+        "gateway-6c53656d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779243985090,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-14c4d584",
+        "broker-c895c093"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244005166,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-c895c093",
+        "broker-e86984d6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244025238,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-6c53656d",
+        "gateway-9c81147e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244045326,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-71d1ca7a",
+        "gateway-13b8c830"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244069116,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n71684"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779244089194,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-ff69b0b5",
+        "broker-648aa27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244109278,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-9c81147e",
+        "gateway-7812ef74"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244129362,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-e86984d6",
+        "broker-7ee569a8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244149666,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-7ee569a8",
+        "broker-0615e5f4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244169755,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-13b8c830",
+        "gateway-ef39c27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244189838,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-7812ef74",
+        "gateway-e1a94dd6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244209910,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-0615e5f4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244230498,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-ef39c27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244250575,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-e1a94dd6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244270642,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-ef39c27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244290714,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-648aa27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244311306,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-0cc1e7f2",
+        "gateway-bed8a538"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244331635,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-bed8a538",
+        "gateway-c0b2c24c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244351722,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-a2b7653c",
+        "gateway-ef39c27c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244372334,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-db28ea34",
+        "broker-17495bae"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244392431,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-e1a94dd6",
+        "gateway-d60a06d4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244415993,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n33472"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779244436079,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-17495bae"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244456702,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-d60a06d4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244476782,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-d60a06d4",
+        "gateway-ed566228"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244496866,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ed566228",
+        "gateway-c79ba5e7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244516954,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-f5cfecef",
+        "gateway-5c5de9b6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244537038,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-c0b2c24c",
+        "gateway-1c17771b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244557646,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-e32c5d57"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244577731,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-c79ba5e7",
+        "gateway-e21a1503"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244597815,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-4c0465d5",
+        "gateway-cb4f5933"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244617894,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-e21a1503",
+        "gateway-e21b56f1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244637991,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-e21b56f1",
+        "gateway-cb4f5933"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244658598,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-b430a4ad",
+        "gateway-bfe61143"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244678679,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-e32c5d57"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244699282,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-fa79b625",
+        "broker-5105bdf1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244719374,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-5105bdf1",
+        "broker-8453f160"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244739459,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-5c5de9b6",
+        "gateway-b09cceaf"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244760294,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-bfe61143",
+        "gateway-129845f8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244780362,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-8453f160"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244800498,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-129845f8",
+        "gateway-38c1c9a5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244820587,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-8453f160",
+        "broker-e455691e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244840678,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-31cd82c4",
+        "broker-74b93c26"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244860758,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-e455691e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244881375,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-139c0456",
+        "gateway-38c1c9a5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244901986,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-0b1eb530",
+        "broker-db358907"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244922059,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-db358907"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244942159,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-5b949841",
+        "broker-db358907"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244963014,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-74b93c26",
+        "broker-17f2fd1f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779244983091,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-51f53f5e",
+        "broker-b8edad32"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245006712,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n56704"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245026790,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-32a7200b",
+        "gateway-4bc95ab5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245046878,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-4bc95ab5",
+        "gateway-ddb98d5e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245067182,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-ddb98d5e",
+        "gateway-5d1246bb"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245087270,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-5d1246bb",
+        "gateway-195df8a4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245110878,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n55860"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245130959,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-b8edad32",
+        "broker-dbb4e07c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245151023,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-195df8a4"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245171146,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-53db8699",
+        "broker-17f2fd1f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245191746,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-ba72ec0a",
+        "gateway-736d3708"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245215541,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n14284"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245235634,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-6fa3b9a6",
+        "broker-33f2aadd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245255722,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-195df8a4",
+        "gateway-492b8fd1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245275814,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-33f2aadd",
+        "broker-de754bf1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245295902,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-de754bf1",
+        "broker-cd8ee3e3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245315978,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-cd8ee3e3",
+        "broker-49c20168"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245336058,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-49c20168",
+        "broker-1cb03eac"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245356126,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-736d3708"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245376734,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-8abecc2f",
+        "gateway-f44ba4de"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245396822,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-492b8fd1",
+        "broker-1cb03eac"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245417423,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-2ef390e7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245438026,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-f44ba4de"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245458638,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-f5b98e67",
+        "broker-3108e2b8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245482464,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n72728"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245502554,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-0c1a8178",
+        "gateway-725c8b5f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245526128,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n72728"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245546199,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-3108e2b8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245566794,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-725c8b5f",
+        "gateway-54c3a762"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245586855,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-dbb4e07c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245606919,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-2874a03c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245626986,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-2874a03c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245647075,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-79a5d2bb",
+        "gateway-54c3a762"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245667706,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-2874a03c",
+        "gateway-7ee8abfd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245687775,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-7ee8abfd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245711352,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n20312"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245731435,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-becc12cc",
+        "broker-a2afe6f5"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245751514,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-6bb1e9b1",
+        "gateway-7ee8abfd"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245772138,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-dbb4e07c",
+        "broker-65162de2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245792463,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-a2afe6f5",
+        "broker-6e8dcd13"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245812551,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-6e8dcd13",
+        "broker-f55f5249"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245832643,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-65162de2",
+        "broker-a4b81df3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245852722,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-15fbc8e1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245873327,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-f55f5249",
+        "broker-098e01af"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245897154,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n48316"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245917246,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-a4b81df3",
+        "gateway-54876db7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245937862,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-e44891bd",
+        "gateway-262d0181"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779245961460,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n60672"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779245981542,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-b80fb0b1",
+        "broker-9d906b24"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246001627,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-262d0181",
+        "gateway-e211f487"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246021706,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-dc62bb80",
+        "gateway-3ae74830"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246045453,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n60672"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246065518,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-098e01af"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246085595,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-9d906b24"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246105694,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-9d906b24",
+        "broker-e06dca24"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246125768,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-e211f487"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246145851,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-098e01af",
+        "broker-fcd9a877"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246165943,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-e06dca24",
+        "broker-14d9485f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246186027,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-fcd9a877",
+        "broker-3daca9d1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246206098,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-3daca9d1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246226702,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-e211f487"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246247318,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-3ae74830",
+        "gateway-58cd3fe6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246270165,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-e4012129",
+        "gateway-388e825b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246290249,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-388e825b",
+        "gateway-6b25afc3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246310321,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-58cd3fe6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246333893,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n49952"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246353971,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-d60bd26d",
+        "gateway-8c0f9e58"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246374054,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-14d9485f",
+        "broker-4436a9e7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246397892,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n33304"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246418123,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-6b25afc3",
+        "gateway-4fb7def6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246438214,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-4fb7def6",
+        "gateway-ca51bc95"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246458306,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-4436a9e7",
+        "broker-b24a36ef"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246478399,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-ca51bc95",
+        "gateway-eba1725d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246498470,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-58cd3fe6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246519062,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-eba1725d",
+        "gateway-4718e1e0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246539150,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-8c0f9e58",
+        "gateway-8adabbec"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246559216,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-45c2b341"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246582800,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n53388"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246602894,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-4718e1e0",
+        "gateway-30eb5b78"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246626464,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n18488"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246646555,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-45c2b341",
+        "gateway-3c8e7016"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246666627,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-3c8e7016"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246686699,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-30eb5b78"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246706782,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-3c8e7016",
+        "gateway-713a1d20"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246727102,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-30eb5b78",
+        "gateway-4bc2f12e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246747182,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-4bc2f12e",
+        "gateway-b4eb925f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246767259,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-b4eb925f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246787322,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-b4eb925f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246807410,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-8adabbec",
+        "gateway-404a5d9d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246827483,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-713a1d20"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246847566,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-404a5d9d",
+        "gateway-687ded86"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246867650,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-687ded86",
+        "gateway-0e7e0a60"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246887746,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-0e7e0a60",
+        "gateway-23c15f0a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246911334,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n79012"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779246931414,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-b4eb925f",
+        "gateway-8c1d5a1d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246951482,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-23c15f0a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246971559,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-23c15f0a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779246992151,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-8c1d5a1d",
+        "gateway-f5a458a1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247012234,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-b24a36ef",
+        "broker-c051871f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247032322,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-713a1d20",
+        "gateway-b614d93b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247052415,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-6fd16a7d",
+        "gateway-76f703e1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247072502,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-b614d93b",
+        "gateway-faa447e7"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247092590,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-f5a458a1",
+        "gateway-76f703e1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247113214,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-faa447e7",
+        "broker-6fe073f0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247137332,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n16296"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779247157406,
+      "primitive": "kill_node",
+      "targets": [
+        "broker-c051871f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247177994,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-46f3ef7c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247198591,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-267004bc",
+        "broker-390b155b"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247218670,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-4950a373"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247239255,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-6c71b995"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247259858,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-663443c0",
+        "gateway-35f17895"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247279942,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-390b155b",
+        "broker-23cd842c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247300031,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-35f17895",
+        "gateway-b2d0a18d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247320630,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-e2cebc1c",
+        "broker-06c33046"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247344221,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n15068"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779247364307,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-06c33046",
+        "broker-e5cab8df"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247384390,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-eb844276",
+        "gateway-152a93b2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247404486,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-23cd842c",
+        "gateway-152a93b2"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247425095,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-e5cab8df",
+        "broker-e7a70cf1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247445187,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-e7a70cf1",
+        "gateway-12859dad"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247465779,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-1faca8a8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247485858,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-147963bd",
+        "gateway-78c8302c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247505923,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-1faca8a8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247526003,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-ad9bae8b",
+        "broker-ca903a9a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247546860,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-a9e3b331",
+        "broker-376e7cb1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247566942,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-437cb7a7",
+        "gateway-b55c292e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247587030,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-78c8302c",
+        "gateway-d39e980d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247610605,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n29612"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779247630695,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-1faca8a8",
+        "broker-b6edd016"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247650795,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-b55c292e",
+        "broker-376e7cb1"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247671435,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-f5f54a45"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247692126,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-d39e980d",
+        "gateway-ea4e78fa"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247712210,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-b6edd016",
+        "broker-30cc3068"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247732294,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-ea4e78fa",
+        "gateway-3c17d935"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247752374,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-30cc3068",
+        "broker-badbcfc0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247772458,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-e2834fd5",
+        "broker-f9ae6e95"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247792530,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-badbcfc0",
+        "broker-161f522a"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247816229,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n28084"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779247836306,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-161f522a",
+        "broker-44444f93"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247856394,
+      "primitive": "burst_kill",
+      "targets": [
+        "broker-44444f93",
+        "broker-f9ae6e95"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247877011,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-0db63665",
+        "gateway-85ecca84"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247897107,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-af2e1a03",
+        "gateway-03f6e92d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247917190,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-85ecca84",
+        "gateway-a09dfe63"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247937270,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-a09dfe63",
+        "gateway-620390fc"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779247960832,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n22124"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779247980895,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-123555a0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248000982,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-03f6e92d",
+        "gateway-116ea369"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248021042,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-620390fc"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248041118,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-123555a0"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248061190,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-620390fc"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248081258,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-3c17d935"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248105454,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n19712"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248125535,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-ae2e7e76"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248146138,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-123555a0",
+        "broker-0bbcfdf9"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248166218,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-0bbcfdf9",
+        "broker-ba35a6e8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248189792,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n18744"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248209850,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-116ea369"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248229918,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-ba35a6e8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248250014,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-620390fc",
+        "gateway-108ec68f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248270087,
+      "primitive": "disk_full",
+      "targets": [
+        "broker-ba35a6e8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248290178,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-ba35a6e8",
+        "broker-0f1fbc51"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248310266,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-116ea369",
+        "gateway-3bdc140c"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248330359,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-3bdc140c",
+        "broker-0f1fbc51"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248354448,
+      "primitive": "wedge_node",
+      "targets": [
+        "broker:0\r\n29084"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248374530,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-108ec68f",
+        "gateway-2048c09f"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248394606,
+      "primitive": "slow_link",
+      "targets": [
+        "gateway-2048c09f",
+        "gateway-49099063"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248414691,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-2e744e85",
+        "broker-42faf0c3"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248434750,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-05eebf94"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248454842,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-42faf0c3",
+        "broker-5981b7be"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248474918,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-49099063"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248495566,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-5981b7be",
+        "broker-d0a6f4ac"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248515658,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-05eebf94",
+        "gateway-ae524d69"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248535742,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-ae524d69",
+        "gateway-f50d1d70"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248559331,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n53396"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248579415,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-4f53cd70"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248603523,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n39584"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248623611,
+      "primitive": "burst_kill",
+      "targets": [
+        "gateway-4354453c",
+        "gateway-8ead13ba"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248644226,
+      "primitive": "clock_skew",
+      "targets": [
+        "gateway-f50d1d70",
+        "gateway-fba0cebe"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248664302,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-d0a6f4ac",
+        "broker-601bd98d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248684374,
+      "primitive": "lossy_link",
+      "targets": [
+        "broker-ac0017cb",
+        "broker-9c110db8"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248704458,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-57e166cc",
+        "gateway-05e452c6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248724551,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-fba0cebe",
+        "gateway-31757651"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248744755,
+      "primitive": "lossy_link",
+      "targets": [
+        "gateway-31757651",
+        "gateway-80da7d84"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248764830,
+      "primitive": "clock_skew",
+      "targets": [
+        "broker-9c110db8",
+        "broker-acae418d"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248784895,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-80da7d84"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248804983,
+      "primitive": "kill_node",
+      "targets": [
+        "gateway-05e452c6"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248825602,
+      "primitive": "restart_node",
+      "targets": [
+        "gateway-80da7d84",
+        "gateway-0714ed98"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248845686,
+      "primitive": "restart_node",
+      "targets": [
+        "broker-601bd98d",
+        "broker-3fe8fb0e"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248865771,
+      "primitive": "slow_link",
+      "targets": [
+        "broker-acae418d",
+        "broker-264a0301"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    },
+    {
+      "timestamp_ms": 1779248889426,
+      "primitive": "wedge_node",
+      "targets": [
+        "gateway:0\r\n73724"
+      ],
+      "detection": "Passed",
+      "waited_ms": 3000
+    },
+    {
+      "timestamp_ms": 1779248909495,
+      "primitive": "disk_full",
+      "targets": [
+        "gateway-0ca94866"
+      ],
+      "detection": "Passed",
+      "waited_ms": 0
+    }
+  ]
+}
