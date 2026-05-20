@@ -196,6 +196,11 @@ enum ChaosCmd {
     },
     /// List every shipped chaos primitive with sample CLI invocation + admin flag
     Catalog,
+    /// Pretty-print a soak report JSON (e.g. E:/tmp/rafka-chaos-soak-<seed>.json)
+    Report {
+        /// Soak seed used as filename suffix
+        seed: u64,
+    },
     /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
     Soak {
         /// Total duration (e.g. 5m, 1h, 24h)
@@ -373,6 +378,7 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     format!("--target-type {target_type} --duration-ms {duration_ms}"),
                 ),
                 ChaosCmd::Catalog => ("mesh chaos catalog".into(), "".into()),
+                ChaosCmd::Report { seed } => ("mesh chaos report".into(), format!("{seed}")),
                 ChaosCmd::Soak { duration, interval, seed } => (
                     "mesh chaos soak".into(),
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
@@ -448,6 +454,7 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::FirewallInbound { target_node_type: target_type.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
                 }
                 ChaosCmd::Catalog => cmd_chaos_catalog().await,
+                ChaosCmd::Report { seed } => cmd_chaos_report(*seed).await,
                 ChaosCmd::Soak { duration, interval, seed } => {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
                 }
@@ -487,6 +494,59 @@ async fn cmd_chaos_restart(api_url: &str, target: Option<String>, deadline_ms: u
         rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
         _ => Err(anyhow!("detection failed")),
     }
+}
+
+/// Pretty-print a soak report by seed. Reads E:/tmp/rafka-chaos-soak-<seed>.json
+/// (the location run_soak writes to) and prints a human summary: event count,
+/// pass/fail/timeout breakdown, primitive distribution, duration, last failure
+/// snippet if any.
+async fn cmd_chaos_report(seed: u64) -> Result<()> {
+    let path = format!("E:/tmp/rafka-chaos-soak-{}.json", seed);
+    let raw = std::fs::read_to_string(&path).map_err(|e| anyhow!("read {path}: {e}"))?;
+    let report: Value = serde_json::from_str(&raw).map_err(|e| anyhow!("parse {path}: {e}"))?;
+    let events = report["event_count"].as_i64().unwrap_or(0);
+    let passed = report["passed"].as_i64().unwrap_or(0);
+    let to = report["failed_timeout"].as_i64().unwrap_or(0);
+    let ass = report["failed_assertion"].as_i64().unwrap_or(0);
+    let started = report["started_ms"].as_i64().unwrap_or(0);
+    let ended = report["ended_ms"].as_i64().unwrap_or(0);
+    let dur_s = (ended - started) as f64 / 1000.0;
+    println!("soak report  seed={seed}  file={path}");
+    println!("  events:   {events}  (passed={passed}  timeouts={to}  assertions={ass})");
+    println!("  duration: {dur_s:.1}s ({:.2}h)", dur_s / 3600.0);
+    let mut by_prim: std::collections::BTreeMap<String, i64> =
+        std::collections::BTreeMap::new();
+    if let Some(arr) = report["events"].as_array() {
+        for e in arr {
+            if let Some(name) = e["primitive"].as_str() {
+                *by_prim.entry(name.to_string()).or_insert(0) += 1;
+            }
+        }
+    }
+    println!("  primitives:");
+    for (p, c) in &by_prim {
+        println!("    {:<18} {c}", p);
+    }
+    // Last failure snippet if any
+    if to + ass > 0 {
+        if let Some(arr) = report["events"].as_array() {
+            println!("  failures:");
+            for e in arr {
+                let det = &e["detection"];
+                if det.is_string() && det.as_str() == Some("Passed") {
+                    continue;
+                }
+                if let Some(obj) = det.as_object() {
+                    if obj.contains_key("Passed") {
+                        continue;
+                    }
+                }
+                let name = e["primitive"].as_str().unwrap_or("?");
+                println!("    {name}: {}", serde_json::to_string(det).unwrap_or_default());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Print the catalog of every shipped chaos primitive with one-line description,
