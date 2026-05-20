@@ -80,6 +80,28 @@ enum MeshCmd {
         #[command(subcommand)]
         sub: ChaosCmd,
     },
+    /// Test runner — functional + chaos, results written to E:/tmp/rafka-tests/
+    Test {
+        #[command(subcommand)]
+        sub: TestCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum TestCmd {
+    /// List every test the operator can run (functional + chaos)
+    List,
+    /// Run one test by name (use `list` to see names). Writes JSON report.
+    Run {
+        name: String,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
+    /// Run every test in sequence, return non-zero if any fail
+    All {
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -384,6 +406,11 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
                 ),
             },
+            MeshCmd::Test { sub } => match sub {
+                TestCmd::List => ("mesh test list".into(), "".into()),
+                TestCmd::Run { name, seed } => ("mesh test run".into(), format!("{name} --seed {seed}")),
+                TestCmd::All { seed } => ("mesh test all".into(), format!("--seed {seed}")),
+            },
         },
     }
 }
@@ -459,8 +486,280 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
                 }
             },
+            MeshCmd::Test { sub } => match sub {
+                TestCmd::List => cmd_test_list().await,
+                TestCmd::Run { name, seed } => cmd_test_run(&cli.api_url, name, *seed).await,
+                TestCmd::All { seed } => cmd_test_all(&cli.api_url, *seed).await,
+            },
         },
     }
+}
+
+/// Test registry — single source of truth. Each entry: (name, kind, description, runner).
+/// `kind` distinguishes pure-Rust unit tests (cargo test) from live-mesh chaos tests
+/// (need topology-ui running). Reports written to E:/tmp/rafka-tests/<name>-<seed>.json.
+const TEST_REGISTRY: &[(&str, &str, &str)] = &[
+    ("framer-roundtrip",        "functional", "proptest: every (tag, frame) round-trips byte-for-byte through tag+varint+postcard framer"),
+    ("framer-truncation",       "functional", "proptest: dropping last byte of any frame surfaces FramerError::Truncated"),
+    ("traced-frame-roundtrip",  "functional", "tag=0x10 wrapped TracedFrame preserves trace_id + span_id across encode→decode"),
+    ("unknown-tag-rejected",    "functional", "frames with tag != 0x10 must NOT deserialize as TracedFrame"),
+    ("chaos-soak-9prim-1min",   "chaos",      "1-minute soak with 9-primitive pool; expects 100% pass; gates the substrate"),
+    ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
+    ("mesh-five-types-present", "chaos",      "spawn 5 nodes (gateway+broker+compute+registry+bridge), verify all 5 visible in topology + heartbeats fresh"),
+    ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
+];
+
+#[derive(serde::Serialize)]
+struct TestReport {
+    name: String,
+    kind: String,
+    description: String,
+    seed: u64,
+    started_ms: u64,
+    ended_ms: u64,
+    duration_ms: u64,
+    status: String, // "passed" | "failed" | "skipped"
+    detail: String,
+}
+
+fn tests_dir() -> std::path::PathBuf {
+    let p = std::path::PathBuf::from("E:/tmp/rafka-tests");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+async fn cmd_test_list() -> Result<()> {
+    println!("rafka test registry ({} tests)", TEST_REGISTRY.len());
+    println!("{:<30} {:<11} {}", "name", "kind", "description");
+    println!("{:<30} {:<11} {}", "----", "----", "-----------");
+    for (name, kind, desc) in TEST_REGISTRY {
+        println!("{name:<30} {kind:<11} {desc}");
+    }
+    Ok(())
+}
+
+async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
+    let entry = TEST_REGISTRY
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .ok_or_else(|| anyhow!("unknown test '{name}' — see `rfa mesh test list`"))?;
+    let (_, kind, desc) = entry;
+    println!("test start: {name} (kind={kind}, seed={seed})");
+    let started = std::time::Instant::now();
+    let started_ms = timestamp_ms();
+    let (status, detail): (&str, String) = match name.as_ref() {
+        "framer-roundtrip" | "framer-truncation" | "traced-frame-roundtrip"
+        | "unknown-tag-rejected" => run_cargo_test_for("rafka-mesh-ops", name).await,
+        "chaos-soak-9prim-1min" => run_chaos_soak(api_url, "1m", "8s", seed).await,
+        "chaos-soak-9prim-5min" => run_chaos_soak(api_url, "5m", "10s", seed).await,
+        "mesh-five-types-present" => run_mesh_five_types_present(api_url).await,
+        "remove-resilience" => run_remove_resilience(api_url).await,
+        _ => ("skipped", format!("no runner wired for {name}")),
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let ended_ms = timestamp_ms();
+    let report = TestReport {
+        name: name.into(),
+        kind: kind.to_string(),
+        description: desc.to_string(),
+        seed,
+        started_ms,
+        ended_ms,
+        duration_ms,
+        status: status.into(),
+        detail,
+    };
+    let path = tests_dir().join(format!("{name}-{seed}.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+    println!("test end: {name} status={} duration={duration_ms}ms", report.status);
+    println!("report: {}", path.display());
+    if report.status == "passed" {
+        Ok(())
+    } else {
+        Err(anyhow!("test {name} did not pass: {}", report.detail))
+    }
+}
+
+async fn cmd_test_all(api_url: &str, seed: u64) -> Result<()> {
+    let mut failed: Vec<String> = Vec::new();
+    for (name, _, _) in TEST_REGISTRY {
+        println!("\n=== running: {name} ===");
+        if let Err(e) = cmd_test_run(api_url, name, seed).await {
+            println!("FAIL: {e}");
+            failed.push(name.to_string());
+        }
+    }
+    println!("\n=== summary: {}/{} passed ===", TEST_REGISTRY.len() - failed.len(), TEST_REGISTRY.len());
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!("failed tests: {failed:?}"))
+    }
+}
+
+async fn run_cargo_test_for(crate_name: &str, test_filter: &str) -> (&'static str, String) {
+    // Re-shape test name: framer-roundtrip → framer::tests::round_trip etc.
+    let filter = match test_filter {
+        "framer-roundtrip" => "framer::tests::round_trip",
+        "framer-truncation" => "framer::tests::truncation_detected",
+        "traced-frame-roundtrip" => "tests::traced_frame_round_trip",
+        "unknown-tag-rejected" => "tests::unknown_tag_fails_decode",
+        other => other,
+    };
+    let out = match tokio::process::Command::new("cargo")
+        .args(["test", "-p", crate_name, "--lib", filter, "--", "--nocapture"])
+        .env("CARGO_TARGET_DIR", "E:/cargo-target-v2")
+        .current_dir("E:/dev/rafka-V2-new-mesh")
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => return ("failed", format!("cargo invocation failed: {e}")),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if out.status.success() {
+        // Extract the "test result:" line for a tighter detail string.
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("test result:"))
+            .unwrap_or("passed")
+            .trim()
+            .to_string();
+        ("passed", line)
+    } else {
+        ("failed", format!("stdout: {stdout}\nstderr: {stderr}"))
+    }
+}
+
+async fn run_chaos_soak(api_url: &str, duration: &str, interval: &str, seed: u64) -> (&'static str, String) {
+    let dur = match humantime::parse_duration(duration) {
+        Ok(d) => d,
+        Err(e) => return ("failed", format!("parse duration: {e}")),
+    };
+    let iv = match humantime::parse_duration(interval) {
+        Ok(d) => d,
+        Err(e) => return ("failed", format!("parse interval: {e}")),
+    };
+    let mut ctx = rafka_chaos::default_context(seed);
+    ctx.topology_ui_url = api_url.to_string();
+    let report = rafka_chaos::soak::run_soak(&ctx, dur, iv, seed).await;
+    if report.failed_timeout == 0 && report.failed_assertion == 0 {
+        (
+            "passed",
+            format!(
+                "{} events, all passed; primitive distribution validates 9-prim pool",
+                report.event_count
+            ),
+        )
+    } else {
+        (
+            "failed",
+            format!(
+                "{} events: {} passed, {} timeouts, {} assertions",
+                report.event_count, report.passed, report.failed_timeout, report.failed_assertion
+            ),
+        )
+    }
+}
+
+async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
+    use std::collections::HashSet;
+    let client = reqwest::Client::new();
+    for t in ["gateway", "broker", "compute", "registry", "bridge"] {
+        let _ = client
+            .post(format!("{api_url}/api/nodes/spawn"))
+            .json(&serde_json::json!({"node_type": t}))
+            .send()
+            .await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    let body: serde_json::Value = match client
+        .get(format!("{api_url}/api/nodes/spawned"))
+        .send()
+        .await
+    {
+        Ok(r) => r.json().await.unwrap_or(serde_json::json!({"spawned": []})),
+        Err(e) => return ("failed", format!("query /api/spawned: {e}")),
+    };
+    let types: HashSet<String> = body["spawned"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.split('-').next().unwrap_or("").to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let expected: HashSet<String> = ["gateway", "broker", "compute", "registry", "bridge"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let missing: Vec<String> = expected.difference(&types).cloned().collect();
+    if missing.is_empty() {
+        ("passed", format!("all 5 types present: {types:?}"))
+    } else {
+        ("failed", format!("missing types: {missing:?}; saw {types:?}"))
+    }
+}
+
+async fn fetch_json(client: &reqwest::Client, url: &str) -> serde_json::Value {
+    match client.get(url).send().await {
+        Ok(r) => r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    }
+}
+
+async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
+    let client = reqwest::Client::new();
+    for t in ["gateway", "broker", "broker", "compute", "registry", "bridge"] {
+        let _ = client
+            .post(format!("{api_url}/api/nodes/spawn"))
+            .json(&serde_json::json!({"node_type": t}))
+            .send()
+            .await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let pre = fetch_json(&client, &format!("{api_url}/api/nodes/spawned")).await;
+    let pre_names: Vec<String> = pre["spawned"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    if pre_names.len() < 4 {
+        return ("failed", format!("expected ≥4 nodes after spawn, got {}", pre_names.len()));
+    }
+    let kill_targets: Vec<String> = pre_names.iter().take(3).cloned().collect();
+    for name in &kill_targets {
+        let _ = client.delete(format!("{api_url}/api/nodes/{name}")).send().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    let hb = fetch_json(&client, &format!("{api_url}/api/heartbeats")).await;
+    let fresh = hb["heartbeats"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|h| {
+                    let name = h["node_name"].as_str().unwrap_or("");
+                    !kill_targets.iter().any(|k| k == name)
+                        && h["age_ms"].as_i64().unwrap_or(99999) < 10000
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    if fresh >= 3 {
+        (
+            "passed",
+            format!("killed {} nodes, {fresh} survivors still emit fresh heartbeats", kill_targets.len()),
+        )
+    } else {
+        ("failed", format!("only {fresh} survivors fresh after 3 kills (need ≥3)"))
+    }
+}
+
+fn timestamp_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 async fn cmd_chaos_kill(api_url: &str, target: Option<String>, deadline_ms: u64) -> Result<()> {

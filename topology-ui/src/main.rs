@@ -157,6 +157,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   <button class="tab" data-panel="panel-health">Heartbeat</button>
   <button class="tab" data-panel="panel-chaos">Chaos</button>
   <button class="tab" data-panel="panel-timeline">Timeline</button>
+  <button class="tab" data-panel="panel-tests">Tests</button>
 </div>
 
 <div id="panel-waterfall" class="panel active">
@@ -222,6 +223,17 @@ const HTML: &str = r##"<!DOCTYPE html>
     Green ↦ resolved (substrate detected the disturbance); amber ↦ pending or failed.
   </div>
   <div id="timeline-list" style="font-family:monospace;font-size:0.78rem"></div>
+</div>
+
+<div id="panel-tests" class="panel">
+  <div id="controls">
+    <button id="tests-refresh">Refresh tests</button>
+    <span id="tests-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
+  </div>
+  <div style="color:#8b949e;font-size:0.75rem;margin-bottom:0.5rem">
+    Every test reproducible via <code>rfa mesh test run &lt;name&gt;</code>. Reports written to <code>E:/tmp/rafka-tests/</code>. Run <code>rfa mesh test list</code> to see the catalog. Auto-refreshes every 5s.
+  </div>
+  <div id="tests-list"></div>
 </div>
 
 <script>
@@ -712,6 +724,55 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   timelineRefresh.addEventListener('click', loadTimeline);
 
+  // ── tests tab ────────────────────────────────────────────────────────────
+  var testsList = document.getElementById('tests-list');
+  var testsStatus = document.getElementById('tests-status');
+  var testsRefresh = document.getElementById('tests-refresh');
+  var testsTimer = null;
+
+  function renderTests(reports) {
+    if (!reports || reports.length === 0) {
+      testsList.innerHTML = '<div style="color:#8b949e">no test reports yet. run <code>rfa mesh test run &lt;name&gt;</code> or <code>rfa mesh test all</code>.</div>';
+      testsStatus.textContent = '0 reports';
+      return;
+    }
+    var html = '';
+    reports.forEach(function(r) {
+      var statusColor = r.status === 'passed' ? '#3fb950' : (r.status === 'failed' ? '#f85149' : '#8b949e');
+      var statusSymbol = r.status === 'passed' ? '✓' : (r.status === 'failed' ? '✗' : '…');
+      var kindColor = r.kind === 'chaos' ? '#e3b341' : '#58a6ff';
+      var when = '';
+      if (r.ended_ms) {
+        var ageSec = Math.floor((Date.now() - r.ended_ms) / 1000);
+        when = ageSec < 60 ? ageSec + 's ago' :
+               ageSec < 3600 ? Math.floor(ageSec/60) + 'm ago' :
+               Math.floor(ageSec/3600) + 'h ago';
+      }
+      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.5rem">' +
+        '<div style="display:flex;gap:0.6rem;align-items:baseline">' +
+          '<span style="color:' + statusColor + ';font-size:1.1rem;width:18px">' + statusSymbol + '</span>' +
+          '<span style="color:#c9d1d9;font-weight:bold;flex:1">' + r.name + '</span>' +
+          '<span style="color:' + kindColor + ';font-size:0.7rem;text-transform:uppercase;padding:0.1rem 0.4rem;border:1px solid ' + kindColor + ';border-radius:3px">' + r.kind + '</span>' +
+          '<span style="color:#8b949e;font-size:0.75rem;width:90px;text-align:right">' + when + '</span>' +
+        '</div>' +
+        '<div style="color:#8b949e;font-size:0.72rem;margin-top:0.25rem;margin-left:26px">' + (r.description || '') + '</div>' +
+        '<div style="color:#6e7681;font-size:0.7rem;margin-top:0.15rem;margin-left:26px;font-family:monospace">seed=' + r.seed + ' duration=' + r.duration_ms + 'ms · <span style="color:' + statusColor + '">' + (r.detail || '') + '</span></div>' +
+        '</div>';
+    });
+    testsList.innerHTML = html;
+    var passed = reports.filter(function(r) { return r.status === 'passed'; }).length;
+    testsStatus.textContent = reports.length + ' reports, ' + passed + ' passed';
+  }
+
+  function loadTests() {
+    fetch('/api/tests')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderTests(d.reports || []); })
+      .catch(function(e) { testsStatus.textContent = 'fetch failed: ' + e; });
+  }
+
+  testsRefresh.addEventListener('click', loadTests);
+
   // tab switching
   var tabs = document.querySelectorAll('.tab');
   tabs.forEach(function(t) {
@@ -727,6 +788,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
       if (chaosTimer) { clearInterval(chaosTimer); chaosTimer = null; }
       if (timelineTimer) { clearInterval(timelineTimer); timelineTimer = null; }
+      if (testsTimer) { clearInterval(testsTimer); testsTimer = null; }
       var panel = t.getAttribute('data-panel');
       if (panel === 'panel-topology') {
         loadTopology();
@@ -743,6 +805,9 @@ const HTML: &str = r##"<!DOCTYPE html>
       } else if (panel === 'panel-timeline') {
         loadTimeline();
         timelineTimer = setInterval(loadTimeline, 5000);
+      } else if (panel === 'panel-tests') {
+        loadTests();
+        testsTimer = setInterval(loadTests, 5000);
       }
     });
   });
@@ -795,6 +860,31 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/tests` — read every JSON test report under `E:/tmp/rafka-tests/`,
+/// sorted newest-first. Each report comes from `rfa mesh test run <name>`.
+/// Used by the Tests tab to show what's been verified + when + how long.
+async fn handle_tests(State(_state): State<AppState>) -> impl IntoResponse {
+    let dir = std::path::Path::new("E:/tmp/rafka-tests");
+    let mut entries: Vec<(u64, Value)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for ent in rd.flatten() {
+            let path = ent.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(raw) = std::fs::read_to_string(&path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                    let ended = v["ended_ms"].as_u64().unwrap_or(0);
+                    entries.push((ended, v));
+                }
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    let reports: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
+    (StatusCode::OK, axum::Json(json!({"reports": reports}))).into_response()
 }
 
 /// `GET /api/heartbeats` — per-instance heartbeat data for every spawned
@@ -1737,6 +1827,7 @@ async fn main() -> Result<()> {
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
         .route("/api/heartbeats", get(handle_heartbeats))
+        .route("/api/tests", get(handle_tests))
         .route("/api/cluster/summary", get(handle_cluster_summary))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
