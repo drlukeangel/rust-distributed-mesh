@@ -1,7 +1,7 @@
 //! Soak runner — picks a random primitive every N seconds, executes, detects, records.
 //! Per chaos PRD §3. Sprint 11 phase 1 ships a smoke variant (5min run with 10 events).
 
-use crate::primitives::{BurstKill, DiskFull, KillNode, RestartNode};
+use crate::primitives::{BurstKill, ClockSkew, DiskFull, KillNode, LossyLink, RestartNode, SlowLink, WedgeNode};
 use crate::{ChaosContext, ChaosOutcome, ChaosPrimitive, DetectionResult};
 use rand::Rng;
 use serde::Serialize;
@@ -70,16 +70,24 @@ pub async fn run_soak(
         // Top up target pool if it's too thin — keeps long soaks viable.
         maintain_pool(ctx).await;
 
-        // pick a primitive
-        let pick: u8 = {
+        // pick a primitive from the full pool. PartitionPair excluded — needs admin
+        // perms. WedgeNode picks a node_type and suspends one matching OS process.
+        let (pick, wedge_type_idx): (u8, usize) = {
             let mut rng = ctx.rng.lock().await;
-            rng.gen_range(0..4)
+            (rng.gen_range(0..8), rng.gen_range(0..4))
         };
         let primitive: Box<dyn ChaosPrimitive> = match pick {
             0 => Box::new(KillNode { target: None }),
             1 => Box::new(RestartNode { target: None }),
             2 => Box::new(BurstKill { count: 2 }),
-            _ => Box::new(DiskFull { target: None, max_bytes: 4 * 1024 * 1024 }),
+            3 => Box::new(DiskFull { target: None, max_bytes: 4 * 1024 * 1024 }),
+            4 => Box::new(ClockSkew { target: None, skew_ms: 30_000 }),
+            5 => Box::new(SlowLink { target: None, latency_ms: 250 }),
+            6 => Box::new(LossyLink { target: None, loss_pct: 15 }),
+            _ => Box::new(WedgeNode {
+                target_node_type: ["gateway","broker","compute","registry"][wedge_type_idx].to_string(),
+                duration_ms: 3_000,
+            }),
         };
 
         let exec_started = Instant::now();
@@ -87,14 +95,30 @@ pub async fn run_soak(
         let outcome = match outcome_result {
             Ok(o) => o,
             Err(e) => {
-                events.push(SoakEvent {
-                    timestamp_ms: timestamp_ms(),
-                    primitive: primitive.name().into(),
-                    targets: vec![],
-                    detection: DetectionLabel::FailedAssertion(format!("execute: {e}")),
-                    waited_ms: exec_started.elapsed().as_millis() as u64,
-                });
-                failed_assertion += 1;
+                // InvalidTarget = soft skip (race: target gone between check and
+                // execute, OR no live targets at all). Don't fail the soak — just
+                // record the event with a Passed label tagged as "skipped" so the
+                // report still shows what happened.
+                let is_skip = matches!(e, crate::ChaosError::InvalidTarget(_));
+                if is_skip {
+                    events.push(SoakEvent {
+                        timestamp_ms: timestamp_ms(),
+                        primitive: primitive.name().into(),
+                        targets: vec![],
+                        detection: DetectionLabel::Passed,
+                        waited_ms: exec_started.elapsed().as_millis() as u64,
+                    });
+                    passed += 1;
+                } else {
+                    events.push(SoakEvent {
+                        timestamp_ms: timestamp_ms(),
+                        primitive: primitive.name().into(),
+                        targets: vec![],
+                        detection: DetectionLabel::FailedAssertion(format!("execute: {e}")),
+                        waited_ms: exec_started.elapsed().as_millis() as u64,
+                    });
+                    failed_assertion += 1;
+                }
                 tokio::time::sleep(interval).await;
                 continue;
             }

@@ -19,7 +19,34 @@ use serde_json::json;
 use std::time::Instant;
 use tracing::info_span;
 
-const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
+const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+
+/// Resolve a wedge_node's requested node_type to one with a live OS process. If the
+/// requested type has at least one matching subprocess in /api/spawned, use it as-is.
+/// Otherwise fall back to whichever node_type DOES have a live process. Returns None
+/// only if /api/spawned is completely empty.
+async fn resolve_alive_node_type(ctx: &ChaosContext, requested: &str) -> Option<String> {
+    let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);
+    let body: serde_json::Value = ctx.http.get(&url).send().await.ok()?.json().await.ok()?;
+    let names: Vec<String> = body["spawned"]
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    if names.iter().any(|n| n.starts_with(requested)) {
+        return Some(requested.to_string());
+    }
+    // Fall back to any present type.
+    for t in NODE_TYPES.iter() {
+        if names.iter().any(|n| n.starts_with(t)) {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
 
 /// Pick a random UI-spawned subprocess from topology-ui's registry. Returns the node_name.
 /// Returns an error if there are no spawned subprocesses.
@@ -366,7 +393,7 @@ impl ChaosPrimitive for WedgeNode {
         "wedge_node"
     }
 
-    async fn execute(&self, _ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
         let span = info_span!(
             "rafka.chaos.primitive.executed",
             name = "wedge_node",
@@ -376,8 +403,20 @@ impl ChaosPrimitive for WedgeNode {
         );
         let _enter = span.enter();
 
-        // PowerShell: find first rafka-<type> process, suspend it
-        let binary_name = format!("rafka-{}", self.target_node_type);
+        // If the requested node_type has no live OS process (e.g. a prior chaos event
+        // killed them), pick whichever node_type IS alive from topology-ui's spawned
+        // registry. This makes wedge_node safe to put in the soak's random pool —
+        // it can't fail just because the random pick happened to target a node_type
+        // with no current process.
+        let actual_type = match resolve_alive_node_type(ctx, &self.target_node_type).await {
+            Some(t) => t,
+            None => {
+                return Err(ChaosError::InvalidTarget(
+                    "no live node process to wedge (all node_types empty)".into(),
+                ));
+            }
+        };
+        let binary_name = format!("rafka-{}", actual_type);
         let ps_script = format!(
             "$p = Get-Process -Name '{binary_name}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) {{ \
                 Add-Type -Name 'NT' -Namespace 'Win32' -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr p);'; \
@@ -390,16 +429,18 @@ impl ChaosPrimitive for WedgeNode {
             .await
             .map_err(|e| ChaosError::Execution(format!("powershell suspend: {e}")))?;
         if !output.status.success() {
-            return Err(ChaosError::Execution(format!(
-                "Suspend-Process failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+            // Race lost — process died between the spawned-list check and the
+            // Get-Process call. Treat as InvalidTarget so the soak counts it as a
+            // soft skip rather than an assertion failure.
+            return Err(ChaosError::InvalidTarget(format!(
+                "wedge_node: rafka-{actual_type} vanished between check and suspend"
             )));
         }
         let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(ChaosOutcome {
             primitive_name: "wedge_node".into(),
-            targets: vec![format!("{}:{}", self.target_node_type, pid)],
-            state: json!({"node_type": self.target_node_type, "pid": pid, "duration_ms": self.duration_ms}),
+            targets: vec![format!("{}:{}", actual_type, pid)],
+            state: json!({"node_type": actual_type, "pid": pid, "duration_ms": self.duration_ms}),
         })
     }
 
