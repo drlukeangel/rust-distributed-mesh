@@ -75,6 +75,13 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     let mesh_id = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "default".to_string());
     let mesh_id: &'static str = Box::leak(mesh_id.into_boxed_str());
 
+    // node_name is the topology-ui-assigned spawn name (e.g. "broker-abc123").
+    // Surfaces as a span attribute so topology-ui can show ONE NODE PER SPAWNED
+    // SUBPROCESS in the Topology tab instead of collapsing all of a type into
+    // a single entry. Defaults to "<unspawned>" for direct/manual launches.
+    let node_name = std::env::var("RAFKA_NODE_NAME").unwrap_or_else(|_| "<unspawned>".to_string());
+    let node_name: &'static str = Box::leak(node_name.into_boxed_str());
+
     let data_dir = std::env::var("RAFKA_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -244,7 +251,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     let heartbeat_handle = {
         let registry = Arc::clone(&peer_registry);
         let mesh_reg = Arc::clone(&mesh_id_registry);
-        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, is_bridge, registry, mesh_reg))
+        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, node_name, is_bridge, registry, mesh_reg))
     };
 
     let ping_handle = match role {
@@ -828,6 +835,7 @@ async fn create_endpoint(
 async fn run_heartbeat(
     node_id: String,
     mesh_id: &'static str,
+    node_name: &'static str,
     is_bridge: bool,
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
@@ -853,6 +861,7 @@ async fn run_heartbeat(
         tracing::info_span!(
             "rafka.mesh.heartbeat",
             node_id = %node_id,
+            node_name = node_name,
             mesh_id = mesh_id,
             peer_count = total_peer_count,
             wall_time_ms = wall_time_ms,

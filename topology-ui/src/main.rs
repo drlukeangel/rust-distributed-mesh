@@ -584,11 +584,13 @@ const HTML: &str = r##"<!DOCTYPE html>
     }
     var html = '';
     services.forEach(function(s) {
-      var ageSec = (s.age_ms / 1000).toFixed(1);
-      var ageColor = s.age_ms > 30000 ? '#f85149' : (s.age_ms > 10000 ? '#e3b341' : '#3fb950');
-      var typeColor = TYPE_COLOR[s.service] || '#888';
+      var ageSec = s.age_ms < 0 ? '?' : (s.age_ms / 1000).toFixed(1);
+      var ageColor = s.age_ms < 0 ? '#8b949e' :
+                     (s.age_ms > 30000 ? '#f85149' : (s.age_ms > 10000 ? '#e3b341' : '#3fb950'));
+      var typeColor = TYPE_COLOR[s.node_type || s.service] || '#888';
       html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem">' +
-        '<div style="color:' + typeColor + ';font-weight:bold;font-size:0.95rem;margin-bottom:0.5rem">' + s.service + '</div>' +
+        '<div style="color:' + typeColor + ';font-weight:bold;font-size:0.95rem;margin-bottom:0.3rem">' + s.service + '</div>' +
+        '<div style="color:#8b949e;font-size:0.7rem">type: ' + (s.node_type || '?') + ' · mesh: ' + (s.mesh_id || 'default') + '</div>' +
         '<div style="color:#8b949e;font-size:0.7rem">node_id: ' + (s.node_id || '').slice(0,16) + '…</div>' +
         '<div style="font-size:1.4rem;color:#c9d1d9;margin-top:0.5rem">peers: <strong>' + s.peer_count + '</strong></div>' +
         '<div style="color:' + ageColor + ';font-size:0.75rem;margin-top:0.25rem">last beat: ' + ageSec + 's ago</div>' +
@@ -599,14 +601,20 @@ const HTML: &str = r##"<!DOCTYPE html>
   }
 
   function loadHealth() {
-    var services = ['gateway','broker','compute','registry'];
-    Promise.all(services.map(function(svc) {
-      return fetch('/api/heartbeat?service=' + svc).then(function(r) { return r.json(); }).then(function(d) {
-        return d.error ? null : Object.assign({service: svc}, d);
-      }).catch(function() { return null; });
-    })).then(function(results) {
-      renderHealth(results.filter(function(x) { return x !== null; }));
-    });
+    fetch('/api/heartbeats').then(function(r) { return r.json(); }).then(function(d) {
+      // d.heartbeats = [{node_name, node_type, node_id, mesh_id, peer_count, age_ms}]
+      var items = (d.heartbeats || []).map(function(h) {
+        return {
+          service: h.node_name,           // card title shows the spawn name
+          node_type: h.node_type,         // for color
+          node_id: h.node_id,
+          peer_count: h.peer_count,
+          age_ms: h.age_ms,
+          mesh_id: h.mesh_id,
+        };
+      });
+      renderHealth(items);
+    }).catch(function(e) { healthStatus.textContent = 'fetch failed: ' + e; });
   }
 
   healthRefresh.addEventListener('click', loadHealth);
@@ -783,6 +791,86 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/heartbeats` — per-instance heartbeat data for every spawned
+/// subprocess. Returns `[{node_name, node_type, node_id, mesh_id, peer_count,
+/// age_ms}]`. Used by the Heartbeat tab to render one card per instance
+/// instead of one per node_type.
+async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
+    let spawned: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0);
+    let mut out: Vec<Value> = Vec::new();
+    for name in spawned {
+        let node_type = KNOWN_NODE_TYPES
+            .iter()
+            .find(|t| name.starts_with(*t))
+            .copied()
+            .unwrap_or("?");
+        let tags_json = serde_json::to_string(&serde_json::json!({"node_name": &name}))
+            .unwrap_or_else(|_| "{}".into());
+        let tags_enc = urlencoding::encode(&tags_json);
+        let url = format!(
+            "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m&tags={}",
+            state.jaeger_url, node_type, tags_enc
+        );
+        let (node_id, mesh_id, peer_count, age_ms) = match state.http.get(&url).send().await {
+            Ok(resp) => match resp.json::<Value>().await {
+                Ok(body) => {
+                    let s = body["data"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|t| t["spans"].as_array())
+                        .and_then(|a| a.first());
+                    let tags = s.and_then(|sp| sp["tags"].as_array());
+                    let nid = tags
+                        .and_then(|tt| {
+                            tt.iter()
+                                .find(|t| t["key"] == "node_id")
+                                .and_then(|t| t["value"].as_str())
+                        })
+                        .unwrap_or("")
+                        .to_string();
+                    let m = tags
+                        .and_then(|tt| {
+                            tt.iter()
+                                .find(|t| t["key"] == "mesh_id")
+                                .and_then(|t| t["value"].as_str())
+                        })
+                        .unwrap_or("default")
+                        .to_string();
+                    let p = tags
+                        .and_then(|tt| {
+                            tt.iter()
+                                .find(|t| t["key"] == "peer_count")
+                                .and_then(|t| t["value"].as_i64())
+                        })
+                        .unwrap_or(0);
+                    let start_us = s.and_then(|sp| sp["startTime"].as_i64()).unwrap_or(0);
+                    let age = if start_us > 0 {
+                        (now_us - start_us).max(0) / 1000
+                    } else {
+                        -1
+                    };
+                    (nid, m, p, age)
+                }
+                Err(_) => (String::new(), "default".into(), 0, -1),
+            },
+            Err(_) => (String::new(), "default".into(), 0, -1),
+        };
+        out.push(json!({
+            "node_name": name,
+            "node_type": node_type,
+            "node_id": node_id,
+            "mesh_id": mesh_id,
+            "peer_count": peer_count,
+            "age_ms": age_ms,
+        }));
+    }
+    (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response()
 }
 
 /// `GET /api/chaos/timeline` — chronological execute → detect pairs.
@@ -1105,99 +1193,68 @@ async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// `GET /api/topology` — return adjacency for the live mesh.
-/// Nodes: the 4 known node types currently emitting in Jaeger. Edges: pairs of
-/// services that have exchanged at least one frame (proxy for connectivity).
+/// Nodes: ONE PER SPAWNED SUBPROCESS (so 3 brokers = 3 distinct nodes). Each
+/// node's mesh_id is resolved by querying Jaeger heartbeats filtered on
+/// `node_name` tag. Edges: within-mesh full clique + cross-mesh dashed edges.
 async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     let span = info_span!("rafka.ui.topology.query", "otel.kind" = "internal");
     let _enter = span.enter();
 
-    // 1. node list = filtered services
-    let services_url = format!("{}/api/services", state.jaeger_url);
-    let services_json: Value = match state
-        .http
-        .get(&services_url)
-        .send()
-        .await
-        .and_then(|r| Ok(r))
-    {
-        Ok(resp) => match resp.json::<Value>().await {
-            Ok(b) => b,
-            Err(e) => {
-                return (
-                    StatusCode::BAD_GATEWAY,
-                    axum::Json(json!({"error": format!("services parse: {e}")})),
-                )
-                    .into_response();
-            }
-        },
-        Err(e) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                axum::Json(json!({"error": format!("services fetch: {e}")})),
-            )
-                .into_response();
-        }
-    };
-
+    let spawned: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
     let mut nodes: Vec<Value> = Vec::new();
-    if let Some(arr) = services_json["data"].as_array() {
-        for v in arr {
-            if let Some(s) = v.as_str() {
-                if KNOWN_NODE_TYPES.contains(&s) {
-                    // Query for most-recent heartbeat to extract mesh_id. Falls back
-                    // to "default" if no heartbeat found (service may have spans but
-                    // not a heartbeat yet — pre-boot or non-node service).
-                    let hb_url = format!(
-                        "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m",
-                        state.jaeger_url, s
-                    );
-                    let mesh_id = match state.http.get(&hb_url).send().await {
-                        Ok(resp) => match resp.json::<Value>().await {
-                            Ok(body) => body["data"]
-                                .as_array()
-                                .and_then(|a| a.first())
-                                .and_then(|t| t["spans"].as_array())
-                                .and_then(|a| a.first())
-                                .and_then(|sp| sp["tags"].as_array())
-                                .and_then(|tags| {
-                                    tags.iter()
-                                        .find(|t| t["key"] == "mesh_id")
-                                        .and_then(|t| t["value"].as_str())
-                                        .map(String::from)
-                                })
-                                .unwrap_or_else(|| "default".to_string()),
-                            Err(_) => "default".to_string(),
-                        },
-                        Err(_) => "default".to_string(),
-                    };
-                    // Per-service frame activity over the last 1m. Used by the
-                    // topology view to render a "X fr/m" badge under each node so
-                    // operators see live throughput at a glance. Bound query cost:
-                    // limit=200 traces, 1m lookback.
-                    let fr_url = format!(
-                        "{}/api/traces?service={}&operation=rafka.mesh.frame.sent&limit=200&lookback=1m",
-                        state.jaeger_url, s
-                    );
-                    let frames_per_min: i64 = match state.http.get(&fr_url).send().await {
-                        Ok(resp) => match resp.json::<Value>().await {
-                            Ok(body) => body["data"]
-                                .as_array()
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|t| t["spans"].as_array())
-                                        .flat_map(|ss| ss.iter())
-                                        .filter(|sp| sp["operationName"] == "rafka.mesh.frame.sent")
-                                        .count() as i64
-                                })
-                                .unwrap_or(0),
-                            Err(_) => 0,
-                        },
-                        Err(_) => 0,
-                    };
-                    nodes.push(json!({"id": s, "type": s, "mesh_id": mesh_id, "frames_per_min": frames_per_min}));
+    for name in &spawned {
+        // Derive node_type from the name prefix (e.g. "broker-abc" → "broker").
+        let node_type = KNOWN_NODE_TYPES
+            .iter()
+            .find(|t| name.starts_with(*t))
+            .copied()
+            .unwrap_or("?");
+        // Resolve per-instance mesh_id from the most-recent heartbeat span filtered
+        // by node_name tag. Jaeger tag-filter format: tags={"node_name":"<value>"}.
+        let tags_json = serde_json::to_string(&serde_json::json!({"node_name": name}))
+            .unwrap_or_else(|_| "{}".into());
+        let tags_enc = urlencoding::encode(&tags_json);
+        let hb_url = format!(
+            "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m&tags={}",
+            state.jaeger_url, node_type, tags_enc
+        );
+        let (mesh_id, peer_count) = match state.http.get(&hb_url).send().await {
+            Ok(resp) => match resp.json::<Value>().await {
+                Ok(body) => {
+                    let span = body["data"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|t| t["spans"].as_array())
+                        .and_then(|a| a.first());
+                    let m = span
+                        .and_then(|sp| sp["tags"].as_array())
+                        .and_then(|tags| {
+                            tags.iter()
+                                .find(|t| t["key"] == "mesh_id")
+                                .and_then(|t| t["value"].as_str())
+                                .map(String::from)
+                        })
+                        .unwrap_or_else(|| "default".to_string());
+                    let p = span
+                        .and_then(|sp| sp["tags"].as_array())
+                        .and_then(|tags| {
+                            tags.iter()
+                                .find(|t| t["key"] == "peer_count")
+                                .and_then(|t| t["value"].as_i64())
+                        })
+                        .unwrap_or(0);
+                    (m, p)
                 }
-            }
-        }
+                Err(_) => ("default".to_string(), 0),
+            },
+            Err(_) => ("default".to_string(), 0),
+        };
+        nodes.push(json!({
+            "id": name,
+            "type": node_type,
+            "mesh_id": mesh_id,
+            "peer_count": peer_count,
+        }));
     }
 
     // 2. edges = pairs of services that exchanged frames recently.
@@ -1430,6 +1487,7 @@ async fn handle_spawn(
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
         .env("OTEL_SERVICE_NAME", node_type)
         .env("RAFKA_DATA_DIR", &spawn_dir)
+        .env("RAFKA_NODE_NAME", &node_name)
         .env("RUST_LOG", &rust_log);
     if let Some(extras) = &body.extra_env {
         for (k, v) in extras {
@@ -1645,6 +1703,7 @@ async fn main() -> Result<()> {
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
+        .route("/api/heartbeats", get(handle_heartbeats))
         .route("/api/cluster/summary", get(handle_cluster_summary))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
