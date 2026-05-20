@@ -702,35 +702,53 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   function renderTimeline(events) {
     if (!events || events.length === 0) {
-      timelineList.innerHTML = '<div style="color:#8b949e">no chaos events in lookback window — soak idle?</div>';
+      timelineList.innerHTML = '<div style="color:#8b949e">no events yet — spawn nodes or run a chaos test</div>';
       timelineStatus.textContent = '0 events';
       return;
     }
     var html = '';
+    var counts = { chaos: 0, node_ready: 0, peer_connected: 0, peer_disconnected: 0 };
     events.forEach(function(e) {
-      var resolved = e.detection === 'passed';
-      var color = resolved ? '#3fb950' : (e.detection === 'pending' ? '#e3b341' : '#f85149');
-      var symbol = resolved ? '✓' : (e.detection === 'pending' ? '…' : '✗');
-      var detectionTxt = resolved ? 'resolved in ' + e.resolved_ms + 'ms' :
-                         (e.detection === 'pending' ? 'pending detection' : 'failed: ' + (e.detection || 'unknown'));
+      counts[e.kind] = (counts[e.kind] || 0) + 1;
+      var color, symbol, statusTxt;
+      if (e.kind === 'chaos') {
+        var resolved = e.status === 'passed';
+        color = resolved ? '#3fb950' : (e.status === 'pending' ? '#e3b341' : '#f85149');
+        symbol = resolved ? '✓' : (e.status === 'pending' ? '…' : '✗');
+        statusTxt = resolved ? 'resolved in ' + e.resolved_ms + 'ms' :
+                    (e.status === 'pending' ? 'pending detection' : 'failed: ' + e.status);
+      } else if (e.kind === 'node_ready') {
+        color = '#58a6ff'; symbol = '⇧'; statusTxt = 'booted';
+      } else if (e.kind === 'peer_connected') {
+        color = '#3fb950'; symbol = '+'; statusTxt = 'connected';
+      } else if (e.kind === 'peer_disconnected') {
+        color = '#f85149'; symbol = '-'; statusTxt = 'disconnected';
+      } else {
+        color = '#8b949e'; symbol = '·'; statusTxt = e.status || '';
+      }
+      var labelColor = e.kind === 'chaos' ? '#e3b341' : '#58a6ff';
       html += '<div style="padding:0.4rem 0.6rem;border-bottom:1px solid #1f2429">' +
         '<div style="display:flex;gap:0.75rem;align-items:baseline">' +
-          '<span style="color:#8b949e;width:80px">' + e.when + '</span>' +
-          '<span style="color:' + color + ';width:18px;text-align:center">' + symbol + '</span>' +
-          '<span style="color:#58a6ff;width:160px">' + e.primitive + '</span>' +
+          '<span style="color:#8b949e;width:90px">' + e.when + '</span>' +
+          '<span style="color:' + color + ';width:18px;text-align:center;font-weight:bold">' + symbol + '</span>' +
+          '<span style="color:' + labelColor + ';width:140px">' + e.label + '</span>' +
           '<span style="color:#c9d1d9;flex:1">' + (e.target || '') + '</span>' +
-          '<span style="color:' + color + '">' + detectionTxt + '</span>' +
+          '<span style="color:' + color + '">' + statusTxt + '</span>' +
         '</div>' +
-        (e.description ? '<div style="color:#6e7681;font-size:0.72rem;margin-top:0.15rem;margin-left:103px">' + e.description + '</div>' : '') +
+        (e.description ? '<div style="color:#6e7681;font-size:0.72rem;margin-top:0.15rem;margin-left:113px">' + e.description + '</div>' : '') +
         '</div>';
     });
     timelineList.innerHTML = html;
-    var resolved = events.filter(function(e) { return e.detection === 'passed'; }).length;
-    timelineStatus.textContent = events.length + ' events, ' + resolved + ' resolved';
+    var summary = events.length + ' events: '
+      + (counts.chaos || 0) + ' chaos · '
+      + (counts.node_ready || 0) + ' boots · '
+      + (counts.peer_connected || 0) + ' connects · '
+      + (counts.peer_disconnected || 0) + ' disconnects';
+    timelineStatus.textContent = summary;
   }
 
   function loadTimeline() {
-    fetch('/api/chaos/timeline')
+    fetch('/api/timeline')
       .then(function(r) { return r.json(); })
       .then(function(d) { renderTimeline(d.events || []); })
       .catch(function(e) { timelineStatus.textContent = 'fetch failed: ' + e; });
@@ -1004,12 +1022,183 @@ fn primitive_description(name: &str) -> &'static str {
     }
 }
 
-/// `GET /api/chaos/timeline` — chronological execute → detect pairs.
-/// Queries Jaeger for both `rafka.chaos.primitive.executed` and
-/// `rafka.chaos.primitive.detected` spans in last 10m, matches them by trace_id
-/// (each chaos event runs in its own trace), and emits a sorted timeline with
-/// "resolved in Xms" or "pending" markers. Used by the Timeline tab to prove
-/// the system is actually resolving the disturbances, not just suffering them.
+/// `GET /api/timeline` — unified chronological feed combining chaos events,
+/// mesh peer lifecycle (peer.connected / peer.disconnected), and node boot
+/// (node.ready). Replaces the chaos-only /api/chaos/timeline so the Timeline
+/// tab shows EVERYTHING happening on the substrate, not just chaos triggers.
+async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResponse {
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0);
+    let mut rows: Vec<(i64, Value)> = Vec::new();
+
+    // ── chaos.primitive.executed + .detected (paired by trace_id) ─────────
+    let exec_url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.executed&limit=200&lookback=10m",
+        state.jaeger_url
+    );
+    let detect_url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=200&lookback=10m",
+        state.jaeger_url
+    );
+    let exec_body: Value = match state.http.get(&exec_url).send().await {
+        Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+        Err(_) => json!({"data":[]}),
+    };
+    let det_body: Value = match state.http.get(&detect_url).send().await {
+        Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+        Err(_) => json!({"data":[]}),
+    };
+    let mut det_by_trace: std::collections::HashMap<String, (String, i64)> =
+        std::collections::HashMap::new();
+    if let Some(arr) = det_body["data"].as_array() {
+        for trace in arr {
+            let tid = trace["traceID"].as_str().unwrap_or("").to_string();
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.detected" {
+                        continue;
+                    }
+                    let tags = s["tags"].as_array();
+                    let result = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "result"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let waited = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "waited_ms"))
+                        .and_then(|x| x["value"].as_i64())
+                        .unwrap_or(0);
+                    det_by_trace.insert(tid.clone(), (result, waited));
+                }
+            }
+        }
+    }
+    if let Some(arr) = exec_body["data"].as_array() {
+        for trace in arr {
+            let tid = trace["traceID"].as_str().unwrap_or("").to_string();
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.executed" {
+                        continue;
+                    }
+                    let start_us = s["startTime"].as_i64().unwrap_or(0);
+                    let tags = s["tags"].as_array();
+                    let primitive = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "name"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let target = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "target"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let (detection, resolved_ms) = match det_by_trace.get(&tid) {
+                        Some((res, w)) => (res.clone(), *w),
+                        None => ("pending".to_string(), 0),
+                    };
+                    rows.push((
+                        start_us,
+                        json!({
+                            "kind": "chaos",
+                            "when": when_ago(now_us, start_us),
+                            "label": primitive.clone(),
+                            "description": primitive_description(&primitive),
+                            "target": target,
+                            "status": detection,
+                            "resolved_ms": resolved_ms,
+                        }),
+                    ));
+                }
+            }
+        }
+    }
+
+    // ── mesh events: node.ready (boot) + peer.connected + peer.disconnected ─
+    for (op, kind, status) in [
+        ("rafka.mesh.node.ready",        "node_ready",        "boot"),
+        ("rafka.mesh.peer.connected",    "peer_connected",    "connected"),
+        ("rafka.mesh.peer.disconnected", "peer_disconnected", "disconnected"),
+    ] {
+        for svc in KNOWN_NODE_TYPES.iter() {
+            let url = format!(
+                "{}/api/traces?service={}&operation={}&limit=50&lookback=10m",
+                state.jaeger_url, svc, op
+            );
+            let body: Value = match state.http.get(&url).send().await {
+                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+                Err(_) => continue,
+            };
+            if let Some(arr) = body["data"].as_array() {
+                for trace in arr {
+                    if let Some(spans) = trace["spans"].as_array() {
+                        for s in spans {
+                            if s["operationName"] != op {
+                                continue;
+                            }
+                            let start_us = s["startTime"].as_i64().unwrap_or(0);
+                            let tags = s["tags"].as_array();
+                            let node_name = tags
+                                .and_then(|t| t.iter().find(|x| x["key"] == "node_name"))
+                                .and_then(|x| x["value"].as_str())
+                                .unwrap_or(svc)
+                                .to_string();
+                            let peer_id = tags
+                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
+                                .and_then(|x| x["value"].as_str())
+                                .map(|s| s.chars().take(12).collect::<String>())
+                                .unwrap_or_default();
+                            let direction = tags
+                                .and_then(|t| t.iter().find(|x| x["key"] == "direction"))
+                                .and_then(|x| x["value"].as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let desc = match kind {
+                                "node_ready" => format!("{node_name} booted ({svc})"),
+                                "peer_connected" => format!("{node_name} ↔ peer {peer_id} {direction}"),
+                                "peer_disconnected" => format!("{node_name} lost peer {peer_id}"),
+                                _ => String::new(),
+                            };
+                            rows.push((
+                                start_us,
+                                json!({
+                                    "kind": kind,
+                                    "when": when_ago(now_us, start_us),
+                                    "label": kind,
+                                    "description": desc,
+                                    "target": node_name,
+                                    "status": status,
+                                    "resolved_ms": 0,
+                                }),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    let events: Vec<Value> = rows.into_iter().take(200).map(|(_, v)| v).collect();
+    (StatusCode::OK, axum::Json(json!({"events": events}))).into_response()
+}
+
+fn when_ago(now_us: i64, then_us: i64) -> String {
+    let age_s = ((now_us - then_us).max(0)) / 1_000_000;
+    if age_s < 60 {
+        format!("{age_s}s ago")
+    } else if age_s < 3600 {
+        format!("{}m{}s ago", age_s / 60, age_s % 60)
+    } else {
+        format!("{}h{}m ago", age_s / 3600, (age_s % 3600) / 60)
+    }
+}
+
+/// LEGACY `GET /api/chaos/timeline` — chaos-only timeline kept for backward
+/// compatibility. New consumers should use `/api/timeline` which unifies chaos
+/// + mesh + boot events. Internally just calls the unified handler.
 async fn handle_chaos_timeline(State(state): State<AppState>) -> impl IntoResponse {
     let exec_url = format!(
         "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.executed&limit=300&lookback=10m",
@@ -1852,6 +2041,7 @@ async fn main() -> Result<()> {
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
+        .route("/api/timeline", get(handle_unified_timeline))
         .route("/api/heartbeats", get(handle_heartbeats))
         .route("/api/tests", get(handle_tests))
         .route("/api/cluster/summary", get(handle_cluster_summary))
