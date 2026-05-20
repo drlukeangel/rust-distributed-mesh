@@ -12,8 +12,11 @@ use std::time::{Duration, Instant};
 /// spawning fresh subprocesses before the next primitive. Keeps long soaks viable
 /// (otherwise kill-heavy primitives drain the pool and remaining events all fail
 /// with InvalidTarget).
-const MIN_POOL_SIZE: usize = 4;
-const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
+/// Minimum pool size before maintain_pool tops up. Must be >= NODE_TYPES.len() so
+/// the pool can actually hold one of each type simultaneously — otherwise we
+/// never converge to a full mesh.
+const MIN_POOL_SIZE: usize = 5;
+const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
 
 #[derive(Serialize)]
 pub struct SoakEvent {
@@ -184,34 +187,44 @@ pub async fn run_soak(
     }
 }
 
-/// Top up the UI-spawned subprocess pool to MIN_POOL_SIZE if it has dropped lower.
-/// Spawns one subprocess per missing slot, round-robin through NODE_TYPES.
+/// Ensure each NODE_TYPE has AT LEAST ONE instance in the spawned pool.
+/// This is the only invariant the soak enforces — user-spawned extras are left
+/// alone. Previous round-robin refill was buggy: when chaos killed one node,
+/// refill always picked NODE_TYPES[0] (gateway), so over a 4-hour soak the pool
+/// became gateway-heavy with compute/registry/bridge missing entirely. Fix:
+/// look at WHICH types are currently absent, spawn exactly those.
 async fn maintain_pool(ctx: &ChaosContext) {
     let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);
-    let current: usize = match ctx.http.get(&url).send().await {
+    let spawned: Vec<String> = match ctx.http.get(&url).send().await {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
-            Ok(body) => body["spawned"].as_array().map(|a| a.len()).unwrap_or(0),
-            Err(_) => 0,
+            Ok(body) => body["spawned"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            Err(_) => return,
         },
         Err(_) => return, // topology-ui unreachable; let next primitive raise the error
     };
-    if current >= MIN_POOL_SIZE {
-        return;
-    }
-    let to_spawn = MIN_POOL_SIZE - current;
     let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
-    for i in 0..to_spawn {
-        let node_type = NODE_TYPES[i % NODE_TYPES.len()];
+    let mut missing: Vec<&str> = Vec::new();
+    for t in NODE_TYPES.iter() {
+        if !spawned.iter().any(|name| name.starts_with(t)) {
+            missing.push(t);
+        }
+    }
+    for t in &missing {
         let _ = ctx
             .http
             .post(&spawn_url)
-            .json(&json!({"node_type": node_type}))
+            .json(&json!({"node_type": *t}))
             .send()
             .await;
     }
     // Brief wait so the spawned subprocesses appear in /api/spawned before the next
     // primitive picks targets.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if !missing.is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 fn timestamp_ms() -> u64 {
