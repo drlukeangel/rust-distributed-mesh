@@ -646,11 +646,12 @@ const HTML: &str = r##"<!DOCTYPE html>
     var recent = d.recent || [];
     var rhtml = '';
     recent.forEach(function(e) {
-      rhtml += '<div style="border-bottom:1px solid #1f2429;padding:0.35rem 0.5rem;font-size:0.8rem">' +
-        '<span style="color:#3fb950">' + e.name + '</span>' +
+      rhtml += '<div style="border-bottom:1px solid #1f2429;padding:0.4rem 0.5rem;font-size:0.8rem">' +
+        '<div><span style="color:#3fb950">' + e.name + '</span>' +
         '<span style="color:#8b949e"> on </span>' +
         '<span style="color:#c9d1d9">' + (e.target || '?') + '</span>' +
-        '<span style="color:#8b949e;float:right">' + e.when + '</span>' +
+        '<span style="color:#8b949e;float:right">' + e.when + '</span></div>' +
+        (e.description ? '<div style="color:#6e7681;font-size:0.72rem;margin-top:0.15rem">' + e.description + '</div>' : '') +
         '</div>';
     });
     chaosRecent.innerHTML = rhtml;
@@ -686,12 +687,15 @@ const HTML: &str = r##"<!DOCTYPE html>
       var symbol = resolved ? '✓' : (e.detection === 'pending' ? '…' : '✗');
       var detectionTxt = resolved ? 'resolved in ' + e.resolved_ms + 'ms' :
                          (e.detection === 'pending' ? 'pending detection' : 'failed: ' + (e.detection || 'unknown'));
-      html += '<div style="padding:0.4rem 0.6rem;border-bottom:1px solid #1f2429;display:flex;gap:0.75rem;align-items:baseline">' +
-        '<span style="color:#8b949e;width:80px">' + e.when + '</span>' +
-        '<span style="color:' + color + ';width:18px;text-align:center">' + symbol + '</span>' +
-        '<span style="color:#58a6ff;width:160px">' + e.primitive + '</span>' +
-        '<span style="color:#c9d1d9;flex:1">' + (e.target || '') + '</span>' +
-        '<span style="color:' + color + '">' + detectionTxt + '</span>' +
+      html += '<div style="padding:0.4rem 0.6rem;border-bottom:1px solid #1f2429">' +
+        '<div style="display:flex;gap:0.75rem;align-items:baseline">' +
+          '<span style="color:#8b949e;width:80px">' + e.when + '</span>' +
+          '<span style="color:' + color + ';width:18px;text-align:center">' + symbol + '</span>' +
+          '<span style="color:#58a6ff;width:160px">' + e.primitive + '</span>' +
+          '<span style="color:#c9d1d9;flex:1">' + (e.target || '') + '</span>' +
+          '<span style="color:' + color + '">' + detectionTxt + '</span>' +
+        '</div>' +
+        (e.description ? '<div style="color:#6e7681;font-size:0.72rem;margin-top:0.15rem;margin-left:103px">' + e.description + '</div>' : '') +
         '</div>';
     });
     timelineList.innerHTML = html;
@@ -873,6 +877,29 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response()
 }
 
+/// One-line description per chaos primitive. Returned alongside every chaos
+/// event in /api/chaos/recent + /api/chaos/timeline so the operator-facing
+/// tabs can show "what does this thing do" without crossing references.
+/// Single source of truth — UI just renders.
+fn primitive_description(name: &str) -> &'static str {
+    match name {
+        "kill_node"        => "Terminate one random spawned subprocess (SIGKILL equivalent). Substrate must detect within deadline.",
+        "restart_node"     => "Kill + immediately re-spawn the same node_type with a fresh NodeId. Substrate must reconnect.",
+        "burst_kill"       => "Kill N random subprocesses back-to-back. Tests substrate-race conditions on the spawn registry.",
+        "disk_full"        => "Fill the target's spawn data dir until writes fail (capped). Tests disk-pressure path.",
+        "wedge_node"       => "Suspend the OS process via Windows NtSuspendProcess. Process exists but doesn't respond; revert resumes it.",
+        "clock_skew"       => "Restart target with RAFKA_CLOCK_SKEW_MS env. node-base adds that offset to wall_time_ms on every heartbeat span.",
+        "slow_link"        => "Restart target with RAFKA_LINK_SLOW_MS env. node-base sleeps that many ms before each outbound frame send.",
+        "lossy_link"       => "Restart target with RAFKA_LINK_LOSS_PCT env. Per outbound frame, dice roll <pct ⇒ emit drop span and skip the send.",
+        "nat_shift"        => "Restart target with new random RAFKA_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.",
+        "partition_pair"   => "ADMIN: Windows firewall block outbound UDP between two named programs. Survivors should detect the partition.",
+        "partition_subset" => "ADMIN: Pick K random node_types as the subset; firewall-block every (subset, complement) pair. Tests split-brain.",
+        "flap_link"        => "ADMIN: Create+delete partition_pair-style firewall block N times with on/off duty. Tests substrate against churn.",
+        "firewall_inbound" => "ADMIN: Block inbound UDP to one named program for duration_ms. Peers can't dial in; existing outbound still works.",
+        _                  => "Unknown primitive.",
+    }
+}
+
 /// `GET /api/chaos/timeline` — chronological execute → detect pairs.
 /// Queries Jaeger for both `rafka.chaos.primitive.executed` and
 /// `rafka.chaos.primitive.detected` spans in last 10m, matches them by trace_id
@@ -968,6 +995,7 @@ async fn handle_chaos_timeline(State(state): State<AppState>) -> impl IntoRespon
                         json!({
                             "when": when,
                             "primitive": primitive,
+                            "description": primitive_description(&primitive),
                             "target": target,
                             "detection": detection,
                             "resolved_ms": resolved_ms,
@@ -1126,7 +1154,12 @@ async fn handle_chaos_recent(State(state): State<AppState>) -> impl IntoResponse
             } else {
                 format!("{}h ago", age_s / 3600)
             };
-            json!({"name": name, "target": target, "when": when})
+            json!({
+                "name": name,
+                "description": primitive_description(name),
+                "target": target,
+                "when": when,
+            })
         })
         .collect();
     (
