@@ -6,5 +6,10 @@ edition = "2021"
 [dependencies]
 serde = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
+unsigned-varint = "0.8"
 anyhow = { workspace = true }
 opentelemetry = { workspace = true }
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "1"

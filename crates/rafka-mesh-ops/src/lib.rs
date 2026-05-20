@@ -4,6 +4,9 @@ use opentelemetry::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod framer;
+pub use framer::{decode as framer_decode, encode as framer_encode, FramerError, TAG_LEGACY_FRAME};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InternalMeshFrame {
     Ping { org_id: u64 },
