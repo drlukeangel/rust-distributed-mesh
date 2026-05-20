@@ -22,12 +22,12 @@ Goal: every sprint after sprint-11 inherits the chaos-pass acceptance criterion 
 - `clock_skew{target, skew_ms}` — restart the target node with `RAFKA_CLOCK_SKEW_MS` env injected via topology-ui's `extra_env` field. `rafka-node-base` reads the var at boot and emits `clock_skew_ms` + `wall_time_ms` attributes on every `rafka.mesh.heartbeat` span. Detection verifies new subprocess appears; substrate detection (Jaeger query for skewed `wall_time_ms`) is a follow-up.
 - `slow_link{target, latency_ms}` — kill + respawn target with `RAFKA_LINK_SLOW_MS` env. `rafka-node-base.run_ping_sender` reads at boot and sleeps that many ms before each outbound `open_uni` so the link appears slow at the app layer.
 - `lossy_link{target, loss_pct}` — kill + respawn with `RAFKA_LINK_LOSS_PCT` env (0-100). Per outbound ping, node-base rolls a u8%100; if < loss_pct, emits a `rafka.mesh.frame.dropped_by_fault_inject` span and skips the write. Telemetry-visible drop signal.
+- `nat_shift{target}` — kill + respawn target with a different `RAFKA_NODE_BIND_ADDR` (random ephemeral port). iroh's magicsock re-discovers the NodeId at the new addr; the cached connection type updates rather than duplicates. Substrate signal: fresh `prepare_send/get_send_addrs` span with new `direct(<addr>:<port>)` for the same NodeId.
 
 ## Phase 3 (queued) — extended network primitives
 
 - `partition_subset` — partition multiple node-pairs forming disjoint subsets
 - `flap_link` — repeatedly disconnect+reconnect via firewall rule toggle
-- `nat_shift` — force iroh endpoint rebind to new port (mid-run reconfigure)
 - `firewall_inbound` — block all inbound to a target
 
 ## Locked spans

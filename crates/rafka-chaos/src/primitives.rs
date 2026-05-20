@@ -855,6 +855,38 @@ impl ChaosPrimitive for ClockSkew {
     }
 }
 
+/// `nat_shift` — kill + respawn target with a different `RAFKA_NODE_BIND_ADDR`
+/// so the new iroh endpoint binds on a fresh port. Survivors must re-discover
+/// the NodeId on the new addr; iroh's magicsock will replace the cached
+/// connection type rather than duplicate it. Detection: new subprocess appears.
+pub struct NatShift {
+    pub target: Option<String>,
+}
+
+#[async_trait]
+impl ChaosPrimitive for NatShift {
+    fn name(&self) -> &str {
+        "nat_shift"
+    }
+
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        use rand::Rng;
+        // Choose a random ephemeral-range port. Reuse=0 lets the OS pick if our
+        // chosen one collides; node-base honors any RAFKA_NODE_BIND_ADDR.
+        let port: u16 = {
+            let mut rng = ctx.rng.lock().await;
+            rng.gen_range(40000..60000)
+        };
+        respawn_with_env(ctx, self.target.as_deref(), "nat_shift", &[
+            ("RAFKA_NODE_BIND_ADDR", format!("0.0.0.0:{port}")),
+        ]).await
+    }
+
+    async fn detect(&self, ctx: &ChaosContext, outcome: &ChaosOutcome, deadline_ms: u64) -> Result<DetectionResult, ChaosError> {
+        detect_respawned(ctx, outcome, deadline_ms, "nat_shift").await
+    }
+}
+
 /// `slow_link` — restart target node with `RAFKA_LINK_SLOW_MS` env so node-base
 /// sleeps that many ms before each outbound frame send (substrate-level latency
 /// injection). Detection: new subprocess appears in `/api/spawned`.

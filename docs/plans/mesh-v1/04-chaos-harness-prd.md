@@ -1,6 +1,6 @@
 # PRD — Chaos Test Harness
 
-**Status:** 9 of 12 primitives SHIPPED; 1-hour soak gate passed 3× independent (177/177, 178/178, 175/175). See [Shipping status](#shipping-status) section below for current state. 24-hour soak gate from the original brief remains a future stretch goal.
+**Status:** 10 of 13 primitives SHIPPED (added nat_shift); 1-hour soak gate passed 3× independent (177/177, 178/178, 175/175), 2-hour with full pool passed 349/349. See [Shipping status](#shipping-status) section below. 24-hour soak gate from the original brief remains a future stretch goal.
 **Companion to:** `00-mesh-rebuild-prd.md`
 **Ships in:** Sprint 1 (Sprint 0 substrate must be alive first)
 
@@ -29,9 +29,9 @@ Each primitive is an operation that disturbs the mesh in a specific, reproducibl
 | `clock_skew` | ✅ SHIPPED | Restart node with `RAFKA_CLOCK_SKEW_MS` env; node emits `clock_skew_ms` + `wall_time_ms` attrs on every heartbeat | New subprocess appears; substrate detection via Jaeger query for skewed `wall_time_ms` |
 | `slow_link` | ✅ SHIPPED | Restart with `RAFKA_LINK_SLOW_MS` env; node-base sleeps that many ms before each outbound `open_uni` | New subprocess appears; trace gaps observable in Jaeger waterfall |
 | `lossy_link` | ✅ SHIPPED | Restart with `RAFKA_LINK_LOSS_PCT` env (0-100); per-ping dice roll skips writes and emits `rafka.mesh.frame.dropped_by_fault_inject` span | Drop spans visible in Jaeger; pong return rate degrades by ~loss_pct |
+| `nat_shift` | ✅ SHIPPED | Kill + respawn target with a different `RAFKA_NODE_BIND_ADDR` so iroh endpoint binds on a fresh ephemeral port. Survivors must re-discover NodeId on the new addr. | New subprocess appears; iroh `prepare_send` shows fresh `direct(<new-addr>)` connection type |
 | `partition_subset` | ⏳ QUEUED | Splits the mesh into two disjoint subsets that can each communicate internally but not with the other side | Each subset converges to its own view; on heal, full mesh reconverges within 30s |
 | `flap_link` | ⏳ QUEUED | Repeatedly disconnect+reconnect an edge every N seconds | No "ghost peer" accumulation; final state matches expected after flapping stops |
-| `nat_shift` | ⏳ QUEUED | Force a node to rebind its endpoint to a new port | Peers re-discover via iroh-relay or DNS; old connection is replaced, not duplicated |
 | `firewall_inbound` | ⏳ QUEUED | Block inbound connections to a node (Windows-firewall-pattern reproduction) | Peers reach via relay if available; node remains visible in topology even if direct-peer-only nodes can't reach it |
 
 ## 3. The soak run

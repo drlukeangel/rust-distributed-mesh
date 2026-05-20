@@ -1,7 +1,7 @@
 //! Soak runner — picks a random primitive every N seconds, executes, detects, records.
 //! Per chaos PRD §3. Sprint 11 phase 1 ships a smoke variant (5min run with 10 events).
 
-use crate::primitives::{BurstKill, ClockSkew, DiskFull, KillNode, LossyLink, RestartNode, SlowLink, WedgeNode};
+use crate::primitives::{BurstKill, ClockSkew, DiskFull, KillNode, LossyLink, NatShift, RestartNode, SlowLink, WedgeNode};
 use crate::{ChaosContext, ChaosOutcome, ChaosPrimitive, DetectionResult};
 use rand::Rng;
 use serde::Serialize;
@@ -74,7 +74,7 @@ pub async fn run_soak(
         // perms. WedgeNode picks a node_type and suspends one matching OS process.
         let (pick, wedge_type_idx): (u8, usize) = {
             let mut rng = ctx.rng.lock().await;
-            (rng.gen_range(0..8), rng.gen_range(0..4))
+            (rng.gen_range(0..9), rng.gen_range(0..4))
         };
         let primitive: Box<dyn ChaosPrimitive> = match pick {
             0 => Box::new(KillNode { target: None }),
@@ -84,6 +84,7 @@ pub async fn run_soak(
             4 => Box::new(ClockSkew { target: None, skew_ms: 30_000 }),
             5 => Box::new(SlowLink { target: None, latency_ms: 250 }),
             6 => Box::new(LossyLink { target: None, loss_pct: 15 }),
+            7 => Box::new(NatShift { target: None }),
             _ => Box::new(WedgeNode {
                 target_node_type: ["gateway","broker","compute","registry"][wedge_type_idx].to_string(),
                 duration_ms: 3_000,
