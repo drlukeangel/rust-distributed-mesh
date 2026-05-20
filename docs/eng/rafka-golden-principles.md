@@ -96,7 +96,7 @@ When choosing a serialization format for a new subsystem, evaluate who reads it 
     *   **Keep `serde_json` for human-read/external data:** REST APIs, Audit logs (so SREs can pipe `__rafka_audit_log` through `jq`), Theme YAMLs, and config files.
     *   **Use `postcard` for internal data read ONCE:** Gateway↔Broker trusted mesh RPC payloads, `InternalMeshFrame` auxiliary data, control-plane events, and compacted internal topics (e.g., `__system_compiled_acls`).
     *   **Use `rkyv` for internal data read MANY TIMES:** Data that gets heavily queried, enabling zero-copy memory mapping directly from disk.
-*   **v2 status:** VIOLATING. `rafka-mesh-ops::InternalMeshFrame` currently uses `bincode 2`. Per this principle, internal QUIC mesh payloads should use `postcard`. Tracked as a follow-up; swap is ~30min of mechanical work (replace `bincode::serde::encode_to_vec` / `decode_from_slice` with `postcard::to_allocvec` / `from_bytes`, remove `bincode::Encode/Decode` derives).
+*   **v2 status:** SHIPPED. `rafka-mesh-ops::InternalMeshFrame` uses `postcard 1` with `alloc` feature. Encoding via `postcard::to_allocvec` / decode via `postcard::from_bytes`. Verified end-to-end: 14 frame.sent spans (Hello + Ping + Pong) + 3 cross-process hello_received decodes with correct peer_mesh_id + node_type extraction.
 
 ## 12. Election Is QUIC-Mesh-Native; Not Raft
 Rafka does not use Raft for coordinator election or replication consensus. Election is a **QUIC-mesh-native primitive** built on the existing peer-discovery + heartbeat substrate. The coordinator role rotates between gateway peers via heartbeat broadcast over the QUIC mesh; on heartbeat-timeout the lowest-ID surviving peer claims the role with a monotonically-incremented term.

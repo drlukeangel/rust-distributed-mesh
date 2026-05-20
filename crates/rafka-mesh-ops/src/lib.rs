@@ -1,11 +1,10 @@
-use bincode::error::DecodeError;
 use opentelemetry::{
     trace::{SpanContext, TraceContextExt, TraceFlags, TraceId, SpanId, TraceState},
     Context,
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, bincode::Encode, bincode::Decode)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InternalMeshFrame {
     Ping { org_id: u64 },
     Pong { org_id: u64 },
@@ -21,7 +20,10 @@ pub enum InternalMeshFrame {
 ///   [16..24] span_id (big-endian bytes)
 ///   [24]     trace_flags (u8, 0x01 = sampled)
 ///   [25..32] padding (zeros, reserved for future use)
-///   [32..]   bincode-encoded InternalMeshFrame
+///   [32..]   postcard-encoded InternalMeshFrame
+///
+/// Encoding is `postcard` (golden principle #11: internal data read once →
+/// postcard for smaller wire size + format stability). Previously bincode 2.
 const HEADER_LEN: usize = 32;
 
 impl InternalMeshFrame {
@@ -38,19 +40,17 @@ impl InternalMeshFrame {
         buf.push(sc.trace_flags().to_u8());
         buf.extend_from_slice(&[0u8; 7]); // padding / reserved
 
-        let frame_bytes = bincode::serde::encode_to_vec(self, bincode::config::standard())
-            .expect("InternalMeshFrame encode is infallible");
+        let frame_bytes =
+            postcard::to_allocvec(self).expect("InternalMeshFrame encode is infallible");
         buf.extend_from_slice(&frame_bytes);
         buf
     }
 
     /// Decode frame + reconstruct OTel parent context from wire header.
     /// Returns `(parent_ctx, frame)`. Sub-32-byte input is treated as decode failure.
-    pub fn decode_with_context(bytes: &[u8]) -> Result<(Context, Self), DecodeError> {
+    pub fn decode_with_context(bytes: &[u8]) -> Result<(Context, Self), postcard::Error> {
         if bytes.len() < HEADER_LEN {
-            return Err(DecodeError::UnexpectedEnd {
-                additional: HEADER_LEN - bytes.len(),
-            });
+            return Err(postcard::Error::DeserializeUnexpectedEnd);
         }
 
         let trace_id = TraceId::from_bytes(bytes[0..16].try_into().unwrap());
@@ -60,8 +60,7 @@ impl InternalMeshFrame {
         let sc = SpanContext::new(trace_id, span_id, flags, true, TraceState::default());
         let parent_ctx = Context::new().with_remote_span_context(sc);
 
-        let (frame, _) =
-            bincode::serde::decode_from_slice(&bytes[HEADER_LEN..], bincode::config::standard())?;
+        let frame = postcard::from_bytes(&bytes[HEADER_LEN..])?;
         Ok((parent_ctx, frame))
     }
 }
