@@ -100,6 +100,72 @@ enum ChaosCmd {
         #[arg(long, default_value = "30000")]
         deadline_ms: u64,
     },
+    /// Kill `count` random spawned subprocesses back-to-back (substrate-race test)
+    BurstKill {
+        #[arg(long, default_value = "3")]
+        count: usize,
+        #[arg(long, default_value = "30000")]
+        deadline_ms: u64,
+    },
+    /// Fill a target node's spawn dir until writes fail (capped by --max-mb)
+    DiskFull {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "4")]
+        max_mb: u64,
+        #[arg(long, default_value = "10000")]
+        deadline_ms: u64,
+    },
+    /// Suspend (NtSuspendProcess) one matching rafka-<type>.exe for `--duration_ms`
+    Wedge {
+        #[arg(long, default_value = "broker")]
+        target_type: String,
+        #[arg(long, default_value = "3000")]
+        duration_ms: u64,
+    },
+    /// Restart target with RAFKA_CLOCK_SKEW_MS env (default 30000ms)
+    ClockSkew {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "30000")]
+        skew_ms: i64,
+        #[arg(long, default_value = "10000")]
+        deadline_ms: u64,
+    },
+    /// Restart target with RAFKA_LINK_SLOW_MS env (default 250ms)
+    SlowLink {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "250")]
+        latency_ms: u64,
+        #[arg(long, default_value = "10000")]
+        deadline_ms: u64,
+    },
+    /// Restart target with RAFKA_LINK_LOSS_PCT env (default 15%)
+    LossyLink {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "15")]
+        loss_pct: u8,
+        #[arg(long, default_value = "10000")]
+        deadline_ms: u64,
+    },
+    /// Restart target with new RAFKA_NODE_BIND_ADDR (random ephemeral port)
+    NatShift {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, default_value = "10000")]
+        deadline_ms: u64,
+    },
+    /// Block outbound UDP between two named programs via Windows firewall (NEEDS ADMIN)
+    PartitionPair {
+        #[arg(long)]
+        a: String,
+        #[arg(long)]
+        b: String,
+        #[arg(long, default_value = "5000")]
+        duration_ms: u64,
+    },
     /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
     Soak {
         /// Total duration (e.g. 5m, 1h, 24h)
@@ -235,6 +301,35 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     "mesh chaos restart".into(),
                     target.clone().unwrap_or_else(|| "<random>".into()),
                 ),
+                ChaosCmd::BurstKill { count, .. } => ("mesh chaos burst-kill".into(), format!("--count {count}")),
+                ChaosCmd::DiskFull { target, max_mb, .. } => (
+                    "mesh chaos disk-full".into(),
+                    format!("--target {} --max-mb {max_mb}", target.clone().unwrap_or_else(|| "<random>".into())),
+                ),
+                ChaosCmd::Wedge { target_type, duration_ms } => (
+                    "mesh chaos wedge".into(),
+                    format!("--target-type {target_type} --duration-ms {duration_ms}"),
+                ),
+                ChaosCmd::ClockSkew { target, skew_ms, .. } => (
+                    "mesh chaos clock-skew".into(),
+                    format!("--target {} --skew-ms {skew_ms}", target.clone().unwrap_or_else(|| "<random>".into())),
+                ),
+                ChaosCmd::SlowLink { target, latency_ms, .. } => (
+                    "mesh chaos slow-link".into(),
+                    format!("--target {} --latency-ms {latency_ms}", target.clone().unwrap_or_else(|| "<random>".into())),
+                ),
+                ChaosCmd::LossyLink { target, loss_pct, .. } => (
+                    "mesh chaos lossy-link".into(),
+                    format!("--target {} --loss-pct {loss_pct}", target.clone().unwrap_or_else(|| "<random>".into())),
+                ),
+                ChaosCmd::NatShift { target, .. } => (
+                    "mesh chaos nat-shift".into(),
+                    target.clone().unwrap_or_else(|| "<random>".into()),
+                ),
+                ChaosCmd::PartitionPair { a, b, duration_ms } => (
+                    "mesh chaos partition-pair".into(),
+                    format!("--a {a} --b {b} --duration-ms {duration_ms}"),
+                ),
                 ChaosCmd::Soak { duration, interval, seed } => (
                     "mesh chaos soak".into(),
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
@@ -275,6 +370,30 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 ChaosCmd::Restart { target, deadline_ms } => {
                     cmd_chaos_restart(&cli.api_url, target.clone(), *deadline_ms).await
                 }
+                ChaosCmd::BurstKill { count, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::BurstKill { count: *count }), *deadline_ms).await
+                }
+                ChaosCmd::DiskFull { target, max_mb, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::DiskFull { target: target.clone(), max_bytes: max_mb * 1024 * 1024 }), *deadline_ms).await
+                }
+                ChaosCmd::Wedge { target_type, duration_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::WedgeNode { target_node_type: target_type.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
+                }
+                ChaosCmd::ClockSkew { target, skew_ms, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::ClockSkew { target: target.clone(), skew_ms: *skew_ms }), *deadline_ms).await
+                }
+                ChaosCmd::SlowLink { target, latency_ms, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::SlowLink { target: target.clone(), latency_ms: *latency_ms }), *deadline_ms).await
+                }
+                ChaosCmd::LossyLink { target, loss_pct, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::LossyLink { target: target.clone(), loss_pct: *loss_pct }), *deadline_ms).await
+                }
+                ChaosCmd::NatShift { target, deadline_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::NatShift { target: target.clone() }), *deadline_ms).await
+                }
+                ChaosCmd::PartitionPair { a, b, duration_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::PartitionPair { a: a.clone(), b: b.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
+                }
                 ChaosCmd::Soak { duration, interval, seed } => {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
                 }
@@ -309,6 +428,24 @@ async fn cmd_chaos_restart(api_url: &str, target: Option<String>, deadline_ms: u
     println!("primitive: restart_node");
     println!("old:       {}", outcome.targets[0]);
     println!("new:       {}", outcome.targets[1]);
+    println!("detection: {:?}", det);
+    match det {
+        rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
+        _ => Err(anyhow!("detection failed")),
+    }
+}
+
+/// Generic one-shot primitive runner: execute() → detect() → print result.
+/// Used by all primitive-specific subcommands so the print format stays consistent.
+async fn cmd_chaos_primitive(api_url: &str, prim: Box<dyn rafka_chaos::ChaosPrimitive>, deadline_ms: u64) -> Result<()> {
+    let mut ctx = rafka_chaos::default_context(0);
+    ctx.topology_ui_url = api_url.to_string();
+    let outcome = prim.execute(&ctx).await.map_err(|e| anyhow!("execute: {e}"))?;
+    let det = prim.detect(&ctx, &outcome, deadline_ms).await.map_err(|e| anyhow!("detect: {e}"))?;
+    println!("primitive: {}", prim.name());
+    for (i, t) in outcome.targets.iter().enumerate() {
+        println!("target[{i}]:  {t}");
+    }
     println!("detection: {:?}", det);
     match det {
         rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
