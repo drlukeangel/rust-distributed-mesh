@@ -138,6 +138,8 @@ const HTML: &str = r##"<!DOCTYPE html>
   <span id="status-text">connecting…</span>
 </div>
 
+<div id="cluster-summary" style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.5rem;font-size:0.8rem;color:#8b949e;font-family:monospace"></div>
+
 <div id="spawn-row">
   <button class="spawn-btn" data-type="gateway">+ Spawn gateway</button>
   <button class="spawn-btn" data-type="broker">+ Spawn broker</button>
@@ -420,6 +422,24 @@ const HTML: &str = r##"<!DOCTYPE html>
   });
 
   // ── topology tab ────────────────────────────────────────────────────────────
+  // ── cluster summary banner ───────────────────────────────────────────────
+  var clusterBanner = document.getElementById('cluster-summary');
+  function loadClusterSummary() {
+    fetch('/api/cluster/summary')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var meshes = (d.meshes || []).join(', ') || '(none)';
+        clusterBanner.innerHTML =
+          '<span style="color:#3fb950">' + d.spawned_count + ' spawned</span> | ' +
+          '<span style="color:#58a6ff">meshes: ' + meshes + '</span> | ' +
+          '<span style="color:#e3b341">chaos: ' + d.chaos_events_1m + '/min</span> | ' +
+          '<span style="color:#c9d1d9">mean peers: ' + (d.mean_peer_count || 0).toFixed(1) + '</span>';
+      })
+      .catch(function(e) { clusterBanner.textContent = 'summary fetch failed: ' + e; });
+  }
+  setInterval(loadClusterSummary, 8000);
+  loadClusterSummary();
+
   var topoSvg = document.getElementById('topology-svg');
   var topoStatus = document.getElementById('topology-status');
   var topoRefresh = document.getElementById('topology-refresh');
@@ -705,6 +725,91 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/cluster/summary` — one-call operator dashboard. Aggregates:
+/// - spawned_count (subprocess registry size)
+/// - meshes (distinct mesh_id values observed in last 2m of heartbeats)
+/// - chaos_events_1m (rafka.chaos.primitive.executed in last 1m via Jaeger)
+/// - mean_peer_count (avg peer_count from each known service's last heartbeat)
+/// Used by the UI status banner so operators see one-line health at a glance.
+async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoResponse {
+    let spawned_count = state.processes.iter().count() as i64;
+
+    // Meshes + mean_peer_count: one heartbeat query per known node type
+    let mut meshes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut peer_sum: i64 = 0;
+    let mut peer_n: i64 = 0;
+    for svc in KNOWN_NODE_TYPES.iter() {
+        let url = format!(
+            "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m",
+            state.jaeger_url, svc
+        );
+        if let Ok(resp) = state.http.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                if let Some(first) = body["data"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|t| t["spans"].as_array())
+                    .and_then(|a| a.first())
+                {
+                    if let Some(tags) = first["tags"].as_array() {
+                        for t in tags {
+                            if t["key"] == "mesh_id" {
+                                if let Some(m) = t["value"].as_str() {
+                                    meshes.insert(m.to_string());
+                                }
+                            }
+                            if t["key"] == "peer_count" {
+                                if let Some(p) = t["value"].as_i64() {
+                                    peer_sum += p;
+                                    peer_n += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mean_peer_count: f64 = if peer_n > 0 {
+        peer_sum as f64 / peer_n as f64
+    } else {
+        0.0
+    };
+
+    // chaos_events_1m
+    let chaos_url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.executed&limit=300&lookback=1m",
+        state.jaeger_url
+    );
+    let chaos_events_1m: i64 = match state.http.get(&chaos_url).send().await {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(b) => b["data"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t["spans"].as_array())
+                        .flat_map(|ss| ss.iter())
+                        .filter(|sp| sp["operationName"] == "rafka.chaos.primitive.executed")
+                        .count() as i64
+                })
+                .unwrap_or(0),
+            Err(_) => 0,
+        },
+        Err(_) => 0,
+    };
+
+    (
+        StatusCode::OK,
+        axum::Json(json!({
+            "spawned_count": spawned_count,
+            "meshes": meshes.into_iter().collect::<Vec<_>>(),
+            "chaos_events_1m": chaos_events_1m,
+            "mean_peer_count": mean_peer_count,
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /api/chaos/recent` — query Jaeger for chaos.primitive.executed spans
@@ -1372,6 +1477,7 @@ async fn main() -> Result<()> {
         .route("/api/topology", get(handle_topology))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
+        .route("/api/cluster/summary", get(handle_cluster_summary))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
