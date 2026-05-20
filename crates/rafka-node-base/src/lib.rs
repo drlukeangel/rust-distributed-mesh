@@ -177,6 +177,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     tracing::info_span!(
         "rafka.mesh.node.ready",
         node_id = %node_id,
+        node_name = node_name,
         node_type = node_type_str,
         mesh_id = mesh_id,
         bind_addr = %actual_bind_addr,

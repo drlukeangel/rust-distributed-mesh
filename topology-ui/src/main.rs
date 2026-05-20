@@ -283,10 +283,12 @@ const HTML: &str = r##"<!DOCTYPE html>
   }
 
   function loadNodes() {
-    fetch('/api/nodes')
+    // PER-INSTANCE: fetch spawned subprocesses, populate dropdown with each
+    // spawn name (broker-abc123) rather than collapsing to service types.
+    fetch('/api/nodes/spawned')
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        var nodes = d.nodes || [];
+        var nodes = (d.spawned || []).sort();
         var prev = sel.value;
         while (sel.options.length > 1) sel.remove(1);
         nodes.forEach(function(n) {
@@ -296,9 +298,9 @@ const HTML: &str = r##"<!DOCTYPE html>
           sel.appendChild(opt);
         });
         if (prev && nodes.indexOf(prev) !== -1) sel.value = prev;
-        setStatus(true, 'nodes: ' + (nodes.length ? nodes.join(', ') : '(none in jaeger yet)'));
+        setStatus(true, 'nodes: ' + (nodes.length ? nodes.join(', ') : '(pool empty — click + Spawn buttons)'));
       })
-      .catch(function() { setStatus(false, 'node list unavailable'); });
+      .catch(function() { setStatus(false, 'spawned list unavailable'); });
   }
 
   function renderWaterfall(svc, traceData) {
@@ -591,7 +593,7 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   function renderHealth(services) {
     if (!services || services.length === 0) {
-      healthCards.innerHTML = '<div style="color:#8b949e">no heartbeat data yet</div>';
+      healthCards.innerHTML = '<div style="color:#8b949e">no heartbeat data yet — spawn nodes first</div>';
       return;
     }
     var html = '';
@@ -600,8 +602,9 @@ const HTML: &str = r##"<!DOCTYPE html>
       var ageColor = s.age_ms < 0 ? '#8b949e' :
                      (s.age_ms > 30000 ? '#f85149' : (s.age_ms > 10000 ? '#e3b341' : '#3fb950'));
       var typeColor = TYPE_COLOR[s.node_type || s.service] || '#888';
-      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem">' +
-        '<div style="color:' + typeColor + ';font-weight:bold;font-size:0.95rem;margin-bottom:0.3rem">' + s.service + '</div>' +
+      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:1rem;position:relative">' +
+        '<button class="kill-btn" data-node="' + s.service + '" style="position:absolute;top:0.5rem;right:0.5rem;background:#3d1f1f;border:1px solid #f85149;color:#f85149;font-size:0.7rem;padding:0.15rem 0.45rem;border-radius:3px;cursor:pointer;font-family:inherit">kill</button>' +
+        '<div style="color:' + typeColor + ';font-weight:bold;font-size:0.95rem;margin-bottom:0.3rem;padding-right:48px">' + s.service + '</div>' +
         '<div style="color:#8b949e;font-size:0.7rem">type: ' + (s.node_type || '?') + ' · mesh: ' + (s.mesh_id || 'default') + '</div>' +
         '<div style="color:#8b949e;font-size:0.7rem">node_id: ' + (s.node_id || '').slice(0,16) + '…</div>' +
         '<div style="font-size:1.4rem;color:#c9d1d9;margin-top:0.5rem">peers: <strong>' + s.peer_count + '</strong></div>' +
@@ -609,7 +612,18 @@ const HTML: &str = r##"<!DOCTYPE html>
         '</div>';
     });
     healthCards.innerHTML = html;
-    healthStatus.textContent = services.length + ' services tracked';
+    healthStatus.textContent = services.length + ' nodes tracked';
+    // Wire kill buttons (event delegation would also work — direct binding is fine for ≤20 cards).
+    Array.prototype.forEach.call(healthCards.querySelectorAll('.kill-btn'), function(btn) {
+      btn.addEventListener('click', function() {
+        var name = btn.getAttribute('data-node');
+        if (!confirm('Kill ' + name + '?')) return;
+        fetch('/api/nodes/' + encodeURIComponent(name), { method: 'DELETE' })
+          .then(function(r) { return r.json(); })
+          .then(function() { loadHealth(); })
+          .catch(function(e) { alert('kill failed: ' + e); });
+      });
+    });
   }
 
   function loadHealth() {
@@ -1456,9 +1470,21 @@ async fn handle_boot_trace(
     Query(params): Query<BootTraceQuery>,
 ) -> impl IntoResponse {
     let svc = &params.service;
+    // `svc` is the per-instance node_name (e.g. "broker-abc123"). Derive the
+    // Jaeger service from its prefix (broker/gateway/...) and filter via the
+    // node_name tag so each spawned subprocess returns its OWN boot trace
+    // rather than collapsing to the most-recent of any of that type.
+    let node_type = KNOWN_NODE_TYPES
+        .iter()
+        .find(|t| svc.starts_with(*t))
+        .copied()
+        .unwrap_or(svc.as_str());
+    let tags_json = serde_json::to_string(&serde_json::json!({"node_name": svc}))
+        .unwrap_or_else(|_| "{}".into());
+    let tags_enc = urlencoding::encode(&tags_json);
     let url = format!(
-        "{}/api/traces?service={}&operation=rafka.mesh.node.ready&limit=1&lookback=10m",
-        state.jaeger_url, svc
+        "{}/api/traces?service={}&operation=rafka.mesh.node.ready&limit=1&lookback=2h&tags={}",
+        state.jaeger_url, node_type, tags_enc
     );
     let span = info_span!(
         "rafka.ui.jaeger.query",
