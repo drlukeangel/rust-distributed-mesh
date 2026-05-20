@@ -156,6 +156,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   <button class="tab" data-panel="panel-alerts">Alerts</button>
   <button class="tab" data-panel="panel-health">Heartbeat</button>
   <button class="tab" data-panel="panel-chaos">Chaos</button>
+  <button class="tab" data-panel="panel-timeline">Timeline</button>
 </div>
 
 <div id="panel-waterfall" class="panel active">
@@ -209,6 +210,18 @@ const HTML: &str = r##"<!DOCTYPE html>
   </div>
   <div id="chaos-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.5rem;margin-bottom:1rem"></div>
   <div id="chaos-recent" style="border:1px solid #30363d;border-radius:6px;padding:0.5rem"></div>
+</div>
+
+<div id="panel-timeline" class="panel">
+  <div id="controls">
+    <button id="timeline-refresh">Refresh timeline</button>
+    <span id="timeline-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
+  </div>
+  <div style="color:#8b949e;font-size:0.75rem;margin-bottom:0.5rem">
+    Chronological execute → detect pairs for every chaos primitive in the last 10 min.
+    Green ↦ resolved (substrate detected the disturbance); amber ↦ pending or failed.
+  </div>
+  <div id="timeline-list" style="font-family:monospace;font-size:0.78rem"></div>
 </div>
 
 <script>
@@ -646,6 +659,47 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   chaosRefresh.addEventListener('click', loadChaos);
 
+  // ── timeline tab ─────────────────────────────────────────────────────────
+  var timelineList = document.getElementById('timeline-list');
+  var timelineStatus = document.getElementById('timeline-status');
+  var timelineRefresh = document.getElementById('timeline-refresh');
+  var timelineTimer = null;
+
+  function renderTimeline(events) {
+    if (!events || events.length === 0) {
+      timelineList.innerHTML = '<div style="color:#8b949e">no chaos events in lookback window — soak idle?</div>';
+      timelineStatus.textContent = '0 events';
+      return;
+    }
+    var html = '';
+    events.forEach(function(e) {
+      var resolved = e.detection === 'passed';
+      var color = resolved ? '#3fb950' : (e.detection === 'pending' ? '#e3b341' : '#f85149');
+      var symbol = resolved ? '✓' : (e.detection === 'pending' ? '…' : '✗');
+      var detectionTxt = resolved ? 'resolved in ' + e.resolved_ms + 'ms' :
+                         (e.detection === 'pending' ? 'pending detection' : 'failed: ' + (e.detection || 'unknown'));
+      html += '<div style="padding:0.4rem 0.6rem;border-bottom:1px solid #1f2429;display:flex;gap:0.75rem;align-items:baseline">' +
+        '<span style="color:#8b949e;width:80px">' + e.when + '</span>' +
+        '<span style="color:' + color + ';width:18px;text-align:center">' + symbol + '</span>' +
+        '<span style="color:#58a6ff;width:160px">' + e.primitive + '</span>' +
+        '<span style="color:#c9d1d9;flex:1">' + (e.target || '') + '</span>' +
+        '<span style="color:' + color + '">' + detectionTxt + '</span>' +
+        '</div>';
+    });
+    timelineList.innerHTML = html;
+    var resolved = events.filter(function(e) { return e.detection === 'passed'; }).length;
+    timelineStatus.textContent = events.length + ' events, ' + resolved + ' resolved';
+  }
+
+  function loadTimeline() {
+    fetch('/api/chaos/timeline')
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderTimeline(d.events || []); })
+      .catch(function(e) { timelineStatus.textContent = 'fetch failed: ' + e; });
+  }
+
+  timelineRefresh.addEventListener('click', loadTimeline);
+
   // tab switching
   var tabs = document.querySelectorAll('.tab');
   tabs.forEach(function(t) {
@@ -660,6 +714,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       if (alertsTimer) { clearInterval(alertsTimer); alertsTimer = null; }
       if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
       if (chaosTimer) { clearInterval(chaosTimer); chaosTimer = null; }
+      if (timelineTimer) { clearInterval(timelineTimer); timelineTimer = null; }
       var panel = t.getAttribute('data-panel');
       if (panel === 'panel-topology') {
         loadTopology();
@@ -673,6 +728,9 @@ const HTML: &str = r##"<!DOCTYPE html>
       } else if (panel === 'panel-chaos') {
         loadChaos();
         chaosTimer = setInterval(loadChaos, 10000);
+      } else if (panel === 'panel-timeline') {
+        loadTimeline();
+        timelineTimer = setInterval(loadTimeline, 5000);
       }
     });
   });
@@ -725,6 +783,115 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/chaos/timeline` — chronological execute → detect pairs.
+/// Queries Jaeger for both `rafka.chaos.primitive.executed` and
+/// `rafka.chaos.primitive.detected` spans in last 10m, matches them by trace_id
+/// (each chaos event runs in its own trace), and emits a sorted timeline with
+/// "resolved in Xms" or "pending" markers. Used by the Timeline tab to prove
+/// the system is actually resolving the disturbances, not just suffering them.
+async fn handle_chaos_timeline(State(state): State<AppState>) -> impl IntoResponse {
+    let exec_url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.executed&limit=300&lookback=10m",
+        state.jaeger_url
+    );
+    let detect_url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=300&lookback=10m",
+        state.jaeger_url
+    );
+    let exec_body: Value = match state.http.get(&exec_url).send().await {
+        Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+        Err(_) => return (StatusCode::OK, axum::Json(json!({"events": []}))).into_response(),
+    };
+    let det_body: Value = match state.http.get(&detect_url).send().await {
+        Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+        Err(_) => json!({"data":[]}),
+    };
+
+    // Build detected-by-trace_id index: trace_id → (result, waited_ms)
+    let mut det_by_trace: std::collections::HashMap<String, (String, i64)> =
+        std::collections::HashMap::new();
+    if let Some(arr) = det_body["data"].as_array() {
+        for trace in arr {
+            let tid = trace["traceID"].as_str().unwrap_or("").to_string();
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.detected" {
+                        continue;
+                    }
+                    let tags = s["tags"].as_array();
+                    let result = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "result"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let waited = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "waited_ms"))
+                        .and_then(|x| x["value"].as_i64())
+                        .unwrap_or(0);
+                    det_by_trace.insert(tid.clone(), (result, waited));
+                }
+            }
+        }
+    }
+
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0);
+
+    // Walk executed spans, join with detected via trace_id.
+    let mut rows: Vec<(i64, Value)> = Vec::new();
+    if let Some(arr) = exec_body["data"].as_array() {
+        for trace in arr {
+            let tid = trace["traceID"].as_str().unwrap_or("").to_string();
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.executed" {
+                        continue;
+                    }
+                    let start_us = s["startTime"].as_i64().unwrap_or(0);
+                    let tags = s["tags"].as_array();
+                    let primitive = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "name"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let target = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "target"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let (detection, resolved_ms) = match det_by_trace.get(&tid) {
+                        Some((res, w)) => (res.clone(), *w),
+                        None => ("pending".to_string(), 0),
+                    };
+                    let age_s = ((now_us - start_us).max(0)) / 1_000_000;
+                    let when = if age_s < 60 {
+                        format!("{age_s}s ago")
+                    } else if age_s < 3600 {
+                        format!("{}m{}s ago", age_s / 60, age_s % 60)
+                    } else {
+                        format!("{}h{}m ago", age_s / 3600, (age_s % 3600) / 60)
+                    };
+                    rows.push((
+                        start_us,
+                        json!({
+                            "when": when,
+                            "primitive": primitive,
+                            "target": target,
+                            "detection": detection,
+                            "resolved_ms": resolved_ms,
+                        }),
+                    ));
+                }
+            }
+        }
+    }
+    rows.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    let events: Vec<Value> = rows.into_iter().map(|(_, v)| v).collect();
+    (StatusCode::OK, axum::Json(json!({"events": events}))).into_response()
 }
 
 /// `GET /api/cluster/summary` — one-call operator dashboard. Aggregates:
@@ -1477,6 +1644,7 @@ async fn main() -> Result<()> {
         .route("/api/topology", get(handle_topology))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
+        .route("/api/chaos/timeline", get(handle_chaos_timeline))
         .route("/api/cluster/summary", get(handle_cluster_summary))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
