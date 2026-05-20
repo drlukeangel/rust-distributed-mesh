@@ -23,7 +23,7 @@ impl IrohMeshTransport {
     pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<Self> {
         let endpoint = Endpoint::builder()
             .secret_key(secret_key)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
             .bind_addr_v4(bind_addr)
             .discovery(MdnsDiscovery::builder())

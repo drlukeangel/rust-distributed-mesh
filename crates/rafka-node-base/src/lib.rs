@@ -205,6 +205,38 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
 
     let peer_registry: PeerRegistry = Arc::new(DashMap::new());
     let mesh_id_registry: MeshIdRegistry = Arc::new(DashMap::new());
+
+    // Bootstrap iroh-gossip on the existing endpoint. Topic ID = blake3(mesh_id)
+    // so every node in the same mesh joins the same gossip topic. Real gossip
+    // plane — replaces the previously-lying rafka.mesh.boot.gossip_started span
+    // that was just mdns discovery in disguise.
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(transport.endpoint.clone());
+    let topic_bytes: [u8; 32] = *blake3::hash(mesh_id.as_bytes()).as_bytes();
+    let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
+    tracing::info_span!(
+        "rafka.mesh.gossip.subscribed",
+        node_id = %node_id,
+        mesh_id = mesh_id,
+        topic_id = %hex::encode(topic_bytes),
+    )
+    .in_scope(|| {
+        info!(mesh_id, topic_id = %hex::encode(topic_bytes), "iroh-gossip subscribed (HyParView+Plumtree)");
+    });
+
+    let gossip_handle = {
+        let node_id_g = node_id.clone();
+        let registry_for_digest = Arc::clone(&peer_registry);
+        let gossip_clone = gossip.clone();
+        tokio::spawn(run_gossip(
+            gossip_clone,
+            topic_id,
+            node_id_g,
+            mesh_id,
+            node_name,
+            gossip_interval_ms,
+            registry_for_digest,
+        ))
+    };
     let mdns_rx = std::mem::replace(
         &mut transport.mdns_discovered,
         tokio::sync::mpsc::channel(1).1,
@@ -228,7 +260,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     }
 
     let accept_handle =
-        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry)).await;
+        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone()).await;
 
     let dial_handle = if !seed_nodes.is_empty() {
         let node_id_dial = node_id.clone();
@@ -276,6 +308,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     accept_handle.abort();
     heartbeat_handle.abort();
     mdns_handle.abort();
+    gossip_handle.abort();
     if let Some(h) = ping_handle {
         h.abort();
     }
@@ -284,6 +317,129 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// State digest broadcast over iroh-gossip every gossip_interval_ms. Tiny
+/// payload (≤200 bytes after postcard) so it fits well under QUIC datagram MTU
+/// (~1200 bytes safe). Plumtree's spanning tree disseminates these efficiently
+/// across the mesh; HyParView keeps membership churn graceful.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct GossipDigest {
+    node_id: String,
+    node_name: String,
+    mesh_id: String,
+    peer_count: u64,
+    wall_time_ms: u64,
+}
+
+async fn run_gossip(
+    gossip: iroh_gossip::net::Gossip,
+    topic_id: iroh_gossip::proto::TopicId,
+    node_id: String,
+    mesh_id: &'static str,
+    node_name: &'static str,
+    interval_ms: u64,
+    registry: PeerRegistry,
+) {
+    use futures_lite::StreamExt;
+    use iroh_gossip::api::Event;
+    // Subscribe with no bootstrap peers — peers self-discover via the iroh
+    // endpoint's mdns. Once peers connect via the underlying QUIC, gossip
+    // forms its active spanning tree organically.
+    let topic = match gossip.subscribe(topic_id, Vec::new()).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::info_span!(
+                "rafka.mesh.gossip.subscribe_failed",
+                node_id = %node_id,
+                error = %e,
+            )
+            .in_scope(|| info!(error = %e, "gossip subscribe failed; gossip plane disabled for this node"));
+            return;
+        }
+    };
+    let (sender, mut receiver) = topic.split();
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                // Feed mdns-discovered peers to gossip so the swarm forms. Subscribe
+                // with empty bootstrap only finds peers if they're explicitly added.
+                // join_peers is idempotent — calling every tick with the current
+                // peer registry is cheap.
+                let peer_node_ids: Vec<iroh::NodeId> = registry
+                    .iter()
+                    .filter_map(|e| iroh::NodeId::from_str(e.key()).ok())
+                    .collect();
+                if !peer_node_ids.is_empty() {
+                    let _ = sender.join_peers(peer_node_ids).await;
+                }
+                let digest = GossipDigest {
+                    node_id: node_id.clone(),
+                    node_name: node_name.to_string(),
+                    mesh_id: mesh_id.to_string(),
+                    peer_count: registry.len() as u64,
+                    wall_time_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                };
+                let payload = match postcard::to_allocvec(&digest) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let size = payload.len();
+                if let Err(e) = sender.broadcast(payload.into()).await {
+                    tracing::info_span!(
+                        "rafka.mesh.gossip.broadcast_failed",
+                        node_id = %node_id,
+                        error = %e,
+                    )
+                    .in_scope(|| info!(error = %e, "gossip broadcast failed"));
+                } else {
+                    tracing::info_span!(
+                        "rafka.mesh.gossip.broadcast",
+                        node_id = %node_id,
+                        mesh_id = mesh_id,
+                        size_bytes = size as i64,
+                    )
+                    .in_scope(|| info!(size_bytes = size, "gossip digest broadcast"));
+                }
+            }
+            event = receiver.next() => {
+                let Some(event) = event else { continue };
+                let event = match event {
+                    Ok(e) => e,
+                    Err(e) => {
+                        tracing::info_span!(
+                            "rafka.mesh.gossip.receive_failed",
+                            node_id = %node_id,
+                            error = %e,
+                        )
+                        .in_scope(|| info!(error = %e, "gossip receive event errored"));
+                        continue;
+                    }
+                };
+                if let Event::Received(msg) = event {
+                    let size = msg.content.len();
+                    let from = msg.delivered_from.to_string();
+                    let digest: Option<GossipDigest> = postcard::from_bytes(&msg.content).ok();
+                    let summary = digest
+                        .as_ref()
+                        .map(|d| format!("node={}/peers={}", d.node_name, d.peer_count))
+                        .unwrap_or_else(|| "<decode_failed>".to_string());
+                    tracing::info_span!(
+                        "rafka.mesh.gossip.received",
+                        node_id = %node_id,
+                        from_peer = %from,
+                        size_bytes = size as i64,
+                        digest = %summary,
+                    )
+                    .in_scope(|| info!(from = %from, size_bytes = size, digest = %summary, "gossip digest received"));
+                }
+            }
+        }
+    }
 }
 
 #[instrument(skip_all)]
@@ -411,6 +567,7 @@ async fn start_accept_loop(
     own_node_type: &'static str,
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
+    gossip: iroh_gossip::net::Gossip,
 ) -> tokio::task::JoinHandle<()> {
     let endpoint = transport.endpoint.clone();
     tokio::spawn(async move {
@@ -420,8 +577,36 @@ async fn start_accept_loop(
                     let own_id = own_node_id.clone();
                     let reg = Arc::clone(&registry);
                     let mesh_reg = Arc::clone(&mesh_id_registry);
+                    let gossip = gossip.clone();
                     tokio::spawn(async move {
-                        if let Ok(conn) = incoming.await {
+                        let conn = match incoming.await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                info!(error = %e, "accept: incoming await failed");
+                                return;
+                            }
+                        };
+                        let alpn = conn.alpn().unwrap_or_default();
+                        if alpn == iroh_gossip::ALPN {
+                            // Route to gossip — its handle_connection drives the
+                            // HyParView state machine on this connection.
+                            let peer_id = conn
+                                .remote_node_id()
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|_| "unknown".into());
+                            tracing::info_span!(
+                                "rafka.mesh.gossip.accept",
+                                node_id = %own_id,
+                                peer_id = %peer_id,
+                            )
+                            .in_scope(|| info!(peer_id = %peer_id, "gossip accept"));
+                            if let Err(e) = gossip.handle_connection(conn).await {
+                                info!(peer_id = %peer_id, error = %e, "gossip handle_connection failed");
+                            }
+                            return;
+                        }
+                        // Default: our rafka-mesh-v1 ALPN
+                        {
                             let peer_id = conn
                                 .remote_node_id()
                                 .map(|id| id.to_string())

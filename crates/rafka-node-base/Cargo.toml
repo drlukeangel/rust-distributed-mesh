@@ -12,9 +12,13 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 iroh = { workspace = true }
+iroh-gossip = "0.91"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
+futures-lite = "2"
+blake3 = "1"
