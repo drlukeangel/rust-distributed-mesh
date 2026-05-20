@@ -1,8 +1,14 @@
 use anyhow::Result;
 use dashmap::DashMap;
 use iroh::{endpoint::Connection, NodeAddr, PublicKey, SecretKey};
-use rafka_mesh_ops::InternalMeshFrame;
+use rafka_mesh_ops::{framer, InternalMeshFrame};
 use rafka_mesh_transport::{IrohMeshTransport, ALPN};
+
+/// Tag for the dedicated bidirectional QUIC stream echo handler — the data
+/// plane sanity check. Sender writes a varint-length-prefixed postcard payload,
+/// receiver decodes, sends it back identically. Round-trip proves the
+/// bi-stream substrate works end-to-end before any real compute lands.
+pub const TAG_BI_ECHO: u8 = 0x11;
 use serde::{Deserialize, Serialize};
 use std::{
     net::{SocketAddr, SocketAddrV4},
@@ -262,6 +268,16 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     let accept_handle =
         start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone()).await;
 
+    // Dedicated bidirectional QUIC stream echo accept loop — the data plane
+    // sanity surface for the new framed wire grammar (tag 0x11). Lives in its
+    // own task because it accepts NEW bi-streams as they arrive, independent
+    // of the per-peer frame readers.
+    let bi_echo_handle = {
+        let endpoint = transport.endpoint.clone();
+        let node_id_be = node_id.clone();
+        tokio::spawn(run_bi_echo_acceptor(endpoint, node_id_be))
+    };
+
     let dial_handle = if !seed_nodes.is_empty() {
         let node_id_dial = node_id.clone();
         let endpoint = transport.endpoint.clone();
@@ -309,6 +325,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     heartbeat_handle.abort();
     mdns_handle.abort();
     gossip_handle.abort();
+    bi_echo_handle.abort();
     if let Some(h) = ping_handle {
         h.abort();
     }
@@ -317,6 +334,113 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Placeholder no-op — per-connection bi-stream reader is now spawned per peer
+/// connection inside start_accept_loop alongside run_frame_reader. Kept as a
+/// long-sleeping task so the parent abort handle stays valid; remove on next
+/// cleanup pass.
+async fn run_bi_echo_acceptor(endpoint: iroh::Endpoint, node_id: String) {
+    let _ = &endpoint;
+    let _ = &node_id;
+    std::future::pending::<()>().await;
+}
+
+/// Per-connection bi-stream echo reader. Loops on `conn.accept_bi()`, reads a
+/// complete framed payload (tag + varint length + postcard bytes), and if tag
+/// is `TAG_BI_ECHO` (0x11), echoes the same bytes back on the send half and
+/// finishes. Other tags are dropped with a span. This is the data-plane sanity
+/// surface — proves bi-stream open + read + write + close cycle works end-to-
+/// end before any real broker/compute logic lands.
+async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: String, peer_id_str: String) {
+    loop {
+        let (mut send, mut recv) = match conn.accept_bi().await {
+            Ok(pair) => pair,
+            Err(_) => break, // connection closed
+        };
+        let bytes = match recv.read_to_end(64 * 1024).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::info_span!(
+                    "rafka.mesh.bi.read_failed",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                    error = %e,
+                )
+                .in_scope(|| info!(error = %e, "bi-stream read failed"));
+                continue;
+            }
+        };
+        if bytes.is_empty() {
+            continue;
+        }
+        let tag = bytes[0];
+        if tag != TAG_BI_ECHO {
+            tracing::info_span!(
+                "rafka.mesh.bi.unknown_tag",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                tag = tag as i64,
+                size_bytes = bytes.len() as i64,
+            )
+            .in_scope(|| info!(tag, "bi-stream unknown tag — dropping"));
+            continue;
+        }
+        let recv_span = tracing::info_span!(
+            "rafka.mesh.bi.echo_received",
+            node_id = %own_node_id,
+            peer_id = %peer_id_str,
+            size_bytes = bytes.len() as i64,
+        );
+        recv_span.in_scope(|| info!(size = bytes.len(), "bi echo received"));
+
+        // Echo back identical bytes (tag + varint + payload).
+        if let Err(e) = send.write_all(&bytes).await {
+            tracing::info_span!(
+                "rafka.mesh.bi.write_failed",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                error = %e,
+            )
+            .in_scope(|| info!(error = %e, "bi echo write failed"));
+            continue;
+        }
+        if let Err(e) = send.finish() {
+            tracing::info_span!(
+                "rafka.mesh.bi.finish_failed",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                error = %e,
+            )
+            .in_scope(|| info!(error = %e, "bi echo finish failed"));
+            continue;
+        }
+        tracing::info_span!(
+            "rafka.mesh.bi.echo_sent",
+            node_id = %own_node_id,
+            peer_id = %peer_id_str,
+            size_bytes = bytes.len() as i64,
+        )
+        .in_scope(|| info!(size = bytes.len(), "bi echo sent"));
+    }
+}
+
+/// Standalone bi-stream client: open a bi-stream to `peer`, write a framed
+/// payload (tag 0x11), read echo back, return the round-trip bytes. Used by
+/// the bi-stream-echo test in the CLI test runner — proves the dedicated data
+/// plane works without needing live broker / compute / message types yet.
+pub async fn bi_echo_roundtrip(
+    endpoint: &iroh::Endpoint,
+    peer: iroh::NodeId,
+    payload: Vec<u8>,
+) -> anyhow::Result<Vec<u8>> {
+    let conn = endpoint.connect(peer, ALPN).await?;
+    let (mut send, mut recv) = conn.open_bi().await?;
+    let frame = framer::encode(TAG_BI_ECHO, &payload);
+    send.write_all(&frame).await?;
+    send.finish()?;
+    let echoed = recv.read_to_end(64 * 1024).await?;
+    Ok(echoed)
 }
 
 /// State digest broadcast over iroh-gossip every gossip_interval_ms. Tiny
@@ -484,6 +608,11 @@ async fn dial_seeds(
 
                 send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
 
+                let conn_bi = conn.clone();
+                let own_bi = own_node_id.clone();
+                let peer_bi = peer_id_str.clone();
+                tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+
                 let own = own_node_id.clone();
                 let reg = Arc::clone(&registry);
                 let mesh_reg = Arc::clone(&mesh_id_registry);
@@ -548,6 +677,11 @@ async fn watch_mdns(
                     reg.insert(peer_id_str.clone(), conn.clone());
 
                     send_hello(&conn, &own, own_mesh_id, own_node_type, &peer_id_str).await;
+
+                    let conn_bi = conn.clone();
+                    let own_bi = own.clone();
+                    let peer_bi = peer_id_str.clone();
+                    tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
 
                     run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg).await;
                 }
@@ -625,6 +759,12 @@ async fn start_accept_loop(
                             reg.insert(peer_id.clone(), conn.clone());
 
                             send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
+
+                            // Per-connection bi-stream echo reader (data plane sanity).
+                            let conn_bi = conn.clone();
+                            let own_bi = own_id.clone();
+                            let peer_bi = peer_id.clone();
+                            tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
 
                             run_frame_reader(own_id, own_mesh_id, peer_id.clone(), conn, reg, mesh_reg).await;
                         }
@@ -1079,6 +1219,73 @@ async fn run_heartbeat(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::{Endpoint, Watcher};
+    use rafka_mesh_transport::ALPN;
+
+    /// End-to-end bi-stream echo: two in-process iroh endpoints, A accepts +
+    /// echoes via run_bi_echo_reader, B opens bi-stream + writes + reads back.
+    /// Proves the data plane wire format (tag 0x11 + varint + postcard) makes
+    /// the full round trip across the QUIC bi-stream.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn bi_stream_echo_e2e() {
+        // Endpoint A (server)
+        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
+        let endpoint_a = Endpoint::builder()
+            .secret_key(secret_a)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind()
+            .await
+            .expect("endpoint A");
+        let addr_a = endpoint_a.node_addr().initialized().await;
+        let node_id_a = endpoint_a.node_id();
+
+        // Accept loop on A: any incoming connection gets bi_echo_reader.
+        let _accept_handle = {
+            let endpoint = endpoint_a.clone();
+            let own = node_id_a.to_string();
+            tokio::spawn(async move {
+                if let Some(incoming) = endpoint.accept().await {
+                    let conn = incoming.await.expect("A accept");
+                    let peer = conn.remote_node_id().map(|i| i.to_string()).unwrap_or_default();
+                    run_bi_echo_reader(conn, own, peer).await;
+                }
+            })
+        };
+
+        // Endpoint B (client)
+        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
+        let endpoint_b = Endpoint::builder()
+            .secret_key(secret_b)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind()
+            .await
+            .expect("endpoint B");
+        // Add A as known peer so the dial resolves without DHT/mdns.
+        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+
+        // Round-trip via the public helper
+        let payload = b"bi-stream-echo-test-payload".to_vec();
+        let echoed = bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone())
+            .await
+            .expect("bi_echo_roundtrip");
+
+        // Echo bytes are the FULL framed envelope (tag + varint + payload)
+        // because the reader echoes raw bytes. Decode to verify the inner
+        // payload survived intact.
+        let (tag, inner, _consumed): (u8, Vec<u8>, usize) =
+            framer::decode(&echoed).expect("decode echo");
+        assert_eq!(tag, TAG_BI_ECHO, "echoed tag must be 0x11");
+        assert_eq!(inner, payload, "echoed payload must equal sent");
     }
 }
 

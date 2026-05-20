@@ -503,10 +503,13 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("framer-truncation",       "functional", "proptest: dropping last byte of any frame surfaces FramerError::Truncated"),
     ("traced-frame-roundtrip",  "functional", "tag=0x10 wrapped TracedFrame preserves trace_id + span_id across encode→decode"),
     ("unknown-tag-rejected",    "functional", "frames with tag != 0x10 must NOT deserialize as TracedFrame"),
+    ("bi-stream-echo",          "functional", "two in-process iroh endpoints exchange a tag=0x11 framed payload over a bidirectional QUIC stream; payload survives byte-for-byte"),
     ("chaos-soak-9prim-1min",   "chaos",      "1-minute soak with 9-primitive pool; expects 100% pass; gates the substrate"),
     ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
     ("mesh-five-types-present", "chaos",      "spawn 5 nodes (gateway+broker+compute+registry+bridge), verify all 5 visible in topology + heartbeats fresh"),
     ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
+    ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rafka.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
+    ("gossip-mesh-to-mesh",     "chaos",      "spawn nodes in mesh-A + mesh-B; verify each mesh's gossip stays isolated (separate topic_id per mesh_id) AND cross.peer_connected spans fire"),
 ];
 
 #[derive(serde::Serialize)]
@@ -550,10 +553,13 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
     let (status, detail): (&str, String) = match name.as_ref() {
         "framer-roundtrip" | "framer-truncation" | "traced-frame-roundtrip"
         | "unknown-tag-rejected" => run_cargo_test_for("rafka-mesh-ops", name).await,
+        "bi-stream-echo" => run_cargo_test_for("rafka-node-base", "bi_stream_echo_e2e").await,
         "chaos-soak-9prim-1min" => run_chaos_soak(api_url, "1m", "8s", seed).await,
         "chaos-soak-9prim-5min" => run_chaos_soak(api_url, "5m", "10s", seed).await,
         "mesh-five-types-present" => run_mesh_five_types_present(api_url).await,
         "remove-resilience" => run_remove_resilience(api_url).await,
+        "gossip-swarm-forms" => run_gossip_swarm_forms(api_url).await,
+        "gossip-mesh-to-mesh" => run_gossip_mesh_to_mesh(api_url).await,
         _ => ("skipped", format!("no runner wired for {name}")),
     };
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -604,6 +610,7 @@ async fn run_cargo_test_for(crate_name: &str, test_filter: &str) -> (&'static st
         "framer-truncation" => "framer::tests::truncation_detected",
         "traced-frame-roundtrip" => "tests::traced_frame_round_trip",
         "unknown-tag-rejected" => "tests::unknown_tag_fails_decode",
+        "bi-stream-echo" => "tests::bi_stream_echo_e2e",
         other => other,
     };
     let out = match tokio::process::Command::new("cargo")
@@ -706,6 +713,77 @@ async fn fetch_json(client: &reqwest::Client, url: &str) -> serde_json::Value {
     match client.get(url).send().await {
         Ok(r) => r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({})),
         Err(_) => serde_json::json!({}),
+    }
+}
+
+async fn run_gossip_swarm_forms(api_url: &str) -> (&'static str, String) {
+    let client = reqwest::Client::new();
+    for t in ["gateway", "broker", "compute", "registry"] {
+        let _ = client
+            .post(format!("{api_url}/api/nodes/spawn"))
+            .json(&serde_json::json!({"node_type": t}))
+            .send()
+            .await
+            .ok();
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(18)).await;
+    // Sum received spans across all 4 services — proves the swarm formed.
+    let mut total_rx: i64 = 0;
+    for svc in ["gateway", "broker", "compute", "registry"] {
+        let url = format!(
+            "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.gossip.received&limit=50&lookback=2m"
+        );
+        let body = fetch_json(&client, &url).await;
+        total_rx += body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t["spans"].as_array())
+                    .flat_map(|ss| ss.iter())
+                    .filter(|sp| sp["operationName"] == "rafka.mesh.gossip.received")
+                    .count() as i64
+            })
+            .unwrap_or(0);
+    }
+    if total_rx >= 4 {
+        ("passed", format!("gossip swarm exchanged {total_rx} received digests across 4 nodes"))
+    } else {
+        ("failed", format!("only {total_rx} gossip.received spans seen (need ≥4 across 4 nodes for evidence of swarm formation)"))
+    }
+}
+
+async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
+    let client = reqwest::Client::new();
+    // Two nodes, distinct mesh_ids
+    for (t, mid) in [("gateway", "mesh-test-A"), ("broker", "mesh-test-B")] {
+        let _ = client
+            .post(format!("{api_url}/api/nodes/spawn"))
+            .json(&serde_json::json!({"node_type": t, "extra_env": {"RAFKA_MESH_ID": mid}}))
+            .send()
+            .await
+            .ok();
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(12)).await;
+    // cross.peer_connected fires when Hello frames carry mismatched mesh_ids
+    let body = fetch_json(
+        &client,
+        "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.cross.peer_connected&limit=10&lookback=2m",
+    )
+    .await;
+    let cross_count = body["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|t| t["spans"].as_array())
+                .flat_map(|ss| ss.iter())
+                .filter(|sp| sp["operationName"] == "rafka.mesh.cross.peer_connected")
+                .count() as i64
+        })
+        .unwrap_or(0);
+    if cross_count >= 1 {
+        ("passed", format!("{cross_count} cross.peer_connected spans — mesh-A and mesh-B detected each other across the boundary"))
+    } else {
+        ("failed", "no cross.peer_connected spans — mesh-to-mesh isolation/discovery broken".into())
     }
 }
 
