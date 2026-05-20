@@ -194,6 +194,8 @@ enum ChaosCmd {
         #[arg(long, default_value = "5000")]
         duration_ms: u64,
     },
+    /// List every shipped chaos primitive with sample CLI invocation + admin flag
+    Catalog,
     /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
     Soak {
         /// Total duration (e.g. 5m, 1h, 24h)
@@ -370,6 +372,7 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     "mesh chaos firewall-inbound".into(),
                     format!("--target-type {target_type} --duration-ms {duration_ms}"),
                 ),
+                ChaosCmd::Catalog => ("mesh chaos catalog".into(), "".into()),
                 ChaosCmd::Soak { duration, interval, seed } => (
                     "mesh chaos soak".into(),
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
@@ -444,6 +447,7 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 ChaosCmd::FirewallInbound { target_type, duration_ms } => {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::FirewallInbound { target_node_type: target_type.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
                 }
+                ChaosCmd::Catalog => cmd_chaos_catalog().await,
                 ChaosCmd::Soak { duration, interval, seed } => {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
                 }
@@ -483,6 +487,43 @@ async fn cmd_chaos_restart(api_url: &str, target: Option<String>, deadline_ms: u
         rafka_chaos::DetectionResult::Passed { .. } => Ok(()),
         _ => Err(anyhow!("detection failed")),
     }
+}
+
+/// Print the catalog of every shipped chaos primitive with one-line description,
+/// admin requirement, and example invocation. Cheap operator introspection — no
+/// HTTP calls, runs purely against compiled-in metadata.
+async fn cmd_chaos_catalog() -> Result<()> {
+    let entries: &[(&str, bool, &str, &str)] = &[
+        ("kill_node",         false, "terminate one random spawned subprocess",          "rfa mesh chaos kill"),
+        ("restart_node",      false, "kill + immediately re-spawn same node_type",       "rfa mesh chaos restart"),
+        ("burst_kill",        false, "N back-to-back kills against random targets",      "rfa mesh chaos burst-kill --count 3"),
+        ("disk_full",         false, "fill spawn data dir until writes fail",            "rfa mesh chaos disk-full --max-mb 4"),
+        ("wedge_node",        false, "Suspend the OS process via NtSuspendProcess",      "rfa mesh chaos wedge --target-type broker"),
+        ("clock_skew",        false, "restart node with RAFKA_CLOCK_SKEW_MS env",        "rfa mesh chaos clock-skew --skew-ms 30000"),
+        ("slow_link",         false, "restart node with RAFKA_LINK_SLOW_MS env",         "rfa mesh chaos slow-link --latency-ms 250"),
+        ("lossy_link",        false, "restart node with RAFKA_LINK_LOSS_PCT env",        "rfa mesh chaos lossy-link --loss-pct 15"),
+        ("nat_shift",         false, "restart with random RAFKA_NODE_BIND_ADDR port",    "rfa mesh chaos nat-shift"),
+        ("partition_pair",    true,  "Windows firewall block outbound UDP for 2 progs",  "rfa mesh chaos partition-pair --a gateway --b broker"),
+        ("partition_subset",  true,  "split node_type catalog: K types blocked from rest","rfa mesh chaos partition-subset --size 2"),
+        ("flap_link",         true,  "create+delete firewall block N cycles",            "rfa mesh chaos flap-link --a gateway --b broker --cycles 5"),
+        ("firewall_inbound",  true,  "block inbound UDP to a named program",             "rfa mesh chaos firewall-inbound --target-type broker"),
+    ];
+    println!("rafka chaos primitive catalog ({} shipped)\n", entries.len());
+    println!("{:<20} {:<8} {}", "primitive", "admin?", "what it does");
+    println!("{:<20} {:<8} {}", "---------", "------", "------------");
+    for (name, admin, desc, _ex) in entries {
+        let admin_mark = if *admin { "yes" } else { "no" };
+        println!("{name:<20} {admin_mark:<8} {desc}");
+    }
+    println!("\nexamples:");
+    for (name, _admin, _desc, ex) in entries {
+        println!("  {name}: {ex}");
+    }
+    println!(
+        "\nsoak (all non-admin primitives in random rotation):"
+    );
+    println!("  rfa mesh chaos soak --duration 1h --interval 20s --seed 42");
+    Ok(())
 }
 
 /// Generic one-shot primitive runner: execute() → detect() → print result.
