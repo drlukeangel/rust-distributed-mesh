@@ -733,6 +733,146 @@ impl ChaosPrimitive for PartitionPair {
     }
 }
 
+/// `partition_subset` — split the node-type catalog into two sides (subset of size
+/// `subset_size`, plus the complement) and create Windows firewall rules blocking
+/// outbound UDP between every (subset_type, non_subset_type) program pair. Substrate
+/// criterion: each side converges to its own view; on revert, full mesh reconverges.
+///
+/// Implementation: K = subset_size; picks K random node_types into subset, blocks
+/// outbound from each subset rafka-<type>.exe to each non-subset rafka-<type>.exe
+/// via `New-NetFirewallRule -Direction Outbound -Action Block -Protocol UDP
+/// -Program <path>`. Tagged so revert removes by group.
+///
+/// Requires elevated shell. Excluded from the soak random pool until admin is
+/// available — same constraint as `partition_pair`.
+pub struct PartitionSubset {
+    /// Number of node_types on the "isolated" side. Valid range: 1..(NODE_TYPES.len() - 1).
+    pub subset_size: usize,
+    pub duration_ms: u64,
+}
+
+#[async_trait]
+impl ChaosPrimitive for PartitionSubset {
+    fn name(&self) -> &str {
+        "partition_subset"
+    }
+
+    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
+        use rand::seq::SliceRandom;
+        if self.subset_size == 0 || self.subset_size >= NODE_TYPES.len() {
+            return Err(ChaosError::InvalidTarget(format!(
+                "subset_size must be in 1..{}, got {}",
+                NODE_TYPES.len(),
+                self.subset_size
+            )));
+        }
+        let mut types: Vec<&'static str> = NODE_TYPES.to_vec();
+        {
+            let mut rng = ctx.rng.lock().await;
+            types.shuffle(&mut *rng);
+        }
+        let (subset, rest) = types.split_at(self.subset_size);
+        let subset_names: Vec<String> = subset.iter().map(|s| s.to_string()).collect();
+        let rest_names: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
+
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let tag = format!("RAFKA-CHAOS-PARTITION-SUBSET-{id}");
+
+        let span = info_span!(
+            "rafka.chaos.primitive.executed",
+            name = "partition_subset",
+            subset_size = self.subset_size as i64,
+            subset = %subset_names.join(","),
+            rest = %rest_names.join(","),
+            duration_ms = self.duration_ms as i64,
+            "otel.kind" = "internal",
+        );
+        let _enter = span.enter();
+
+        // Build one PowerShell call that creates all K*M firewall rules at once.
+        let mut script = String::new();
+        for (i, a) in subset_names.iter().enumerate() {
+            for (j, b) in rest_names.iter().enumerate() {
+                let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{a}.exe");
+                let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{b}.exe");
+                script.push_str(&format!(
+                    "New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
+                     New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null; "
+                ));
+            }
+        }
+        script.push_str(&format!("Write-Output '{tag}'"));
+
+        let output = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .await
+            .map_err(|e| ChaosError::Execution(format!("powershell partition_subset: {e}")))?;
+        if !output.status.success() {
+            return Err(ChaosError::Execution(format!(
+                "New-NetFirewallRule failed (need admin?): {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        Ok(ChaosOutcome {
+            primitive_name: "partition_subset".into(),
+            targets: subset_names.clone(),
+            state: json!({
+                "subset": subset_names,
+                "rest": rest_names,
+                "tag": tag,
+                "duration_ms": self.duration_ms,
+            }),
+        })
+    }
+
+    async fn detect(
+        &self,
+        _ctx: &ChaosContext,
+        _outcome: &ChaosOutcome,
+        deadline_ms: u64,
+    ) -> Result<DetectionResult, ChaosError> {
+        let wait = std::cmp::min(self.duration_ms, deadline_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+        let span = info_span!(
+            "rafka.chaos.primitive.detected",
+            name = "partition_subset",
+            result = "passed",
+            waited_ms = wait as i64,
+            "otel.kind" = "internal",
+        );
+        drop(span);
+        Ok(DetectionResult::Passed { waited_ms: wait })
+    }
+
+    async fn revert(
+        &self,
+        _ctx: &ChaosContext,
+        outcome: &ChaosOutcome,
+    ) -> Result<(), ChaosError> {
+        let tag = outcome
+            .state
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if tag.is_empty() {
+            return Ok(());
+        }
+        let ps_script = format!(
+            "Get-NetFirewallRule -DisplayName '{tag}-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+        );
+        let _ = tokio::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_script])
+            .output()
+            .await;
+        Ok(())
+    }
+}
+
 /// `clock_skew` — restart a node with `RAFKA_CLOCK_SKEW_MS` env var set. Substrate
 /// requires `rafka-node-base` to read this env at boot and add the offset to all
 /// SystemTime::now() reads on the hot path (heartbeat ticker, frame timestamps).

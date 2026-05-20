@@ -166,6 +166,14 @@ enum ChaosCmd {
         #[arg(long, default_value = "5000")]
         duration_ms: u64,
     },
+    /// Split node-type catalog: subset of `--size` blocked from rest via firewall (NEEDS ADMIN)
+    PartitionSubset {
+        /// Number of node_types in the isolated subset
+        #[arg(long, default_value = "2")]
+        size: usize,
+        #[arg(long, default_value = "5000")]
+        duration_ms: u64,
+    },
     /// Smoke / nightly soak runner. Picks random primitives every <interval> for <duration>.
     Soak {
         /// Total duration (e.g. 5m, 1h, 24h)
@@ -330,6 +338,10 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     "mesh chaos partition-pair".into(),
                     format!("--a {a} --b {b} --duration-ms {duration_ms}"),
                 ),
+                ChaosCmd::PartitionSubset { size, duration_ms } => (
+                    "mesh chaos partition-subset".into(),
+                    format!("--size {size} --duration-ms {duration_ms}"),
+                ),
                 ChaosCmd::Soak { duration, interval, seed } => (
                     "mesh chaos soak".into(),
                     format!("--duration {duration} --interval {interval} --seed {seed}"),
@@ -393,6 +405,9 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 }
                 ChaosCmd::PartitionPair { a, b, duration_ms } => {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::PartitionPair { a: a.clone(), b: b.clone(), duration_ms: *duration_ms }), duration_ms + 5000).await
+                }
+                ChaosCmd::PartitionSubset { size, duration_ms } => {
+                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::PartitionSubset { subset_size: *size, duration_ms: *duration_ms }), duration_ms + 5000).await
                 }
                 ChaosCmd::Soak { duration, interval, seed } => {
                     cmd_chaos_soak(&cli.api_url, duration, interval, *seed).await
