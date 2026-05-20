@@ -153,6 +153,7 @@ const HTML: &str = r##"<!DOCTYPE html>
   <button class="tab" data-panel="panel-topology">Topology</button>
   <button class="tab" data-panel="panel-alerts">Alerts</button>
   <button class="tab" data-panel="panel-health">Heartbeat</button>
+  <button class="tab" data-panel="panel-chaos">Chaos</button>
 </div>
 
 <div id="panel-waterfall" class="panel active">
@@ -197,6 +198,15 @@ const HTML: &str = r##"<!DOCTYPE html>
     <span id="health-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
   </div>
   <div id="health-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem"></div>
+</div>
+
+<div id="panel-chaos" class="panel">
+  <div id="controls">
+    <button id="chaos-refresh">Refresh chaos events</button>
+    <span id="chaos-status" style="color:#8b949e;font-size:0.8rem;margin-left:0.5rem"></span>
+  </div>
+  <div id="chaos-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.5rem;margin-bottom:1rem"></div>
+  <div id="chaos-recent" style="border:1px solid #30363d;border-radius:6px;padding:0.5rem"></div>
 </div>
 
 <script>
@@ -567,6 +577,54 @@ const HTML: &str = r##"<!DOCTYPE html>
 
   healthRefresh.addEventListener('click', loadHealth);
 
+  // ── chaos events panel ───────────────────────────────────────────────────
+  var chaosSummary = document.getElementById('chaos-summary');
+  var chaosRecent = document.getElementById('chaos-recent');
+  var chaosStatus = document.getElementById('chaos-status');
+  var chaosRefresh = document.getElementById('chaos-refresh');
+  var chaosTimer = null;
+
+  function renderChaos(d) {
+    var counts = d.counts || {};
+    var keys = Object.keys(counts).sort();
+    if (keys.length === 0) {
+      chaosSummary.innerHTML = '<div style="color:#8b949e;font-size:0.85rem">no chaos events in lookback window</div>';
+      chaosRecent.innerHTML = '';
+      chaosStatus.textContent = '0 events';
+      return;
+    }
+    var html = '';
+    keys.forEach(function(k) {
+      html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:4px;padding:0.5rem">' +
+        '<div style="color:#58a6ff;font-size:0.7rem;text-transform:uppercase">' + k + '</div>' +
+        '<div style="font-size:1.4rem;color:#c9d1d9">' + counts[k] + '</div>' +
+        '</div>';
+    });
+    chaosSummary.innerHTML = html;
+    var recent = d.recent || [];
+    var rhtml = '';
+    recent.forEach(function(e) {
+      rhtml += '<div style="border-bottom:1px solid #1f2429;padding:0.35rem 0.5rem;font-size:0.8rem">' +
+        '<span style="color:#3fb950">' + e.name + '</span>' +
+        '<span style="color:#8b949e"> on </span>' +
+        '<span style="color:#c9d1d9">' + (e.target || '?') + '</span>' +
+        '<span style="color:#8b949e;float:right">' + e.when + '</span>' +
+        '</div>';
+    });
+    chaosRecent.innerHTML = rhtml;
+    var total = keys.reduce(function(a, k) { return a + counts[k]; }, 0);
+    chaosStatus.textContent = total + ' events in last 10min';
+  }
+
+  function loadChaos() {
+    fetch('/api/chaos/recent')
+      .then(function(r) { return r.json(); })
+      .then(renderChaos)
+      .catch(function(e) { chaosStatus.textContent = 'fetch failed: ' + e; });
+  }
+
+  chaosRefresh.addEventListener('click', loadChaos);
+
   // tab switching
   var tabs = document.querySelectorAll('.tab');
   tabs.forEach(function(t) {
@@ -580,6 +638,7 @@ const HTML: &str = r##"<!DOCTYPE html>
       if (topoTimer) { clearInterval(topoTimer); topoTimer = null; }
       if (alertsTimer) { clearInterval(alertsTimer); alertsTimer = null; }
       if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+      if (chaosTimer) { clearInterval(chaosTimer); chaosTimer = null; }
       var panel = t.getAttribute('data-panel');
       if (panel === 'panel-topology') {
         loadTopology();
@@ -590,6 +649,9 @@ const HTML: &str = r##"<!DOCTYPE html>
       } else if (panel === 'panel-health') {
         loadHealth();
         healthTimer = setInterval(loadHealth, 5000);
+      } else if (panel === 'panel-chaos') {
+        loadChaos();
+        chaosTimer = setInterval(loadChaos, 10000);
       }
     });
   });
@@ -642,6 +704,75 @@ async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse
     );
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
+}
+
+/// `GET /api/chaos/recent` — query Jaeger for chaos.primitive.executed spans
+/// in the last 10 minutes; group by primitive name (counts) + return 20 most
+/// recent events for the operator-visible Chaos tab.
+async fn handle_chaos_recent(State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!(
+        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.executed&limit=200&lookback=10m",
+        state.jaeger_url
+    );
+    let body: Value = match state.http.get(&url).send().await {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::OK, axum::Json(json!({"counts": {}, "recent": []}))).into_response(),
+        },
+        Err(_) => return (StatusCode::OK, axum::Json(json!({"counts": {}, "recent": []}))).into_response(),
+    };
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut all_events: Vec<(i64, String, String)> = Vec::new(); // (start_us, name, target)
+    if let Some(arr) = body["data"].as_array() {
+        for trace in arr {
+            if let Some(spans) = trace["spans"].as_array() {
+                for s in spans {
+                    if s["operationName"] != "rafka.chaos.primitive.executed" {
+                        continue;
+                    }
+                    let tags = s["tags"].as_array();
+                    let name = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "name"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("?")
+                        .to_string();
+                    let target = tags
+                        .and_then(|t| t.iter().find(|x| x["key"] == "target"))
+                        .and_then(|x| x["value"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let start_us = s["startTime"].as_i64().unwrap_or(0);
+                    *counts.entry(name.clone()).or_insert(0) += 1;
+                    all_events.push((start_us, name, target));
+                }
+            }
+        }
+    }
+    all_events.sort_by(|a, b| b.0.cmp(&a.0));
+    let now_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0);
+    let recent: Vec<Value> = all_events
+        .iter()
+        .take(20)
+        .map(|(t, name, target)| {
+            let age_s = ((now_us - t).max(0)) / 1_000_000;
+            let when = if age_s < 60 {
+                format!("{age_s}s ago")
+            } else if age_s < 3600 {
+                format!("{}m ago", age_s / 60)
+            } else {
+                format!("{}h ago", age_s / 3600)
+            };
+            json!({"name": name, "target": target, "when": when})
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        axum::Json(json!({"counts": counts, "recent": recent})),
+    )
+        .into_response()
 }
 
 /// `GET /api/alerts` — query Jaeger for chaos.primitive.detected spans with
@@ -1215,6 +1346,7 @@ async fn main() -> Result<()> {
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
         .route("/api/alerts", get(handle_alerts))
+        .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
