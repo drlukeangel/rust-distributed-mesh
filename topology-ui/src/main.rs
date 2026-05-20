@@ -489,6 +489,7 @@ const HTML: &str = r##"<!DOCTYPE html>
         '<circle cx="' + p.x + '" cy="' + p.y + '" r="22" fill="' + typeColor + '" fill-opacity="0.65"/>' +
         '<text x="' + p.x + '" y="' + (p.y + 4) + '">' + (n.id.length > 12 ? n.id.slice(0,10) + '…' : n.id) + '</text>' +
         '<text x="' + p.x + '" y="' + (p.y + 38) + '" style="fill:#8b949e;font-size:9px">' + (n.mesh_id || 'default') + '</text>' +
+        (typeof n.frames_per_min === 'number' && n.frames_per_min > 0 ? '<text x="' + p.x + '" y="' + (p.y + 50) + '" style="fill:#3fb950;font-size:9px">' + n.frames_per_min + ' fr/m</text>' : '') +
         '</g>');
     });
     topoSvg.innerHTML = svgParts.join('');
@@ -897,7 +898,31 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                         },
                         Err(_) => "default".to_string(),
                     };
-                    nodes.push(json!({"id": s, "type": s, "mesh_id": mesh_id}));
+                    // Per-service frame activity over the last 1m. Used by the
+                    // topology view to render a "X fr/m" badge under each node so
+                    // operators see live throughput at a glance. Bound query cost:
+                    // limit=200 traces, 1m lookback.
+                    let fr_url = format!(
+                        "{}/api/traces?service={}&operation=rafka.mesh.frame.sent&limit=200&lookback=1m",
+                        state.jaeger_url, s
+                    );
+                    let frames_per_min: i64 = match state.http.get(&fr_url).send().await {
+                        Ok(resp) => match resp.json::<Value>().await {
+                            Ok(body) => body["data"]
+                                .as_array()
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|t| t["spans"].as_array())
+                                        .flat_map(|ss| ss.iter())
+                                        .filter(|sp| sp["operationName"] == "rafka.mesh.frame.sent")
+                                        .count() as i64
+                                })
+                                .unwrap_or(0),
+                            Err(_) => 0,
+                        },
+                        Err(_) => 0,
+                    };
+                    nodes.push(json!({"id": s, "type": s, "mesh_id": mesh_id, "frames_per_min": frames_per_min}));
                 }
             }
         }
