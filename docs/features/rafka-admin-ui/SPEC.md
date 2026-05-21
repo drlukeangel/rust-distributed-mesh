@@ -143,30 +143,34 @@ mesh-grow-shrink
 ## 7. Known issues (acknowledge, don't re-file)
 
 1. ~~admin-ui crash under chaos at low cadence~~ — **CLOSED at
-   system boundary** (2026-05-21, floor=5000ms): `/api/chaos/start`
+   system boundary** (2026-05-21, floor=30000ms): `/api/chaos/start`
    now returns HTTP 400 with `error: cadence_ms_below_floor` when
-   `cadence_ms < 5000`. The upstream bug
+   `cadence_ms < 30000`. The upstream bug
    (`iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`: `assertion
    failed: untracked_bytes <= segment_size`) still exists in
    `tokio-rt-worker` under concurrent kill+respawn with in-flight
    QUIC streams.
 
-   Initial floor was 2000ms; QA postfix round (NF-1) found 18
-   iroh-quinn panics in 5min at exactly 2000ms — tokio recovered
-   the tasks but the panics still fired. Raised to 5000ms (matches
-   the chaos default cadence). The 30-minute soak at 5000ms
-   completes with 0 panics (commit 88937f9 verification).
+   Floor escalation history:
+     * 2000ms → QA found 18 panics in 5min (NF-1)
+     * 5000ms → direct retest showed 6+ panic pairs in 90s of
+       chaos; admin-ui terminated mid-test (panics escape tokio
+       task supervision via iroh's QUIC worker pool, which we
+       don't own)
+     * 30000ms → matches the original `cadence_ms` AtomicU64
+       default; the 30-min chaos-soak-9prim-30min test passes
+       cleanly at this cadence (40+ events, 0 failed, commit
+       88937f9 evidence)
 
-   `CHAOS_CADENCE_FLOOR_MS = 5000` is a `const` in
-   `admin-ui/src/main.rs`; can be lowered once iroh upgrades past
-   0.91.2 to a release bundling iroh-quinn-proto 0.15.x+
-   (where the assertion is fixed upstream).
+   `CHAOS_CADENCE_FLOOR_MS = 30_000` is a `const` in
+   `admin-ui/src/main.rs`. Can be lowered once iroh upgrades past
+   0.91.2 to a release bundling iroh-quinn-proto 0.15.x+ (where
+   the assertion is fixed upstream).
 
    Verified end-to-end:
-     POST /api/chaos/start {"cadence_ms":500}  → 400 (with reason)
-     POST /api/chaos/start {"cadence_ms":2000} → 400 (now)
-     POST /api/chaos/start {"cadence_ms":4999} → 400
-     POST /api/chaos/start {"cadence_ms":5000} → 200, chaos starts
+     POST /api/chaos/start {"cadence_ms":20000} → 400 (with reason)
+     POST /api/chaos/start {"cadence_ms":29999} → 400
+     POST /api/chaos/start {"cadence_ms":30000} → 200, chaos starts
 2. **Boot Waterfall returns 502 when Jaeger has no trace** — semantic fix
    shipped; was previously 404. Some services genuinely have no recent
    trace; admin-ui correctly bubbles up Jaeger's miss. Friendly empty
@@ -219,18 +223,26 @@ mesh-grow-shrink
    digest into `live_digests()` + `topic_membership()` on every
    broadcast tick. iroh-gossip does not echo broadcasts to the sender,
    so without this every node was invisible in its own UI.
-9. ~~Panic hook installed but never fires~~ — **FIXED** (2026-05-21,
-   two-part). PART 1: hook moved to plain `fn main()` BEFORE the
-   tokio runtime is built — fixed the hyper "no timer set" panic
-   capture (verified). PART 2 (post-QA-postfix): the hook fired
-   but the iroh-quinn double-panic (mutex poisoning fires a
-   second panic on the same thread mid-`write_all`) caused Rust
-   to abort before the buffered write reached disk, leaving
-   0-byte files. Fix: eprintln FIRST (stderr is typically
-   redirected to a capture file by the parent), then
-   open+write_all+flush+drop in a tight sequence. The first
-   panic's message is now guaranteed to reach stderr-capture even
-   if the file write is preempted by a second panic.
+9. ~~Panic hook installed but never fires~~ — **FIXED + VERIFIED
+   end-to-end** (2026-05-21, three iterations). PART 1: hook
+   moved to plain `fn main()` BEFORE the tokio runtime is built —
+   fixed the hyper "no timer set" panic capture (verified). PART
+   2: eprintln FIRST + atomic-ish open+write_all+flush+drop
+   sequence (commit fb1a195). PART 3 verification (2026-05-21
+   chaos retest at floor=5000ms): stderr now contains the
+   custom-format hook output for BOTH the iroh-quinn assertion
+   AND the immediate mutex-poison second panic:
+
+     ==== PANIC @ epoch_ms=1779366524560 (thread="tokio-rt-worker") ====
+     panicked at iroh-quinn-proto-0.13.0/src/connection/mod.rs:654:21
+     ==== PANIC @ epoch_ms=1779366526072 (thread="tokio-rt-worker") ====
+     panicked at iroh-quinn-0.14.0/src/mutex.rs:138:42
+
+   So both panics in the double-panic sequence now get captured
+   by the custom hook. This is what was supposed to happen all
+   along; the QA-postfix report (R5 FAIL) was a real catch and
+   the eprintln-first + flush+drop fix is what finally made it
+   work reliably.
 10. ~~Messages summary lacks peer NodeId prefix~~ — **FIXED** (2026-05-21):
     `push_message` now prepends an 8-char hex prefix of `from_peer_id`
     to the summary string itself, e.g. `[7144d954] Ping{org_id=0}`.

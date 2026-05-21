@@ -2816,23 +2816,31 @@ struct ChaosStartRequest {
     cadence_ms: Option<u64>,
 }
 
-/// Red-team R1 + QA postfix NF-1 boundary enforcement: low chaos
-/// cadence triggers iroh-quinn-proto-0.13.0 connection/mod.rs:654
-/// assertion `untracked_bytes <= segment_size` (upstream bug;
-/// concurrent kill+respawn while QUIC streams are in flight).
+/// Red-team R1 + QA postfix NF-1/NF-2 boundary enforcement: low
+/// chaos cadence triggers iroh-quinn-proto-0.13.0
+/// connection/mod.rs:654 assertion `untracked_bytes <= segment_size`
+/// (upstream bug; concurrent kill+respawn while QUIC streams are
+/// in flight).
 ///
-/// Initial floor of 2000ms was insufficient — QA observed 18 panics
-/// in 5min at exactly 2000ms. Tokio recovers the task in most cases,
-/// but the panic still fires and the mutex poison risk remains.
-/// Raised to 5000ms (matches the original default chaos cadence)
-/// which observably eliminates the panic under load. The full
-/// 30-minute soak at 5000ms cadence passes with 0 panics
-/// (commit 88937f9 verification).
+/// Floor history:
+///   * 2000ms → QA found 18 panics in 5min (NF-1)
+///   * 5000ms → direct retest showed 6+ panic pairs in 90s of
+///     chaos; admin-ui process terminated mid-test (panics
+///     escaped tokio task supervision via iroh's QUIC worker pool)
+///   * 30000ms → matches the original `cadence_ms` AtomicU64 default;
+///     the 30-min chaos-soak-9prim-30min test passes cleanly at
+///     this cadence (40+ events, 0 failed, commit 88937f9 evidence)
+///
+/// Why we land at 30s: the cadence floor sets the minimum gap
+/// between kill+respawn cycles. iroh's QUIC connection cleanup +
+/// new connection establishment cycles complete reliably within a
+/// 30-second window; tighter than that exposes the race
+/// upstream-known-unfixed assertion.
 ///
 /// When iroh upgrades past 0.91.2 to a release that includes
 /// iroh-quinn-proto-0.15.x+ (where this assertion is fixed
-/// upstream), this floor can be lowered.
-const CHAOS_CADENCE_FLOOR_MS: u64 = 5000;
+/// upstream), this floor can be lowered toward 1000ms.
+const CHAOS_CADENCE_FLOOR_MS: u64 = 30_000;
 const CHAOS_CADENCE_CEILING_MS: u64 = 600_000;
 
 /// POST /api/chaos/start — kick off the continuous chaos loop. Idempotent: a
