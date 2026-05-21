@@ -2513,6 +2513,13 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_BRIDGE_TARGET_MESHES",
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
+    // Dev simulation overrides for CPU/RAM telemetry. Gated server-side
+    // by RAFKA_DEPLOYMENT=prod (set by orchestrator) — even if these leak
+    // into a prod manifest, the node ignores them. Safe to allow-list.
+    "RAFKA_DEV_CPU_BUDGET",
+    "RAFKA_DEV_RAM_BUDGET",
+    "RAFKA_DEV_CPU_USED",
+    "RAFKA_DEV_RAM_USED",
 ];
 
 fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
