@@ -55,6 +55,8 @@ pub enum Role {
 pub struct NodeRuntime {
     node_type: String,
     role: Role,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 }
 
 impl NodeRuntime {
@@ -62,6 +64,8 @@ impl NodeRuntime {
         Self {
             node_type: node_type.into(),
             role: Role::Broker,
+            cpu_budget: None,
+            ram_budget: None,
         }
     }
 
@@ -70,9 +74,24 @@ impl NodeRuntime {
         self
     }
 
+    /// Set the node's programmatic CPU budget in cores. When set, this
+    /// value flows directly into `GossipDigest.cpu_budget`. When left
+    /// unset (None), `LoadSampler` falls back to sysinfo measurement
+    /// (cgroup-aware on Linux, host total elsewhere).
+    pub fn with_cpu_budget(mut self, cores: f32) -> Self {
+        self.cpu_budget = Some(cores);
+        self
+    }
+
+    /// Same shape for RAM budget in GB.
+    pub fn with_ram_budget(mut self, gb: f32) -> Self {
+        self.ram_budget = Some(gb);
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         let _guard = rafka_telemetry::init_telemetry(&self.node_type);
-        run_node(self.node_type, self.role).await
+        run_node(self.node_type, self.role, self.cpu_budget, self.ram_budget).await
     }
 }
 
@@ -92,7 +111,12 @@ type PeerRegistry = Arc<DashMap<String, Connection>>;
 /// peer→mesh associations observable from any code path that has the peer_id.
 type MeshIdRegistry = Arc<DashMap<String, String>>;
 
-async fn run_node(node_type: String, role: Role) -> Result<()> {
+async fn run_node(
+    node_type: String,
+    role: Role,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
+) -> Result<()> {
     // mesh_id is a logical cluster identifier. Multiple physical nodes with the
     // same mesh_id form one mesh; cross-mesh peering (see feature mesh-to-mesh)
     // requires a Role::Bridge node that joins multiple mesh_ids. Defaults to
@@ -268,6 +292,8 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
             gossip_interval_ms,
             registry_for_digest,
             mesh_id, // primary task: topic_label = mesh_id (digests filed under our own mesh)
+            cpu_budget,
+            ram_budget,
         ))
     };
 
@@ -330,6 +356,8 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
                 gossip_interval_ms,
                 registry_for_digest,
                 extra_mesh_static, // topic_label = actual subscription topic (NOT primary)
+                cpu_budget,
+                ram_budget,
             ));
         }
     }
@@ -677,9 +705,11 @@ async fn run_gossip(
     // digest under topic_membership["admin-ui"] and the edge-builder
     // would produce O(n²) spurious cross-mesh pairs (red-team R2 2026-05-21).
     topic_label: &'static str,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 ) {
     let counters = mesh_counters();
-    let load_sampler = LoadSampler::new(None, None, None, None);
+    let load_sampler = LoadSampler::new(cpu_budget, ram_budget, None, None);
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh
@@ -1731,5 +1761,51 @@ mod gossip_digest_schema_tests {
         // Wire-size budget: digest must remain under 200 bytes for typical
         // small-mesh values to fit inside QUIC datagram MTU comfortably.
         assert!(bytes.len() < 200, "digest is {} bytes, must stay under 200", bytes.len());
+    }
+}
+
+#[cfg(test)]
+mod node_runtime_builder_tests {
+    use super::*;
+
+    #[test]
+    fn default_runtime_has_no_budget() {
+        let rt = NodeRuntime::new("broker");
+        assert_eq!(rt.cpu_budget, None);
+        assert_eq!(rt.ram_budget, None);
+    }
+
+    #[test]
+    fn with_cpu_budget_sets_value() {
+        let rt = NodeRuntime::new("broker").with_cpu_budget(4.0);
+        assert_eq!(rt.cpu_budget, Some(4.0));
+        assert_eq!(rt.ram_budget, None);
+    }
+
+    #[test]
+    fn with_ram_budget_sets_value() {
+        let rt = NodeRuntime::new("broker").with_ram_budget(2.0);
+        assert_eq!(rt.cpu_budget, None);
+        assert_eq!(rt.ram_budget, Some(2.0));
+    }
+
+    #[test]
+    fn both_budgets_chain() {
+        let rt = NodeRuntime::new("broker")
+            .with_cpu_budget(4.0)
+            .with_ram_budget(2.0);
+        assert_eq!(rt.cpu_budget, Some(4.0));
+        assert_eq!(rt.ram_budget, Some(2.0));
+    }
+
+    #[test]
+    fn with_role_preserves_budgets() {
+        let rt = NodeRuntime::new("bridge")
+            .with_cpu_budget(1.0)
+            .with_ram_budget(0.5)
+            .with_role(Role::Bridge);
+        assert_eq!(rt.cpu_budget, Some(1.0));
+        assert_eq!(rt.ram_budget, Some(0.5));
+        assert!(matches!(rt.role, Role::Bridge));
     }
 }
