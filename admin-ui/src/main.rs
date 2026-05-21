@@ -1076,6 +1076,10 @@ struct AppState {
     /// Red-team A#3: serialize /api/bootstrap calls so parallel requests
     /// queue instead of all passing the cap check before any spawn lands.
     bootstrap_mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Per-node-type RAFKA_DEV_* overrides loaded from each crate's
+    /// `.env.dev` file at boot. Used by `spawn_one` to seed child env,
+    /// and exposed via `/api/dev-presets` for SpawnBar UI defaults.
+    pub dev_presets: std::sync::Arc<std::collections::HashMap<String, Vec<(String, String)>>>,
 }
 
 #[derive(Deserialize)]
@@ -3787,6 +3791,54 @@ fn install_panic_hook() -> std::path::PathBuf {
     panic_log_path
 }
 
+/// Load per-crate `.env.dev` files at startup. Each file is parsed as
+/// dotenv key=value pairs. Missing or unreadable files are NOT an error
+/// — they just produce an empty preset for that node type. The function
+/// is silent on success and logs a single WARN span per file that
+/// existed but failed to parse.
+fn load_dev_presets() -> std::collections::HashMap<String, Vec<(String, String)>> {
+    let crates = [
+        ("broker", "broker/.env.dev"),
+        ("gateway", "gateway/.env.dev"),
+        ("compute", "compute/.env.dev"),
+        ("registry", "registry/.env.dev"),
+        ("bridge", "bridge/.env.dev"),
+    ];
+    // CARGO_MANIFEST_DIR points at admin-ui/; the .env.dev files live one
+    // dir up at each node-type crate's root.
+    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut out = std::collections::HashMap::new();
+    for (node_type, rel_path) in crates {
+        let full = workspace_root.join(rel_path);
+        let pairs: Vec<(String, String)> = match dotenvy::from_path_iter(&full) {
+            Ok(iter) => iter.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::info_span!(
+                    "rafka.ui.dev_presets.missing",
+                    node_type = node_type,
+                    path = %full.display(),
+                    error = %e,
+                    "otel.kind" = "internal",
+                )
+                .in_scope(|| {
+                    tracing::warn!(
+                        node_type,
+                        path = %full.display(),
+                        error = %e,
+                        "could not load .env.dev preset; node will spawn without it"
+                    )
+                });
+                Vec::new()
+            }
+        };
+        out.insert(node_type.to_string(), pairs);
+    }
+    out
+}
+
 fn main() -> Result<()> {
     // SPEC §7 #1 + red-team R5 root-cause fix: install panic hook BEFORE
     // any threads exist. Previous attempt installed the hook inside async
@@ -3929,6 +3981,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        dev_presets: std::sync::Arc::new(load_dev_presets()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-

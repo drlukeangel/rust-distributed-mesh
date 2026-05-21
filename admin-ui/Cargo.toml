@@ -44,3 +44,4 @@ blake3 = "1"
 postcard = { version = "1", features = ["alloc"] }
 futures-lite = "2"
 hex = { workspace = true }
+dotenvy = "0.15.7"
