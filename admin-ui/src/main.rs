@@ -1859,6 +1859,10 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             "frames_sent_total": d.frames_sent_total,
             "frames_recv_total": d.frames_recv_total,
             "wall_time_ms": d.wall_time_ms,
+            "cpu_used": d.cpu_used,
+            "cpu_budget": d.cpu_budget,
+            "ram_used": d.ram_used,
+            "ram_budget": d.ram_budget,
             "status": "live",
         }));
     }
@@ -1877,6 +1881,10 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "frames_sent_total": 0,
                 "frames_recv_total": 0,
                 "wall_time_ms": 0,
+                "cpu_used": 0.0,
+                "cpu_budget": 0.0,
+                "ram_used": 0.0,
+                "ram_budget": 0.0,
                 "status": "pending",
             }));
         }
