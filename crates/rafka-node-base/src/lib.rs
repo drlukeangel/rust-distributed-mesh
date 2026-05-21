@@ -547,6 +547,18 @@ pub struct GossipDigest {
     pub frames_sent_total: u64,
     pub frames_recv_total: u64,
     pub wall_time_ms: u64,
+    /// Process CPU usage in cores (e.g. 2.4 = 2.4 cores' worth of work).
+    /// Measured via sysinfo; may be overridden by RAFKA_DEV_CPU_USED in dev.
+    pub cpu_used: f32,
+    /// Process CPU budget in cores (cgroup-aware on Linux, host cpus
+    /// elsewhere). May be overridden by RAFKA_DEV_CPU_BUDGET in dev.
+    pub cpu_budget: f32,
+    /// Resident memory in GB. Measured via sysinfo (this is the same number
+    /// `top` shows as RES). May be overridden by RAFKA_DEV_RAM_USED in dev.
+    pub ram_used: f32,
+    /// RAM budget in GB (cgroup-aware on Linux, host total elsewhere).
+    /// May be overridden by RAFKA_DEV_RAM_BUDGET in dev.
+    pub ram_budget: f32,
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -1673,5 +1685,38 @@ async fn wait_for_signal() -> &'static str {
             info!("auto-shutdown timer fired");
             "auto_shutdown_timer"
         }
+    }
+}
+
+#[cfg(test)]
+mod gossip_digest_schema_tests {
+    use super::*;
+
+    #[test]
+    fn digest_carries_load_fields_through_postcard_roundtrip() {
+        let original = GossipDigest {
+            node_id: "abc123".into(),
+            node_name: "broker-1".into(),
+            mesh_id: "mesh-a".into(),
+            node_type: "broker".into(),
+            peer_count: 3,
+            peer_ids: vec!["peer1".into()],
+            frames_sent_total: 100,
+            frames_recv_total: 200,
+            wall_time_ms: 1_700_000_000_000,
+            cpu_used: 2.4,
+            cpu_budget: 4.0,
+            ram_used: 0.31,
+            ram_budget: 2.0,
+        };
+        let bytes = postcard::to_allocvec(&original).expect("encode");
+        let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(decoded.cpu_used, 2.4);
+        assert_eq!(decoded.cpu_budget, 4.0);
+        assert_eq!(decoded.ram_used, 0.31_f32);
+        assert_eq!(decoded.ram_budget, 2.0);
+        // Wire-size budget: digest must remain under 200 bytes for typical
+        // small-mesh values to fit inside QUIC datagram MTU comfortably.
+        assert!(bytes.len() < 200, "digest is {} bytes, must stay under 200", bytes.len());
     }
 }
