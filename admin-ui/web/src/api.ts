@@ -6,6 +6,9 @@ export interface TopologyNode {
   mesh_id: string;
   node_id?: string;
   peer_count?: number;
+  /// hex node_ids of every peer this node has an active iroh connection
+  /// to. Resolve to friendly names via the topology's id→name map.
+  peer_ids?: string[];
   /// monotonic frame counters from GossipDigest (live mesh, no Jaeger)
   frames_sent_total?: number;
   frames_recv_total?: number;
