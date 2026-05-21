@@ -3590,7 +3590,11 @@ async fn observer_task(state: AppState) {
     tracing::info!("observer: bringing up iroh endpoint via IrohMeshTransport (same path nodes use)");
     let secret = iroh::SecretKey::generate();
     let bind_addr: std::net::SocketAddrV4 = "127.0.0.1:0".parse().unwrap();
-    let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr).await {
+    let mdns_enable: bool = std::env::var("RAFKA_MDNS_ENABLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true);
+    let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr, mdns_enable).await {
         Ok(t) => t,
         Err(err) => {
             tracing::error!(error = %err, "observer: IrohMeshTransport::new failed");

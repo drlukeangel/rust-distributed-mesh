@@ -150,6 +150,11 @@ async fn run_node(
         .and_then(|s| s.parse().ok())
         .unwrap_or(2000);
 
+    let mdns_enable: bool = std::env::var("RAFKA_MDNS_ENABLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true);
+
     let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
         .unwrap_or_default()
         .split(',')
@@ -209,7 +214,7 @@ async fn run_node(
 
     // Create iroh endpoint: no tracing span active here so iroh background tasks
     // are NOT attached to node.ready.
-    let mut transport = create_endpoint(secret_key, bind_addr).await?;
+    let mut transport = create_endpoint(secret_key, bind_addr, mdns_enable).await?;
 
     let sockets = transport.endpoint.bound_sockets();
     let actual_bind_addr = if sockets.is_empty() {
@@ -246,7 +251,7 @@ async fn run_node(
         .in_scope(|| info!(alpn = ?std::str::from_utf8(ALPN).unwrap_or("<binary>"), "ALPN registered"));
 
         tracing::info_span!("rafka.mesh.boot.gossip_started", node_id = %node_id)
-            .in_scope(|| info!(gossip_interval_ms, "gossip discovery started via iroh mdns"));
+            .in_scope(|| info!(gossip_interval_ms, mdns_enable, "gossip discovery started"));
 
         tracing::info_span!("rafka.mesh.boot.accept_loop_started", node_id = %node_id)
             .in_scope(|| info!("accept loop running"));
@@ -1475,9 +1480,10 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
 async fn create_endpoint(
     secret_key: SecretKey,
     bind_addr: SocketAddrV4,
+    mdns_enable: bool,
 ) -> Result<IrohMeshTransport> {
-    let transport = IrohMeshTransport::new(secret_key, bind_addr).await?;
-    info!(node_id = %transport.endpoint.id(), "iroh endpoint bound");
+    let transport = IrohMeshTransport::new(secret_key, bind_addr, mdns_enable).await?;
+    info!(node_id = %transport.endpoint.id(), mdns_enable = mdns_enable, "iroh endpoint bound");
     Ok(transport)
 }
 

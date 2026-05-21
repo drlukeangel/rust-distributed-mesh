@@ -27,7 +27,7 @@ impl IrohMeshTransport {
     /// address lookup services are added AFTER `bind()` rather than
     /// during construction.
     #[instrument(skip(secret_key))]
-    pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4) -> Result<Self> {
+    pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4, mdns_enable: bool) -> Result<Self> {
         let endpoint = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_key)
             .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
@@ -36,32 +36,35 @@ impl IrohMeshTransport {
             .bind()
             .await?;
 
-        // Attach mDNS-style local-network address lookup. In 0.98 this is
-        // registered against the endpoint AFTER bind, unlike the 0.91 API
-        // which baked it into the builder.
-        let mdns = MdnsAddressLookup::builder()
-            .build(endpoint.id())
-            .map_err(|e| anyhow::anyhow!("MdnsAddressLookup build failed: {e}"))?;
-        endpoint
-            .address_lookup()
-            .map_err(|e| anyhow::anyhow!("endpoint.address_lookup() failed: {e}"))?
-            .add(mdns.clone());
-
-        // Subscribe to discovery events and forward node_ids over a channel
-        // so consumers (rafka-node-base's peer registry) can react without
-        // pulling in the iroh subscriber API directly.
         let (tx, rx) = mpsc::channel::<String>(64);
-        let mut events = mdns.subscribe().await;
-        tokio::spawn(async move {
-            while let Some(event) = events.next().await {
-                if let DiscoveryEvent::Discovered { endpoint_info, .. } = event {
-                    let node_id = endpoint_info.endpoint_id.to_string();
-                    if tx.send(node_id).await.is_err() {
-                        break;
+
+        if mdns_enable {
+            // Attach mDNS-style local-network address lookup. In 0.98 this is
+            // registered against the endpoint AFTER bind, unlike the 0.91 API
+            // which baked it into the builder.
+            let mdns = MdnsAddressLookup::builder()
+                .build(endpoint.id())
+                .map_err(|e| anyhow::anyhow!("MdnsAddressLookup build failed: {e}"))?;
+            endpoint
+                .address_lookup()
+                .map_err(|e| anyhow::anyhow!("endpoint.address_lookup() failed: {e}"))?
+                .add(mdns.clone());
+
+            // Subscribe to discovery events and forward node_ids over a channel
+            // so consumers (rafka-node-base's peer registry) can react without
+            // pulling in the iroh subscriber API directly.
+            let mut events = mdns.subscribe().await;
+            tokio::spawn(async move {
+                while let Some(event) = events.next().await {
+                    if let DiscoveryEvent::Discovered { endpoint_info, .. } = event {
+                        let node_id = endpoint_info.endpoint_id.to_string();
+                        if tx.send(node_id).await.is_err() {
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(Self { endpoint, mdns_discovered: rx })
     }
