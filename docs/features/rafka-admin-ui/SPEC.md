@@ -2,8 +2,9 @@
 
 **Branch**: i37-rafka-authz-create
 **Commit hash at handoff**: see `git log -1 --format=%h`
-**Service URL**: `http://127.0.0.1:19107`
-**CLI binary**: `E:\cargo-target-v2\debug\rfa.exe`
+**Service URL**: `http://127.0.0.1:19107` (default, override via `RAFKA_ADMIN_UI_BIND_ADDR`)
+**CLI binary**: `E:\dev\rafka-V2-new-mesh\target\debug\rfa.exe` (resolved from `cargo metadata --no-deps --format-version 1 | jq -r .target_directory`)
+**Admin-ui binary**: `E:\dev\rafka-V2-new-mesh\target\debug\rafka-admin-ui.exe`
 
 This is the contract. Anything claimed below must verifiably hold. Anything
 you (QA) find that contradicts this doc is a real bug.

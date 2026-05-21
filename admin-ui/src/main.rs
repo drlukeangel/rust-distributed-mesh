@@ -3821,6 +3821,18 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         // rejects nodes without an explicit RAFKA_MESH_ID.
         std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b,bridge");
     }
+    // QA postfix NF-4 fix: admin-ui was appearing in topology/heartbeats with
+    // id=`<unspawned>` and mesh_id=`default` because NodeRuntime falls back to
+    // those placeholders when env vars are missing. Set them explicitly so
+    // admin-ui has identifiable values that say "this IS the admin-ui process".
+    if std::env::var("RAFKA_NODE_NAME").is_err() {
+        std::env::set_var("RAFKA_NODE_NAME", "admin-ui");
+    }
+    if std::env::var("RAFKA_MESH_ID").is_err() {
+        // admin-ui is not on any single mesh — give it a dedicated identifier
+        // that distinguishes it from the placeholder "default".
+        std::env::set_var("RAFKA_MESH_ID", "admin");
+    }
     // Spawned as a tokio task so axum can run in parallel in this same
     // process. Same tokio runtime, same lifecycle.
     let node_handle = tokio::spawn(async {
