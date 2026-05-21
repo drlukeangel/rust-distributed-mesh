@@ -46,3 +46,20 @@ hex = "0.4"
 rand = "0.8"
 bincode = { version = "2", features = ["serde"] }
 dashmap = "6"
+
+# TEMPORARY: patch iroh-quinn-proto 0.13.0 to a locally-forked branch that
+# backports the GSO/tail-loss-probe segment-size assertion fix. The upstream
+# panic `assertion failed: untracked_bytes <= segment_size as u64` at
+# iroh-quinn-proto-0.13.0/src/connection/mod.rs:654 fires under heavy
+# concurrent stream load (Plumtree dissemination at ~18 nodes). Local fix
+# branch lives at E:/dev/iroh-quinn-proto_fix/iroh-quinn (branch
+# fix/backport-gso-tlp-panic).
+#
+# REMOVE THIS BLOCK AS PART OF THE PLANNED iroh 1.0 BUMP: the iroh team
+# released 1.0.0-rc.1 on 2026-05-25 (rc.0 on 2026-05-21) and renamed
+# iroh-quinn-proto to `noq-proto`. Once we bump iroh + iroh-gossip to
+# 1.0.0, both the panic AND the crate-name rename are addressed upstream
+# and this patch becomes redundant. Track in a follow-on branch
+# `chore/bump-iroh-1.0`.
+[patch.crates-io]
+iroh-quinn-proto = { path = "E:/dev/iroh-quinn-proto_fix/iroh-quinn/quinn-proto" }
