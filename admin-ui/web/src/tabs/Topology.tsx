@@ -27,9 +27,26 @@ function meshColor(mesh: string): string {
   return palette[Math.abs(h) % palette.length];
 }
 
+/// Map a utilization ratio (used / budget) to a color used in the node
+/// tile. Green = healthy, amber = getting warm, red = saturated. Returns
+/// the muted text grey when budget is 0 (no data yet).
+function utilColor(used: number | undefined, budget: number | undefined): string {
+  if (used === undefined || budget === undefined || budget <= 0) return "#8b949e";
+  const ratio = used / budget;
+  if (ratio < 0.5) return "#3fb950";
+  if (ratio < 0.8) return "#d29922";
+  return "#f85149";
+}
+
 function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
-  const bridges = t.nodes.filter((n) => n.type === "bridge");
-  const members = t.nodes.filter((n) => n.type !== "bridge");
+  // The admin-ui process registers itself with mesh_id="admin" (see
+  // admin-ui/src/main.rs ~3842). It's an observer, not a mesh participant —
+  // showing it as its own swim lane both clutters the view and breaks bridge
+  // centering (with 3 sorted meshes [admin, mesh-a, mesh-b], the row center
+  // lands exactly on mesh-a, so bridges render on top of the wrong group).
+  const observable = t.nodes.filter((n) => (n.mesh_id || "default") !== "admin");
+  const bridges = observable.filter((n) => n.type === "bridge");
+  const members = observable.filter((n) => n.type !== "bridge");
 
   const byMesh = new Map<string, typeof members>();
   for (const n of members) {
@@ -119,6 +136,16 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
                   RX:{n.frames_recv_total}
                 </div>
               )}
+              {(n.cpu_budget ?? 0) > 0 && (
+                <div style={{ fontSize: 9, color: utilColor(n.cpu_used, n.cpu_budget) }}>
+                  CPU:{(n.cpu_used ?? 0).toFixed(1)}/{(n.cpu_budget ?? 0).toFixed(1)}
+                </div>
+              )}
+              {(n.ram_budget ?? 0) > 0 && (
+                <div style={{ fontSize: 9, color: utilColor(n.ram_used, n.ram_budget) }}>
+                  MEM:{(n.ram_used ?? 0).toFixed(2)}/{(n.ram_budget ?? 0).toFixed(2)}gb
+                </div>
+              )}
             </div>
           ),
         },
@@ -189,18 +216,23 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
   // Edges: server emits within-mesh full clique + bridge→anchor cross edges.
   // Render within = dim gray (architectural, not animated). Cross = gold
   // dashed + animated (visually distinguishes the bridge link).
-  const edges: Edge[] = t.edges.map((e) => {
-    const isCross = e.kind === "cross";
-    return {
-      id: `${e.from}->${e.to}`,
-      source: e.from,
-      target: e.to,
-      style: isCross
-        ? { stroke: "#e3b341", strokeWidth: 1.5, strokeDasharray: "5,4" }
-        : { stroke: "#30363d", strokeWidth: 1, opacity: 0.4 },
-      animated: isCross,
-    };
-  });
+  // Drop edges that reference the filtered-out observer node (admin-ui),
+  // otherwise React Flow renders them with missing endpoints.
+  const visibleNodeIds = new Set(observable.map((n) => n.id));
+  const edges: Edge[] = t.edges
+    .filter((e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to))
+    .map((e) => {
+      const isCross = e.kind === "cross";
+      return {
+        id: `${e.from}->${e.to}`,
+        source: e.from,
+        target: e.to,
+        style: isCross
+          ? { stroke: "#e3b341", strokeWidth: 1.5, strokeDasharray: "5,4" }
+          : { stroke: "#30363d", strokeWidth: 1, opacity: 0.4 },
+        animated: isCross,
+      };
+    });
 
   return { nodes, edges };
 }
