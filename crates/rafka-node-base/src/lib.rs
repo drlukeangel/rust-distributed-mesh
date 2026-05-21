@@ -25,7 +25,7 @@ mod deployment;
 pub use deployment::Deployment;
 
 mod load;
-pub use load::{announce_overrides, LoadSampler, NodeLoad};
+pub use load::{LoadSampler, NodeLoad};
 
 pub enum Role {
     Gateway,
@@ -672,9 +672,7 @@ async fn run_gossip(
     topic_label: &'static str,
 ) {
     let counters = mesh_counters();
-    let deployment = Deployment::from_env();
-    announce_overrides(deployment);
-    let load_sampler = LoadSampler::new(deployment);
+    let load_sampler = LoadSampler::new(None, None, None, None);
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh

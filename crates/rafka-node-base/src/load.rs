@@ -1,8 +1,7 @@
-//! Per-process CPU and RAM measurement, with dev-only env-var overrides
-//! gated by [`Deployment`]. Production path uses `sysinfo`. Dev path lets
-//! tests inject deterministic values.
+//! Per-process CPU and RAM measurement with optional programmatic overrides.
+//! The sampler is "dumb": it consumes values passed at construction (or falls
+//! through to sysinfo if `None`). Env-var reading is the caller's concern.
 
-use crate::deployment::Deployment;
 use std::sync::Mutex;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
@@ -21,16 +20,23 @@ pub struct NodeLoad {
 pub struct LoadSampler {
     sys: Mutex<System>,
     pid: Pid,
-    deployment: Deployment,
-    /// Effective host cpu count (cached at construction; never changes
-    /// for the life of the process). Used as the cpu_budget fallback.
     host_cpu_count: f32,
-    /// Total system memory in bytes (cached at construction).
     host_total_ram_bytes: u64,
+    // Programmatic overrides passed at construction. If Some(v), sample()
+    // returns v for that field instead of the sysinfo measurement.
+    cpu_used_override: Option<f32>,
+    cpu_budget_override: Option<f32>,
+    ram_used_override: Option<f32>,
+    ram_budget_override: Option<f32>,
 }
 
 impl LoadSampler {
-    pub fn new(deployment: Deployment) -> Self {
+    pub fn new(
+        cpu_budget: Option<f32>,
+        ram_budget: Option<f32>,
+        cpu_used: Option<f32>,
+        ram_used: Option<f32>,
+    ) -> Self {
         let refresh = RefreshKind::nothing()
             .with_memory(sysinfo::MemoryRefreshKind::everything())
             .with_processes(ProcessRefreshKind::everything().with_cpu());
@@ -43,16 +49,18 @@ impl LoadSampler {
         Self {
             sys: Mutex::new(sys),
             pid,
-            deployment,
             host_cpu_count,
             host_total_ram_bytes,
+            cpu_used_override: cpu_used,
+            cpu_budget_override: cpu_budget,
+            ram_used_override: ram_used,
+            ram_budget_override: ram_budget,
         }
     }
 
-    /// Sample the current load. Honors `RAFKA_DEV_*` overrides when
-    /// `deployment.allows_dev_overrides()`; otherwise always measures.
-    /// Override-but-ignored cases (prod mode with a `RAFKA_DEV_*` set)
-    /// are logged once at construction by [`warn_on_ignored_overrides`].
+    /// Sample the current load. If a field override was provided at
+    /// construction, that value is returned directly; otherwise sysinfo
+    /// is queried for a live measurement.
     pub fn sample(&self) -> NodeLoad {
         let mut sys = self.sys.lock().unwrap();
         sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[self.pid]), true);
@@ -69,13 +77,11 @@ impl LoadSampler {
         let real_cpu_budget = self.host_cpu_count;
         let real_ram_budget_gb = bytes_to_gb(self.host_total_ram_bytes);
 
-        let allow_dev = self.deployment.allows_dev_overrides();
-
         NodeLoad {
-            cpu_used:   resolve_override("RAFKA_DEV_CPU_USED",   allow_dev).unwrap_or(real_cpu_used),
-            cpu_budget: resolve_override("RAFKA_DEV_CPU_BUDGET", allow_dev).unwrap_or(real_cpu_budget),
-            ram_used:   resolve_override("RAFKA_DEV_RAM_USED",   allow_dev).unwrap_or(real_ram_used_gb),
-            ram_budget: resolve_override("RAFKA_DEV_RAM_BUDGET", allow_dev).unwrap_or(real_ram_budget_gb),
+            cpu_used:   self.cpu_used_override.unwrap_or(real_cpu_used),
+            cpu_budget: self.cpu_budget_override.unwrap_or(real_cpu_budget),
+            ram_used:   self.ram_used_override.unwrap_or(real_ram_used_gb),
+            ram_budget: self.ram_budget_override.unwrap_or(real_ram_budget_gb),
         }
     }
 }
@@ -84,176 +90,51 @@ fn bytes_to_gb(bytes: u64) -> f32 {
     (bytes as f64 / 1_073_741_824.0) as f32
 }
 
-fn resolve_override(var: &str, allow: bool) -> Option<f32> {
-    if !allow {
-        return None;
-    }
-    std::env::var(var).ok()?.parse::<f32>().ok()
-}
-
-/// Emit a single startup span describing what's happening with overrides.
-/// Two situations produce output:
-///   1. deployment != prod AND at least one override is set
-///      → INFO span listing which fields are simulated
-///   2. deployment == prod AND at least one override is set
-///      → WARN span listing the overrides that were ignored
-/// Otherwise silent.
-pub fn announce_overrides(deployment: Deployment) {
-    let vars = [
-        "RAFKA_DEV_CPU_USED",
-        "RAFKA_DEV_CPU_BUDGET",
-        "RAFKA_DEV_RAM_USED",
-        "RAFKA_DEV_RAM_BUDGET",
-    ];
-    let set: Vec<&str> = vars
-        .iter()
-        .copied()
-        .filter(|v| std::env::var(v).is_ok())
-        .collect();
-    if set.is_empty() {
-        return;
-    }
-    if deployment.allows_dev_overrides() {
-        tracing::info_span!(
-            "rafka.mesh.node.dev_overrides_active",
-            fields = ?set,
-            deployment = ?deployment,
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::info!(?set, ?deployment, "dev load overrides active"));
-    } else {
-        tracing::info_span!(
-            "rafka.mesh.node.dev_overrides_ignored",
-            fields = ?set,
-            deployment = ?deployment,
-            "otel.kind" = "internal",
-        )
-        .in_scope(|| tracing::warn!(?set, ?deployment, "dev load overrides set but ignored (deployment=prod)"));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    // Serialize env-var mutation across tests in this module.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn with_envs<F: FnOnce()>(pairs: &[(&str, Option<&str>)], f: F) {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prev: Vec<(String, Option<String>)> = pairs
-            .iter()
-            .map(|(k, _)| ((*k).to_string(), std::env::var(*k).ok()))
-            .collect();
-        for (k, v) in pairs {
-            match v {
-                Some(val) => std::env::set_var(k, val),
-                None => std::env::remove_var(k),
-            }
-        }
-        f();
-        for (k, prev_val) in prev {
-            match prev_val {
-                Some(v) => std::env::set_var(&k, v),
-                None => std::env::remove_var(&k),
-            }
-        }
+    #[test]
+    fn no_overrides_uses_sysinfo() {
+        let s = LoadSampler::new(None, None, None, None);
+        let l = s.sample();
+        // host has at least 1 cpu and >0 ram on any reasonable test runner
+        assert!(l.cpu_budget >= 1.0, "cpu_budget {} should be >= 1.0", l.cpu_budget);
+        assert!(l.ram_budget > 0.0, "ram_budget {} should be > 0", l.ram_budget);
     }
 
     #[test]
-    fn prod_ignores_overrides() {
-        with_envs(
-            &[
-                ("RAFKA_DEPLOYMENT", Some("prod")),
-                ("RAFKA_DEV_CPU_BUDGET", Some("999")),
-                ("RAFKA_DEV_RAM_BUDGET", Some("999")),
-            ],
-            || {
-                let s = LoadSampler::new(Deployment::Prod);
-                let l = s.sample();
-                assert!(
-                    l.cpu_budget < 999.0,
-                    "prod must ignore RAFKA_DEV_CPU_BUDGET; got {}",
-                    l.cpu_budget
-                );
-                assert!(
-                    l.ram_budget < 999.0,
-                    "prod must ignore RAFKA_DEV_RAM_BUDGET; got {}",
-                    l.ram_budget
-                );
-            },
-        );
+    fn cpu_budget_override_wins_over_sysinfo() {
+        let s = LoadSampler::new(Some(4.0), None, None, None);
+        let l = s.sample();
+        assert_eq!(l.cpu_budget, 4.0);
+        // sysinfo still drives the other three
+        assert!(l.ram_budget > 0.0);
     }
 
     #[test]
-    fn dev_honors_budget_overrides() {
-        with_envs(
-            &[
-                ("RAFKA_DEPLOYMENT", Some("dev")),
-                ("RAFKA_DEV_CPU_BUDGET", Some("4.0")),
-                ("RAFKA_DEV_RAM_BUDGET", Some("2.0")),
-            ],
-            || {
-                let s = LoadSampler::new(Deployment::Dev);
-                let l = s.sample();
-                assert_eq!(l.cpu_budget, 4.0);
-                assert_eq!(l.ram_budget, 2.0);
-            },
-        );
+    fn ram_budget_override_wins_over_sysinfo() {
+        let s = LoadSampler::new(None, Some(2.0), None, None);
+        let l = s.sample();
+        assert_eq!(l.ram_budget, 2.0);
+        assert!(l.cpu_budget >= 1.0);
     }
 
     #[test]
-    fn dev_honors_used_overrides() {
-        with_envs(
-            &[
-                ("RAFKA_DEPLOYMENT", Some("dev")),
-                ("RAFKA_DEV_CPU_USED", Some("3.8")),
-                ("RAFKA_DEV_RAM_USED", Some("1.5")),
-            ],
-            || {
-                let s = LoadSampler::new(Deployment::Dev);
-                let l = s.sample();
-                assert_eq!(l.cpu_used, 3.8);
-                assert_eq!(l.ram_used, 1.5);
-            },
-        );
+    fn used_overrides_win_over_sysinfo() {
+        let s = LoadSampler::new(None, None, Some(3.8), Some(1.5));
+        let l = s.sample();
+        assert_eq!(l.cpu_used, 3.8);
+        assert_eq!(l.ram_used, 1.5);
     }
 
     #[test]
-    fn dev_without_overrides_measures_real_values() {
-        with_envs(
-            &[
-                ("RAFKA_DEPLOYMENT", Some("dev")),
-                ("RAFKA_DEV_CPU_USED", None),
-                ("RAFKA_DEV_CPU_BUDGET", None),
-                ("RAFKA_DEV_RAM_USED", None),
-                ("RAFKA_DEV_RAM_BUDGET", None),
-            ],
-            || {
-                let s = LoadSampler::new(Deployment::Dev);
-                let l = s.sample();
-                // host cpu count is at least 1 on any test runner
-                assert!(l.cpu_budget >= 1.0, "cpu_budget {} should be >= 1.0", l.cpu_budget);
-                // host has at least 64 MB of RAM on any test runner
-                assert!(l.ram_budget > 0.0, "ram_budget {} should be > 0", l.ram_budget);
-            },
-        );
-    }
-
-    #[test]
-    fn unparseable_override_falls_back_to_real() {
-        with_envs(
-            &[
-                ("RAFKA_DEPLOYMENT", Some("dev")),
-                ("RAFKA_DEV_CPU_BUDGET", Some("not a number")),
-            ],
-            || {
-                let s = LoadSampler::new(Deployment::Dev);
-                let l = s.sample();
-                // garbage override must NOT clobber the real value
-                assert!(l.cpu_budget >= 1.0);
-            },
-        );
+    fn all_four_overrides() {
+        let s = LoadSampler::new(Some(4.0), Some(2.0), Some(3.0), Some(1.5));
+        let l = s.sample();
+        assert_eq!(l.cpu_budget, 4.0);
+        assert_eq!(l.ram_budget, 2.0);
+        assert_eq!(l.cpu_used, 3.0);
+        assert_eq!(l.ram_used, 1.5);
     }
 }
