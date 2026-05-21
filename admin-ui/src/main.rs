@@ -1105,6 +1105,34 @@ async fn handle_health() -> impl IntoResponse {
     axum::Json(json!({"status": "ok"}))
 }
 
+/// GET /api/dev-presets — returns the cached per-node-type RAFKA_DEV_*
+/// overrides loaded at startup from each crate's `.env.dev`. The
+/// SpawnBar UI uses this to seed its cpu/ram inputs with the per-type
+/// default; the operator can override per-spawn.
+async fn handle_dev_presets(State(state): State<AppState>) -> impl IntoResponse {
+    let mut out: std::collections::HashMap<&str, serde_json::Value> =
+        std::collections::HashMap::new();
+    for (node_type, pairs) in state.dev_presets.iter() {
+        let mut obj = serde_json::Map::new();
+        for (k, v) in pairs {
+            // Surface ONLY the cpu_budget and ram_budget keys to the UI;
+            // everything else (cpu_used, ram_used) belongs in the broker
+            // operator's hand, not as a per-spawn default.
+            if k == "RAFKA_DEV_CPU_BUDGET" {
+                if let Ok(f) = v.parse::<f32>() {
+                    obj.insert("cpu_budget".into(), json!(f));
+                }
+            } else if k == "RAFKA_DEV_RAM_BUDGET" {
+                if let Ok(f) = v.parse::<f32>() {
+                    obj.insert("ram_budget".into(), json!(f));
+                }
+            }
+        }
+        out.insert(node_type.as_str(), serde_json::Value::Object(obj));
+    }
+    (StatusCode::OK, axum::Json(json!(out))).into_response()
+}
+
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
     let names: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
     let span = info_span!(
@@ -2583,6 +2611,20 @@ async fn spawn_one(
         .env("RAFKA_DATA_DIR", &spawn_dir)
         .env("RAFKA_NODE_NAME", &node_name)
         .env("RUST_LOG", &rust_log);
+    // Every child spawned by admin-ui runs in dev mode. Production deploys
+    // never go through spawn_one. RAFKA_DEPLOYMENT=dev unlocks the
+    // RAFKA_DEV_* overrides that we'll layer in next.
+    cmd.env("RAFKA_DEPLOYMENT", "dev");
+
+    // Apply this node-type's per-crate .env.dev preset (loaded at admin-ui
+    // startup, cached on AppState). Goes BEFORE extra_env so the spawn
+    // request's extra_env (driven by SpawnBar UI inputs) can override it.
+    if let Some(preset) = state.dev_presets.get(node_type) {
+        for (k, v) in preset.iter() {
+            cmd.env(k, v);
+        }
+    }
+
     for (k, v) in &extra_env {
         cmd.env(k, v);
     }
@@ -4052,6 +4094,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
+        .route("/api/dev-presets", get(handle_dev_presets))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
@@ -4150,5 +4193,20 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
                 tracing::debug!(error = ?e, "connection serve ended");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod dev_presets_tests {
+    use super::*;
+
+    #[test]
+    fn load_presets_emits_one_entry_per_known_type() {
+        // load_dev_presets() should always emit five keys, even when no
+        // .env.dev files are present (entries are empty in that case).
+        let presets = load_dev_presets();
+        for t in ["broker", "gateway", "compute", "registry", "bridge"] {
+            assert!(presets.contains_key(t), "missing preset for {}", t);
+        }
     }
 }
