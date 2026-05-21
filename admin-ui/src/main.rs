@@ -2596,6 +2596,17 @@ async fn spawn_one(
         .unwrap_or_else(|| "default".to_string());
 
     let mut cmd = tokio::process::Command::new(&binary);
+    // admin-ui's own load_env_dev_from at startup populates RAFKA_DEV_* in
+    // admin-ui's process env (so admin-ui broadcasts its own budget). By
+    // default tokio::process::Command inherits the parent env, which would
+    // leak admin-ui's RAFKA_DEV_CPU_BUDGET=2.0 into every spawned child
+    // and override the child's own .env.dev. Strip them so each child
+    // resolves its budget from its own .env.dev (or from the explicit CLI
+    // flags we add later in spawn_one).
+    cmd.env_remove("RAFKA_DEV_CPU_BUDGET")
+        .env_remove("RAFKA_DEV_RAM_BUDGET")
+        .env_remove("RAFKA_DEV_CPU_USED")
+        .env_remove("RAFKA_DEV_RAM_USED");
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
         .env("OTEL_SERVICE_NAME", node_type)
         .env("RAFKA_DATA_DIR", &spawn_dir)
