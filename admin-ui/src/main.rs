@@ -974,6 +974,13 @@ struct SpawnedMeta {
     node_type: String,
     mesh_id: String,
     pid: u32,
+    /// hex-encoded iroh EndpointId (== public key) of this spawned child.
+    /// Pre-minted by admin-ui before launching the child process, so admin-ui
+    /// can use it as a seed for subsequent spawns.
+    node_id_hex: String,
+    /// TCP/UDP port assigned to this child by admin-ui's port pool. Combined
+    /// with localhost to form `RAFKA_SEED_NODES` entries.
+    bind_port: u16,
 }
 
 struct ChaosController {
@@ -1076,6 +1083,11 @@ struct AppState {
     /// Red-team A#3: serialize /api/bootstrap calls so parallel requests
     /// queue instead of all passing the cap check before any spawn lands.
     bootstrap_mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Monotonic counter for assigning bind ports to spawned children.
+    /// Each spawn gets `next_bind_port.fetch_add(1, Relaxed)` + a base.
+    /// Used to form deterministic `<id>@127.0.0.1:<port>` seed entries
+    /// before children even start.
+    next_bind_port: Arc<std::sync::atomic::AtomicU16>,
 }
 
 #[derive(Deserialize)]
@@ -2595,6 +2607,61 @@ async fn spawn_one(
         .cloned()
         .unwrap_or_else(|| "default".to_string());
 
+    // ---- pre-mint identity (so admin-ui knows the child's node_id) ----
+    let secret_key = iroh::SecretKey::generate();
+    let node_id_hex = secret_key.public().to_string();
+    let identity_json = serde_json::json!({
+        "secret_key_hex": hex::encode(secret_key.to_bytes())
+    });
+    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
+    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
+        return Err(format!("failed to write child identity: {e}"));
+    }
+
+    // ---- assign a unique bind port from the AppState pool ----
+    let bind_port = state
+        .next_bind_port
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bind_addr_str = format!("127.0.0.1:{}", bind_port);
+
+    // ---- build seed list from already-spawned same-mesh nodes ----
+    // For non-bridge children: seed from up to 2 already-spawned nodes that
+    // share the same mesh_id. The first child in a mesh has no seed (it IS
+    // the anchor) — that's fine.
+    // For bridge children: seed from up to 1 node in mesh-a AND 1 in mesh-b
+    // so the bridge can connect to both target meshes at startup.
+    let seeds_csv = {
+        if node_type == "bridge" {
+            let mut seeds = Vec::new();
+            for target_mesh in ["mesh-a", "mesh-b"] {
+                if let Some(seed) = state
+                    .spawned_meta
+                    .iter()
+                    .find(|e| e.value().mesh_id == target_mesh)
+                    .map(|e| {
+                        format!(
+                            "{}@127.0.0.1:{}",
+                            e.value().node_id_hex,
+                            e.value().bind_port
+                        )
+                    })
+                {
+                    seeds.push(seed);
+                }
+            }
+            seeds.join(",")
+        } else {
+            let same_mesh: Vec<String> = state
+                .spawned_meta
+                .iter()
+                .filter(|e| e.value().mesh_id == mesh_id)
+                .take(2)
+                .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+                .collect();
+            same_mesh.join(",")
+        }
+    };
+
     let mut cmd = tokio::process::Command::new(&binary);
     // admin-ui's own load_env_dev_from at startup populates RAFKA_DEV_* in
     // admin-ui's process env (so admin-ui broadcasts its own budget). By
@@ -2615,6 +2682,15 @@ async fn spawn_one(
 
     for (k, v) in &extra_env {
         cmd.env(k, v);
+    }
+
+    // ---- seed injection: set AFTER extra_env so admin-ui's values always win ----
+    // Disable mDNS for the child — we're using explicit seeds instead.
+    cmd.env("RAFKA_MDNS_ENABLE", "false");
+    // Assign the deterministic port we pre-allocated from the pool.
+    cmd.env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
+    if !seeds_csv.is_empty() {
+        cmd.env("RAFKA_SEED_NODES", &seeds_csv);
     }
 
     // Pass budgets as CLI flags (NOT env vars). The child binary parses
@@ -2639,6 +2715,8 @@ async fn spawn_one(
                     node_type: node_type.to_string(),
                     mesh_id: mesh_id.clone(),
                     pid,
+                    node_id_hex: node_id_hex.clone(),
+                    bind_port,
                 },
             );
             state.events.push(LocalEvent {
@@ -4001,6 +4079,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(14820)),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
