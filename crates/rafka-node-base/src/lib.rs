@@ -672,6 +672,9 @@ async fn run_gossip(
     topic_label: &'static str,
 ) {
     let counters = mesh_counters();
+    let deployment = Deployment::from_env();
+    announce_overrides(deployment);
+    let load_sampler = LoadSampler::new(deployment);
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh
@@ -707,6 +710,7 @@ async fn run_gossip(
                 }
                 use std::sync::atomic::Ordering;
                 let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
+                let load = load_sampler.sample();
                 let digest = GossipDigest {
                     node_id: node_id.clone(),
                     node_name: node_name.to_string(),
@@ -720,6 +724,10 @@ async fn run_gossip(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0),
+                    cpu_used: load.cpu_used,
+                    cpu_budget: load.cpu_budget,
+                    ram_used: load.ram_used,
+                    ram_budget: load.ram_budget,
                 };
                 let payload = match postcard::to_allocvec(&digest) {
                     Ok(b) => b,
