@@ -21,6 +21,9 @@ use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+mod deployment;
+pub use deployment::Deployment;
+
 pub enum Role {
     Gateway,
     Broker,
