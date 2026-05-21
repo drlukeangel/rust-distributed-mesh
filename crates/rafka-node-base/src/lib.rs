@@ -1087,20 +1087,28 @@ async fn run_frame_reader(
                 // Decode for the Messages tab — capture variant + fields so
                 // the operator sees actual payload content, not just kind.
                 let frame_size = bytes.len();
+                // Red-team R6 fix: prefix the summary with an 8-char
+                // peer-ID prefix so /api/messages renders self-describing
+                // entries — was "Ping{org_id=0}" with from_peer_id in a
+                // separate field; now "[3f120f46] Ping{org_id=0}" in the
+                // summary itself so a UI table column rendering only
+                // `summary` still shows the source. from_peer_id remains
+                // available as the full 64-char NodeId.
+                let peer_prefix: String = peer_id_str.chars().take(8).collect();
                 let (kind_tag, summary) = match InternalMeshFrame::decode_with_context(&bytes) {
                     Ok((_, InternalMeshFrame::Hello { mesh_id: m, node_type: nt })) => (
                         "hello",
-                        format!("Hello{{mesh_id={m}, node_type={nt}}}"),
+                        format!("[{peer_prefix}] Hello{{mesh_id={m}, node_type={nt}}}"),
                     ),
                     Ok((_, InternalMeshFrame::Ping { org_id })) => (
                         "ping",
-                        format!("Ping{{org_id={org_id}}}"),
+                        format!("[{peer_prefix}] Ping{{org_id={org_id}}}"),
                     ),
                     Ok((_, InternalMeshFrame::Pong { org_id })) => (
                         "pong",
-                        format!("Pong{{org_id={org_id}}}"),
+                        format!("[{peer_prefix}] Pong{{org_id={org_id}}}"),
                     ),
-                    Err(e) => ("decode_failed", format!("<decode_failed: {e}>")),
+                    Err(e) => ("decode_failed", format!("[{peer_prefix}] <decode_failed: {e}>")),
                 };
                 push_message(&peer_id_str, kind_tag, frame_size, summary);
 

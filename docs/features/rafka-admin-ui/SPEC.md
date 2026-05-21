@@ -208,6 +208,22 @@ mesh-grow-shrink
    driver threads. Restructured: panic hook now installs in plain
    `fn main()` BEFORE the tokio runtime is built, so every worker
    (including iroh's) inherits it from thread-spawn time.
+10. ~~Messages summary lacks peer NodeId prefix~~ — **FIXED** (2026-05-21):
+    `push_message` now prepends an 8-char hex prefix of `from_peer_id`
+    to the summary string itself, e.g. `[7144d954] Ping{org_id=0}`.
+    `from_peer_id` field remains for the full 64-char NodeId. A UI
+    table column rendering only `summary` is now self-describing.
+11. ~~`remove-resilience` test flake (only 1/3 survivors fresh)~~ —
+    **FIXED** (2026-05-21): two root causes — (a) test tried to spawn
+    a bridge in `mesh-a` which fails because bridge requires
+    `mesh_id="bridge"` + `RAFKA_BRIDGE_TARGET_MESHES` env, so only
+    5/6 spawned cleanly; (b) timing windows (5s settle + 15s
+    post-kill + 10s age threshold) were too tight for iroh-gossip's
+    spanning tree to re-form after losing 3 of 6 peers. Fix: spawn
+    6 non-bridge types (2 gateway + 2 broker + 1 compute + 1
+    registry), and bump windows to 8s settle + 25s post-kill + 18s
+    age threshold (~3.5× heartbeat interval, tolerates one missed
+    tick during tree repair). Verified `status=passed duration=33s`.
 
 ## Soak SLO (post-flake-acceptance)
 

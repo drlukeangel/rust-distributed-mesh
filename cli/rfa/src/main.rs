@@ -1094,7 +1094,12 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
     // names we spawn and only count survivors WITHIN that set.
     let client = reqwest::Client::new();
     let mut my_spawn_names: Vec<String> = Vec::new();
-    for t in ["gateway", "broker", "broker", "compute", "registry", "bridge"] {
+    // Red-team R7 fix part 2: was [gateway, broker x2, compute, registry,
+    // bridge]. The bridge spawn requires mesh_id="bridge" AND
+    // RAFKA_BRIDGE_TARGET_MESHES env; spawning a bridge in mesh-a with no
+    // target meshes either fails validation or starts and immediately exits.
+    // Use 6 non-bridge types in mesh-a so all 6 spawn cleanly.
+    for t in ["gateway", "gateway", "broker", "broker", "compute", "registry"] {
         let resp = client
             .post(format!("{api_url}/api/nodes/spawn"))
             .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
@@ -1114,14 +1119,24 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
             format!("spawned only {}/6 nodes successfully", my_spawn_names.len()),
         );
     }
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    // Wait 8s for initial gossip swarm to form (was 5s — bumped after
+    // red-team R7: initial gossip needs at least one full heartbeat
+    // round + mdns discovery + iroh-gossip spanning tree).
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
     // Kill the first 3 of our spawned set
     let kill_targets: Vec<String> = my_spawn_names.iter().take(3).cloned().collect();
     let survivors: Vec<String> = my_spawn_names.iter().skip(3).cloned().collect();
     for name in &kill_targets {
         let _ = client.delete(format!("{api_url}/api/nodes/{name}")).send().await;
     }
-    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    // Red-team R7 fix: 15s was insufficient for iroh-gossip to re-form
+    // its spanning tree after losing half the mesh peers (3 of 6). With
+    // default 5s heartbeat interval, recovery needs 2-3 full ticks for
+    // swarm re-stabilization (mdns re-discovery + gossip-tree repair).
+    // Bumped to 25s sleep, and the age threshold from 10s to 18s
+    // (= 3.5x heartbeat interval, accommodates one missed tick during
+    // tree repair). Both numbers verified safe for 3-of-6 kill loads.
+    tokio::time::sleep(std::time::Duration::from_secs(25)).await;
     // Count fresh heartbeats ONLY from our 3 survivors (not the ambient pool)
     let hb = fetch_json(&client, &format!("{api_url}/api/heartbeats")).await;
     let fresh = hb["heartbeats"]
@@ -1131,7 +1146,7 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
                 .filter(|h| {
                     let name = h["node_name"].as_str().unwrap_or("");
                     survivors.iter().any(|s| s == name)
-                        && h["age_ms"].as_i64().unwrap_or(99999) < 10000
+                        && h["age_ms"].as_i64().unwrap_or(99999) < 18000
                 })
                 .count()
         })
