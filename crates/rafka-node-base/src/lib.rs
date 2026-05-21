@@ -24,6 +24,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 mod deployment;
 pub use deployment::Deployment;
 
+mod load;
+pub use load::{announce_overrides, LoadSampler, NodeLoad};
+
 pub enum Role {
     Gateway,
     Broker,
