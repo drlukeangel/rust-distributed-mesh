@@ -836,14 +836,21 @@ async fn run_gossip(
                         .as_ref()
                         .map(|d| format!("node={}/peers={}", d.node_name, d.peer_count))
                         .unwrap_or_else(|| "<decode_failed>".to_string());
-                    tracing::info_span!(
+                    // TRACE not INFO: this span fires per-frame. At 18 nodes
+                    // with Plumtree eager-push, each digest arrives ~17 times
+                    // (once per peer in the spanning-tree fanout), so logging
+                    // here at INFO produces ~2600 events/sec per node and was
+                    // the dominant CPU cost (host pegged at 95-99% during
+                    // bootstrap-2-mesh). State transitions stay at INFO; this
+                    // per-message event lives at TRACE.
+                    tracing::trace_span!(
                         "rafka.mesh.gossip.received",
                         node_id = %node_id,
                         from_peer = %from,
                         size_bytes = size as i64,
                         digest = %summary,
                     )
-                    .in_scope(|| info!(from = %from, size_bytes = size, digest = %summary, "gossip digest received"));
+                    .in_scope(|| tracing::trace!(from = %from, size_bytes = size, digest = %summary, "gossip digest received"));
                 }
             }
         }
