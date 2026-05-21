@@ -2790,15 +2790,34 @@ fn now_us() -> i64 {
 
 #[derive(Deserialize, Default)]
 struct ChaosStartRequest {
-    /// Optional cadence override. Bounded to [500ms, 600_000ms].
+    /// Optional cadence override. Hard floor 2000ms (see CHAOS_CADENCE_FLOOR_MS).
     #[serde(default)]
     cadence_ms: Option<u64>,
 }
+
+/// Red-team R1 boundary enforcement: cadence_ms < 2000 triggers
+/// iroh-quinn-proto-0.13.0 connection/mod.rs:654 assertion
+/// `untracked_bytes <= segment_size` (upstream bug; concurrent kill+
+/// respawn while QUIC streams are in flight). The assertion panics
+/// `tokio-rt-worker` and poisons the iroh quinn mutex, terminating
+/// admin-ui. We enforce the safe-envelope floor here so the bug
+/// cannot be triggered through the public API.
+///
+/// When iroh upgrades past 0.91.2 to a release that includes
+/// iroh-quinn-proto-0.15.x+ (where this assertion is fixed),
+/// this floor can be reduced to 500.
+const CHAOS_CADENCE_FLOOR_MS: u64 = 2000;
+const CHAOS_CADENCE_CEILING_MS: u64 = 600_000;
 
 /// POST /api/chaos/start — kick off the continuous chaos loop. Idempotent: a
 /// second call while running is a no-op. The loop picks a random non-bridge
 /// node every cadence_ms milliseconds, kills it, then respawns a same-type
 /// replacement in the same mesh.
+///
+/// cadence_ms is clamped to [CHAOS_CADENCE_FLOOR_MS, CHAOS_CADENCE_CEILING_MS].
+/// Values below the floor return HTTP 400 with an explanatory message — the
+/// caller MUST know they're outside the safe operating envelope, not silently
+/// upgraded.
 ///
 /// Red-team A#2: body.cadence_ms (if present + valid) is now honored. Was
 /// previously parsed-then-discarded so operators thought they could tune the
@@ -2814,7 +2833,24 @@ async fn handle_chaos_start(
     if !body.is_empty() {
         if let Ok(req) = serde_json::from_slice::<ChaosStartRequest>(&body) {
             if let Some(c) = req.cadence_ms {
-                let clamped = c.clamp(500, 600_000);
+                if c < CHAOS_CADENCE_FLOOR_MS {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        axum::Json(json!({
+                            "error": "cadence_ms_below_floor",
+                            "requested_ms": c,
+                            "floor_ms": CHAOS_CADENCE_FLOOR_MS,
+                            "reason": "cadence < 2000ms triggers an upstream iroh-quinn-proto-0.13.0 \
+                                       assertion (connection/mod.rs:654: untracked_bytes <= segment_size) \
+                                       under concurrent kill+respawn. The assertion poisons the iroh \
+                                       quinn mutex and terminates the admin-ui process. The floor \
+                                       enforces the safe operating envelope until iroh-quinn-proto \
+                                       0.15.x lands via an iroh upgrade.",
+                        })),
+                    )
+                        .into_response();
+                }
+                let clamped = c.clamp(CHAOS_CADENCE_FLOOR_MS, CHAOS_CADENCE_CEILING_MS);
                 state.chaos.cadence_ms.store(clamped, Ordering::SeqCst);
             }
         }

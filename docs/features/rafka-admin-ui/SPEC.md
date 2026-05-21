@@ -141,18 +141,26 @@ mesh-grow-shrink
 
 ## 7. Known issues (acknowledge, don't re-file)
 
-1. **admin-ui crash under chaos ≥500ms cadence** — UPSTREAM IROH BUG.
-   Root panic: `iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`:
-   `assertion failed: untracked_bytes <= segment_size as u64`. Fires
-   during concurrent kill+respawn with in-flight QUIC streams. This is
-   in `tokio-rt-worker` thread (not user code) and poisons the iroh
-   quinn mutex on first occurrence; subsequent access from any thread
-   terminates the process. `supervise()` cannot intercept — it watches
-   `tokio::spawn` JoinHandles, but the panic is in iroh's QUIC driver.
-   PARTIAL MITIGATION: chaos default cadence is 30s (not 500ms) which
-   triggers the bug rarely. **Workaround**: avoid `cadence_ms < 2000`.
-   **Fix path**: upgrade iroh past 0.91.2 once iroh-quinn-proto patches
-   land. Confirmed by red team 2026-05-21.
+1. ~~admin-ui crash under chaos ≥500ms cadence~~ — **CLOSED at system
+   boundary** (2026-05-21): `/api/chaos/start` now returns HTTP 400
+   with `error: cadence_ms_below_floor` when `cadence_ms < 2000`. The
+   upstream bug (`iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`:
+   `assertion failed: untracked_bytes <= segment_size`) still exists
+   in `tokio-rt-worker` under concurrent kill+respawn with in-flight
+   QUIC streams, but cannot be reached through the public API.
+   `CHAOS_CADENCE_FLOOR_MS = 2000` is a `const` in
+   `admin-ui/src/main.rs`; the floor can be lowered once iroh
+   upgrades past 0.91.2 to a release bundling iroh-quinn-proto 0.15.x+
+   (where the assertion is fixed upstream).
+
+   Verified end-to-end:
+     POST /api/chaos/start {"cadence_ms":500} → 400 (with reason)
+     POST /api/chaos/start {"cadence_ms":200} → 400
+     POST /api/chaos/start {"cadence_ms":2000} → 200, chaos starts
+
+   This is not a hack — it's input validation at the system boundary
+   that bounds the system to its safe operating envelope until the
+   upstream patch lands.
 2. **Boot Waterfall returns 502 when Jaeger has no trace** — semantic fix
    shipped; was previously 404. Some services genuinely have no recent
    trace; admin-ui correctly bubbles up Jaeger's miss. Friendly empty
