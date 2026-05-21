@@ -10,6 +10,12 @@ export interface TopologyNode {
   frames_sent_total?: number;
   frames_recv_total?: number;
   wall_time_ms?: number;
+  /// CPU + RAM from GossipDigest. cores / GB respectively. Optional
+  /// because pre-load-telemetry nodes (mid-rollout) may not populate them.
+  cpu_used?: number;
+  cpu_budget?: number;
+  ram_used?: number;
+  ram_budget?: number;
   status?: "live" | "pending";
   /// legacy — Jaeger-era, kept for back-compat
   frames_per_min?: number;
@@ -150,10 +156,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, seed }),
     }),
-  spawn: (node_type: NodeType, mesh_id: string) =>
+  spawn: (node_type: NodeType, mesh_id: string, extra_env?: Record<string, string>) =>
     j<{ node_name: string; pid: number }>("/api/nodes/spawn", {
       method: "POST",
-      body: JSON.stringify({ node_type, extra_env: { RAFKA_MESH_ID: mesh_id } }),
+      body: JSON.stringify({
+        node_type,
+        extra_env: { RAFKA_MESH_ID: mesh_id, ...(extra_env ?? {}) },
+      }),
     }),
   kill: (node_name: string) =>
     j<{ node_name: string; reason: string }>(
