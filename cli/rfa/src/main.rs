@@ -511,6 +511,30 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
     ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rafka.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
     ("gossip-mesh-to-mesh",     "chaos",      "spawn nodes in mesh-A + mesh-B; verify each mesh's gossip stays isolated (separate topic_id per mesh_id) AND cross.peer_connected spans fire"),
+    // === Single-primitive chaos tests ===
+    ("kill-broker",             "chaos",      "KillNode targeting a random broker; verify subprocess removed within 30s"),
+    ("kill-gateway",            "chaos",      "KillNode targeting a random gateway; verify removed within 30s"),
+    ("kill-compute",            "chaos",      "KillNode targeting a random compute; verify removed within 30s"),
+    ("kill-registry",           "chaos",      "KillNode targeting a random registry; verify removed within 30s"),
+    ("restart-broker",          "chaos",      "RestartNode broker (kill + respawn same type); verify new node_name appears within 30s"),
+    ("restart-gateway",         "chaos",      "RestartNode gateway; verify new node_name appears within 30s"),
+    ("burst-kill-3",            "chaos",      "BurstKill 3 random nodes back-to-back; verify all removed within 30s (substrate race)"),
+    ("burst-kill-5",            "chaos",      "BurstKill 5 random nodes back-to-back; verify all removed within 30s"),
+    ("wedge-broker-2s",         "chaos",      "WedgeNode broker for 2s (NtSuspendProcess); peer_count drops then recovers"),
+    ("wedge-gateway-5s",        "chaos",      "WedgeNode gateway for 5s; longer wedge tests stale-peer expiry"),
+    ("clock-skew-5s",           "chaos",      "ClockSkew target node by +5s; restart with RAFKA_CLOCK_SKEW_MS=5000"),
+    ("clock-skew-60s",          "chaos",      "ClockSkew target node by +60s; bigger skew stresses heartbeat staleness logic"),
+    ("slow-link-100ms",         "chaos",      "SlowLink: restart node with RAFKA_LINK_SLOW_MS=100; verify ping spans show latency"),
+    ("slow-link-500ms",         "chaos",      "SlowLink: restart node with RAFKA_LINK_SLOW_MS=500; aggressive latency injection"),
+    ("lossy-link-10pct",        "chaos",      "LossyLink: restart node with RAFKA_LINK_LOSS_PCT=10; expect rafka.mesh.frame.dropped_by_fault_inject spans"),
+    ("lossy-link-25pct",        "chaos",      "LossyLink: restart node with RAFKA_LINK_LOSS_PCT=25; verify mesh resilience to packet loss"),
+    ("nat-shift",               "chaos",      "NatShift: restart target with new random RAFKA_NODE_BIND_ADDR (simulates NAT rebind)"),
+    // === Soak variants of increasing duration ===
+    ("chaos-soak-9prim-2min",   "chaos",      "2-minute soak with 9-primitive pool; medium-duration substrate check"),
+    ("chaos-soak-9prim-10min",  "chaos",      "10-minute soak with 9-primitive pool; long-duration steady-state"),
+    ("chaos-soak-9prim-30min",  "chaos",      "30-minute soak with 9-primitive pool; deep substrate validation"),
+    // === Mesh shape tests ===
+    ("mesh-grow-shrink",        "chaos",      "spawn 10 extra brokers above bootstrap pool, kill them all in sequence, verify pool returns to baseline"),
 ];
 
 #[derive(serde::Serialize)]
@@ -562,6 +586,28 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
         "remove-resilience" => run_remove_resilience(api_url).await,
         "gossip-swarm-forms" => run_gossip_swarm_forms(api_url).await,
         "gossip-mesh-to-mesh" => run_gossip_mesh_to_mesh(api_url).await,
+        // New single-primitive chaos tests
+        "kill-broker"     => run_one_primitive(api_url, "kill", Some("broker".into())).await,
+        "kill-gateway"    => run_one_primitive(api_url, "kill", Some("gateway".into())).await,
+        "kill-compute"    => run_one_primitive(api_url, "kill", Some("compute".into())).await,
+        "kill-registry"   => run_one_primitive(api_url, "kill", Some("registry".into())).await,
+        "restart-broker"  => run_one_primitive(api_url, "restart", Some("broker".into())).await,
+        "restart-gateway" => run_one_primitive(api_url, "restart", Some("gateway".into())).await,
+        "burst-kill-3"    => run_one_primitive(api_url, "burst_kill_3", None).await,
+        "burst-kill-5"    => run_one_primitive(api_url, "burst_kill_5", None).await,
+        "wedge-broker-2s" => run_one_primitive(api_url, "wedge_broker_2000", None).await,
+        "wedge-gateway-5s" => run_one_primitive(api_url, "wedge_gateway_5000", None).await,
+        "clock-skew-5s"   => run_one_primitive(api_url, "clock_skew_5000", None).await,
+        "clock-skew-60s"  => run_one_primitive(api_url, "clock_skew_60000", None).await,
+        "slow-link-100ms" => run_one_primitive(api_url, "slow_link_100", None).await,
+        "slow-link-500ms" => run_one_primitive(api_url, "slow_link_500", None).await,
+        "lossy-link-10pct" => run_one_primitive(api_url, "lossy_link_10", None).await,
+        "lossy-link-25pct" => run_one_primitive(api_url, "lossy_link_25", None).await,
+        "nat-shift"       => run_one_primitive(api_url, "nat_shift", None).await,
+        "chaos-soak-9prim-2min"  => run_chaos_soak(api_url, "2m", "8s", seed).await,
+        "chaos-soak-9prim-10min" => run_chaos_soak(api_url, "10m", "10s", seed).await,
+        "chaos-soak-9prim-30min" => run_chaos_soak(api_url, "30m", "15s", seed).await,
+        "mesh-grow-shrink"  => run_mesh_grow_shrink(api_url).await,
         _ => ("skipped", format!("no runner wired for {name}")),
     };
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -590,7 +636,28 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
 
 async fn cmd_test_all(api_url: &str, seed: u64) -> Result<()> {
     let mut failed: Vec<String> = Vec::new();
-    for (name, _, _) in TEST_REGISTRY {
+    let http = reqwest::Client::new();
+    // Pool floor — re-bootstrap if the cluster drops below this many nodes
+    // between tests. Many chaos primitives need >=4 live nodes to target.
+    const POOL_FLOOR: i64 = 6;
+    for (name, kind, _) in TEST_REGISTRY {
+        // Functional tests run cargo tests in isolation — they don't depend
+        // on the live mesh pool. Skip the refill check.
+        if *kind == "chaos" {
+            if let Ok(r) = http.get(format!("{api_url}/api/cluster/summary")).send().await {
+                if let Ok(body) = r.json::<serde_json::Value>().await {
+                    let n = body["spawned"].as_i64().unwrap_or(0);
+                    if n < POOL_FLOOR {
+                        println!("=== pool ({n}) below floor ({POOL_FLOOR}) — re-bootstrapping ===");
+                        let _ = http
+                            .post(format!("{api_url}/api/bootstrap"))
+                            .send()
+                            .await;
+                        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    }
+                }
+            }
+        }
         println!("\n=== running: {name} ===");
         if let Err(e) = cmd_test_run(api_url, name, seed).await {
             println!("FAIL: {e}");
@@ -673,30 +740,246 @@ async fn run_chaos_soak(api_url: &str, duration: &str, interval: &str, seed: u64
     }
 }
 
+/// Generic single-primitive runner. Dispatches by `kind` to the matching
+/// rafka_chaos primitive, executes it, waits for detection within 30s.
+/// `target_type_filter` (when Some) narrows the random target selection to
+/// node names starting with that prefix.
+async fn run_one_primitive(
+    api_url: &str,
+    kind: &str,
+    target_type_filter: Option<String>,
+) -> (&'static str, String) {
+    use rafka_chaos::{
+        primitives::{
+            BurstKill, ClockSkew, KillNode, LossyLink, NatShift, RestartNode, SlowLink, WedgeNode,
+        },
+        ChaosPrimitive, DetectionResult,
+    };
+    let mut ctx = rafka_chaos::default_context(0);
+    ctx.topology_ui_url = api_url.to_string();
+    let deadline_ms = 30_000u64;
+
+    // For "*_<type>" tests, pick a real spawned node of that type up front so
+    // KillNode/RestartNode operate on a concrete name instead of guessing.
+    let target = if let Some(t) = &target_type_filter {
+        match pick_node_of_type(api_url, t).await {
+            Some(n) => Some(n),
+            None => return ("failed", format!("no spawned node of type {t} to target")),
+        }
+    } else {
+        None
+    };
+
+    let outcome_result: Result<rafka_chaos::ChaosOutcome, rafka_chaos::ChaosError>;
+    let detect_kind = kind.to_string();
+    // Dispatch by primitive label
+    let det = match kind {
+        "kill" => {
+            let p = KillNode { target: target.clone() };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        "restart" => {
+            let p = RestartNode { target: target.clone() };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        "burst_kill_3" | "burst_kill_5" => {
+            let count: usize = if kind.ends_with('5') { 5 } else { 3 };
+            let p = BurstKill { count };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        s if s.starts_with("wedge_") => {
+            let target_type = if s.contains("broker") { "broker" } else if s.contains("gateway") { "gateway" } else { "compute" };
+            let duration_ms: u64 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(2000);
+            let p = WedgeNode { target_node_type: target_type.to_string(), duration_ms };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        s if s.starts_with("clock_skew_") => {
+            let skew_ms: i64 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(5000);
+            let p = ClockSkew { target: None, skew_ms };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        s if s.starts_with("slow_link_") => {
+            let latency_ms: u64 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(100);
+            let p = SlowLink { target: None, latency_ms };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        s if s.starts_with("lossy_link_") => {
+            let pct: u8 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(10);
+            let p = LossyLink { target: None, loss_pct: pct };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        "nat_shift" => {
+            let p = NatShift { target: None };
+            outcome_result = p.execute(&ctx).await;
+            match outcome_result {
+                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
+                Err(e) => return ("failed", format!("execute: {e}")),
+            }
+        }
+        _ => return ("failed", format!("unknown primitive label {kind}")),
+    };
+    match det {
+        Ok(DetectionResult::Passed { waited_ms }) => (
+            "passed",
+            format!("{detect_kind} primitive detected in {waited_ms}ms"),
+        ),
+        Ok(DetectionResult::FailedTimeout { waited_ms }) => (
+            "failed",
+            format!("{detect_kind}: timed out after {waited_ms}ms"),
+        ),
+        Ok(DetectionResult::FailedAssertion { msg, waited_ms }) => (
+            "failed",
+            format!("{detect_kind}: assertion failed after {waited_ms}ms — {msg}"),
+        ),
+        Err(e) => ("failed", format!("detect err: {e}")),
+    }
+}
+
+/// Spawn 10 extra brokers above the bootstrap pool, kill them in sequence,
+/// verify pool returns to original size. Tests pool-cap discipline + reaper.
+async fn run_mesh_grow_shrink(api_url: &str) -> (&'static str, String) {
+    let client = reqwest::Client::new();
+    // Capture baseline
+    let pre = match client
+        .get(format!("{api_url}/api/cluster/summary"))
+        .send()
+        .await
+    {
+        Ok(r) => r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({})),
+        Err(e) => return ("failed", format!("baseline query: {e}")),
+    };
+    let baseline = pre["spawned"].as_i64().unwrap_or(0);
+
+    // Spawn 10 extras
+    let mut spawned: Vec<String> = Vec::new();
+    for _ in 0..10 {
+        let resp = client
+            .post(format!("{api_url}/api/nodes/spawn"))
+            .json(&serde_json::json!({"node_type":"broker","mesh_id":"mesh-a"}))
+            .send()
+            .await;
+        if let Ok(r) = resp {
+            if let Ok(body) = r.json::<serde_json::Value>().await {
+                if let Some(n) = body["node_name"].as_str() {
+                    spawned.push(n.to_string());
+                }
+            }
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    // Kill them all in sequence
+    for n in &spawned {
+        let _ = client.delete(format!("{api_url}/api/nodes/{n}")).send().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    // Verify pool returned to baseline
+    let post = match client
+        .get(format!("{api_url}/api/cluster/summary"))
+        .send()
+        .await
+    {
+        Ok(r) => r.json::<serde_json::Value>().await.unwrap_or(serde_json::json!({})),
+        Err(e) => return ("failed", format!("post query: {e}")),
+    };
+    let post_count = post["spawned"].as_i64().unwrap_or(-1);
+    if (post_count - baseline).abs() <= 1 {
+        (
+            "passed",
+            format!(
+                "baseline={baseline}, spawned 10 ({} survived), killed all, post={post_count}",
+                spawned.len()
+            ),
+        )
+    } else {
+        (
+            "failed",
+            format!("pool drift: baseline={baseline}, post={post_count}"),
+        )
+    }
+}
+
+/// Helper: pick a random node_name from /api/heartbeats matching a type prefix.
+async fn pick_node_of_type(api_url: &str, type_prefix: &str) -> Option<String> {
+    let client = reqwest::Client::new();
+    let r = client
+        .get(format!("{api_url}/api/heartbeats"))
+        .send()
+        .await
+        .ok()?;
+    let body: serde_json::Value = r.json().await.ok()?;
+    let mut names: Vec<String> = body["heartbeats"]
+        .as_array()?
+        .iter()
+        .filter_map(|h| {
+            let n = h["node_name"].as_str()?;
+            if n.starts_with(type_prefix) {
+                Some(n.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    names.sort();
+    names.first().cloned()
+}
+
 async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
     use std::collections::HashSet;
     let client = reqwest::Client::new();
     for t in ["gateway", "broker", "compute", "registry", "bridge"] {
         let _ = client
             .post(format!("{api_url}/api/nodes/spawn"))
-            .json(&serde_json::json!({"node_type": t}))
+            .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
             .send()
             .await;
     }
     tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+    // Use /api/heartbeats — /api/nodes/spawned was removed in the
+    // mesh-native pivot. Heartbeats is the authoritative live list.
     let body: serde_json::Value = match client
-        .get(format!("{api_url}/api/nodes/spawned"))
+        .get(format!("{api_url}/api/heartbeats"))
         .send()
         .await
     {
-        Ok(r) => r.json().await.unwrap_or(serde_json::json!({"spawned": []})),
-        Err(e) => return ("failed", format!("query /api/spawned: {e}")),
+        Ok(r) => r.json().await.unwrap_or(serde_json::json!({"heartbeats": []})),
+        Err(e) => return ("failed", format!("query /api/heartbeats: {e}")),
     };
-    let types: HashSet<String> = body["spawned"]
+    let types: HashSet<String> = body["heartbeats"]
         .as_array()
         .map(|a| {
             a.iter()
-                .filter_map(|v| v.as_str().map(|s| s.split('-').next().unwrap_or("").to_string()))
+                .filter_map(|h| h["node_type"].as_str().map(|s| s.to_string()))
                 .collect()
         })
         .unwrap_or_default();
@@ -724,7 +1007,7 @@ async fn run_gossip_swarm_forms(api_url: &str) -> (&'static str, String) {
     for t in ["gateway", "broker", "compute", "registry"] {
         let _ = client
             .post(format!("{api_url}/api/nodes/spawn"))
-            .json(&serde_json::json!({"node_type": t}))
+            .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
             .send()
             .await
             .ok();
@@ -801,7 +1084,7 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
     for t in ["gateway", "broker", "broker", "compute", "registry", "bridge"] {
         let resp = client
             .post(format!("{api_url}/api/nodes/spawn"))
-            .json(&serde_json::json!({"node_type": t}))
+            .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
             .send()
             .await;
         if let Ok(r) = resp {
@@ -1341,7 +1624,7 @@ async fn cmd_node_add(
     fmt: &Format,
 ) -> Result<()> {
     let url = format!("{api_url}/api/nodes/spawn");
-    let req_body = serde_json::json!({"node_type": node_type.as_str()});
+    let req_body = serde_json::json!({"node_type": node_type.as_str(), "mesh_id": "mesh-a"});
     let (status, body) = http_post(client, &url, &req_body).await?;
 
     if status == 201 {

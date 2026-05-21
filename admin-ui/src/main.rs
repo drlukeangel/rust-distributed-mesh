@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::ServeDir;
-use rafka_node_base::{GossipDigest, live_digests};
+use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -1829,24 +1829,61 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             }));
         }
     }
-    // Edges: cross-reference each digest's peer_ids against id_to_name.
-    // Canonical undirected edge per pair.
+    // Edges = authoritative gossip-topic membership intersections.
+    // For each topic we've subscribed to (from topic_membership()):
+    //   - All nodes whose digests landed on that topic are co-members
+    //   - Draw an edge between every pair of co-members
+    // Edge kind = "within" if the pair share their primary mesh_id; "cross"
+    // if either endpoint is a bridge (a bridge sits in multiple topics by
+    // design, so cross-topic edges incident on it are real cross-mesh
+    // connections).
+    //
+    // This replaces the peer_ids approach which conflated iroh-mdns
+    // discovery (everyone-sees-everyone) with gossip-topic membership.
     let canon = |a: &str, b: &str| -> (String, String) {
         if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
     };
-    let mut edge_set: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut name_to_meta: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
     for entry in digests.iter() {
-        let self_name = entry.value().node_name.clone();
-        for peer_id in &entry.value().peer_ids {
-            if let Some(peer_name) = id_to_name.get(peer_id) {
-                edge_set.insert(canon(&self_name, peer_name));
+        let d = entry.value();
+        name_to_meta.insert(d.node_name.clone(), (d.mesh_id.clone(), d.node_type.clone()));
+    }
+    for entry in state.spawned_meta.iter() {
+        if !name_to_meta.contains_key(entry.key()) {
+            name_to_meta.insert(
+                entry.key().clone(),
+                (entry.value().mesh_id.clone(), entry.value().node_type.clone()),
+            );
+        }
+    }
+    let mut edge_set: std::collections::HashSet<(String, String, &'static str)> =
+        std::collections::HashSet::new();
+    for topic_entry in topic_membership().iter() {
+        // Collect node_names of members on this topic. Skip ids we can't
+        // resolve (digest hasn't landed yet for them).
+        let mut members: Vec<String> = topic_entry
+            .value()
+            .iter()
+            .filter_map(|nid| id_to_name.get(nid).cloned())
+            .collect();
+        members.sort();
+        members.dedup();
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let (a, b) = canon(&members[i], &members[j]);
+                let kind = match (name_to_meta.get(&a), name_to_meta.get(&b)) {
+                    (Some((_, at)), Some((_, bt))) if at == "bridge" || bt == "bridge" => "cross",
+                    (Some((am, _)), Some((bm, _))) if am == bm => "within",
+                    _ => "cross", // co-members on a topic; both not bridges + different primary mesh = bridge-like role
+                };
+                edge_set.insert((a, b, kind));
             }
         }
     }
     let edges: Vec<Value> = edge_set
         .into_iter()
-        .map(|(a, b)| json!({"from": a, "to": b, "kind": "within"}))
+        .map(|(a, b, kind)| json!({"from": a, "to": b, "kind": kind}))
         .collect();
     return (
         StatusCode::OK,
@@ -2274,7 +2311,11 @@ async fn handle_boot_trace(
                 match traces.and_then(|arr| arr.first()) {
                     Some(first) => (StatusCode::OK, axum::Json(json!({"data": [first]}))).into_response(),
                     None => (
-                        StatusCode::NOT_FOUND,
+                        // 502 (Bad Gateway): Jaeger replied but has no
+                        // trace for this service. Distinct from 404 ("the
+                        // /api/boot-trace endpoint doesn't exist"). Matches
+                        // the SPEC contract documented in section 3.
+                        StatusCode::BAD_GATEWAY,
                         axum::Json(json!({"error": format!("no boot trace found for service {svc}")})),
                     )
                         .into_response(),
@@ -2440,13 +2481,18 @@ async fn spawn_one(
     if !KNOWN_NODE_TYPES.contains(&node_type) {
         return Err(format!("unknown node_type: {node_type}"));
     }
-    // Validate mesh_id BEFORE filesystem ops so a bad value can't half-spawn.
-    if let Some(m) = extra_env.get("RAFKA_MESH_ID") {
-        if !is_safe_mesh_id(m) {
-            return Err(format!(
-                "invalid mesh_id '{m}' — must match ^[a-z0-9][a-z0-9-]{{0,63}}$"
-            ));
-        }
+    // mesh_id is REQUIRED. "default" mesh shouldn't exist — every spawn
+    // must explicitly declare its mesh. This removes the fallback that
+    // silently created orphan nodes on the "default" gossip topic.
+    let mesh_id = extra_env
+        .get("RAFKA_MESH_ID")
+        .ok_or_else(|| {
+            "missing RAFKA_MESH_ID — every node must explicitly declare its mesh".to_string()
+        })?;
+    if !is_safe_mesh_id(mesh_id) {
+        return Err(format!(
+            "invalid mesh_id '{mesh_id}' — must match ^[a-z0-9][a-z0-9-]{{0,63}}$"
+        ));
     }
     // Red-team round-2 F#2 (defense-in-depth): re-validate extras inside
     // spawn_one so chaos loop / bootstrap paths can't bypass the allow-list.
@@ -2637,12 +2683,17 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
         }
     }
 
-    // 2 bridges — bridges span meshes, so no RAFKA_MESH_ID. The previous
-    // setting of "bridge" leaked into /api/cluster/summary's meshes list
-    // and made it look like "bridge" was a real mesh. They get the empty
-    // env and the node binary defaults to whatever it does without the var.
+    // 2 bridges — bridges live on the "bridge" mesh (their primary topic)
+    // AND subscribe to mesh-a + mesh-b via RAFKA_BRIDGE_TARGET_MESHES so
+    // they actually receive cross-mesh gossip. Without that env they're
+    // just orphan nodes on the bridge topic that no one watches.
     for _ in 0..2 {
-        let env = HashMap::new();
+        let mut env = HashMap::new();
+        env.insert("RAFKA_MESH_ID".to_string(), "bridge".to_string());
+        env.insert(
+            "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
+            "mesh-a,mesh-b".to_string(),
+        );
         match spawn_one(&state, "bridge", env).await {
             Ok((name, _)) => spawned.push(name),
             Err(e) => errors.push(e),
@@ -2785,6 +2836,19 @@ struct RunTestRequest {
 /// POST /api/tests/run — invoke `rfa.exe mesh test run <name> --seed <s>` and
 /// return the resulting report. Spawns rfa as a subprocess (it owns the per-test
 /// runners) and reads back the JSON written to E:/tmp/rafka-tests/<name>-<s>.json.
+/// GET /api/messages — live data-plane traffic flowing through admin-ui.
+/// Returns the last 500 frames received via run_frame_reader. Newest first.
+/// Source: rafka_node_base::message_ring() (process-global VecDeque).
+async fn handle_messages() -> impl IntoResponse {
+    let ring = message_ring();
+    let guard = ring.lock().unwrap();
+    let mut items: Vec<_> = guard.iter().cloned().collect();
+    drop(guard);
+    items.reverse(); // newest first
+    items.truncate(500);
+    (StatusCode::OK, axum::Json(json!({"messages": items}))).into_response()
+}
+
 async fn handle_test_run(
     State(state): State<AppState>,
     Json(body): Json<RunTestRequest>,
@@ -3581,6 +3645,16 @@ async fn main() -> Result<()> {
     // bridge binaries take. We DO NOT init telemetry separately here;
     // tracing_subscriber's global init would panic on the second call.
     //
+    // RAFKA_OBSERVER_MESHES: admin-ui subscribes to every mesh's gossip
+    // topic, not just its own. Without this, iroh-gossip's topic isolation
+    // means admin-ui only sees one mesh's digests at a time. We default to
+    // mesh-a + mesh-b (bootstrap composition); operator can override.
+    if std::env::var("RAFKA_OBSERVER_MESHES").is_err() {
+        // Watch every legit mesh: the two bootstrap meshes plus the bridge
+        // mesh (bridges live there). No "default" anymore — spawn_one now
+        // rejects nodes without an explicit RAFKA_MESH_ID.
+        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b,bridge");
+    }
     // Spawned as a tokio task so axum can run in parallel in this same
     // process. Same tokio runtime, same lifecycle.
     let node_handle = tokio::spawn(async {
@@ -3685,6 +3759,7 @@ async fn main() -> Result<()> {
         .route("/api/chaos/stop", post(handle_chaos_stop))
         .route("/api/chaos/state", get(handle_chaos_state))
         .route("/api/tests/run", post(handle_test_run))
+        .route("/api/messages", get(handle_messages))
         .route("/api/nodes/{node_name}", delete(handle_kill))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state)

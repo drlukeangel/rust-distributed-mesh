@@ -217,7 +217,10 @@ impl ChaosPrimitive for RestartNode {
         let resp = ctx
             .http
             .post(&spawn_url)
-            .json(&json!({"node_type": node_type}))
+            // admin-ui now requires mesh_id on every spawn (post mesh-native pivot).
+            // Default replacement to mesh-a; a future enhancement queries the original
+            // target's mesh from heartbeats so the replacement inherits.
+            .json(&json!({"node_type": node_type, "mesh_id": "mesh-a"}))
             .send()
             .await
             .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
@@ -1123,6 +1126,7 @@ impl ChaosPrimitive for ClockSkew {
             .post(&spawn_url)
             .json(&json!({
                 "node_type": node_type,
+                "mesh_id": "mesh-a",  // admin-ui post mesh-native pivot requires mesh_id
                 "extra_env": {"RAFKA_CLOCK_SKEW_MS": self.skew_ms.to_string()},
             }))
             .send()
@@ -1311,7 +1315,9 @@ async fn respawn_with_env(
     let resp = ctx
         .http
         .post(&spawn_url)
-        .json(&json!({"node_type": node_type, "extra_env": env_map}))
+        // Inject mesh_id at top-level for the new admin-ui validation; extra_env
+        // also gets RAFKA_MESH_ID so the child env carries it.
+        .json(&json!({"node_type": node_type, "mesh_id": "mesh-a", "extra_env": env_map}))
         .send()
         .await
         .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;

@@ -256,6 +256,68 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
             registry_for_digest,
         ))
     };
+
+    // RAFKA_OBSERVER_MESHES (admin-ui) AND RAFKA_BRIDGE_TARGET_MESHES (bridges):
+    // comma-separated list of ADDITIONAL meshes to subscribe to (beyond our
+    // primary RAFKA_MESH_ID). Both env vars feed the same multi-topic-join
+    // path — observer/bridge is just a labeling distinction. Each extra
+    // topic gets its own run_gossip task that writes into the process-wide
+    // live_digests() map and broadcasts our own digest on that topic too,
+    // so bridges genuinely appear as members of every mesh they bridge.
+    let extra_meshes_combined = {
+        let observer = std::env::var("RAFKA_OBSERVER_MESHES").unwrap_or_default();
+        let bridge_targets = std::env::var("RAFKA_BRIDGE_TARGET_MESHES").unwrap_or_default();
+        let combined = if observer.is_empty() {
+            bridge_targets
+        } else if bridge_targets.is_empty() {
+            observer
+        } else {
+            format!("{observer},{bridge_targets}")
+        };
+        if combined.is_empty() { None } else { Some(combined) }
+    };
+    if let Some(extra) = extra_meshes_combined {
+        for extra_mesh in extra.split(',') {
+            let extra_mesh = extra_mesh.trim();
+            if extra_mesh.is_empty() || extra_mesh == mesh_id {
+                continue;
+            }
+            let extra_mesh_static: &'static str =
+                Box::leak(extra_mesh.to_string().into_boxed_str());
+            let extra_topic_bytes: [u8; 32] =
+                *blake3::hash(extra_mesh_static.as_bytes()).as_bytes();
+            let extra_topic_id =
+                iroh_gossip::proto::TopicId::from_bytes(extra_topic_bytes);
+            tracing::info_span!(
+                "rafka.mesh.gossip.subscribed_extra",
+                node_id = %node_id,
+                extra_mesh_id = extra_mesh_static,
+                topic_id = %hex::encode(extra_topic_bytes),
+            )
+            .in_scope(|| {
+                info!(extra_mesh = extra_mesh_static, "iroh-gossip extra topic subscribed (observer mode)");
+            });
+            let node_id_g = node_id.clone();
+            let registry_for_digest = Arc::clone(&peer_registry);
+            let gossip_clone = gossip.clone();
+            let node_type_g = node_type_str.to_string();
+            // CRITICAL: pass our PRIMARY mesh_id, not the extra topic's mesh_id.
+            // The digest describes the node's identity (primary mesh); the
+            // topic is just the broadcast channel. Without this, multiple
+            // run_gossip tasks for the same node race to overwrite
+            // live_digests[node_id] with conflicting mesh_id values.
+            tokio::spawn(run_gossip(
+                gossip_clone,
+                extra_topic_id,
+                node_id_g,
+                mesh_id,          // primary, NOT extra_mesh_static
+                node_name,
+                node_type_g,
+                gossip_interval_ms,
+                registry_for_digest,
+            ));
+        }
+    }
     let mdns_rx = std::mem::replace(
         &mut transport.mdns_discovered,
         tokio::sync::mpsc::channel(1).1,
@@ -508,6 +570,68 @@ pub fn live_digests() -> &'static Arc<DashMap<String, GossipDigest>> {
     LIVE_DIGESTS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+/// Per-topic membership ledger. For each gossip topic we subscribe to,
+/// records the node_ids whose digests we've actually received on that
+/// topic in the last gossip cycle. This is the AUTHORITATIVE answer to
+/// "which nodes belong to mesh X" — built from observed traffic, not
+/// from inferred peer_ids (which conflate iroh-mdns connections with
+/// gossip topic membership).
+static TOPIC_MEMBERSHIP: std::sync::OnceLock<
+    Arc<DashMap<String, std::collections::HashSet<String>>>,
+> = std::sync::OnceLock::new();
+
+pub fn topic_membership(
+) -> &'static Arc<DashMap<String, std::collections::HashSet<String>>> {
+    TOPIC_MEMBERSHIP.get_or_init(|| Arc::new(DashMap::new()))
+}
+
+/// Last N frames this node received over its data plane. Pushed by
+/// `run_frame_reader` after each successful decode. Bounded to 1000 entries
+/// (oldest dropped on overflow). Powers the admin-ui Messages tab — live
+/// view of mesh traffic flowing through THIS node.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MeshMessage {
+    pub ts_ms: u64,
+    pub from_peer_id: String,
+    pub frame_kind: String,
+    pub bytes: usize,
+    /// Human-readable decoded summary of the frame contents — e.g.
+    /// "Ping{org_id=0}", "Hello{mesh_id=mesh-a, node_type=broker}".
+    /// `<decode_failed>` if postcard couldn't parse the bytes.
+    pub summary: String,
+}
+
+static MESSAGE_RING: std::sync::OnceLock<
+    Arc<std::sync::Mutex<std::collections::VecDeque<MeshMessage>>>,
+> = std::sync::OnceLock::new();
+
+pub fn message_ring(
+) -> &'static Arc<std::sync::Mutex<std::collections::VecDeque<MeshMessage>>> {
+    MESSAGE_RING.get_or_init(|| {
+        Arc::new(std::sync::Mutex::new(
+            std::collections::VecDeque::with_capacity(1024),
+        ))
+    })
+}
+
+fn push_message(from_peer_id: &str, frame_kind: &str, bytes: usize, summary: String) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut g = message_ring().lock().unwrap();
+    if g.len() >= 1000 {
+        g.pop_front();
+    }
+    g.push_back(MeshMessage {
+        ts_ms: now_ms,
+        from_peer_id: from_peer_id.to_string(),
+        frame_kind: frame_kind.to_string(),
+        bytes,
+        summary,
+    });
+}
+
 async fn run_gossip(
     gossip: iroh_gossip::net::Gossip,
     topic_id: iroh_gossip::proto::TopicId,
@@ -613,6 +737,15 @@ async fn run_gossip(
                     // zero Jaeger dependency. The mesh IS the topology.
                     if let Some(d) = &digest {
                         live_digests().insert(d.node_id.clone(), d.clone());
+                        // Authoritative topic-membership: we received d's digest
+                        // ON THIS TOPIC (= the `mesh_id` param of this run_gossip
+                        // task), so d is a member of that topic's swarm.
+                        // Edges in /api/topology are built from this map's
+                        // intersections rather than from peer_ids (mdns junk).
+                        topic_membership()
+                            .entry(mesh_id.to_string())
+                            .or_insert_with(std::collections::HashSet::new)
+                            .insert(d.node_id.clone());
                     }
                     let summary = digest
                         .as_ref()
@@ -928,6 +1061,26 @@ async fn run_frame_reader(
                 counters
                     .frames_recv
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // Decode for the Messages tab — capture variant + fields so
+                // the operator sees actual payload content, not just kind.
+                let frame_size = bytes.len();
+                let (kind_tag, summary) = match InternalMeshFrame::decode_with_context(&bytes) {
+                    Ok((_, InternalMeshFrame::Hello { mesh_id: m, node_type: nt })) => (
+                        "hello",
+                        format!("Hello{{mesh_id={m}, node_type={nt}}}"),
+                    ),
+                    Ok((_, InternalMeshFrame::Ping { org_id })) => (
+                        "ping",
+                        format!("Ping{{org_id={org_id}}}"),
+                    ),
+                    Ok((_, InternalMeshFrame::Pong { org_id })) => (
+                        "pong",
+                        format!("Pong{{org_id={org_id}}}"),
+                    ),
+                    Err(e) => ("decode_failed", format!("<decode_failed: {e}>")),
+                };
+                push_message(&peer_id_str, kind_tag, frame_size, summary);
 
                 match InternalMeshFrame::decode_with_context(&bytes) {
                     Ok((parent_ctx, InternalMeshFrame::Hello { mesh_id: peer_mesh_id, node_type: peer_node_type })) => {
