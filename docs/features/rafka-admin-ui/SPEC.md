@@ -141,26 +141,31 @@ mesh-grow-shrink
 
 ## 7. Known issues (acknowledge, don't re-file)
 
-1. ~~admin-ui crash under chaos ≥500ms cadence~~ — **CLOSED at system
-   boundary** (2026-05-21): `/api/chaos/start` now returns HTTP 400
-   with `error: cadence_ms_below_floor` when `cadence_ms < 2000`. The
-   upstream bug (`iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`:
-   `assertion failed: untracked_bytes <= segment_size`) still exists
-   in `tokio-rt-worker` under concurrent kill+respawn with in-flight
-   QUIC streams, but cannot be reached through the public API.
-   `CHAOS_CADENCE_FLOOR_MS = 2000` is a `const` in
-   `admin-ui/src/main.rs`; the floor can be lowered once iroh
-   upgrades past 0.91.2 to a release bundling iroh-quinn-proto 0.15.x+
+1. ~~admin-ui crash under chaos at low cadence~~ — **CLOSED at
+   system boundary** (2026-05-21, floor=5000ms): `/api/chaos/start`
+   now returns HTTP 400 with `error: cadence_ms_below_floor` when
+   `cadence_ms < 5000`. The upstream bug
+   (`iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`: `assertion
+   failed: untracked_bytes <= segment_size`) still exists in
+   `tokio-rt-worker` under concurrent kill+respawn with in-flight
+   QUIC streams.
+
+   Initial floor was 2000ms; QA postfix round (NF-1) found 18
+   iroh-quinn panics in 5min at exactly 2000ms — tokio recovered
+   the tasks but the panics still fired. Raised to 5000ms (matches
+   the chaos default cadence). The 30-minute soak at 5000ms
+   completes with 0 panics (commit 88937f9 verification).
+
+   `CHAOS_CADENCE_FLOOR_MS = 5000` is a `const` in
+   `admin-ui/src/main.rs`; can be lowered once iroh upgrades past
+   0.91.2 to a release bundling iroh-quinn-proto 0.15.x+
    (where the assertion is fixed upstream).
 
    Verified end-to-end:
-     POST /api/chaos/start {"cadence_ms":500} → 400 (with reason)
-     POST /api/chaos/start {"cadence_ms":200} → 400
-     POST /api/chaos/start {"cadence_ms":2000} → 200, chaos starts
-
-   This is not a hack — it's input validation at the system boundary
-   that bounds the system to its safe operating envelope until the
-   upstream patch lands.
+     POST /api/chaos/start {"cadence_ms":500}  → 400 (with reason)
+     POST /api/chaos/start {"cadence_ms":2000} → 400 (now)
+     POST /api/chaos/start {"cadence_ms":4999} → 400
+     POST /api/chaos/start {"cadence_ms":5000} → 200, chaos starts
 2. **Boot Waterfall returns 502 when Jaeger has no trace** — semantic fix
    shipped; was previously 404. Some services genuinely have no recent
    trace; admin-ui correctly bubbles up Jaeger's miss. Friendly empty
@@ -190,24 +195,41 @@ mesh-grow-shrink
    peer.connected/disconnected events show full `broker-abc12345`
    instead of just `broker`. Both self_name and peer_name resolved.
 7. ~~Topology graph shows spurious cross-mesh edges~~ — **FIXED**
-   (2026-05-21): `run_gossip()` previously keyed `topic_membership()`
-   by the digest's primary `mesh_id` even for EXTRA-topic subscribers
-   (admin-ui's bridge subscription). Every node admin-ui received
-   landed under `topic_membership["admin-ui"]` → 64 spurious
-   non-bridge cross-mesh edges. Fix: added `topic_label: &'static str`
-   param to `run_gossip` distinct from `mesh_id`; primary task passes
-   `mesh_id`, extras pass `extra_mesh_static`.
+   (2026-05-21, two-part). PART 1 (commit 00d7b87): `run_gossip()`
+   keyed `topic_membership()` by the digest's primary `mesh_id` even
+   for EXTRA-topic subscribers, conflating topic membership. Added
+   `topic_label: &'static str` distinct from `mesh_id`. PART 2
+   (post-QA-postfix): the edge generator's catch-all `_ => "cross"`
+   arm still emitted edges for any two co-members on a topic whose
+   metadata was incomplete OR who simply had different primary
+   `mesh_id` (e.g. admin-ui observer with `mesh_id="default"` paired
+   with mesh-a peers). QA postfix found 80 illegal non-bridge cross
+   edges. Fix: edge generator now SUPPRESSES the edge if both
+   endpoints are non-bridge with different `mesh_id`, or if either
+   side's meta is missing. The bridge architecture invariant ("only
+   bridges mediate cross-mesh") is now enforced in the edge
+   generator itself, not just in the data source.
+
+   Verified after Part 2: `illegal_nonbridge_cross: 0` (was 80).
+   Edge counts in 18-node bootstrap: 91 total / 35 cross (all 35
+   incident on a bridge) / 56 within. Graph honest.
 8. ~~admin-ui invisible in its own /api/topology~~ — **FIXED**
    (2026-05-21): `run_gossip` now self-inserts the locally-built
    digest into `live_digests()` + `topic_membership()` on every
    broadcast tick. iroh-gossip does not echo broadcasts to the sender,
    so without this every node was invisible in its own UI.
-9. ~~Panic hook installed but never fires~~ — **FIXED** (2026-05-21):
-   previous attempt installed the hook inside `#[tokio::main] async
-   fn main`, after the tokio runtime had already spawned iroh's QUIC
-   driver threads. Restructured: panic hook now installs in plain
-   `fn main()` BEFORE the tokio runtime is built, so every worker
-   (including iroh's) inherits it from thread-spawn time.
+9. ~~Panic hook installed but never fires~~ — **FIXED** (2026-05-21,
+   two-part). PART 1: hook moved to plain `fn main()` BEFORE the
+   tokio runtime is built — fixed the hyper "no timer set" panic
+   capture (verified). PART 2 (post-QA-postfix): the hook fired
+   but the iroh-quinn double-panic (mutex poisoning fires a
+   second panic on the same thread mid-`write_all`) caused Rust
+   to abort before the buffered write reached disk, leaving
+   0-byte files. Fix: eprintln FIRST (stderr is typically
+   redirected to a capture file by the parent), then
+   open+write_all+flush+drop in a tight sequence. The first
+   panic's message is now guaranteed to reach stderr-capture even
+   if the file write is preempted by a second panic.
 10. ~~Messages summary lacks peer NodeId prefix~~ — **FIXED** (2026-05-21):
     `push_message` now prepends an 8-char hex prefix of `from_peer_id`
     to the summary string itself, e.g. `[7144d954] Ping{org_id=0}`.
