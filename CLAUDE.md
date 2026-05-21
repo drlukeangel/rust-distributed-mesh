@@ -94,7 +94,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.boot.alpn_registered` | `node_id`, `alpn` (e.g. `"rafka-mesh-v1"`) |
 | `rafka.mesh.boot.gossip_started` | `node_id` |
 | `rafka.mesh.boot.accept_loop_started` | `node_id` |
-| `rafka.mesh.heartbeat` | `node_id`, `peer_count` |
+| `rafka.mesh.heartbeat` | `node_id`, `peer_count`, `cpu_used`, `cpu_budget`, `ram_used`, `ram_budget` |
 | `rafka.mesh.node.stopping` | `node_id`, `reason` |
 | `rafka.mesh.peer.discovered` | `node_id` (local), `peer_id` (remote), `peer_node_type` |
 | `rafka.mesh.peer.connected` | `node_id`, `peer_id`, `peer_node_type` |
@@ -118,6 +118,10 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.frames_received_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
 | `rafka.mesh.frame.decode_error_rate` | errors/sec (gauge) | `src_node_id`, `dst_node_id` |
 | `rafka.mesh.peer.rtt_ms` | milliseconds (histogram) | `node_id`, `peer_id` |
+| `rafka.mesh.node.cpu_used_cores`   | cores (gauge) | `node_id`, `node_type` |
+| `rafka.mesh.node.cpu_budget_cores` | cores (gauge) | `node_id`, `node_type` |
+| `rafka.mesh.node.ram_used_gb`      | GB (gauge)    | `node_id`, `node_type` |
+| `rafka.mesh.node.ram_budget_gb`    | GB (gauge)    | `node_id`, `node_type` |
 
 Aggregation window: **5-second sliding** for every per-sec gauge. Locked so the dynamic-throughput viz can divide consistently.
 
@@ -298,6 +302,11 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the `rafka-topology-ui` HTTP server binds to. Override to expose on a different interface or port. |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Base URL of the Jaeger Query API. Used by `rafka-topology-ui` (chunk 2+) to fetch trace data for the boot-waterfall panel. |
 | `CARGO_TARGET_DIR` | `./target` | Read by `rafka-topology-ui` to locate node binaries for spawn. Set to `E:/cargo-target-sprint-02` in local dev so the UI can find debug builds without a separate install step. |
+| `RAFKA_DEPLOYMENT` | `prod` | One of `dev`, `staging`, `prod`. Gates all `RAFKA_DEV_*` overrides. Defaults to `prod` so a production manifest gets safe behavior without explicit setting. Set to `dev` automatically by admin-ui for every spawned child. |
+| `RAFKA_DEV_CPU_BUDGET` | _(measured via sysinfo)_ | Override the reported `cpu_budget` field in `GossipDigest` (cores, fractional). Honored only when `RAFKA_DEPLOYMENT != prod`. Used by per-crate `.env.dev` to give heterogeneous test brokers different CPU profiles. |
+| `RAFKA_DEV_RAM_BUDGET` | _(measured via sysinfo)_ | Override reported `ram_budget` in GB. Same gating as `RAFKA_DEV_CPU_BUDGET`. |
+| `RAFKA_DEV_CPU_USED` | _(measured via sysinfo)_ | Override reported `cpu_used` in cores. For deterministic routing/migration test scenarios (broker reports 95% load without actually being loaded). Same gating. |
+| `RAFKA_DEV_RAM_USED` | _(measured via sysinfo)_ | Override reported `ram_used` in GB. Same gating. |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 
