@@ -254,6 +254,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
             node_type_g,
             gossip_interval_ms,
             registry_for_digest,
+            mesh_id, // primary task: topic_label = mesh_id (digests filed under our own mesh)
         ))
     };
 
@@ -310,11 +311,12 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
                 gossip_clone,
                 extra_topic_id,
                 node_id_g,
-                mesh_id,          // primary, NOT extra_mesh_static
+                mesh_id,          // digest's mesh_id stays primary (node's identity)
                 node_name,
                 node_type_g,
                 gossip_interval_ms,
                 registry_for_digest,
+                extra_mesh_static, // topic_label = actual subscription topic (NOT primary)
             ));
         }
     }
@@ -641,6 +643,15 @@ async fn run_gossip(
     node_type: String,
     interval_ms: u64,
     registry: PeerRegistry,
+    // topic_label is the key under which received digests get filed in
+    // topic_membership(). For PRIMARY-topic tasks this MUST equal mesh_id
+    // (so a broker's mesh-a digests live under topic_membership["mesh-a"]).
+    // For EXTRA-topic tasks (observer/bridge subscribers) this MUST equal
+    // the extra topic's mesh-name, NOT the node's primary mesh_id —
+    // otherwise admin-ui (primary "admin-ui") would file every received
+    // digest under topic_membership["admin-ui"] and the edge-builder
+    // would produce O(n²) spurious cross-mesh pairs (red-team R2 2026-05-21).
+    topic_label: &'static str,
 ) {
     let counters = mesh_counters();
     use futures_lite::StreamExt;
@@ -697,6 +708,17 @@ async fn run_gossip(
                     Err(_) => continue,
                 };
                 let size = payload.len();
+                // Red-team R3 fix: file our own digest into live_digests +
+                // topic_membership so we appear in /api/topology and
+                // /api/heartbeats from our own perspective. iroh-gossip does
+                // NOT echo broadcasts back to the sender, so without this
+                // self-injection an admin-ui observer (or any node) is
+                // invisible in its own UI.
+                live_digests().insert(digest.node_id.clone(), digest.clone());
+                topic_membership()
+                    .entry(topic_label.to_string())
+                    .or_insert_with(std::collections::HashSet::new)
+                    .insert(digest.node_id.clone());
                 if let Err(e) = sender.broadcast(payload.into()).await {
                     tracing::info_span!(
                         "rafka.mesh.gossip.broadcast_failed",
@@ -743,7 +765,7 @@ async fn run_gossip(
                         // Edges in /api/topology are built from this map's
                         // intersections rather than from peer_ids (mdns junk).
                         topic_membership()
-                            .entry(mesh_id.to_string())
+                            .entry(topic_label.to_string())
                             .or_insert_with(std::collections::HashSet::new)
                             .insert(d.node_id.clone());
                     }

@@ -3665,15 +3665,7 @@ fn chrono_like_now() -> String {
     format!("epoch_ms={}", d.as_millis())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    // SPEC §7 #1 root-cause progress: install a panic hook BEFORE anything
-    // else so that any panic — main thread, tokio worker, background task
-    // — writes a full backtrace + thread name + location to
-    // <CARGO_TARGET_DIR>/admin-ui-panic.log. The 30m soak crash was
-    // unreproducible because the panic line was lost to log rotation;
-    // this file persists across restarts.
-    std::env::set_var("RUST_BACKTRACE", "full");
+fn install_panic_hook() -> std::path::PathBuf {
     let panic_log_path = std::env::var("CARGO_TARGET_DIR")
         .map(|d| std::path::PathBuf::from(d).join("admin-ui-panic.log"))
         .unwrap_or_else(|_| std::path::PathBuf::from("./admin-ui-panic.log"));
@@ -3698,8 +3690,35 @@ async fn main() -> Result<()> {
             let _ = f.write_all(line.as_bytes());
         }
     }));
-    tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed");
+    panic_log_path
+}
 
+fn main() -> Result<()> {
+    // SPEC §7 #1 + red-team R5 root-cause fix: install panic hook BEFORE
+    // any threads exist. Previous attempt installed the hook inside async
+    // fn main (i.e. after #[tokio::main] had already started worker
+    // threads + iroh's quinn driver threads). Red team confirmed those
+    // threads were using the DEFAULT hook (stderr backtrace showed
+    // `std::panicking::default_hook` firing on iroh-quinn crash, not our
+    // custom hook). Install in plain fn main BEFORE building the runtime.
+    std::env::set_var("RUST_BACKTRACE", "full");
+    let panic_log_path = install_panic_hook();
+    eprintln!(
+        "[admin-ui] panic hook installed; future panics will append to {}",
+        panic_log_path.display()
+    );
+
+    // Build the tokio runtime explicitly so the panic hook is in place
+    // before any worker threads (including iroh-quinn's QUIC driver)
+    // start.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async_main(panic_log_path))
+}
+
+async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
+    tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed (pre-runtime)");
     // admin-ui IS a node. The NodeRuntime call below owns telemetry
     // initialization + iroh endpoint + gossip subscription + heartbeat
     // broadcast — same path the broker / gateway / compute / registry /

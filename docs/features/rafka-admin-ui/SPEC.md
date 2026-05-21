@@ -141,25 +141,60 @@ mesh-grow-shrink
 
 ## 7. Known issues (acknowledge, don't re-file)
 
-1. **admin-ui crash during long soaks** — happens ~1-in-2 runs during
-   chaos-soak-9prim-30min. Stack trace not captured. Workaround: restart.
+1. **admin-ui crash under chaos ≥500ms cadence** — UPSTREAM IROH BUG.
+   Root panic: `iroh-quinn-proto-0.13.0/src/connection/mod.rs:654`:
+   `assertion failed: untracked_bytes <= segment_size as u64`. Fires
+   during concurrent kill+respawn with in-flight QUIC streams. This is
+   in `tokio-rt-worker` thread (not user code) and poisons the iroh
+   quinn mutex on first occurrence; subsequent access from any thread
+   terminates the process. `supervise()` cannot intercept — it watches
+   `tokio::spawn` JoinHandles, but the panic is in iroh's QUIC driver.
+   PARTIAL MITIGATION: chaos default cadence is 30s (not 500ms) which
+   triggers the bug rarely. **Workaround**: avoid `cadence_ms < 2000`.
+   **Fix path**: upgrade iroh past 0.91.2 once iroh-quinn-proto patches
+   land. Confirmed by red team 2026-05-21.
 2. **Boot Waterfall returns 502 when Jaeger has no trace** — semantic fix
    shipped; was previously 404. Some services genuinely have no recent
-   trace; admin-ui correctly bubbles up Jaeger's miss.
+   trace; admin-ui correctly bubbles up Jaeger's miss. Friendly empty
+   state in UI tells the user to refresh after 30s of Jaeger ingestion.
 3. **Soak primitive flake rate ~5-10%** — chaos primitives sometimes don't
    detect within their deadline window (race condition in Jaeger ingestion
    lag). DETERMINISTIC under seed 42 — re-runs produce identical pass set.
 4. **Pool cap 50** — bootstrap returns 429 if would exceed; chaos respawn
    also respects this cap.
-5. ~~HTTP server CLOSE_WAIT wedge after long tests~~ — **MITIGATED**:
-   `TimeoutLayer(60s)` + `ConcurrencyLimitLayer(64)` + `TCP_NODELAY` on
-   the listener. axum now drains stuck connections instead of holding
-   them indefinitely. Root cause (likely hyper keep-alive default of
-   forever) not addressed; rerun gossip-swarm-forms to confirm no wedge.
+5. **HTTP slowloris — partial-header connections held indefinitely.**
+   `TimeoutLayer(60s)` is a Tower middleware that starts counting from
+   when hyper has assembled a COMPLETE request. A connection that sends
+   only `GET /api/topology HTTP/1.1\r\nHost: x\r\n` (no terminating
+   `\r\n\r\n`) never starts the timer. Confirmed by red team 2026-05-21
+   (A3): connection still `ESTABLISHED` after 75s. **Fix path**: swap
+   `axum::serve` for `hyper_util::server::conn::auto::Builder` with
+   `http1().header_read_timeout(Duration::from_secs(30))`. Not yet
+   landed; deferred to a separate refactor — affects every endpoint's
+   accept path and the change is non-trivial.
 6. ~~Timeline `node_name` for Jaeger-sourced events~~ — **FIXED**:
    handler now resolves `node_id` → `node_name` via `live_digests()` so
    peer.connected/disconnected events show full `broker-abc12345`
    instead of just `broker`. Both self_name and peer_name resolved.
+7. ~~Topology graph shows spurious cross-mesh edges~~ — **FIXED**
+   (2026-05-21): `run_gossip()` previously keyed `topic_membership()`
+   by the digest's primary `mesh_id` even for EXTRA-topic subscribers
+   (admin-ui's bridge subscription). Every node admin-ui received
+   landed under `topic_membership["admin-ui"]` → 64 spurious
+   non-bridge cross-mesh edges. Fix: added `topic_label: &'static str`
+   param to `run_gossip` distinct from `mesh_id`; primary task passes
+   `mesh_id`, extras pass `extra_mesh_static`.
+8. ~~admin-ui invisible in its own /api/topology~~ — **FIXED**
+   (2026-05-21): `run_gossip` now self-inserts the locally-built
+   digest into `live_digests()` + `topic_membership()` on every
+   broadcast tick. iroh-gossip does not echo broadcasts to the sender,
+   so without this every node was invisible in its own UI.
+9. ~~Panic hook installed but never fires~~ — **FIXED** (2026-05-21):
+   previous attempt installed the hook inside `#[tokio::main] async
+   fn main`, after the tokio runtime had already spawned iroh's QUIC
+   driver threads. Restructured: panic hook now installs in plain
+   `fn main()` BEFORE the tokio runtime is built, so every worker
+   (including iroh's) inherits it from thread-spawn time.
 
 ## Soak SLO (post-flake-acceptance)
 
