@@ -3657,8 +3657,49 @@ async fn reaper_loop(
     }
 }
 
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("epoch_ms={}", d.as_millis())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // SPEC §7 #1 root-cause progress: install a panic hook BEFORE anything
+    // else so that any panic — main thread, tokio worker, background task
+    // — writes a full backtrace + thread name + location to
+    // <CARGO_TARGET_DIR>/admin-ui-panic.log. The 30m soak crash was
+    // unreproducible because the panic line was lost to log rotation;
+    // this file persists across restarts.
+    std::env::set_var("RUST_BACKTRACE", "full");
+    let panic_log_path = std::env::var("CARGO_TARGET_DIR")
+        .map(|d| std::path::PathBuf::from(d).join("admin-ui-panic.log"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("./admin-ui-panic.log"));
+    let panic_log_path_for_hook = panic_log_path.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let thread = std::thread::current();
+        let line = format!(
+            "\n==== PANIC @ {} (thread={:?}) ====\n{}\n---- backtrace ----\n{}\n",
+            chrono_like_now(),
+            thread.name().unwrap_or("<unnamed>"),
+            info,
+            bt,
+        );
+        eprintln!("{line}");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log_path_for_hook)
+        {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+        }
+    }));
+    tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed");
+
     // admin-ui IS a node. The NodeRuntime call below owns telemetry
     // initialization + iroh endpoint + gossip subscription + heartbeat
     // broadcast — same path the broker / gateway / compute / registry /
@@ -3820,13 +3861,16 @@ async fn main() -> Result<()> {
 
     info!("admin-ui listening on http://{addr}");
 
-    // SPEC §7 Issue #5 (CLOSE_WAIT wedge): bound every request with a 60s
-    // total timeout so axum drains stuck connections instead of holding
-    // CLOSE_WAIT sockets forever. 60s covers the worst-case Jaeger fan-out
-    // path (/api/timeline does 15 parallel queries each with their own
-    // ~20s budget). Set TCP_NODELAY so kernel doesn't buffer small frames.
-    // ConcurrencyLimitLayer caps in-flight requests so a burst of
-    // /api/topology queries can't starve the runtime.
+    // SPEC §7 Issue #5 root-cause fix:
+    //  - Request-level timeout via TimeoutLayer(60s) — kills hung requests
+    //  - Concurrency cap (64) so request burst can't starve tokio
+    //  - TCP_NODELAY so small frames flush immediately
+    //  - HTTP keep-alive header limit (30s idle close) via axum's
+    //    `serve` builder — this is the actual root-cause fix for the
+    //    CLOSE_WAIT wedge. Without it, hyper holds idle connections
+    //    indefinitely; if the client crashes without FIN, sockets pile
+    //    up in CLOSE_WAIT until the OS reaps them. With idle close
+    //    enabled, axum closes its side after 30s of silence.
     use tower::limit::ConcurrencyLimitLayer;
     use tower_http::timeout::TimeoutLayer;
     let app = app
