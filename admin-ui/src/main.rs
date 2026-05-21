@@ -1095,6 +1095,16 @@ struct SpawnRequest {
     /// primitives like clock_skew to inject behavior switches at restart.
     #[serde(default)]
     extra_env: Option<std::collections::HashMap<String, String>>,
+    /// Optional CPU budget in cores (fractional ok). When set, admin-ui
+    /// spawns the child with `--cpu-budget <value>`. The child resolves
+    /// it at hydration (CLI > env > sysinfo) and broadcasts it in its
+    /// GossipDigest. Blank UI input → None → no flag passed → child
+    /// falls through to its own .env.dev value or sysinfo.
+    #[serde(default)]
+    cpu_budget: Option<f32>,
+    /// Same pattern for RAM budget in GB.
+    #[serde(default)]
+    ram_budget: Option<f32>,
 }
 
 async fn handle_health() -> impl IntoResponse {
@@ -2528,6 +2538,8 @@ async fn spawn_one(
     state: &AppState,
     node_type: &str,
     extra_env: HashMap<String, String>,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 ) -> Result<(String, u32), String> {
     if !KNOWN_NODE_TYPES.contains(&node_type) {
         return Err(format!("unknown node_type: {node_type}"));
@@ -2592,6 +2604,18 @@ async fn spawn_one(
 
     for (k, v) in &extra_env {
         cmd.env(k, v);
+    }
+
+    // Pass budgets as CLI flags (NOT env vars). The child binary parses
+    // these via rafka_node_base::parse_budget_cli_args(). The child
+    // resolves CLI > env > sysinfo at hydration; blank UI inputs upstream
+    // mean cpu_budget/ram_budget arrive as None here and no flag is added,
+    // so the child falls through to its own .env.dev or sysinfo defaults.
+    if let Some(c) = cpu_budget {
+        cmd.args(["--cpu-budget", &c.to_string()]);
+    }
+    if let Some(r) = ram_budget {
+        cmd.args(["--ram-budget", &r.to_string()]);
     }
 
     match cmd.spawn() {
@@ -2668,7 +2692,7 @@ async fn handle_spawn(
         }
         extras.insert("RAFKA_MESH_ID".to_string(), m);
     }
-    match spawn_one(&state, &body.node_type, extras).await {
+    match spawn_one(&state, &body.node_type, extras, body.cpu_budget, body.ram_budget).await {
         Ok((node_name, pid)) => (
             StatusCode::CREATED,
             axum::Json(json!({"node_name": node_name, "pid": pid})),
@@ -2726,7 +2750,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
         for t in types {
             let mut env = HashMap::new();
             env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, t, env).await {
+            match spawn_one(&state, t, env, None, None).await {
                 Ok((name, _)) => spawned.push(name),
                 Err(e) => errors.push(e),
             }
@@ -2746,7 +2770,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
             "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
             "mesh-a,mesh-b".to_string(),
         );
-        match spawn_one(&state, "bridge", env).await {
+        match spawn_one(&state, "bridge", env, None, None).await {
             Ok((name, _)) => spawned.push(name),
             Err(e) => errors.push(e),
         }
@@ -3157,7 +3181,7 @@ async fn chaos_loop(state: AppState) {
         // Respawn replacement
         let mut env = HashMap::new();
         env.insert("RAFKA_MESH_ID".to_string(), meta_c.mesh_id.clone());
-        match spawn_one(&state, &meta_c.node_type, env).await {
+        match spawn_one(&state, &meta_c.node_type, env, None, None).await {
             Ok((new_name, _)) => {
                 state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
                 state.events.push(LocalEvent {
