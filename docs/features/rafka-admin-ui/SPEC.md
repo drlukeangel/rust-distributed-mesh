@@ -224,6 +224,31 @@ mesh-grow-shrink
     registry), and bump windows to 8s settle + 25s post-kill + 18s
     age threshold (~3.5× heartbeat interval, tolerates one missed
     tick during tree repair). Verified `status=passed duration=33s`.
+12. ~~`gossip-mesh-to-mesh` test failure (no cross.peer_connected
+    spans on gateway)~~ — **FIXED** (2026-05-21): test was written
+    pre-bridge architecture and queried `service=gateway` for the
+    `rafka.mesh.cross.peer_connected` span. Post-bridge, mesh-a
+    nodes only talk to bridges and bridges only talk to mesh-b —
+    gateways never directly see cross-mesh peers, so the span
+    fires on `service=bridge` instead. Fix: query all five peer
+    services (bridge, gateway, broker, compute, registry) and
+    aggregate the counts. Verified `status=passed duration=17s`.
+13. ~~`mesh-five-types-present` test failure (missing types:
+    bridge)~~ — **FIXED** (2026-05-21): not a system bug but a
+    missing build artifact — `rafka-bridge.exe` had been deleted/
+    never rebuilt under `target/debug/`. Fix: rebuilt with
+    `cargo build -p rafka-bridge`. PLUS added preflight check
+    in admin-ui `async_main`: at startup it verifies every
+    `KNOWN_NODE_TYPES` binary exists under
+    `{cargo_target_dir}/debug/`. If any are missing, admin-ui
+    exits with `PREFLIGHT FAILURE: missing peer binaries:` listing
+    each path and the exact `cargo build` command to fix. This
+    catches the silent-bootstrap-failure mode (was: bootstrap
+    returned `errors: 2` and bridges never showed in topology).
+    Verified loud failure: removed bridge binary → admin-ui
+    exits at startup with `preflight failed: 1 peer binary/
+    binaries missing`. Verified pass: all 5 binaries present →
+    admin-ui responds 200 within 5s.
 
 ## Soak SLO (post-flake-acceptance)
 

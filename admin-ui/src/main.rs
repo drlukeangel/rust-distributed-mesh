@@ -3803,6 +3803,39 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     });
     tracing::info!(cargo_target_dir = %cargo_target_dir, "subprocess binary search root");
 
+    // Preflight: every KNOWN_NODE_TYPES binary must exist under
+    // {cargo_target_dir}/debug/, or spawn_one will silently return os
+    // error 2 from cmd.spawn() and bootstrap will report bogus errors.
+    // Two specific failure modes this catches:
+    //   - rafka-bridge was missing after `cargo build` ran without -p
+    //     rafka-bridge → bootstrap looked like "16 spawned, 2 errors"
+    //     and bridges never appeared in topology (caused
+    //     mesh-five-types-present + gossip-mesh-to-mesh to fail).
+    //   - CARGO_TARGET_DIR redirected to a stale build dir.
+    // Loud at startup beats silent at bootstrap.
+    {
+        let mut missing: Vec<String> = Vec::new();
+        for nt in KNOWN_NODE_TYPES {
+            let p = format!("{cargo_target_dir}/debug/rafka-{nt}.exe");
+            if !std::path::Path::new(&p).exists() {
+                missing.push(p);
+            }
+        }
+        if !missing.is_empty() {
+            eprintln!("[admin-ui] PREFLIGHT FAILURE: missing peer binaries:");
+            for p in &missing {
+                eprintln!("  - {p}");
+            }
+            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry -p rafka-bridge");
+            anyhow::bail!(
+                "preflight failed: {} peer binary/binaries missing under {}",
+                missing.len(),
+                cargo_target_dir
+            );
+        }
+        tracing::info!(types = ?KNOWN_NODE_TYPES, "preflight: all peer binaries present");
+    }
+
     let addr: SocketAddr = bind_addr.parse()?;
 
     // 4s per-request timeout: Jaeger queries that take longer than this are

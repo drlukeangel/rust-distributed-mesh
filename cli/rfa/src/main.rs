@@ -1063,26 +1063,35 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
             .ok();
     }
     tokio::time::sleep(std::time::Duration::from_secs(12)).await;
-    // cross.peer_connected fires when Hello frames carry mismatched mesh_ids
-    let body = fetch_json(
-        &client,
-        "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.cross.peer_connected&limit=10&lookback=2m",
-    )
-    .await;
-    let cross_count = body["data"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t["spans"].as_array())
-                .flat_map(|ss| ss.iter())
-                .filter(|sp| sp["operationName"] == "rafka.mesh.cross.peer_connected")
-                .count() as i64
-        })
-        .unwrap_or(0);
+    // cross.peer_connected fires when Hello frames carry mismatched mesh_ids.
+    // Post-bridge architecture (sprint after this test was written):
+    // mesh-a-{type} no longer connects directly to mesh-b-{type} — the bridge
+    // sits between them and is the only node receiving cross-mesh Hellos.
+    // So the span fires on service=bridge, not service=gateway. Query every
+    // peer service and aggregate; a hit on any service is proof the cross-
+    // mesh handshake is happening somewhere.
+    let mut cross_count: i64 = 0;
+    for svc in ["bridge", "gateway", "broker", "compute", "registry"] {
+        let url = format!(
+            "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.cross.peer_connected&limit=20&lookback=2m"
+        );
+        let body = fetch_json(&client, &url).await;
+        let n = body["data"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t["spans"].as_array())
+                    .flat_map(|ss| ss.iter())
+                    .filter(|sp| sp["operationName"] == "rafka.mesh.cross.peer_connected")
+                    .count() as i64
+            })
+            .unwrap_or(0);
+        cross_count += n;
+    }
     if cross_count >= 1 {
-        ("passed", format!("{cross_count} cross.peer_connected spans — mesh-A and mesh-B detected each other across the boundary"))
+        ("passed", format!("{cross_count} cross.peer_connected spans across all services — mesh-A and mesh-B see each other (via bridge)"))
     } else {
-        ("failed", "no cross.peer_connected spans — mesh-to-mesh isolation/discovery broken".into())
+        ("failed", "no cross.peer_connected spans on any service — mesh-to-mesh isolation/discovery broken".into())
     }
 }
 
