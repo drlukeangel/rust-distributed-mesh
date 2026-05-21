@@ -57,10 +57,10 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
   const meshes = Array.from(byMesh.keys()).sort();
 
   const nodes: Node[] = [];
-  const meshGap = 480; // px between mesh group centers
+  const meshGap = 560; // px between mesh group centers
   const meshTop = 60;
-  const meshWidth = 380;
-  const meshHeight = 380;
+  const meshWidth = 460;
+  const meshHeight = 460;
 
   // Group containers — react-flow renders these as parent nodes
   meshes.forEach((m, i) => {
@@ -103,14 +103,19 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
     const list = byMesh.get(m)!;
     const cx = meshWidth / 2;
     const cy = meshHeight / 2;
-    const r = Math.min(meshWidth, meshHeight) * 0.35;
+    const r = Math.min(meshWidth, meshHeight) * 0.32;
+    const NODE_W = 100;
+    const NODE_H = 86;
     list.forEach((n, idx) => {
       const ang = (2 * Math.PI * idx) / Math.max(1, list.length) - Math.PI / 2;
       nodes.push({
         id: n.id,
         parentNode: `group-${m}`,
         extent: "parent",
-        position: { x: cx + r * Math.cos(ang) - 35, y: cy + r * Math.sin(ang) - 35 },
+        position: {
+          x: cx + r * Math.cos(ang) - NODE_W / 2,
+          y: cy + r * Math.sin(ang) - NODE_H / 2,
+        },
         data: {
           label: (
             <div style={{ textAlign: "center", lineHeight: 1.15 }}>
@@ -153,9 +158,9 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
           background: `${TYPE_COLOR[n.type]}33`,
           border: `2px solid ${TYPE_COLOR[n.type]}`,
           color: "#fff",
-          width: 70,
-          height: 70,
-          borderRadius: "50%",
+          width: NODE_W,
+          height: NODE_H,
+          borderRadius: 8,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -167,16 +172,19 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
   // Bridge nodes — placed ABOVE the mesh groups, centered horizontally
   // across the row of meshes. Bridges visibly sit "on top of" everything
   // they bridge, not jammed in the gap between meshes.
+  const BRIDGE_W = 110;
+  const BRIDGE_H = 86;
   bridges.forEach((b, i) => {
     const centerOfAllMeshes =
       meshes.length > 0
         ? 80 + (meshes.length - 1) * meshGap * 0.5 + meshWidth / 2
         : 400;
     // spread multiple bridges horizontally around the center
-    const spread = 100;
-    const x = centerOfAllMeshes - 35 + (i - (bridges.length - 1) / 2) * spread;
+    const spread = 130;
+    const x =
+      centerOfAllMeshes - BRIDGE_W / 2 + (i - (bridges.length - 1) / 2) * spread;
     // y above the mesh group tops with some padding
-    const y = Math.max(20, meshTop - 110);
+    const y = Math.max(20, meshTop - 120);
 
     nodes.push({
       id: b.id,
@@ -196,6 +204,26 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
             <div style={{ fontSize: 9, color: "#e3b341", marginTop: 2 }}>
               bridge
             </div>
+            {(b.frames_sent_total ?? 0) > 0 && (
+              <div style={{ fontSize: 9, color: "#3fb950" }}>
+                TX:{b.frames_sent_total}
+              </div>
+            )}
+            {(b.frames_recv_total ?? 0) > 0 && (
+              <div style={{ fontSize: 9, color: "#58a6ff" }}>
+                RX:{b.frames_recv_total}
+              </div>
+            )}
+            {(b.cpu_budget ?? 0) > 0 && (
+              <div style={{ fontSize: 9, color: utilColor(b.cpu_used, b.cpu_budget) }}>
+                CPU:{(b.cpu_used ?? 0).toFixed(1)}/{(b.cpu_budget ?? 0).toFixed(1)}
+              </div>
+            )}
+            {(b.ram_budget ?? 0) > 0 && (
+              <div style={{ fontSize: 9, color: utilColor(b.ram_used, b.ram_budget) }}>
+                MEM:{(b.ram_used ?? 0).toFixed(2)}/{(b.ram_budget ?? 0).toFixed(2)}gb
+              </div>
+            )}
           </div>
         ),
       },
@@ -203,8 +231,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
         background: `${TYPE_COLOR.bridge}33`,
         border: `2px solid ${TYPE_COLOR.bridge}`,
         color: "#fff",
-        width: 80,
-        height: 80,
+        width: BRIDGE_W,
+        height: BRIDGE_H,
         borderRadius: 8,
         display: "flex",
         alignItems: "center",
