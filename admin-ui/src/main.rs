@@ -1076,10 +1076,6 @@ struct AppState {
     /// Red-team A#3: serialize /api/bootstrap calls so parallel requests
     /// queue instead of all passing the cap check before any spawn lands.
     bootstrap_mutex: Arc<tokio::sync::Mutex<()>>,
-    /// Per-node-type RAFKA_DEV_* overrides loaded from each crate's
-    /// `.env.dev` file at boot. Used by `spawn_one` to seed child env,
-    /// and exposed via `/api/dev-presets` for SpawnBar UI defaults.
-    pub dev_presets: std::sync::Arc<std::collections::HashMap<String, Vec<(String, String)>>>,
 }
 
 #[derive(Deserialize)]
@@ -1103,34 +1099,6 @@ struct SpawnRequest {
 
 async fn handle_health() -> impl IntoResponse {
     axum::Json(json!({"status": "ok"}))
-}
-
-/// GET /api/dev-presets — returns the cached per-node-type RAFKA_DEV_*
-/// overrides loaded at startup from each crate's `.env.dev`. The
-/// SpawnBar UI uses this to seed its cpu/ram inputs with the per-type
-/// default; the operator can override per-spawn.
-async fn handle_dev_presets(State(state): State<AppState>) -> impl IntoResponse {
-    let mut out: std::collections::HashMap<&str, serde_json::Value> =
-        std::collections::HashMap::new();
-    for (node_type, pairs) in state.dev_presets.iter() {
-        let mut obj = serde_json::Map::new();
-        for (k, v) in pairs {
-            // Surface ONLY the cpu_budget and ram_budget keys to the UI;
-            // everything else (cpu_used, ram_used) belongs in the broker
-            // operator's hand, not as a per-spawn default.
-            if k == "RAFKA_DEV_CPU_BUDGET" {
-                if let Ok(f) = v.parse::<f32>() {
-                    obj.insert("cpu_budget".into(), json!(f));
-                }
-            } else if k == "RAFKA_DEV_RAM_BUDGET" {
-                if let Ok(f) = v.parse::<f32>() {
-                    obj.insert("ram_budget".into(), json!(f));
-                }
-            }
-        }
-        out.insert(node_type.as_str(), serde_json::Value::Object(obj));
-    }
-    (StatusCode::OK, axum::Json(json!(out))).into_response()
 }
 
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
@@ -2523,13 +2491,6 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_BRIDGE_TARGET_MESHES",
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
-    // Dev simulation overrides for CPU/RAM telemetry. Gated server-side
-    // by RAFKA_DEPLOYMENT=prod (set by orchestrator) — even if these leak
-    // into a prod manifest, the node ignores them. Safe to allow-list.
-    "RAFKA_DEV_CPU_BUDGET",
-    "RAFKA_DEV_RAM_BUDGET",
-    "RAFKA_DEV_CPU_USED",
-    "RAFKA_DEV_RAM_USED",
 ];
 
 fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
@@ -2628,19 +2589,6 @@ async fn spawn_one(
         .env("RAFKA_DATA_DIR", &spawn_dir)
         .env("RAFKA_NODE_NAME", &node_name)
         .env("RUST_LOG", &rust_log);
-    // Every child spawned by admin-ui runs in dev mode. Production deploys
-    // never go through spawn_one. RAFKA_DEPLOYMENT=dev unlocks the
-    // RAFKA_DEV_* overrides that we'll layer in next.
-    cmd.env("RAFKA_DEPLOYMENT", "dev");
-
-    // Apply this node-type's per-crate .env.dev preset (loaded at admin-ui
-    // startup, cached on AppState). Goes BEFORE extra_env so the spawn
-    // request's extra_env (driven by SpawnBar UI inputs) can override it.
-    if let Some(preset) = state.dev_presets.get(node_type) {
-        for (k, v) in preset.iter() {
-            cmd.env(k, v);
-        }
-    }
 
     for (k, v) in &extra_env {
         cmd.env(k, v);
@@ -3850,54 +3798,6 @@ fn install_panic_hook() -> std::path::PathBuf {
     panic_log_path
 }
 
-/// Load per-crate `.env.dev` files at startup. Each file is parsed as
-/// dotenv key=value pairs. Missing or unreadable files are NOT an error
-/// — they just produce an empty preset for that node type. The function
-/// is silent on success and logs a single WARN span per file that
-/// existed but failed to parse.
-fn load_dev_presets() -> std::collections::HashMap<String, Vec<(String, String)>> {
-    let crates = [
-        ("broker", "broker/.env.dev"),
-        ("gateway", "gateway/.env.dev"),
-        ("compute", "compute/.env.dev"),
-        ("registry", "registry/.env.dev"),
-        ("bridge", "bridge/.env.dev"),
-    ];
-    // CARGO_MANIFEST_DIR points at admin-ui/; the .env.dev files live one
-    // dir up at each node-type crate's root.
-    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut out = std::collections::HashMap::new();
-    for (node_type, rel_path) in crates {
-        let full = workspace_root.join(rel_path);
-        let pairs: Vec<(String, String)> = match dotenvy::from_path_iter(&full) {
-            Ok(iter) => iter.filter_map(Result::ok).collect(),
-            Err(e) => {
-                tracing::info_span!(
-                    "rafka.ui.dev_presets.missing",
-                    node_type = node_type,
-                    path = %full.display(),
-                    error = %e,
-                    "otel.kind" = "internal",
-                )
-                .in_scope(|| {
-                    tracing::warn!(
-                        node_type,
-                        path = %full.display(),
-                        error = %e,
-                        "could not load .env.dev preset; node will spawn without it"
-                    )
-                });
-                Vec::new()
-            }
-        };
-        out.insert(node_type.to_string(), pairs);
-    }
-    out
-}
-
 fn main() -> Result<()> {
     // SPEC §7 #1 + red-team R5 root-cause fix: install panic hook BEFORE
     // any threads exist. Previous attempt installed the hook inside async
@@ -4040,7 +3940,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
-        dev_presets: std::sync::Arc::new(load_dev_presets()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -4111,7 +4010,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
-        .route("/api/dev-presets", get(handle_dev_presets))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
@@ -4213,17 +4111,3 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-mod dev_presets_tests {
-    use super::*;
-
-    #[test]
-    fn load_presets_emits_one_entry_per_known_type() {
-        // load_dev_presets() should always emit five keys, even when no
-        // .env.dev files are present (entries are empty in that case).
-        let presets = load_dev_presets();
-        for t in ["broker", "gateway", "compute", "registry", "bridge"] {
-            assert!(presets.contains_key(t), "missing preset for {}", t);
-        }
-    }
-}
