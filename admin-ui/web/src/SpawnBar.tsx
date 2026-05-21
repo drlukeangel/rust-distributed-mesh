@@ -8,6 +8,10 @@ export function SpawnBar() {
   const [chaosRunning, setChaosRunning] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
+  // Pure overrides. Blank = no extra_env entry → admin-ui spawn_one applies
+  // the per-crate .env.dev preset. Filled = override the preset for this spawn.
+  const [cpuOverride, setCpuOverride] = useState<string>("");
+  const [ramOverride, setRamOverride] = useState<string>("");
 
   useEffect(() => {
     api.chaosState()
@@ -32,8 +36,19 @@ export function SpawnBar() {
   const doSpawn = async (t: NodeType) => {
     setBusy(`spawn-${t}`);
     try {
-      const r = await api.spawn(t, mesh);
-      note(`spawned ${r.node_name} into ${mesh}`);
+      const extra_env: Record<string, string> = {};
+      if (cpuOverride.trim() !== "") {
+        extra_env.RAFKA_DEV_CPU_BUDGET = cpuOverride.trim();
+      }
+      if (ramOverride.trim() !== "") {
+        extra_env.RAFKA_DEV_RAM_BUDGET = ramOverride.trim();
+      }
+      const r = await api.spawn(t, mesh, extra_env);
+      const overridesNote =
+        cpuOverride || ramOverride
+          ? ` (overrides: cpu=${cpuOverride || "preset"} ram=${ramOverride || "preset"})`
+          : "";
+      note(`spawned ${r.node_name} into ${mesh}${overridesNote}`);
     } catch (e: any) {
       note(`spawn failed: ${e.message}`);
     } finally {
@@ -77,6 +92,35 @@ export function SpawnBar() {
         )}
         <option value="__new__">+ new mesh…</option>
       </select>
+
+      <label
+        className="muted"
+        title="override cpu budget for the NEXT spawn (cores, fractional ok). leave blank to use the per-crate .env.dev preset."
+      >
+        cpu:
+      </label>
+      <input
+        style={{ width: 50 }}
+        placeholder="preset"
+        value={cpuOverride}
+        onChange={(e) => setCpuOverride(e.target.value)}
+        inputMode="decimal"
+      />
+      <label
+        className="muted"
+        title="override ram budget for the NEXT spawn (GB, fractional ok). leave blank to use the per-crate .env.dev preset."
+      >
+        ram:
+      </label>
+      <input
+        style={{ width: 50 }}
+        placeholder="preset"
+        value={ramOverride}
+        onChange={(e) => setRamOverride(e.target.value)}
+        inputMode="decimal"
+      />
+      <span className="muted" style={{ fontSize: "0.75rem" }}>gb</span>
+
       {TYPES.map((t) => (
         <button
           key={t}
