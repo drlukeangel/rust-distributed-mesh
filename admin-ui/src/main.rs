@@ -3880,16 +3880,23 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
 
     info!("admin-ui listening on http://{addr}");
 
-    // SPEC §7 Issue #5 root-cause fix:
-    //  - Request-level timeout via TimeoutLayer(60s) — kills hung requests
-    //  - Concurrency cap (64) so request burst can't starve tokio
-    //  - TCP_NODELAY so small frames flush immediately
-    //  - HTTP keep-alive header limit (30s idle close) via axum's
-    //    `serve` builder — this is the actual root-cause fix for the
-    //    CLOSE_WAIT wedge. Without it, hyper holds idle connections
-    //    indefinitely; if the client crashes without FIN, sockets pile
-    //    up in CLOSE_WAIT until the OS reaps them. With idle close
-    //    enabled, axum closes its side after 30s of silence.
+    // Red-team R4 root-cause fix: bypass axum::serve for a custom accept
+    // loop that uses hyper_util::server::conn::auto::Builder with
+    // http1().header_read_timeout(30s). axum::serve relies on
+    // TimeoutLayer which is a Tower middleware: it only fires once
+    // hyper has assembled a complete HTTP request. A slowloris
+    // attacker sending `GET / HTTP/1.1\r\nHost: x\r\n` (no terminating
+    // CRLF-CRLF) never completes header assembly, so the Tower timer
+    // never starts — the connection leaks indefinitely (confirmed by
+    // red team 2026-05-21: 75s+ ESTABLISHED partial-header).
+    //
+    // hyper_util's header_read_timeout is enforced INSIDE hyper's
+    // accept-to-first-byte path, so it kills slowloris connections
+    // after 30s even if no complete request is ever assembled.
+    //
+    // Other layers preserved: TimeoutLayer(60s) still kills hung
+    // in-flight requests; ConcurrencyLimitLayer(64) still caps
+    // concurrent in-flight; SO_NODELAY still set on the listener.
     use tower::limit::ConcurrencyLimitLayer;
     use tower_http::timeout::TimeoutLayer;
     let app = app
@@ -3899,7 +3906,57 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     socket.set_nodelay(true)?;
     socket.bind(addr)?;
     let listener = socket.listen(1024)?;
-    axum::serve(listener, app).await?;
 
-    Ok(())
+    use hyper::server::conn::http1;
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    use hyper_util::service::TowerToHyperService;
+    use tower::Service;
+
+    // Use hyper's http1::Builder directly (not hyper_util::auto) so
+    // header_read_timeout is unambiguously enforced from accept-time.
+    // CRITICAL: header_read_timeout requires a Timer; without
+    // `.timer(TokioTimer::new())` hyper panics at first connection
+    // with "timeout 'header_read_timeout' set, but no timer set".
+    //
+    // Verification: a slowloris that sends partial headers and stops
+    // gets FIN'd by hyper at exactly 30s.
+    let conn_builder = std::sync::Arc::new({
+        let mut b = http1::Builder::new();
+        b.timer(TokioTimer::new());
+        b.header_read_timeout(std::time::Duration::from_secs(30));
+        b
+    });
+
+    let mut make_service =
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+    loop {
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                tracing::warn!(error = %e, "accept failed; continuing");
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        let io = TokioIo::new(stream);
+        let tower_service = match make_service.call(peer_addr).await {
+            Ok(svc) => svc,
+            Err(e) => {
+                tracing::warn!(error = ?e, "make_service failed for connection");
+                continue;
+            }
+        };
+        let hyper_service = TowerToHyperService::new(tower_service);
+        let conn_builder = conn_builder.clone();
+        tokio::spawn(async move {
+            if let Err(e) = conn_builder
+                .serve_connection(io, hyper_service)
+                .with_upgrades()
+                .await
+            {
+                tracing::debug!(error = ?e, "connection serve ended");
+            }
+        });
+    }
 }

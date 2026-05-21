@@ -3268,6 +3268,8 @@ dependencies = [
  "futures-lite",
  "hex",
  "http",
+ "hyper",
+ "hyper-util",
  "iroh",
  "iroh-gossip",
  "opentelemetry",

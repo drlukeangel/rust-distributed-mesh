@@ -162,16 +162,21 @@ mesh-grow-shrink
    lag). DETERMINISTIC under seed 42 — re-runs produce identical pass set.
 4. **Pool cap 50** — bootstrap returns 429 if would exceed; chaos respawn
    also respects this cap.
-5. **HTTP slowloris — partial-header connections held indefinitely.**
-   `TimeoutLayer(60s)` is a Tower middleware that starts counting from
-   when hyper has assembled a COMPLETE request. A connection that sends
-   only `GET /api/topology HTTP/1.1\r\nHost: x\r\n` (no terminating
-   `\r\n\r\n`) never starts the timer. Confirmed by red team 2026-05-21
-   (A3): connection still `ESTABLISHED` after 75s. **Fix path**: swap
-   `axum::serve` for `hyper_util::server::conn::auto::Builder` with
-   `http1().header_read_timeout(Duration::from_secs(30))`. Not yet
-   landed; deferred to a separate refactor — affects every endpoint's
-   accept path and the change is non-trivial.
+5. ~~HTTP slowloris — partial-header connections held indefinitely~~ —
+   **FIXED** (2026-05-21): replaced `axum::serve(listener, app)` with
+   a custom accept loop using `hyper::server::conn::http1::Builder`
+   directly, configured with `.timer(TokioTimer::new())` +
+   `.header_read_timeout(Duration::from_secs(30))`. axum Router is
+   wrapped via `into_make_service_with_connect_info` →
+   `TowerToHyperService` per connection. Verified end-to-end: a
+   partial-header connection (`GET / HTTP/1.1\r\nHost: x\r\n`) gets
+   FIN'd by the server at exactly t=30s (poll_read=True, avail=0).
+   First implementation attempt used `hyper_util::auto::Builder` —
+   its protocol-detection phase did not honor http1 timeouts. Second
+   attempt missed the Timer registration and panicked at first
+   connection with "timeout 'header_read_timeout' set, but no timer
+   set" — the panic hook captured the full backtrace (proving R5
+   also works). Final form: explicit http1::Builder + TokioTimer.
 6. ~~Timeline `node_name` for Jaeger-sourced events~~ — **FIXED**:
    handler now resolves `node_id` → `node_name` via `live_digests()` so
    peer.connected/disconnected events show full `broker-abc12345`
