@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dashmap::DashMap;
-use iroh::{endpoint::Connection, NodeAddr, PublicKey, SecretKey};
+use iroh::{EndpointAddr, endpoint::Connection, PublicKey, SecretKey};
 use rafka_mesh_ops::{framer, InternalMeshFrame};
 use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 
@@ -550,7 +550,7 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
 /// plane works without needing live broker / compute / message types yet.
 pub async fn bi_echo_roundtrip(
     endpoint: &iroh::Endpoint,
-    peer: iroh::NodeId,
+    peer: impl Into<iroh::EndpointAddr>,
     payload: Vec<u8>,
 ) -> anyhow::Result<Vec<u8>> {
     let conn = endpoint.connect(peer, ALPN).await?;
@@ -738,9 +738,9 @@ async fn run_gossip(
                 // with empty bootstrap only finds peers if they're explicitly added.
                 // join_peers is idempotent — calling every tick with the current
                 // peer registry is cheap.
-                let peer_node_ids: Vec<iroh::NodeId> = registry
+                let peer_node_ids: Vec<iroh::EndpointId> = registry
                     .iter()
-                    .filter_map(|e| iroh::NodeId::from_str(e.key()).ok())
+                    .filter_map(|e| iroh::EndpointId::from_str(e.key()).ok())
                     .collect();
                 if !peer_node_ids.is_empty() {
                     let _ = sender.join_peers(peer_node_ids).await;
@@ -874,7 +874,7 @@ async fn dial_seeds(
             info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
         });
 
-        let endpoint_addr = NodeAddr::new(seed.id).with_direct_addresses([seed.addr]);
+        let endpoint_addr = EndpointAddr::new(seed.id).with_ip_addr(seed.addr);
         match endpoint.connect(endpoint_addr, ALPN).await {
             Ok(conn) => {
                 tracing::info_span!(
@@ -1004,14 +1004,11 @@ async fn start_accept_loop(
                                 return;
                             }
                         };
-                        let alpn = conn.alpn().unwrap_or_default();
+                        let alpn = conn.alpn();
                         if alpn == iroh_gossip::ALPN {
                             // Route to gossip — its handle_connection drives the
                             // HyParView state machine on this connection.
-                            let peer_id = conn
-                                .remote_node_id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|_| "unknown".into());
+                            let peer_id = conn.remote_id().to_string();
                             tracing::info_span!(
                                 "rafka.mesh.gossip.accept",
                                 node_id = %own_id,
@@ -1025,10 +1022,7 @@ async fn start_accept_loop(
                         }
                         // Default: our rafka-mesh-v1 ALPN
                         {
-                            let peer_id = conn
-                                .remote_node_id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|_| "unknown".into());
+                            let peer_id = conn.remote_id().to_string();
                             tracing::info_span!(
                                 "rafka.mesh.peer.connected",
                                 node_id = %own_id,
@@ -1459,7 +1453,7 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
         info!(path = ?identity_path, node_id = %secret_key.public(), "loaded existing identity");
         Ok(secret_key)
     } else {
-        let secret_key = SecretKey::generate(rand::rngs::OsRng);
+        let secret_key = SecretKey::generate();
         let identity = NodeIdentity {
             secret_key_hex: hex::encode(secret_key.to_bytes()),
         };
@@ -1476,7 +1470,7 @@ async fn create_endpoint(
     bind_addr: SocketAddrV4,
 ) -> Result<IrohMeshTransport> {
     let transport = IrohMeshTransport::new(secret_key, bind_addr).await?;
-    info!(node_id = %transport.endpoint.node_id(), "iroh endpoint bound");
+    info!(node_id = %transport.endpoint.id(), "iroh endpoint bound");
     Ok(transport)
 }
 
@@ -1553,7 +1547,7 @@ async fn run_heartbeat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::{Endpoint, Watcher};
+    use iroh::{Endpoint, endpoint::presets};
     use rafka_mesh_transport::ALPN;
 
     /// End-to-end bi-stream echo: two in-process iroh endpoints, A accepts +
@@ -1563,17 +1557,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn bi_stream_echo_e2e() {
         // Endpoint A (server)
-        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_a = Endpoint::builder()
+        let secret_a = iroh::SecretKey::generate();
+        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint A");
-        let addr_a = endpoint_a.node_addr().initialized().await;
-        let node_id_a = endpoint_a.node_id();
+        let addr_a = endpoint_a.addr();
+        let node_id_a = endpoint_a.id();
 
         // Accept loop on A: any incoming connection gets bi_echo_reader.
         let _accept_handle = {
@@ -1582,28 +1576,28 @@ mod tests {
             tokio::spawn(async move {
                 if let Some(incoming) = endpoint.accept().await {
                     let conn = incoming.await.expect("A accept");
-                    let peer = conn.remote_node_id().map(|i| i.to_string()).unwrap_or_default();
+                    let peer = conn.remote_id().to_string();
                     run_bi_echo_reader(conn, own, peer).await;
                 }
             })
         };
 
         // Endpoint B (client)
-        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_b = Endpoint::builder()
+        let secret_b = iroh::SecretKey::generate();
+        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint B");
-        // Add A as known peer so the dial resolves without DHT/mdns.
-        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+        // In iroh 0.98 there is no add_node_addr; pass the full EndpointAddr
+        // directly to bi_echo_roundtrip (it accepts impl Into<EndpointAddr>).
 
         // Round-trip via the public helper
         let payload = b"bi-stream-echo-test-payload".to_vec();
-        let echoed = bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone())
+        let echoed = bi_echo_roundtrip(&endpoint_b, addr_a, payload.clone())
             .await
             .expect("bi_echo_roundtrip");
 
@@ -1627,32 +1621,28 @@ mod tests {
     /// beyond what a single broker handshake demands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn backpressure_bi_stream_flood() {
-        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_a = Endpoint::builder()
+        let secret_a = iroh::SecretKey::generate();
+        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint A");
-        let addr_a = endpoint_a.node_addr().initialized().await;
-        let node_id_a = endpoint_a.node_id();
+        let addr_a = endpoint_a.addr();
 
         // Accept loop on A: keep accepting incoming connections; each gets a
         // run_bi_echo_reader spawned. Runs until the test drops the handle.
         let _accept_handle = {
             let endpoint = endpoint_a.clone();
-            let own = node_id_a.to_string();
+            let own = endpoint_a.id().to_string();
             tokio::spawn(async move {
                 while let Some(incoming) = endpoint.accept().await {
                     let own = own.clone();
                     tokio::spawn(async move {
                         if let Ok(conn) = incoming.await {
-                            let peer = conn
-                                .remote_node_id()
-                                .map(|i| i.to_string())
-                                .unwrap_or_default();
+                            let peer = conn.remote_id().to_string();
                             run_bi_echo_reader(conn, own, peer).await;
                         }
                     });
@@ -1660,16 +1650,18 @@ mod tests {
             })
         };
 
-        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_b = Endpoint::builder()
+        let secret_b = iroh::SecretKey::generate();
+        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint B");
-        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+        // In iroh 0.98, addr_a (EndpointAddr) is passed directly to connect()
+        // instead of using the removed add_node_addr API.
+        let addr_a_clone = addr_a.clone();
 
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1680,10 +1672,11 @@ mod tests {
             let endpoint_b = endpoint_b.clone();
             let total = total.clone();
             let errors = errors.clone();
+            let addr = addr_a_clone.clone();
             workers.push(tokio::spawn(async move {
                 let payload = vec![0xAB_u8; 1024]; // 1 KiB per round-trip
                 while tokio::time::Instant::now() < deadline {
-                    match bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone()).await {
+                    match bi_echo_roundtrip(&endpoint_b, addr.clone(), payload.clone()).await {
                         Ok(_) => {
                             total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }

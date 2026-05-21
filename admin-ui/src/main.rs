@@ -3588,7 +3588,7 @@ async fn observer_task(state: AppState) {
     use std::str::FromStr;
 
     tracing::info!("observer: bringing up iroh endpoint via IrohMeshTransport (same path nodes use)");
-    let secret = iroh::SecretKey::generate(rand::rngs::OsRng);
+    let secret = iroh::SecretKey::generate();
     let bind_addr: std::net::SocketAddrV4 = "127.0.0.1:0".parse().unwrap();
     let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr).await {
         Ok(t) => t,
@@ -3598,7 +3598,7 @@ async fn observer_task(state: AppState) {
         }
     };
     let endpoint = transport.endpoint.clone();
-    let observer_node_id = endpoint.node_id().to_string();
+    let observer_node_id = endpoint.id().to_string();
     tracing::info!(
         observer_node_id = %observer_node_id,
         "observer: iroh endpoint bound; subscribing to mesh topics as they appear"
@@ -3715,7 +3715,7 @@ async fn observer_task(state: AppState) {
             let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
             // Best effort — collect peers from spawned_meta if their node_id is known.
             // For now leave empty; iroh mdns will surface them.
-            let _ = (topic_id, iroh::NodeId::from_str("0").is_ok()); // no-op to satisfy borrow
+            let _ = (topic_id, iroh::EndpointId::from_str("0").is_ok()); // no-op to satisfy borrow
         }
 
         tokio::time::sleep(Duration::from_secs(3)).await;

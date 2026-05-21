@@ -30,9 +30,11 @@ opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.27"
 
-# iroh — latest stable non-RC at sprint-02 open (0.35 was used in sprint-01;
-# 1.0.0-rc.0 exists but is a release candidate; 0.95.1 is latest stable)
-iroh = { version = "0.91", features = ["discovery-local-network"] }
+# iroh 0.98 — iroh team confirmed 0.91 / iroh-quinn-proto 0.13.0 has a real
+# perf bug at scale (18 nodes pegged an 80-logical-core box at ~92%). 0.98
+# fixes both the perf and the GSO/TLP debug-assertion panic. Feature
+# `discovery-local-network` was renamed to `address-lookup-mdns` in 0.98.
+iroh = { version = "0.98", features = ["address-lookup-mdns"] }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }
@@ -47,19 +49,6 @@ rand = "0.8"
 bincode = { version = "2", features = ["serde"] }
 dashmap = "6"
 
-# TEMPORARY: patch iroh-quinn-proto 0.13.0 to a locally-forked branch that
-# backports the GSO/tail-loss-probe segment-size assertion fix. The upstream
-# panic `assertion failed: untracked_bytes <= segment_size as u64` at
-# iroh-quinn-proto-0.13.0/src/connection/mod.rs:654 fires under heavy
-# concurrent stream load (Plumtree dissemination at ~18 nodes). Local fix
-# branch lives at E:/dev/iroh-quinn-proto_fix/iroh-quinn (branch
-# fix/backport-gso-tlp-panic).
-#
-# REMOVE THIS BLOCK AS PART OF THE PLANNED iroh 1.0 BUMP: the iroh team
-# released 1.0.0-rc.1 on 2026-05-25 (rc.0 on 2026-05-21) and renamed
-# iroh-quinn-proto to `noq-proto`. Once we bump iroh + iroh-gossip to
-# 1.0.0, both the panic AND the crate-name rename are addressed upstream
-# and this patch becomes redundant. Track in a follow-on branch
-# `chore/bump-iroh-1.0`.
-[patch.crates-io]
-iroh-quinn-proto = { path = "E:/dev/iroh-quinn-proto_fix/iroh-quinn/quinn-proto" }
+# iroh-quinn-proto patch block removed on the iroh 0.98 bump: the
+# GSO/TLP segment-size assertion is fixed upstream as of 0.98's bundled
+# iroh-quinn-proto, so the local fork override is no longer needed.
