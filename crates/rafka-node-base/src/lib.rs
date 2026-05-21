@@ -148,7 +148,7 @@ async fn run_node(
     let gossip_interval_ms: u64 = std::env::var("RAFKA_GOSSIP_INTERVAL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(500);
+        .unwrap_or(2000);
 
     let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
         .unwrap_or_default()
