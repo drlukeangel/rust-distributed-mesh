@@ -1088,6 +1088,16 @@ struct AppState {
     /// Used to form deterministic `<id>@127.0.0.1:<port>` seed entries
     /// before children even start.
     next_bind_port: Arc<std::sync::atomic::AtomicU16>,
+    /// Admin-ui's own iroh node_id (hex / PublicKey::to_string format),
+    /// pre-minted before NodeRuntime starts so spawn_one can include
+    /// admin-ui in every child's RAFKA_SEED_NODES. Children dial admin-ui
+    /// at boot; admin-ui's NodeRuntime accept loop receives them and
+    /// iroh-gossip HyParView propagates digests on every observed topic.
+    admin_node_id_hex: String,
+    /// Port admin-ui's iroh endpoint is pinned to (default 14819, one
+    /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
+    /// before NodeRuntime starts.
+    admin_bind_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -2625,14 +2635,19 @@ async fn spawn_one(
     let bind_addr_str = format!("127.0.0.1:{}", bind_port);
 
     // ---- build seed list from already-spawned same-mesh nodes ----
-    // For non-bridge children: seed from up to 2 already-spawned nodes that
-    // share the same mesh_id. The first child in a mesh has no seed (it IS
-    // the anchor) — that's fine.
-    // For bridge children: seed from up to 1 node in mesh-a AND 1 in mesh-b
-    // so the bridge can connect to both target meshes at startup.
+    // Admin-ui is ALWAYS prepended as the first seed so every child can
+    // dial back to admin-ui at boot. Admin-ui's NodeRuntime accept loop
+    // receives the connection; iroh-gossip HyParView then propagates peer
+    // info on every topic admin-ui is subscribed to (mesh-a, mesh-b, bridge),
+    // giving admin-ui visibility into every child's gossip digests.
+    // Additional same-mesh seeds follow so peers can also reach each other.
+    let admin_seed = format!(
+        "{}@127.0.0.1:{}",
+        state.admin_node_id_hex, state.admin_bind_port
+    );
     let seeds_csv = {
+        let mut all_seeds = vec![admin_seed];
         if node_type == "bridge" {
-            let mut seeds = Vec::new();
             for target_mesh in ["mesh-a", "mesh-b"] {
                 if let Some(seed) = state
                     .spawned_meta
@@ -2646,10 +2661,9 @@ async fn spawn_one(
                         )
                     })
                 {
-                    seeds.push(seed);
+                    all_seeds.push(seed);
                 }
             }
-            seeds.join(",")
         } else {
             let same_mesh: Vec<String> = state
                 .spawned_meta
@@ -2658,8 +2672,9 @@ async fn spawn_one(
                 .take(2)
                 .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
                 .collect();
-            same_mesh.join(",")
+            all_seeds.extend(same_mesh);
         }
+        all_seeds.join(",")
     };
 
     let mut cmd = tokio::process::Command::new(&binary);
@@ -3969,6 +3984,59 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         // that distinguishes it from the placeholder "default".
         std::env::set_var("RAFKA_MESH_ID", "admin");
     }
+    // Pin admin-ui to a deterministic bind port so spawned children can
+    // include it in their RAFKA_SEED_NODES and dial back to it. Default 14819
+    // (one below the spawn-pool base 14820). Operator can override via the
+    // env var before launching admin-ui — we only set it when unset.
+    let admin_bind_port: u16 = if std::env::var("RAFKA_NODE_BIND_ADDR").is_err() {
+        std::env::set_var("RAFKA_NODE_BIND_ADDR", "127.0.0.1:14819");
+        14819
+    } else {
+        // Parse whatever the operator set so we can construct seed entries.
+        std::env::var("RAFKA_NODE_BIND_ADDR")
+            .unwrap()
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.port())
+            .unwrap_or(14819)
+    };
+    // Pre-mint admin-ui's iroh identity so we know its node_id before
+    // NodeRuntime starts. This mirrors the pattern spawn_one uses for children.
+    // NodeRuntime will load the same file (via RAFKA_DATA_DIR + node-identity.json)
+    // and boot with the same key → same node_id guaranteed.
+    let admin_data_dir = std::env::var("RAFKA_DATA_DIR")
+        .unwrap_or_else(|_| "./data/admin-ui".to_string());
+    let admin_data_path = std::path::PathBuf::from(&admin_data_dir);
+    let _ = std::fs::create_dir_all(&admin_data_path);
+    // Ensure NodeRuntime picks up this data dir.
+    std::env::set_var("RAFKA_DATA_DIR", &admin_data_dir);
+    let admin_identity_path = admin_data_path.join("node-identity.json");
+    let admin_node_id_hex: String = if admin_identity_path.exists() {
+        let raw = std::fs::read_to_string(&admin_identity_path)
+            .expect("read existing admin-ui identity");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse admin-ui identity JSON");
+        let hex_str = parsed["secret_key_hex"]
+            .as_str()
+            .expect("secret_key_hex field missing");
+        let bytes = hex::decode(hex_str).expect("hex decode of secret_key_hex");
+        let key_arr: [u8; 32] = bytes
+            .try_into()
+            .expect("secret_key_hex must be 32 bytes");
+        let sk = iroh::SecretKey::from_bytes(&key_arr);
+        sk.public().to_string()
+    } else {
+        let sk = iroh::SecretKey::generate();
+        let pubkey = sk.public().to_string();
+        let json = serde_json::json!({ "secret_key_hex": hex::encode(sk.to_bytes()) });
+        std::fs::write(&admin_identity_path, json.to_string())
+            .expect("write admin-ui identity");
+        pubkey
+    };
+    tracing::info!(
+        admin_node_id = %admin_node_id_hex,
+        admin_bind_port,
+        "admin-ui identity pre-minted; children will seed via this node"
+    );
     // Load admin-ui's own .env.dev (dev preset for the observer process).
     rafka_node_base::load_env_dev_from(env!("CARGO_MANIFEST_DIR"));
 
@@ -4080,6 +4148,8 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
         next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(14820)),
+        admin_node_id_hex: admin_node_id_hex.clone(),
+        admin_bind_port,
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
