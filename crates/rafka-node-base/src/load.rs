@@ -150,6 +150,49 @@ pub fn announce_dev_state(
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLI budget-flag parser (used by each binary's main())
+// ---------------------------------------------------------------------------
+
+/// Parsed values for the two budget CLI flags each node binary accepts.
+/// Used by each binary's main() to opt into CLI overrides.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BudgetCliArgs {
+    pub cpu_budget: Option<f32>,
+    pub ram_budget: Option<f32>,
+}
+
+/// Hand-rolled parser for `--cpu-budget <f32>` and `--ram-budget <f32>`
+/// flags out of `std::env::args()`. Other args are ignored (this is not
+/// a full CLI; nodes have no other flags today). Unparseable values are
+/// silently treated as absent — the binary's main() decides what to do
+/// next (typically fall through to env).
+pub fn parse_budget_cli_args() -> BudgetCliArgs {
+    let mut out = BudgetCliArgs::default();
+    let mut args = std::env::args().peekable();
+    // Skip argv[0] (the binary name)
+    let _ = args.next();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--cpu-budget" => {
+                out.cpu_budget = args.next().and_then(|s| s.parse::<f32>().ok());
+            }
+            "--ram-budget" => {
+                out.ram_budget = args.next().and_then(|s| s.parse::<f32>().ok());
+            }
+            // Allow `--cpu-budget=4.0` long form too.
+            s if s.starts_with("--cpu-budget=") => {
+                out.cpu_budget = s["--cpu-budget=".len()..].parse::<f32>().ok();
+            }
+            s if s.starts_with("--ram-budget=") => {
+                out.ram_budget = s["--ram-budget=".len()..].parse::<f32>().ok();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Resolved load values to ship inside `GossipDigest`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct NodeLoad {
@@ -442,5 +485,11 @@ mod tests {
         assert_eq!(l.ram_budget, 2.0);
         assert_eq!(l.cpu_used, 3.0);
         assert_eq!(l.ram_used, 1.5);
+    }
+
+    #[test]
+    fn parse_budget_cli_no_args() {
+        let parsed = BudgetCliArgs::default();
+        assert!(parsed.cpu_budget.is_none() && parsed.ram_budget.is_none());
     }
 }

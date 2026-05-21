@@ -28,8 +28,10 @@ mod load;
 pub use load::{
     announce_dev_state,
     load_env_dev_from,
+    parse_budget_cli_args,
     read_dev_cpu_budget,
     read_dev_ram_budget,
+    BudgetCliArgs,
     LoadSampler,
     NodeLoad,
 };
