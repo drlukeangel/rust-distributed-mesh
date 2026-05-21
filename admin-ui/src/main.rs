@@ -3852,14 +3852,36 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         // that distinguishes it from the placeholder "default".
         std::env::set_var("RAFKA_MESH_ID", "admin");
     }
+    // Load admin-ui's own .env.dev (dev preset for the observer process).
+    rafka_node_base::load_env_dev_from(env!("CARGO_MANIFEST_DIR"));
+
+    // Parse CLI budget flags (admin-ui itself accepts them when launched
+    // directly with --cpu-budget / --ram-budget, same as any other node).
+    let cli_budgets = rafka_node_base::parse_budget_cli_args();
+    let cpu_budget: Option<f32> = if cli_budgets.cpu_budget.is_some() {
+        cli_budgets.cpu_budget
+    } else {
+        rafka_node_base::read_dev_cpu_budget()
+    };
+    let ram_budget: Option<f32> = if cli_budgets.ram_budget.is_some() {
+        cli_budgets.ram_budget
+    } else {
+        rafka_node_base::read_dev_ram_budget()
+    };
+    rafka_node_base::announce_dev_state(cpu_budget, ram_budget);
+
     // Spawned as a tokio task so axum can run in parallel in this same
     // process. Same tokio runtime, same lifecycle.
-    let node_handle = tokio::spawn(async {
-        if let Err(e) = rafka_node_base::NodeRuntime::new("admin-ui")
-            .with_role(rafka_node_base::Role::Observer)
-            .run()
-            .await
-        {
+    let node_handle = tokio::spawn(async move {
+        let mut rt = rafka_node_base::NodeRuntime::new("admin-ui")
+            .with_role(rafka_node_base::Role::Observer);
+        if let Some(c) = cpu_budget {
+            rt = rt.with_cpu_budget(c);
+        }
+        if let Some(r) = ram_budget {
+            rt = rt.with_ram_budget(r);
+        }
+        if let Err(e) = rt.run().await {
             eprintln!("[admin-ui node] runtime exited: {e}");
         }
     });
