@@ -3732,11 +3732,41 @@ async fn main() -> Result<()> {
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
     };
 
+    // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
+    // running task panics (rare but observed during 30m soaks), this
+    // wrapper logs the panic and restarts the task after 2s — admin-ui
+    // stays alive instead of wedging the HTTP layer. JoinHandle::is_err()
+    // catches both panics AND graceful-Err returns.
+    fn supervise<F, Fut>(name: &'static str, f: F)
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        tokio::spawn(async move {
+            loop {
+                let h = tokio::spawn(f());
+                match h.await {
+                    Ok(()) => {
+                        tracing::warn!(task = name, "background task exited cleanly; respawning");
+                    }
+                    Err(je) => {
+                        tracing::error!(task = name, error = %je, "background task panicked; respawning in 2s");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
     // Phase A: background snapshot refresher. Every 3 s, recomputes
     // /api/topology + /api/heartbeats data via parallel Jaeger fan-out and
     // stores the result in state.topology_cache. Request handlers read the
     // cache instantly — Jaeger latency moves off the hot path.
-    tokio::spawn(topology_refresher(state.clone()));
+    let state_for_refresher = state.clone();
+    supervise("topology_refresher", move || {
+        let s = state_for_refresher.clone();
+        async move { topology_refresher(s).await }
+    });
 
     // observer_task removed — the NodeRuntime task spawned above IS the
     // observer; admin-ui's own iroh endpoint sees every other node's
@@ -3745,10 +3775,13 @@ async fn main() -> Result<()> {
     // (TODO next: expose those for HTTP read).
     let _live_observer_via_noderuntime = &node_handle;
 
-    tokio::spawn(reaper_loop(
-        Arc::clone(&state.processes),
-        Arc::clone(&state.spawned_meta),
-    ));
+    let procs_for_reaper = Arc::clone(&state.processes);
+    let meta_for_reaper = Arc::clone(&state.spawned_meta);
+    supervise("reaper_loop", move || {
+        let p = Arc::clone(&procs_for_reaper);
+        let m = Arc::clone(&meta_for_reaper);
+        async move { reaper_loop(p, m).await }
+    });
 
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
     // crate dir at compile time; at runtime we prefer an env override so the

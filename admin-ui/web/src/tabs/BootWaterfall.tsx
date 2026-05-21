@@ -25,12 +25,13 @@ export function BootWaterfall() {
     return () => clearInterval(id);
   }, [pick]);
 
+  const [noTrace, setNoTrace] = useState(false);
   useEffect(() => {
     if (!pick) return;
+    setNoTrace(false);
     api
       .bootWaterfall(pick)
       .then((r) => {
-        // Jaeger raw format → sorted BootSpan rows
         const raw = r.data?.[0]?.spans ?? [];
         const parsed: BootSpan[] = raw
           .map((s) => ({
@@ -40,8 +41,18 @@ export function BootWaterfall() {
           }))
           .sort((a, b) => a.start_us - b.start_us);
         setSpans(parsed);
+        setNoTrace(parsed.length === 0);
       })
-      .catch(() => setSpans([]));
+      .catch((e) => {
+        // 502 from server = Jaeger has no trace for this service yet.
+        // Render a friendly empty state instead of an error.
+        if (String(e).includes("502")) {
+          setNoTrace(true);
+          setSpans([]);
+        } else {
+          setSpans([]);
+        }
+      });
   }, [pick]);
 
   if (nodes.length === 0) {
@@ -71,7 +82,11 @@ export function BootWaterfall() {
         )}
       </div>
       {spans.length === 0 ? (
-        <div className="card muted">no boot spans for {pick}</div>
+        <div className="card muted">
+          {noTrace
+            ? `no boot trace recorded for ${pick} yet — Jaeger ingests ~5-30s after node spawn; refresh or pick another node`
+            : `loading boot spans for ${pick}…`}
+        </div>
       ) : (
         <div className="card">
           {spans.map((s) => {
