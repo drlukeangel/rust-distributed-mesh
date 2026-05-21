@@ -10,7 +10,7 @@ members = [
     "compute",
     "registry",
     "bridge",
-    "topology-ui",
+    "admin-ui",
     "cli/rfa",
 ]
 resolver = "2"

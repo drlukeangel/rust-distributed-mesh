@@ -5,9 +5,9 @@ use std::time::Duration;
 use tracing::{info_span, Instrument};
 
 #[derive(Parser)]
-#[command(name = "rfa", about = "rafka CLI — talks to topology-ui REST API")]
+#[command(name = "rfa", about = "rafka CLI — talks to admin-ui REST API")]
 struct Cli {
-    /// topology-ui base URL
+    /// admin-ui base URL
     #[arg(long, default_value = "http://localhost:19090", global = true)]
     api_url: String,
 
@@ -308,7 +308,7 @@ async fn main() -> Result<()> {
 }
 
 /// Inject the current OTel span context as W3C traceparent headers so the
-/// receiving server (topology-ui) can chain its spans under our trace_id.
+/// receiving server (admin-ui) can chain its spans under our trace_id.
 fn current_traceparent_headers() -> reqwest::header::HeaderMap {
     use opentelemetry::global;
     use opentelemetry_http::HeaderInjector;
@@ -497,13 +497,14 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
 
 /// Test registry — single source of truth. Each entry: (name, kind, description, runner).
 /// `kind` distinguishes pure-Rust unit tests (cargo test) from live-mesh chaos tests
-/// (need topology-ui running). Reports written to E:/tmp/rafka-tests/<name>-<seed>.json.
+/// (need admin-ui running). Reports written to E:/tmp/rafka-tests/<name>-<seed>.json.
 const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("framer-roundtrip",        "functional", "proptest: every (tag, frame) round-trips byte-for-byte through tag+varint+postcard framer"),
     ("framer-truncation",       "functional", "proptest: dropping last byte of any frame surfaces FramerError::Truncated"),
     ("traced-frame-roundtrip",  "functional", "tag=0x10 wrapped TracedFrame preserves trace_id + span_id across encode→decode"),
     ("unknown-tag-rejected",    "functional", "frames with tag != 0x10 must NOT deserialize as TracedFrame"),
     ("bi-stream-echo",          "functional", "two in-process iroh endpoints exchange a tag=0x11 framed payload over a bidirectional QUIC stream; payload survives byte-for-byte"),
+    ("backpressure-stream-flood", "chaos",    "32 concurrent bi-streams flood 1 KiB payloads for 10s; passes if 0 errors AND >= 200 round-trips (proves bi-stream plane back-pressures smoothly without OOM or stall)"),
     ("chaos-soak-9prim-1min",   "chaos",      "1-minute soak with 9-primitive pool; expects 100% pass; gates the substrate"),
     ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
     ("mesh-five-types-present", "chaos",      "spawn 5 nodes (gateway+broker+compute+registry+bridge), verify all 5 visible in topology + heartbeats fresh"),
@@ -554,6 +555,7 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
         "framer-roundtrip" | "framer-truncation" | "traced-frame-roundtrip"
         | "unknown-tag-rejected" => run_cargo_test_for("rafka-mesh-ops", name).await,
         "bi-stream-echo" => run_cargo_test_for("rafka-node-base", "bi_stream_echo_e2e").await,
+        "backpressure-stream-flood" => run_cargo_test_for("rafka-node-base", "backpressure_bi_stream_flood").await,
         "chaos-soak-9prim-1min" => run_chaos_soak(api_url, "1m", "8s", seed).await,
         "chaos-soak-9prim-5min" => run_chaos_soak(api_url, "5m", "10s", seed).await,
         "mesh-five-types-present" => run_mesh_five_types_present(api_url).await,
@@ -611,6 +613,7 @@ async fn run_cargo_test_for(crate_name: &str, test_filter: &str) -> (&'static st
         "traced-frame-roundtrip" => "tests::traced_frame_round_trip",
         "unknown-tag-rejected" => "tests::unknown_tag_fails_decode",
         "bi-stream-echo" => "tests::bi_stream_echo_e2e",
+        "backpressure-stream-flood" => "tests::backpressure_bi_stream_flood",
         other => other,
     };
     let out = match tokio::process::Command::new("cargo")
@@ -788,28 +791,42 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
 }
 
 async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
+    // QA F#5: Test MUST be isolated to its own spawned set. Previously this
+    // queried /api/nodes/spawned which returns the ENTIRE ambient pool — so
+    // against a warm server with 30+ pre-existing nodes, the pass criterion
+    // was met vacuously by ambient survivors. Now we capture exactly the 6
+    // names we spawn and only count survivors WITHIN that set.
     let client = reqwest::Client::new();
+    let mut my_spawn_names: Vec<String> = Vec::new();
     for t in ["gateway", "broker", "broker", "compute", "registry", "bridge"] {
-        let _ = client
+        let resp = client
             .post(format!("{api_url}/api/nodes/spawn"))
             .json(&serde_json::json!({"node_type": t}))
             .send()
             .await;
+        if let Ok(r) = resp {
+            if let Ok(body) = r.json::<serde_json::Value>().await {
+                if let Some(n) = body["node_name"].as_str() {
+                    my_spawn_names.push(n.to_string());
+                }
+            }
+        }
+    }
+    if my_spawn_names.len() < 6 {
+        return (
+            "failed",
+            format!("spawned only {}/6 nodes successfully", my_spawn_names.len()),
+        );
     }
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    let pre = fetch_json(&client, &format!("{api_url}/api/nodes/spawned")).await;
-    let pre_names: Vec<String> = pre["spawned"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-        .unwrap_or_default();
-    if pre_names.len() < 4 {
-        return ("failed", format!("expected ≥4 nodes after spawn, got {}", pre_names.len()));
-    }
-    let kill_targets: Vec<String> = pre_names.iter().take(3).cloned().collect();
+    // Kill the first 3 of our spawned set
+    let kill_targets: Vec<String> = my_spawn_names.iter().take(3).cloned().collect();
+    let survivors: Vec<String> = my_spawn_names.iter().skip(3).cloned().collect();
     for name in &kill_targets {
         let _ = client.delete(format!("{api_url}/api/nodes/{name}")).send().await;
     }
     tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+    // Count fresh heartbeats ONLY from our 3 survivors (not the ambient pool)
     let hb = fetch_json(&client, &format!("{api_url}/api/heartbeats")).await;
     let fresh = hb["heartbeats"]
         .as_array()
@@ -817,19 +834,28 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
             a.iter()
                 .filter(|h| {
                     let name = h["node_name"].as_str().unwrap_or("");
-                    !kill_targets.iter().any(|k| k == name)
+                    survivors.iter().any(|s| s == name)
                         && h["age_ms"].as_i64().unwrap_or(99999) < 10000
                 })
                 .count()
         })
         .unwrap_or(0);
-    if fresh >= 3 {
+    if fresh == survivors.len() {
         (
             "passed",
-            format!("killed {} nodes, {fresh} survivors still emit fresh heartbeats", kill_targets.len()),
+            format!(
+                "killed {} of our 6 spawned nodes; all {fresh} of our survivors emit fresh heartbeats",
+                kill_targets.len()
+            ),
         )
     } else {
-        ("failed", format!("only {fresh} survivors fresh after 3 kills (need ≥3)"))
+        (
+            "failed",
+            format!(
+                "only {fresh}/{} of OUR survivors fresh after 3 kills (need all 3)",
+                survivors.len()
+            ),
+        )
     }
 }
 

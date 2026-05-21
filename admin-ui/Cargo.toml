@@ -1,0 +1,43 @@
+[package]
+name = "rafka-admin-ui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rafka-admin-ui"
+path = "src/main.rs"
+
+[dependencies]
+rafka-telemetry = { path = "../crates/rafka-telemetry" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+axum = "0.8.9"
+tower-http = { version = "0.6.11", features = ["cors", "fs"] }
+reqwest = { version = "0.13.3", features = ["json"] }
+dashmap = { workspace = true }
+rand = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-http = "0.27"
+tracing-opentelemetry = { workspace = true }
+http = "1"
+urlencoding = "2"
+
+# admin-ui joins the mesh as a node via NodeRuntime. These deps power the
+# mesh-participant behavior (already in rafka-node-base, but the gossip topic
+# subscription helpers + ALPN + blake3 are needed for any direct iroh work).
+# - iroh-gossip: receive GossipDigest broadcasts from every node
+# - rafka-node-base: GossipDigest type + ALPN constants
+# - blake3: derive topic_id from mesh_id (same as nodes do)
+# - postcard: decode digest payloads
+# - futures-lite: stream adapters for the gossip receiver
+iroh = { workspace = true }
+iroh-gossip = "0.91"
+rafka-node-base = { path = "../crates/rafka-node-base" }
+rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
+blake3 = "1"
+postcard = { version = "1", features = ["alloc"] }
+futures-lite = "2"
+hex = { workspace = true }

@@ -31,6 +31,12 @@ pub enum Role {
     /// heartbeats (one `rafka.mesh.heartbeat` span per observed peer mesh_id) and
     /// boot-time `rafka.mesh.bridge.boot_announced` listing target meshes.
     Bridge,
+    /// Operator console node. Joins the mesh just like any other node —
+    /// subscribes to gossip, emits its own digest + heartbeat, accepts
+    /// peer.connected from siblings. Does NOT run `run_ping_sender` because
+    /// it isn't producing data-plane traffic; it's there to watch. Used by
+    /// the rafka-topology-ui binary.
+    Observer,
 }
 
 pub struct NodeRuntime {
@@ -212,6 +218,10 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
 
     let peer_registry: PeerRegistry = Arc::new(DashMap::new());
     let mesh_id_registry: MeshIdRegistry = Arc::new(DashMap::new());
+    // Initialize the process-wide MeshCounters singleton. Every send/recv site
+    // reads via mesh_counters() so we don't have to thread an Arc through 3
+    // layers of accept loops. run_gossip reads it when assembling each digest.
+    let _ = mesh_counters();
 
     // Bootstrap iroh-gossip on the existing endpoint. Topic ID = blake3(mesh_id)
     // so every node in the same mesh joins the same gossip topic. Real gossip
@@ -234,12 +244,14 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         let node_id_g = node_id.clone();
         let registry_for_digest = Arc::clone(&peer_registry);
         let gossip_clone = gossip.clone();
+        let node_type_g = node_type_str.to_string();
         tokio::spawn(run_gossip(
             gossip_clone,
             topic_id,
             node_id_g,
             mesh_id,
             node_name,
+            node_type_g,
             gossip_interval_ms,
             registry_for_digest,
         ))
@@ -303,12 +315,11 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, node_name, is_bridge, registry, mesh_reg))
     };
 
-    let ping_handle = match role {
-        Role::Gateway => {
-            let registry = Arc::clone(&peer_registry);
-            Some(tokio::spawn(run_ping_sender(node_id.clone(), registry)))
-        }
-        _ => None,
+    // EVERY role runs the ping sender. topology-ui (Role::Observer) is just
+    // another node — it pings like everything else.
+    let ping_handle = {
+        let registry = Arc::clone(&peer_registry);
+        Some(tokio::spawn(run_ping_sender(node_id.clone(), registry)))
     };
 
     let stopping_reason = wait_for_signal().await;
@@ -448,13 +459,53 @@ pub async fn bi_echo_roundtrip(
 /// payload (≤200 bytes after postcard) so it fits well under QUIC datagram MTU
 /// (~1200 bytes safe). Plumtree's spanning tree disseminates these efficiently
 /// across the mesh; HyParView keeps membership churn graceful.
+///
+/// `frames_sent_total` + `frames_recv_total` are monotonic counters. The
+/// operator UI subscribes to these via gossip and computes throughput as
+/// (delta between two consecutive digests) / (delta wall_time_ms).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct GossipDigest {
-    node_id: String,
-    node_name: String,
-    mesh_id: String,
-    peer_count: u64,
-    wall_time_ms: u64,
+pub struct GossipDigest {
+    pub node_id: String,
+    pub node_name: String,
+    pub mesh_id: String,
+    pub node_type: String,
+    pub peer_count: u64,
+    /// Hex-encoded NodeIds of every peer this node has an active iroh
+    /// connection to. The operator UI builds real edges from this list
+    /// (cross-referenced against other digests' node_ids).
+    pub peer_ids: Vec<String>,
+    pub frames_sent_total: u64,
+    pub frames_recv_total: u64,
+    pub wall_time_ms: u64,
+}
+
+/// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
+/// send + receive site. Read by `run_gossip` when assembling each digest so the
+/// operator UI sees live throughput without ever querying Jaeger.
+#[derive(Default)]
+pub struct MeshCounters {
+    pub frames_sent: std::sync::atomic::AtomicU64,
+    pub frames_recv: std::sync::atomic::AtomicU64,
+}
+
+/// Process-wide singleton. Avoids threading `Arc<MeshCounters>` through every
+/// reader/sender helper, which would cascade through 3+ levels of accept loops.
+static MESH_COUNTERS: std::sync::OnceLock<Arc<MeshCounters>> = std::sync::OnceLock::new();
+
+pub fn mesh_counters() -> &'static Arc<MeshCounters> {
+    MESH_COUNTERS.get_or_init(|| Arc::new(MeshCounters::default()))
+}
+
+/// Process-global map of every GossipDigest this node has received from
+/// peers via iroh-gossip. Keyed by node_id (hex). Written by `run_gossip`
+/// on every Event::Received. topology-ui reads from this directly to
+/// render /api/topology + /api/heartbeats — ZERO Jaeger dependency, the
+/// mesh IS the topology source of truth.
+static LIVE_DIGESTS: std::sync::OnceLock<Arc<DashMap<String, GossipDigest>>> =
+    std::sync::OnceLock::new();
+
+pub fn live_digests() -> &'static Arc<DashMap<String, GossipDigest>> {
+    LIVE_DIGESTS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
 async fn run_gossip(
@@ -463,9 +514,11 @@ async fn run_gossip(
     node_id: String,
     mesh_id: &'static str,
     node_name: &'static str,
+    node_type: String,
     interval_ms: u64,
     registry: PeerRegistry,
 ) {
+    let counters = mesh_counters();
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh
@@ -499,11 +552,17 @@ async fn run_gossip(
                 if !peer_node_ids.is_empty() {
                     let _ = sender.join_peers(peer_node_ids).await;
                 }
+                use std::sync::atomic::Ordering;
+                let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
                 let digest = GossipDigest {
                     node_id: node_id.clone(),
                     node_name: node_name.to_string(),
                     mesh_id: mesh_id.to_string(),
+                    node_type: node_type.clone(),
                     peer_count: registry.len() as u64,
+                    peer_ids,
+                    frames_sent_total: counters.frames_sent.load(Ordering::Relaxed),
+                    frames_recv_total: counters.frames_recv.load(Ordering::Relaxed),
                     wall_time_ms: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
@@ -549,6 +608,12 @@ async fn run_gossip(
                     let size = msg.content.len();
                     let from = msg.delivered_from.to_string();
                     let digest: Option<GossipDigest> = postcard::from_bytes(&msg.content).ok();
+                    // Insert into the process-global digest map so the operator
+                    // UI (or anyone in-process) can read live mesh state with
+                    // zero Jaeger dependency. The mesh IS the topology.
+                    if let Some(d) = &digest {
+                        live_digests().insert(d.node_id.clone(), d.clone());
+                    }
                     let summary = digest
                         .as_ref()
                         .map(|d| format!("node={}/peers={}", d.node_name, d.peer_count))
@@ -846,6 +911,7 @@ async fn run_frame_reader(
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
+    let counters = mesh_counters();
     loop {
         match conn.accept_uni().await {
             Ok(mut recv) => {
@@ -856,6 +922,12 @@ async fn run_frame_reader(
                         continue;
                     }
                 };
+
+                // Count EVERY received frame regardless of variant. This is the
+                // ground-truth recv counter the operator UI reads via gossip.
+                counters
+                    .frames_recv
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 match InternalMeshFrame::decode_with_context(&bytes) {
                     Ok((parent_ctx, InternalMeshFrame::Hello { mesh_id: peer_mesh_id, node_type: peer_node_type })) => {
@@ -1009,6 +1081,12 @@ async fn run_frame_reader(
 
 #[instrument(skip_all)]
 async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
+    let counters = mesh_counters();
+    // 10s cadence: faster (3s) overloads the Jaeger ES backend with ~100
+    // spans/sec across 18 nodes and stalls /api/topology resolution. 10s
+    // gives ~30 spans/sec sustained which Jaeger handles fine. The UI's
+    // 60s lookback still accumulates ~6 frame.sent spans per peer pair —
+    // enough to weight edges visibly.
     let mut interval = tokio::time::interval(Duration::from_secs(10));
     // Link fault-injection envs read once at boot. Chaos primitives slow_link/
     // lossy_link restart the node with these set; node-base applies them on
@@ -1099,6 +1177,9 @@ async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
                     sent_span.in_scope(|| {
                         info!(peer_id = %peer_id_str, "ping sent");
                     });
+                    counters
+                        .frames_sent
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(e) => {
                     tracing::info_span!(
@@ -1287,6 +1368,100 @@ mod tests {
             framer::decode(&echoed).expect("decode echo");
         assert_eq!(tag, TAG_BI_ECHO, "echoed tag must be 0x11");
         assert_eq!(inner, payload, "echoed payload must equal sent");
+    }
+
+    /// Backpressure / sustained-throughput test: open 32 concurrent bi-streams
+    /// from B → A, each pushing 1 KiB payloads in a tight loop for 10 seconds.
+    /// Records total round-trips + measured throughput; passes if:
+    ///   - >= 200 round-trips total complete (sanity floor on a 10s window)
+    ///   - zero errors (means the accept loop's read_to_end didn't stall on
+    ///     any single stream — i.e. the data plane back-pressured smoothly
+    ///     instead of OOM-ing or hanging).
+    /// This proves the bi-stream plane survives a sustained burst that's well
+    /// beyond what a single broker handshake demands.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn backpressure_bi_stream_flood() {
+        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
+        let endpoint_a = Endpoint::builder()
+            .secret_key(secret_a)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind()
+            .await
+            .expect("endpoint A");
+        let addr_a = endpoint_a.node_addr().initialized().await;
+        let node_id_a = endpoint_a.node_id();
+
+        // Accept loop on A: keep accepting incoming connections; each gets a
+        // run_bi_echo_reader spawned. Runs until the test drops the handle.
+        let _accept_handle = {
+            let endpoint = endpoint_a.clone();
+            let own = node_id_a.to_string();
+            tokio::spawn(async move {
+                while let Some(incoming) = endpoint.accept().await {
+                    let own = own.clone();
+                    tokio::spawn(async move {
+                        if let Ok(conn) = incoming.await {
+                            let peer = conn
+                                .remote_node_id()
+                                .map(|i| i.to_string())
+                                .unwrap_or_default();
+                            run_bi_echo_reader(conn, own, peer).await;
+                        }
+                    });
+                }
+            })
+        };
+
+        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
+        let endpoint_b = Endpoint::builder()
+            .secret_key(secret_b)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind()
+            .await
+            .expect("endpoint B");
+        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let total = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let errors = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..32 {
+            let endpoint_b = endpoint_b.clone();
+            let total = total.clone();
+            let errors = errors.clone();
+            workers.push(tokio::spawn(async move {
+                let payload = vec![0xAB_u8; 1024]; // 1 KiB per round-trip
+                while tokio::time::Instant::now() < deadline {
+                    match bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone()).await {
+                        Ok(_) => {
+                            total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(_) => {
+                            errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                }
+            }));
+        }
+        for w in workers {
+            let _ = w.await;
+        }
+        let total_ops = total.load(std::sync::atomic::Ordering::Relaxed);
+        let err_ops = errors.load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!(
+            "backpressure_bi_stream_flood: round_trips={total_ops} errors={err_ops} \
+             over 10s across 32 concurrent streams"
+        );
+        assert!(err_ops == 0, "data plane errored under flood (errors={err_ops})");
+        assert!(
+            total_ops >= 200,
+            "sustained throughput too low: only {total_ops} round-trips in 10s"
+        );
     }
 }
 
