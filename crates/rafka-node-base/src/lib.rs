@@ -25,7 +25,14 @@ mod deployment;
 pub use deployment::Deployment;
 
 mod load;
-pub use load::{LoadSampler, NodeLoad};
+pub use load::{
+    announce_dev_state,
+    load_env_dev_from,
+    read_dev_cpu_budget,
+    read_dev_ram_budget,
+    LoadSampler,
+    NodeLoad,
+};
 
 pub enum Role {
     Gateway,

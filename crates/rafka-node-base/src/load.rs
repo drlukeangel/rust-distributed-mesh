@@ -1,9 +1,154 @@
 //! Per-process CPU and RAM measurement with optional programmatic overrides.
 //! The sampler is "dumb": it consumes values passed at construction (or falls
 //! through to sysinfo if `None`). Env-var reading is the caller's concern.
+//!
+//! Dev-mode helpers (`load_env_dev_from`, `read_dev_cpu_budget`,
+//! `read_dev_ram_budget`, `announce_dev_state`) are opt-in — each binary
+//! calls them explicitly from main(); NodeRuntime never calls them.
 
 use std::sync::Mutex;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+
+use crate::deployment::Deployment;
+
+// ---------------------------------------------------------------------------
+// Dev-mode env helpers (opt-in; called by each binary's main())
+// ---------------------------------------------------------------------------
+
+/// Populate the process env from `<manifest_dir>/.env.dev` IF the file
+/// exists. Each k=value line is set as a process env var ONLY if the var
+/// is not already set (parent-process injection wins). Lines starting
+/// with `#` are comments; blank lines ignored. Values may be optionally
+/// wrapped in single or double quotes (stripped on read).
+///
+/// Missing file is NOT an error — production deployments ship only the
+/// binary, not the crate source, so this is a silent no-op in prod.
+///
+/// As a side effect, if the file was loaded AND `RAFKA_DEPLOYMENT` is
+/// unset, this sets `RAFKA_DEPLOYMENT=dev`. The presence of `.env.dev`
+/// IS the dev-mode signal — no separate flag to remember.
+///
+/// Callers typically pass `env!("CARGO_MANIFEST_DIR")` from their binary's
+/// main(). That macro is captured at compile time and points at the
+/// caller's crate root, NOT rafka-node-base.
+pub fn load_env_dev_from(manifest_dir: &str) {
+    let path = std::path::PathBuf::from(manifest_dir).join(".env.dev");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return, // missing is fine — non-dev deployments
+    };
+    let mut loaded_any = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (k, v) = match line.split_once('=') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        let k = k.trim();
+        let v = v
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'');
+        if !k.is_empty() && std::env::var(k).is_err() {
+            std::env::set_var(k, v);
+            loaded_any = true;
+        }
+    }
+    if loaded_any && std::env::var("RAFKA_DEPLOYMENT").is_err() {
+        std::env::set_var("RAFKA_DEPLOYMENT", "dev");
+    }
+}
+
+/// Read `RAFKA_DEV_CPU_BUDGET` from process env, returning Some(value)
+/// only when:
+///   - Deployment mode allows dev overrides (i.e. not Prod), AND
+///   - The env var is set, AND
+///   - The value parses as an f32
+/// Otherwise returns None.
+///
+/// Designed to be called from a node binary's main() as a fallback when
+/// no CLI flag was provided. The Deployment gate ensures a leaked
+/// RAFKA_DEV_* env var in a prod deployment has no effect.
+pub fn read_dev_cpu_budget() -> Option<f32> {
+    read_dev_env_f32("RAFKA_DEV_CPU_BUDGET")
+}
+
+/// Same shape as `read_dev_cpu_budget`, for `RAFKA_DEV_RAM_BUDGET`.
+pub fn read_dev_ram_budget() -> Option<f32> {
+    read_dev_env_f32("RAFKA_DEV_RAM_BUDGET")
+}
+
+fn read_dev_env_f32(var: &str) -> Option<f32> {
+    if !Deployment::from_env().allows_dev_overrides() {
+        return None;
+    }
+    std::env::var(var).ok()?.parse::<f32>().ok()
+}
+
+/// Emit a single startup span describing the dev override state. Call
+/// once from main() AFTER load_env_dev_from and AFTER any CLI parsing.
+/// Pass the resolved values you're about to hand to NodeRuntime.
+///
+/// Behavior:
+///   - If deployment != Prod AND at least one Some(v) was passed: INFO
+///     span listing which fields have overrides + their source-of-truth
+///     ("cli" or "env"). Caller computes the source attribution; this
+///     helper just describes the resolved view.
+///   - If deployment == Prod AND any RAFKA_DEV_* env var is set in the
+///     environment: WARN span listing which ones are present-but-ignored.
+///   - Otherwise silent.
+pub fn announce_dev_state(
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
+) {
+    let deployment = Deployment::from_env();
+    let env_vars_present: Vec<&str> = [
+        "RAFKA_DEV_CPU_BUDGET",
+        "RAFKA_DEV_RAM_BUDGET",
+    ]
+    .iter()
+    .copied()
+    .filter(|v| std::env::var(v).is_ok())
+    .collect();
+    if deployment.allows_dev_overrides() {
+        let any_set = cpu_budget.is_some() || ram_budget.is_some();
+        if !any_set {
+            return;
+        }
+        tracing::info_span!(
+            "rafka.mesh.node.dev_state",
+            cpu_budget = ?cpu_budget,
+            ram_budget = ?ram_budget,
+            deployment = ?deployment,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| {
+            tracing::info!(
+                ?cpu_budget,
+                ?ram_budget,
+                ?deployment,
+                "node hydrating with explicit budget"
+            );
+        });
+    } else if !env_vars_present.is_empty() {
+        tracing::info_span!(
+            "rafka.mesh.node.dev_overrides_ignored",
+            ignored = ?env_vars_present,
+            deployment = ?deployment,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| {
+            tracing::warn!(
+                ignored = ?env_vars_present,
+                ?deployment,
+                "RAFKA_DEV_* env vars present but ignored (deployment != dev)"
+            );
+        });
+    }
+}
 
 /// Resolved load values to ship inside `GossipDigest`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -93,6 +238,167 @@ fn bytes_to_gb(bytes: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::Mutex;
+
+    // Serialize env-var mutation across tests in this module.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_envs<F: FnOnce()>(pairs: &[(&str, Option<&str>)], f: F) {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev: Vec<(String, Option<String>)> = pairs
+            .iter()
+            .map(|(k, _)| ((*k).to_string(), std::env::var(*k).ok()))
+            .collect();
+        for (k, v) in pairs {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        f();
+        for (k, prev_val) in prev {
+            match prev_val {
+                Some(v) => std::env::set_var(&k, v),
+                None => std::env::remove_var(&k),
+            }
+        }
+    }
+
+    #[test]
+    fn read_dev_cpu_budget_returns_none_in_prod() {
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("prod")),
+                ("RAFKA_DEV_CPU_BUDGET", Some("99")),
+            ],
+            || {
+                assert_eq!(read_dev_cpu_budget(), None);
+            },
+        );
+    }
+
+    #[test]
+    fn read_dev_cpu_budget_returns_value_in_dev() {
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("dev")),
+                ("RAFKA_DEV_CPU_BUDGET", Some("4.0")),
+            ],
+            || {
+                assert_eq!(read_dev_cpu_budget(), Some(4.0));
+            },
+        );
+    }
+
+    #[test]
+    fn read_dev_cpu_budget_returns_none_when_unset() {
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("dev")),
+                ("RAFKA_DEV_CPU_BUDGET", None),
+            ],
+            || {
+                assert_eq!(read_dev_cpu_budget(), None);
+            },
+        );
+    }
+
+    #[test]
+    fn read_dev_cpu_budget_returns_none_on_unparseable() {
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("dev")),
+                ("RAFKA_DEV_CPU_BUDGET", Some("banana")),
+            ],
+            || {
+                assert_eq!(read_dev_cpu_budget(), None);
+            },
+        );
+    }
+
+    #[test]
+    fn read_dev_ram_budget_symmetric() {
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("dev")),
+                ("RAFKA_DEV_RAM_BUDGET", Some("2.0")),
+            ],
+            || {
+                assert_eq!(read_dev_ram_budget(), Some(2.0));
+            },
+        );
+    }
+
+    #[test]
+    fn load_env_dev_from_nonexistent_dir_is_silent_noop() {
+        with_envs(
+            &[("RAFKA_DEPLOYMENT", None), ("RAFKA_DEV_CPU_BUDGET", None)],
+            || {
+                load_env_dev_from("/this/path/does/not/exist");
+                assert!(std::env::var("RAFKA_DEPLOYMENT").is_err());
+                assert!(std::env::var("RAFKA_DEV_CPU_BUDGET").is_err());
+            },
+        );
+    }
+
+    #[test]
+    fn load_env_dev_from_real_file_sets_env_and_dev_mode() {
+        // Write a temp .env.dev file in a temp dir, point loader at it.
+        let tmp = std::env::temp_dir().join(format!(
+            "rafka-test-env-dev-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join(".env.dev");
+        std::fs::write(
+            &file,
+            "RAFKA_DEV_CPU_BUDGET=4.0\nRAFKA_DEV_RAM_BUDGET=2.0\n# comment\n",
+        )
+        .unwrap();
+
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", None),
+                ("RAFKA_DEV_CPU_BUDGET", None),
+                ("RAFKA_DEV_RAM_BUDGET", None),
+            ],
+            || {
+                load_env_dev_from(tmp.to_str().unwrap());
+                assert_eq!(std::env::var("RAFKA_DEV_CPU_BUDGET").ok().as_deref(), Some("4.0"));
+                assert_eq!(std::env::var("RAFKA_DEV_RAM_BUDGET").ok().as_deref(), Some("2.0"));
+                // file presence implies dev mode
+                assert_eq!(std::env::var("RAFKA_DEPLOYMENT").ok().as_deref(), Some("dev"));
+            },
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn load_env_dev_from_does_not_override_preset_env() {
+        // If an env var is already set (e.g. by parent process), the loader
+        // must NOT override it.
+        let tmp = std::env::temp_dir().join(format!(
+            "rafka-test-noOverride-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join(".env.dev");
+        std::fs::write(&file, "RAFKA_DEV_CPU_BUDGET=4.0\n").unwrap();
+
+        with_envs(
+            &[
+                ("RAFKA_DEPLOYMENT", Some("dev")),
+                ("RAFKA_DEV_CPU_BUDGET", Some("2.0")), // pre-set by "parent"
+            ],
+            || {
+                load_env_dev_from(tmp.to_str().unwrap());
+                // pre-set value wins
+                assert_eq!(std::env::var("RAFKA_DEV_CPU_BUDGET").ok().as_deref(), Some("2.0"));
+            },
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn no_overrides_uses_sysinfo() {
