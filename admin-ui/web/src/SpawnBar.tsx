@@ -36,14 +36,18 @@ export function SpawnBar() {
   const doSpawn = async (t: NodeType) => {
     setBusy(`spawn-${t}`);
     try {
-      const extra_env: Record<string, string> = {};
+      // Blank inputs → no field sent → admin-ui adds no CLI flag → child
+      // binary's main() falls through to its .env.dev preset or sysinfo.
+      const opts: { cpu_budget?: number; ram_budget?: number } = {};
       if (cpuOverride.trim() !== "") {
-        extra_env.RAFKA_DEV_CPU_BUDGET = cpuOverride.trim();
+        const c = parseFloat(cpuOverride.trim());
+        if (!Number.isNaN(c)) opts.cpu_budget = c;
       }
       if (ramOverride.trim() !== "") {
-        extra_env.RAFKA_DEV_RAM_BUDGET = ramOverride.trim();
+        const r = parseFloat(ramOverride.trim());
+        if (!Number.isNaN(r)) opts.ram_budget = r;
       }
-      const r = await api.spawn(t, mesh, extra_env);
+      const r = await api.spawn(t, mesh, opts);
       const overridesNote =
         cpuOverride || ramOverride
           ? ` (overrides: cpu=${cpuOverride || "preset"} ram=${ramOverride || "preset"})`

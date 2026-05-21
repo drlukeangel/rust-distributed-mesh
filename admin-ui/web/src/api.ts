@@ -159,12 +159,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, seed }),
     }),
-  spawn: (node_type: NodeType, mesh_id: string, extra_env?: Record<string, string>) =>
+  spawn: (
+    node_type: NodeType,
+    mesh_id: string,
+    opts?: { cpu_budget?: number; ram_budget?: number; extra_env?: Record<string, string> },
+  ) =>
     j<{ node_name: string; pid: number }>("/api/nodes/spawn", {
       method: "POST",
       body: JSON.stringify({
         node_type,
-        extra_env: { RAFKA_MESH_ID: mesh_id, ...(extra_env ?? {}) },
+        extra_env: { RAFKA_MESH_ID: mesh_id, ...(opts?.extra_env ?? {}) },
+        ...(opts?.cpu_budget !== undefined ? { cpu_budget: opts.cpu_budget } : {}),
+        ...(opts?.ram_budget !== undefined ? { ram_budget: opts.ram_budget } : {}),
       }),
     }),
   kill: (node_name: string) =>
