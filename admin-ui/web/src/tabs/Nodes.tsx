@@ -17,11 +17,19 @@ function utilColor(used: number | undefined, budget: number | undefined): string
   return "#f85149";
 }
 
-function ageSeconds(wall_time_ms: number | undefined): string {
-  if (!wall_time_ms) return "?";
-  const ageMs = Date.now() - wall_time_ms;
+/// Compute "age" (node lifetime) preferring spawn_time_ms over wall_time_ms.
+/// spawn_time_ms is the admin-ui-recorded spawn timestamp — monotonic, the
+/// thing operators expect for "how long has this node been alive."
+/// wall_time_ms is the per-digest emit time — bounces with gossip cadence,
+/// only useful as a fallback for nodes admin-ui didn't spawn itself.
+function ageSeconds(spawn_time_ms: number | undefined, wall_time_ms: number | undefined): string {
+  const base = spawn_time_ms ?? wall_time_ms;
+  if (!base) return "?";
+  const ageMs = Date.now() - base;
   if (ageMs < 0) return "0.0s";
-  return `${(ageMs / 1000).toFixed(1)}s`;
+  if (ageMs < 60_000) return `${(ageMs / 1000).toFixed(1)}s`;
+  if (ageMs < 3_600_000) return `${(ageMs / 60_000).toFixed(1)}m`;
+  return `${(ageMs / 3_600_000).toFixed(1)}h`;
 }
 
 interface UtilBarProps {
@@ -172,7 +180,7 @@ export function Nodes() {
               <br />
               peers: {n.peer_count ?? 0}
               <br />
-              age: {ageSeconds(n.wall_time_ms)}
+              age: {ageSeconds(n.spawn_time_ms, n.wall_time_ms)}
               <br />
               status: {n.status ?? "?"}
             </div>

@@ -981,6 +981,11 @@ struct SpawnedMeta {
     /// TCP/UDP port assigned to this child by admin-ui's port pool. Combined
     /// with localhost to form `RAFKA_SEED_NODES` entries.
     bind_port: u16,
+    /// UNIX-ms timestamp when admin-ui spawned this child. Used by the UI to
+    /// render a monotonically-increasing "age" (lifetime), distinct from
+    /// `wall_time_ms` on GossipDigest which is the per-digest emit time
+    /// (staleness, bounces with gossip cadence).
+    spawned_at_ms: u64,
 }
 
 struct ChaosController {
@@ -1850,6 +1855,12 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
     for entry in digests.iter() {
         let d = entry.value();
+        // Look up spawn time so the UI can render a monotonic "age" (lifetime)
+        // distinct from `wall_time_ms` which is per-digest emit time.
+        let spawn_time_ms = state
+            .spawned_meta
+            .get(&d.node_name)
+            .map(|e| e.value().spawned_at_ms);
         nodes.push(json!({
             "id": d.node_name,
             "node_id": d.node_id,
@@ -1860,6 +1871,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             "frames_sent_total": d.frames_sent_total,
             "frames_recv_total": d.frames_recv_total,
             "wall_time_ms": d.wall_time_ms,
+            "spawn_time_ms": spawn_time_ms,
             "cpu_used": d.cpu_used,
             "cpu_budget": d.cpu_budget,
             "ram_used": d.ram_used,
@@ -1883,6 +1895,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "frames_sent_total": 0,
                 "frames_recv_total": 0,
                 "wall_time_ms": 0,
+                "spawn_time_ms": entry.value().spawned_at_ms,
                 "cpu_used": 0.0,
                 "cpu_budget": 0.0,
                 "ram_used": 0.0,
@@ -2603,9 +2616,15 @@ async fn spawn_one(
         return Err(format!("failed to create spawn dir: {e}"));
     }
 
+    // Default to debug builds (fast iteration). Set RAFKA_CHILD_BUILD_PROFILE=release
+    // to spawn release-optimized children — required for realistic per-node CPU
+    // numbers, since debug iroh-quinn-proto runs 5-20× slower than release. Real
+    // perf testing must use release; everyday dev iteration uses debug.
+    let profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
+        .unwrap_or_else(|_| "debug".to_string());
     let binary = format!(
-        "{}/debug/rafka-{}.exe",
-        state.cargo_target_dir, node_type
+        "{}/{}/rafka-{}.exe",
+        state.cargo_target_dir, profile, node_type
     );
 
     let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -2724,6 +2743,10 @@ async fn spawn_one(
         Ok(child) => {
             let pid = child.id().unwrap_or(0);
             state.processes.insert(node_name.clone(), Mutex::new(child));
+            let spawned_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
             state.spawned_meta.insert(
                 node_name.clone(),
                 SpawnedMeta {
@@ -2732,6 +2755,7 @@ async fn spawn_one(
                     pid,
                     node_id_hex: node_id_hex.clone(),
                     bind_port,
+                    spawned_at_ms,
                 },
             );
             state.events.push(LocalEvent {

@@ -12,7 +12,11 @@ export interface TopologyNode {
   /// monotonic frame counters from GossipDigest (live mesh, no Jaeger)
   frames_sent_total?: number;
   frames_recv_total?: number;
+  /// per-digest emit time (staleness, bounces with gossip cadence)
   wall_time_ms?: number;
+  /// UNIX-ms timestamp when admin-ui spawned this child. Used for the
+  /// "age" (lifetime) display — monotonically increasing.
+  spawn_time_ms?: number;
   /// CPU + RAM from GossipDigest. cores / GB respectively. Optional
   /// because pre-load-telemetry nodes (mid-rollout) may not populate them.
   cpu_used?: number;
