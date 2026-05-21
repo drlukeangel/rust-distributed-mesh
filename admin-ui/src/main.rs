@@ -1353,6 +1353,14 @@ fn primitive_description(name: &str) -> &'static str {
 /// (node.ready). Replaces the chaos-only /api/chaos/timeline so the Timeline
 /// tab shows EVERYTHING happening on the substrate, not just chaos triggers.
 async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResponse {
+    // QA F5: resolve Jaeger-sourced peer events' node_name from the live
+    // gossip digest map, so the timeline shows broker-abc12345 instead of
+    // just "broker". Built once per request from live_digests().
+    let id_to_name: std::collections::HashMap<String, String> = live_digests()
+        .iter()
+        .map(|e| (e.key().clone(), e.value().node_name.clone()))
+        .collect();
+
     // Fan out 15+ Jaeger queries in parallel so the timeline tab returns in
     // ~1s instead of 15s+ serial.
     let ops: Vec<(&str, &str)> = vec![
@@ -1372,6 +1380,7 @@ async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResp
             let op = op.to_string();
             let kind_label = kind_label.to_string();
             let svc = svc.to_string();
+            let id_map = id_to_name.clone();
             handles.push(tokio::spawn(async move {
                 let body: Value = match http.get(&url).send().await {
                     Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
@@ -1387,21 +1396,32 @@ async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResp
                                 }
                                 let ts_us = s["startTime"].as_i64().unwrap_or(0);
                                 let tags = s["tags"].as_array();
+                                // Prefer node_name tag; else resolve node_id → name via gossip map;
+                                // last-resort fall back to service name.
+                                let self_id = tags
+                                    .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
+                                    .and_then(|x| x["value"].as_str())
+                                    .unwrap_or("");
                                 let node_name = tags
                                     .and_then(|t| t.iter().find(|x| x["key"] == "node_name"))
                                     .and_then(|x| x["value"].as_str())
-                                    .unwrap_or(&svc)
-                                    .to_string();
+                                    .map(String::from)
+                                    .or_else(|| id_map.get(self_id).cloned())
+                                    .unwrap_or_else(|| svc.clone());
                                 let mesh_id = tags
                                     .and_then(|t| t.iter().find(|x| x["key"] == "mesh_id"))
                                     .and_then(|x| x["value"].as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let peer = tags
+                                // peer_id → peer_name lookup
+                                let peer_id_full = tags
                                     .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
                                     .and_then(|x| x["value"].as_str())
-                                    .map(|s| s.chars().take(12).collect::<String>())
-                                    .unwrap_or_default();
+                                    .unwrap_or("");
+                                let peer = id_map
+                                    .get(peer_id_full)
+                                    .cloned()
+                                    .unwrap_or_else(|| peer_id_full.chars().take(12).collect());
                                 let detail = match kind_label.as_str() {
                                     "node.ready" => format!("({svc})"),
                                     "peer.connected" => format!("↔ {peer}"),
@@ -3767,7 +3787,22 @@ async fn main() -> Result<()> {
 
     info!("admin-ui listening on http://{addr}");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // SPEC §7 Issue #5 (CLOSE_WAIT wedge): bound every request with a 60s
+    // total timeout so axum drains stuck connections instead of holding
+    // CLOSE_WAIT sockets forever. 60s covers the worst-case Jaeger fan-out
+    // path (/api/timeline does 15 parallel queries each with their own
+    // ~20s budget). Set TCP_NODELAY so kernel doesn't buffer small frames.
+    // ConcurrencyLimitLayer caps in-flight requests so a burst of
+    // /api/topology queries can't starve the runtime.
+    use tower::limit::ConcurrencyLimitLayer;
+    use tower_http::timeout::TimeoutLayer;
+    let app = app
+        .layer(TimeoutLayer::new(std::time::Duration::from_secs(60)))
+        .layer(ConcurrencyLimitLayer::new(64));
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    socket.set_nodelay(true)?;
+    socket.bind(addr)?;
+    let listener = socket.listen(1024)?;
     axum::serve(listener, app).await?;
 
     Ok(())
