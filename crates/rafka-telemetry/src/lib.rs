@@ -119,6 +119,7 @@ fn build_simple_provider(
 
 fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
     let otel_layer = OpenTelemetryLayer::new(tracer);
+
     tracing_subscriber::registry()
         .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .with(tracing_subscriber::fmt::layer())
