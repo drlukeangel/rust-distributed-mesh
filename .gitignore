@@ -23,5 +23,8 @@ flamegraph-*.folded
 .vscode/
 .idea/
 
+# Workflow scratch from agent tooling (specs, plans, etc. live under docs/plans)
+docs/superpowers/
+
 # node_modules (also under admin-ui/web)
 node_modules/
