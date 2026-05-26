@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dashmap::DashMap;
-use iroh::{endpoint::Connection, NodeAddr, PublicKey, SecretKey};
+use iroh::{EndpointAddr, endpoint::Connection, PublicKey, SecretKey};
 use rafka_mesh_ops::{framer, InternalMeshFrame};
 use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 
@@ -20,6 +20,21 @@ use std::{
 use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+mod deployment;
+pub use deployment::Deployment;
+
+mod load;
+pub use load::{
+    announce_dev_state,
+    load_env_dev_from,
+    parse_budget_cli_args,
+    read_dev_cpu_budget,
+    read_dev_ram_budget,
+    BudgetCliArgs,
+    LoadSampler,
+    NodeLoad,
+};
 
 pub enum Role {
     Gateway,
@@ -42,6 +57,8 @@ pub enum Role {
 pub struct NodeRuntime {
     node_type: String,
     role: Role,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 }
 
 impl NodeRuntime {
@@ -49,6 +66,8 @@ impl NodeRuntime {
         Self {
             node_type: node_type.into(),
             role: Role::Broker,
+            cpu_budget: None,
+            ram_budget: None,
         }
     }
 
@@ -57,9 +76,24 @@ impl NodeRuntime {
         self
     }
 
+    /// Set the node's programmatic CPU budget in cores. When set, this
+    /// value flows directly into `GossipDigest.cpu_budget`. When left
+    /// unset (None), `LoadSampler` falls back to sysinfo measurement
+    /// (cgroup-aware on Linux, host total elsewhere).
+    pub fn with_cpu_budget(mut self, cores: f32) -> Self {
+        self.cpu_budget = Some(cores);
+        self
+    }
+
+    /// Same shape for RAM budget in GB.
+    pub fn with_ram_budget(mut self, gb: f32) -> Self {
+        self.ram_budget = Some(gb);
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         let _guard = rafka_telemetry::init_telemetry(&self.node_type);
-        run_node(self.node_type, self.role).await
+        run_node(self.node_type, self.role, self.cpu_budget, self.ram_budget).await
     }
 }
 
@@ -79,7 +113,12 @@ type PeerRegistry = Arc<DashMap<String, Connection>>;
 /// peer→mesh associations observable from any code path that has the peer_id.
 type MeshIdRegistry = Arc<DashMap<String, String>>;
 
-async fn run_node(node_type: String, role: Role) -> Result<()> {
+async fn run_node(
+    node_type: String,
+    role: Role,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
+) -> Result<()> {
     // mesh_id is a logical cluster identifier. Multiple physical nodes with the
     // same mesh_id form one mesh; cross-mesh peering (see feature mesh-to-mesh)
     // requires a Role::Bridge node that joins multiple mesh_ids. Defaults to
@@ -109,7 +148,12 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     let gossip_interval_ms: u64 = std::env::var("RAFKA_GOSSIP_INTERVAL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(500);
+        .unwrap_or(2000);
+
+    let mdns_enable: bool = std::env::var("RAFKA_MDNS_ENABLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true);
 
     let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
         .unwrap_or_default()
@@ -170,7 +214,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
 
     // Create iroh endpoint: no tracing span active here so iroh background tasks
     // are NOT attached to node.ready.
-    let mut transport = create_endpoint(secret_key, bind_addr).await?;
+    let mut transport = create_endpoint(secret_key, bind_addr, mdns_enable).await?;
 
     let sockets = transport.endpoint.bound_sockets();
     let actual_bind_addr = if sockets.is_empty() {
@@ -207,7 +251,7 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
         .in_scope(|| info!(alpn = ?std::str::from_utf8(ALPN).unwrap_or("<binary>"), "ALPN registered"));
 
         tracing::info_span!("rafka.mesh.boot.gossip_started", node_id = %node_id)
-            .in_scope(|| info!(gossip_interval_ms, "gossip discovery started via iroh mdns"));
+            .in_scope(|| info!(gossip_interval_ms, mdns_enable, "gossip discovery started"));
 
         tracing::info_span!("rafka.mesh.boot.accept_loop_started", node_id = %node_id)
             .in_scope(|| info!("accept loop running"));
@@ -222,6 +266,13 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     // reads via mesh_counters() so we don't have to thread an Arc through 3
     // layers of accept loops. run_gossip reads it when assembling each digest.
     let _ = mesh_counters();
+
+    // Background pruner: drops stale entries from the process-global
+    // `live_digests` and `topic_membership` maps. Without it both grow
+    // monotonically with the count of unique node_ids ever observed —
+    // every cluster restart, peer churn, or admin-ui respawn adds entries
+    // that never leave. See `run_staleness_pruner` for the TTL semantics.
+    tokio::spawn(run_staleness_pruner());
 
     // Bootstrap iroh-gossip on the existing endpoint. Topic ID = blake3(mesh_id)
     // so every node in the same mesh joins the same gossip topic. Real gossip
@@ -255,6 +306,8 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
             gossip_interval_ms,
             registry_for_digest,
             mesh_id, // primary task: topic_label = mesh_id (digests filed under our own mesh)
+            cpu_budget,
+            ram_budget,
         ))
     };
 
@@ -317,6 +370,8 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
                 gossip_interval_ms,
                 registry_for_digest,
                 extra_mesh_static, // topic_label = actual subscription topic (NOT primary)
+                cpu_budget,
+                ram_budget,
             ));
         }
     }
@@ -380,11 +435,9 @@ async fn run_node(node_type: String, role: Role) -> Result<()> {
     };
 
     // EVERY role runs the ping sender. topology-ui (Role::Observer) is just
-    // another node — it pings like everything else.
-    let ping_handle = {
-        let registry = Arc::clone(&peer_registry);
-        Some(tokio::spawn(run_ping_sender(node_id.clone(), registry)))
-    };
+    // another node – it pings like everything else.
+    // [DISABLED]: The QUIC transport now handles keep-alives internally. Pings disabled.
+    let ping_handle: Option<tokio::task::JoinHandle<()>> = None; // Some(tokio::spawn(run_ping_sender(node_id.clone(), Arc::clone(&peer_registry))));
 
     let stopping_reason = wait_for_signal().await;
 
@@ -437,13 +490,13 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
         let bytes = match recv.read_to_end(64 * 1024).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::info_span!(
+                tracing::trace_span!(
                     "rafka.mesh.bi.read_failed",
                     node_id = %own_node_id,
                     peer_id = %peer_id_str,
                     error = %e,
                 )
-                .in_scope(|| info!(error = %e, "bi-stream read failed"));
+                .in_scope(|| tracing::trace!(error = %e, "bi-stream read failed"));
                 continue;
             }
         };
@@ -452,52 +505,52 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
         }
         let tag = bytes[0];
         if tag != TAG_BI_ECHO {
-            tracing::info_span!(
+            tracing::trace_span!(
                 "rafka.mesh.bi.unknown_tag",
                 node_id = %own_node_id,
                 peer_id = %peer_id_str,
                 tag = tag as i64,
                 size_bytes = bytes.len() as i64,
             )
-            .in_scope(|| info!(tag, "bi-stream unknown tag — dropping"));
+            .in_scope(|| tracing::trace!(tag, "bi-stream unknown tag — dropping"));
             continue;
         }
-        let recv_span = tracing::info_span!(
+        let recv_span = tracing::trace_span!(
             "rafka.mesh.bi.echo_received",
             node_id = %own_node_id,
             peer_id = %peer_id_str,
             size_bytes = bytes.len() as i64,
         );
-        recv_span.in_scope(|| info!(size = bytes.len(), "bi echo received"));
+        recv_span.in_scope(|| tracing::trace!(size = bytes.len(), "bi echo received"));
 
         // Echo back identical bytes (tag + varint + payload).
         if let Err(e) = send.write_all(&bytes).await {
-            tracing::info_span!(
+            tracing::trace_span!(
                 "rafka.mesh.bi.write_failed",
                 node_id = %own_node_id,
                 peer_id = %peer_id_str,
                 error = %e,
             )
-            .in_scope(|| info!(error = %e, "bi echo write failed"));
+            .in_scope(|| tracing::trace!(error = %e, "bi echo write failed"));
             continue;
         }
         if let Err(e) = send.finish() {
-            tracing::info_span!(
+            tracing::trace_span!(
                 "rafka.mesh.bi.finish_failed",
                 node_id = %own_node_id,
                 peer_id = %peer_id_str,
                 error = %e,
             )
-            .in_scope(|| info!(error = %e, "bi echo finish failed"));
+            .in_scope(|| tracing::trace!(error = %e, "bi echo finish failed"));
             continue;
         }
-        tracing::info_span!(
+        tracing::trace_span!(
             "rafka.mesh.bi.echo_sent",
             node_id = %own_node_id,
             peer_id = %peer_id_str,
             size_bytes = bytes.len() as i64,
         )
-        .in_scope(|| info!(size = bytes.len(), "bi echo sent"));
+        .in_scope(|| tracing::trace!(size = bytes.len(), "bi echo sent"));
     }
 }
 
@@ -507,7 +560,7 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
 /// plane works without needing live broker / compute / message types yet.
 pub async fn bi_echo_roundtrip(
     endpoint: &iroh::Endpoint,
-    peer: iroh::NodeId,
+    peer: impl Into<iroh::EndpointAddr>,
     payload: Vec<u8>,
 ) -> anyhow::Result<Vec<u8>> {
     let conn = endpoint.connect(peer, ALPN).await?;
@@ -541,6 +594,18 @@ pub struct GossipDigest {
     pub frames_sent_total: u64,
     pub frames_recv_total: u64,
     pub wall_time_ms: u64,
+    /// Process CPU usage in cores (e.g. 2.4 = 2.4 cores' worth of work).
+    /// Measured via sysinfo; may be overridden by RAFKA_DEV_CPU_USED in dev.
+    pub cpu_used: f32,
+    /// Process CPU budget in cores (cgroup-aware on Linux, host cpus
+    /// elsewhere). May be overridden by RAFKA_DEV_CPU_BUDGET in dev.
+    pub cpu_budget: f32,
+    /// Resident memory in GB. Measured via sysinfo (this is the same number
+    /// `top` shows as RES). May be overridden by RAFKA_DEV_RAM_USED in dev.
+    pub ram_used: f32,
+    /// RAM budget in GB (cgroup-aware on Linux, host total elsewhere).
+    /// May be overridden by RAFKA_DEV_RAM_BUDGET in dev.
+    pub ram_budget: f32,
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -572,6 +637,24 @@ pub fn live_digests() -> &'static Arc<DashMap<String, GossipDigest>> {
     LIVE_DIGESTS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+/// Process-local receive timestamps keyed by node_id. Updated at every site
+/// that inserts into `live_digests` — once on our own self-injection and once
+/// per inbound gossip event. The staleness pruner compares `now - last_seen_ms`
+/// rather than `now - digest.wall_time_ms` to avoid clock-skew false positives:
+/// a peer whose wall clock is drifted by 2 minutes would otherwise appear stale
+/// even though we just received a live digest from it.
+///
+/// Uses a Mutex<HashMap> rather than DashMap to avoid holding a DashMap shard
+/// lock on live_digests while also needing a lock on last_seen_ms — a two-map
+/// DashMap access pattern that can deadlock under DashMap's custom RwLock impl.
+static LAST_SEEN_MS: std::sync::OnceLock<
+    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+> = std::sync::OnceLock::new();
+
+pub fn last_seen_ms() -> &'static Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> {
+    LAST_SEEN_MS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+}
+
 /// Per-topic membership ledger. For each gossip topic we subscribe to,
 /// records the node_ids whose digests we've actually received on that
 /// topic in the last gossip cycle. This is the AUTHORITATIVE answer to
@@ -585,6 +668,92 @@ static TOPIC_MEMBERSHIP: std::sync::OnceLock<
 pub fn topic_membership(
 ) -> &'static Arc<DashMap<String, std::collections::HashSet<String>>> {
     TOPIC_MEMBERSHIP.get_or_init(|| Arc::new(DashMap::new()))
+}
+
+/// Default staleness window for the process-global mesh-state pruner. A
+/// `GossipDigest` whose `wall_time_ms` is older than this is treated as
+/// "the source node is gone" and removed from `live_digests` +
+/// `topic_membership`. At the default 2s gossip cadence this is 15 missed
+/// cycles — well past any reasonable flake. Override with `RAFKA_STALENESS_MS`.
+const DEFAULT_STALENESS_MS: u64 = 30_000;
+
+/// Background staleness pruner for the process-global `live_digests` +
+/// `topic_membership` maps. Without it, both grow monotonically with the
+/// count of unique node_ids ever observed — every cluster restart, peer
+/// churn, or admin-ui respawn adds entries that never leave.
+///
+/// Sweeps every 5 seconds, removes digests older than `RAFKA_STALENESS_MS`
+/// (default 30s), then drops the same node_ids from every topic's
+/// membership set. The receiving node's OWN digest is refreshed every
+/// gossip tick via the self-injection at the bottom of `run_gossip`, so
+/// it never goes stale and is never pruned.
+async fn run_staleness_pruner() {
+    let staleness_ms: u64 = std::env::var("RAFKA_STALENESS_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_STALENESS_MS);
+
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(5_000));
+    loop {
+        tick.tick().await;
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Collect all known node_ids first (releasing shard locks before the
+        // staleness check to avoid holding DashMap shard locks across a second
+        // DashMap lookup, which can deadlock with parking_lot's non-reentrant
+        // RwLock). Compare against local receive-time (from last_seen_ms) rather
+        // than the sender's wall_time_ms to avoid clock-skew false positives.
+        let all_keys: Vec<String> = live_digests()
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+
+        let stale: Vec<String> = {
+            let seen = last_seen_ms().lock().unwrap();
+            all_keys
+                .into_iter()
+                .filter(|node_id| {
+                    let received = seen.get(node_id).copied().unwrap_or(0);
+                    now_ms.saturating_sub(received) > staleness_ms
+                })
+                .collect()
+        };
+
+        if stale.is_empty() {
+            continue;
+        }
+
+        for node_id in &stale {
+            live_digests().remove(node_id);
+            last_seen_ms().lock().unwrap().remove(node_id);
+        }
+
+        // Topic membership is the dependent view — same node_ids that
+        // disappeared from live_digests must also leave every topic.
+        for mut topic_entry in topic_membership().iter_mut() {
+            for node_id in &stale {
+                topic_entry.value_mut().remove(node_id);
+            }
+        }
+
+        tracing::info_span!(
+            "rafka.mesh.staleness.pruned",
+            removed = stale.len() as i64,
+            staleness_ms = staleness_ms as i64,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| {
+            info!(
+                removed = stale.len(),
+                staleness_ms,
+                "pruned stale digests + topic membership"
+            );
+        });
+    }
 }
 
 /// Last N frames this node received over its data plane. Pushed by
@@ -652,8 +821,11 @@ async fn run_gossip(
     // digest under topic_membership["admin-ui"] and the edge-builder
     // would produce O(n²) spurious cross-mesh pairs (red-team R2 2026-05-21).
     topic_label: &'static str,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 ) {
     let counters = mesh_counters();
+    let load_sampler = LoadSampler::new(cpu_budget, ram_budget, None, None);
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh
@@ -673,22 +845,39 @@ async fn run_gossip(
     };
     let (sender, mut receiver) = topic.split();
     let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
+    let mut last_digest: Option<GossipDigest> = None;
+    let mut last_broadcast_time: u64 = 0;
+    let mut ticks_since_sample = 10;
+    let mut current_load = load_sampler.sample();
+    let mut joined_peers = std::collections::HashSet::new();
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                // Feed mdns-discovered peers to gossip so the swarm forms. Subscribe
-                // with empty bootstrap only finds peers if they're explicitly added.
-                // join_peers is idempotent — calling every tick with the current
-                // peer registry is cheap.
-                let peer_node_ids: Vec<iroh::NodeId> = registry
-                    .iter()
-                    .filter_map(|e| iroh::NodeId::from_str(e.key()).ok())
-                    .collect();
-                if !peer_node_ids.is_empty() {
-                    let _ = sender.join_peers(peer_node_ids).await;
+                // Feed mdns-discovered peers to gossip so the swarm forms.
+                // join_peers triggers QUIC handshakes, so doing it every 100ms
+                // for already-connected peers creates a massive CPU storm.
+                let mut new_peers = Vec::new();
+                for peer in registry.iter() {
+                    if !joined_peers.contains(peer.key()) {
+                        if let Ok(id) = iroh::EndpointId::from_str(peer.key()) {
+                            new_peers.push(id);
+                            joined_peers.insert(peer.key().clone());
+                        }
+                    }
+                }
+                joined_peers.retain(|p| registry.contains_key(p));
+                if !new_peers.is_empty() {
+                    let _ = sender.join_peers(new_peers).await;
                 }
                 use std::sync::atomic::Ordering;
                 let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
+                
+                ticks_since_sample += 1;
+                if ticks_since_sample >= 10 {
+                    current_load = load_sampler.sample();
+                    ticks_since_sample = 0;
+                }
+                let load = current_load;
                 let digest = GossipDigest {
                     node_id: node_id.clone(),
                     node_name: node_name.to_string(),
@@ -702,12 +891,33 @@ async fn run_gossip(
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0),
+                    cpu_used: load.cpu_used,
+                    cpu_budget: load.cpu_budget,
+                    ram_used: load.ram_used,
+                    ram_budget: load.ram_budget,
                 };
-                let payload = match postcard::to_allocvec(&digest) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let size = payload.len();
+                
+                let mut should_broadcast = false;
+                if let Some(last) = &last_digest {
+                    if last.peer_count != digest.peer_count || last.peer_ids != digest.peer_ids {
+                        should_broadcast = true;
+                    }
+                    if last.frames_sent_total != digest.frames_sent_total || last.frames_recv_total != digest.frames_recv_total {
+                        should_broadcast = true;
+                    }
+                    if (last.cpu_used - digest.cpu_used).abs() > 0.05 * last.cpu_budget.max(1.0) {
+                        should_broadcast = true;
+                    }
+                    if (last.ram_used - digest.ram_used).abs() > 0.05 * last.ram_budget.max(1.0) {
+                        should_broadcast = true;
+                    }
+                    if digest.wall_time_ms.saturating_sub(last_broadcast_time) >= 30_000 {
+                        should_broadcast = true;
+                    }
+                } else {
+                    should_broadcast = true;
+                }
+
                 // Red-team R3 fix: file our own digest into live_digests +
                 // topic_membership so we appear in /api/topology and
                 // /api/heartbeats from our own perspective. iroh-gossip does
@@ -715,10 +925,32 @@ async fn run_gossip(
                 // self-injection an admin-ui observer (or any node) is
                 // invisible in its own UI.
                 live_digests().insert(digest.node_id.clone(), digest.clone());
+                // Track local receive-time (not sender wall-clock) so the
+                // staleness pruner is immune to clock skew between nodes.
+                {
+                    let now_recv = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    last_seen_ms().lock().unwrap().insert(digest.node_id.clone(), now_recv);
+                }
                 topic_membership()
                     .entry(topic_label.to_string())
                     .or_insert_with(std::collections::HashSet::new)
                     .insert(digest.node_id.clone());
+
+                if !should_broadcast {
+                    continue;
+                }
+
+                last_digest = Some(digest.clone());
+                last_broadcast_time = digest.wall_time_ms;
+
+                let payload = match postcard::to_allocvec(&digest) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let size = payload.len();
                 if let Err(e) = sender.broadcast(payload.into()).await {
                     tracing::info_span!(
                         "rafka.mesh.gossip.broadcast_failed",
@@ -737,7 +969,7 @@ async fn run_gossip(
                 }
             }
             event = receiver.next() => {
-                let Some(event) = event else { continue };
+                let Some(event) = event else { break };
                 let event = match event {
                     Ok(e) => e,
                     Err(e) => {
@@ -759,6 +991,14 @@ async fn run_gossip(
                     // zero Jaeger dependency. The mesh IS the topology.
                     if let Some(d) = &digest {
                         live_digests().insert(d.node_id.clone(), d.clone());
+                        // Record local receive-time for clock-skew-safe staleness pruning.
+                        {
+                            let now_recv = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            last_seen_ms().lock().unwrap().insert(d.node_id.clone(), now_recv);
+                        }
                         // Authoritative topic-membership: we received d's digest
                         // ON THIS TOPIC (= the `mesh_id` param of this run_gossip
                         // task), so d is a member of that topic's swarm.
@@ -773,14 +1013,21 @@ async fn run_gossip(
                         .as_ref()
                         .map(|d| format!("node={}/peers={}", d.node_name, d.peer_count))
                         .unwrap_or_else(|| "<decode_failed>".to_string());
-                    tracing::info_span!(
+                    // TRACE not INFO: this span fires per-frame. At 18 nodes
+                    // with Plumtree eager-push, each digest arrives ~17 times
+                    // (once per peer in the spanning-tree fanout), so logging
+                    // here at INFO produces ~2600 events/sec per node and was
+                    // the dominant CPU cost (host pegged at 95-99% during
+                    // bootstrap-2-mesh). State transitions stay at INFO; this
+                    // per-message event lives at TRACE.
+                    tracing::trace_span!(
                         "rafka.mesh.gossip.received",
                         node_id = %node_id,
                         from_peer = %from,
                         size_bytes = size as i64,
                         digest = %summary,
                     )
-                    .in_scope(|| info!(from = %from, size_bytes = size, digest = %summary, "gossip digest received"));
+                    .in_scope(|| tracing::trace!(from = %from, size_bytes = size, digest = %summary, "gossip digest received"));
                 }
             }
         }
@@ -797,56 +1044,99 @@ async fn dial_seeds(
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
+    const MAX_ATTEMPTS: u32 = 10;
+    const BASE_DELAY_MS: u64 = 1_000;
+    const MAX_DELAY_MS: u64 = 30_000;
+
     for seed in seeds {
         let peer_id_str = seed.id.to_string();
+        let endpoint = endpoint.clone();
+        let own_node_id = own_node_id.clone();
+        let registry = Arc::clone(&registry);
+        let mesh_id_registry = Arc::clone(&mesh_id_registry);
 
-        tracing::info_span!(
-            "rafka.mesh.peer.discovered",
-            node_id = %own_node_id,
-            peer_id = %peer_id_str,
-            peer_node_type = "unknown",
-            source = "seed",
-        )
-        .in_scope(|| {
-            info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
+        // Each seed dials in its own task so a slow/down seed doesn't block
+        // subsequent seeds from connecting.
+        tokio::spawn(async move {
+            tracing::info_span!(
+                "rafka.mesh.peer.discovered",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                peer_node_type = "unknown",
+                source = "seed",
+            )
+            .in_scope(|| {
+                info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
+            });
+
+            let endpoint_addr = EndpointAddr::new(seed.id).with_ip_addr(seed.addr);
+            let mut attempt = 0u32;
+            loop {
+                if attempt >= MAX_ATTEMPTS {
+                    tracing::info_span!(
+                        "rafka.mesh.seed.giveup",
+                        node_id = %own_node_id,
+                        peer_id = %peer_id_str,
+                        attempts = attempt as i64,
+                    )
+                    .in_scope(|| {
+                        info!(peer_id = %peer_id_str, attempts = attempt, "seed gave up after max attempts");
+                    });
+                    break;
+                }
+
+                match endpoint.connect(endpoint_addr.clone(), ALPN).await {
+                    Ok(conn) => {
+                        tracing::info_span!(
+                            "rafka.mesh.peer.connected",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            peer_node_type = "unknown",
+                            direction = "outbound",
+                        )
+                        .in_scope(|| {
+                            info!(peer_id = %peer_id_str, "peer connected (outbound)");
+                        });
+
+                        if let Some((_, old_conn)) = registry.remove(&peer_id_str) {
+                            old_conn.close(0u32.into(), b"superseded by new connection");
+                        }
+                        registry.insert(peer_id_str.clone(), conn.clone());
+
+                        send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
+
+                        let conn_bi = conn.clone();
+                        let own_bi = own_node_id.clone();
+                        let peer_bi = peer_id_str.clone();
+                        tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+
+                        let own = own_node_id.clone();
+                        let reg = Arc::clone(&registry);
+                        let mesh_reg = Arc::clone(&mesh_id_registry);
+                        tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
+                        break;
+                    }
+                    Err(e) => {
+                        attempt += 1;
+                        let delay_ms = (BASE_DELAY_MS * 2u64.pow(attempt.min(5))).min(MAX_DELAY_MS);
+                        tracing::info_span!(
+                            "rafka.mesh.seed.retry",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            attempt = attempt as i64,
+                            delay_ms = delay_ms as i64,
+                        )
+                        .in_scope(|| {
+                            info!(peer_id = %peer_id_str, attempt, delay_ms, error = %e, "seed dial failed, retrying");
+                        });
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
         });
-
-        let endpoint_addr = NodeAddr::new(seed.id).with_direct_addresses([seed.addr]);
-        match endpoint.connect(endpoint_addr, ALPN).await {
-            Ok(conn) => {
-                tracing::info_span!(
-                    "rafka.mesh.peer.connected",
-                    node_id = %own_node_id,
-                    peer_id = %peer_id_str,
-                    peer_node_type = "unknown",
-                    direction = "outbound",
-                )
-                .in_scope(|| {
-                    info!(peer_id = %peer_id_str, "peer connected (outbound)");
-                });
-
-                registry.insert(peer_id_str.clone(), conn.clone());
-
-                send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
-
-                let conn_bi = conn.clone();
-                let own_bi = own_node_id.clone();
-                let peer_bi = peer_id_str.clone();
-                tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
-
-                let own = own_node_id.clone();
-                let reg = Arc::clone(&registry);
-                let mesh_reg = Arc::clone(&mesh_id_registry);
-                tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
-            }
-            Err(e) => {
-                info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
-            }
-        }
     }
 }
 
-#[instrument(skip_all)]
 async fn watch_mdns(
     mut rx: tokio::sync::mpsc::Receiver<String>,
     endpoint: iroh::Endpoint,
@@ -895,6 +1185,9 @@ async fn watch_mdns(
                         info!(peer_id = %peer_id_str, "peer connected via mdns (outbound)")
                     });
 
+                    if let Some((_, old_conn)) = reg.remove(&peer_id_str) {
+                        old_conn.close(0u32.into(), b"superseded by new connection");
+                    }
                     reg.insert(peer_id_str.clone(), conn.clone());
 
                     send_hello(&conn, &own, own_mesh_id, own_node_type, &peer_id_str).await;
@@ -941,14 +1234,11 @@ async fn start_accept_loop(
                                 return;
                             }
                         };
-                        let alpn = conn.alpn().unwrap_or_default();
+                        let alpn = conn.alpn();
                         if alpn == iroh_gossip::ALPN {
                             // Route to gossip — its handle_connection drives the
                             // HyParView state machine on this connection.
-                            let peer_id = conn
-                                .remote_node_id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|_| "unknown".into());
+                            let peer_id = conn.remote_id().to_string();
                             tracing::info_span!(
                                 "rafka.mesh.gossip.accept",
                                 node_id = %own_id,
@@ -962,10 +1252,7 @@ async fn start_accept_loop(
                         }
                         // Default: our rafka-mesh-v1 ALPN
                         {
-                            let peer_id = conn
-                                .remote_node_id()
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|_| "unknown".into());
+                            let peer_id = conn.remote_id().to_string();
                             tracing::info_span!(
                                 "rafka.mesh.peer.connected",
                                 node_id = %own_id,
@@ -977,6 +1264,9 @@ async fn start_accept_loop(
                                 info!(peer_id = %peer_id, "peer connected (inbound)");
                             });
 
+                            if let Some((_, old_conn)) = reg.remove(&peer_id) {
+                                old_conn.close(0u32.into(), b"superseded by new connection");
+                            }
                             reg.insert(peer_id.clone(), conn.clone());
 
                             send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
@@ -1073,7 +1363,7 @@ async fn run_frame_reader(
                 let bytes = match recv.read_to_end(4096).await {
                     Ok(b) => b,
                     Err(e) => {
-                        info!(peer_id = %peer_id_str, error = %e, "frame read error");
+                        tracing::trace!(peer_id = %peer_id_str, error = %e, "frame read error");
                         continue;
                     }
                 };
@@ -1117,7 +1407,7 @@ async fn run_frame_reader(
                         // Record peer's mesh_id so heartbeat (Role::Bridge especially)
                         // can aggregate per-mesh peer counts.
                         mesh_id_registry.insert(peer_id_str.clone(), peer_mesh_id.clone());
-                        let recv_span = tracing::info_span!(
+                        let recv_span = tracing::trace_span!(
                             "rafka.mesh.peer.hello_received",
                             node_id = %own_node_id,
                             peer_id = %peer_id_str,
@@ -1127,7 +1417,7 @@ async fn run_frame_reader(
                         );
                         recv_span.set_parent(parent_ctx);
                         recv_span.in_scope(|| {
-                            info!(peer_id = %peer_id_str, peer_mesh_id = %peer_mesh_id, peer_node_type = %peer_node_type, "hello received");
+                            tracing::trace!(peer_id = %peer_id_str, peer_mesh_id = %peer_mesh_id, peer_node_type = %peer_node_type, "hello received");
                         });
                         // Cross-mesh: peer is in a different mesh_id than ours. Emit
                         // dedicated span so operators can filter Jaeger for cross-mesh
@@ -1146,7 +1436,7 @@ async fn run_frame_reader(
                         }
                     }
                     Ok((parent_ctx, InternalMeshFrame::Pong { org_id })) => {
-                        let span = tracing::info_span!(
+                        let span = tracing::trace_span!(
                             "rafka.mesh.frame.received",
                             node_id = %own_node_id,
                             peer_id = %peer_id_str,
@@ -1156,12 +1446,12 @@ async fn run_frame_reader(
                         );
                         span.set_parent(parent_ctx);
                         span.in_scope(|| {
-                            info!(peer_id = %peer_id_str, "pong received");
+                            tracing::trace!(peer_id = %peer_id_str, "pong received");
                         });
                     }
                     Ok((parent_ctx, InternalMeshFrame::Ping { org_id })) => {
                         // Nodes that aren't the ping sender receive pings and reply with pong.
-                        let recv_span = tracing::info_span!(
+                        let recv_span = tracing::trace_span!(
                             "rafka.mesh.frame.received",
                             node_id = %own_node_id,
                             peer_id = %peer_id_str,
@@ -1171,12 +1461,12 @@ async fn run_frame_reader(
                         );
                         recv_span.set_parent(parent_ctx);
                         recv_span.in_scope(|| {
-                            info!(peer_id = %peer_id_str, "ping received");
+                            tracing::trace!(peer_id = %peer_id_str, "ping received");
                         });
 
                         let pong = InternalMeshFrame::Pong { org_id };
                         let sent_span = recv_span.in_scope(|| {
-                            tracing::info_span!(
+                            tracing::trace_span!(
                                 "rafka.mesh.frame.sent",
                                 node_id = %own_node_id,
                                 peer_id = %peer_id_str,
@@ -1193,7 +1483,7 @@ async fn run_frame_reader(
                         match conn.open_uni().await {
                             Ok(mut send) => {
                                 if let Err(e) = send.write_all(&encoded).await {
-                                    tracing::info_span!(
+                                    tracing::trace_span!(
                                         "rafka.mesh.frame.sent_failed",
                                         node_id = %own_node_id,
                                         peer_id = %peer_id_str,
@@ -1201,11 +1491,11 @@ async fn run_frame_reader(
                                         error = %e,
                                         otel.kind = "producer",
                                     )
-                                    .in_scope(|| info!(peer_id = %peer_id_str, "pong write failed"));
+                                    .in_scope(|| tracing::trace!(peer_id = %peer_id_str, "pong write failed"));
                                     continue;
                                 }
                                 if let Err(e) = send.finish() {
-                                    tracing::info_span!(
+                                    tracing::trace_span!(
                                         "rafka.mesh.frame.sent_failed",
                                         node_id = %own_node_id,
                                         peer_id = %peer_id_str,
@@ -1213,15 +1503,15 @@ async fn run_frame_reader(
                                         error = %e,
                                         otel.kind = "producer",
                                     )
-                                    .in_scope(|| info!(peer_id = %peer_id_str, "pong finish failed"));
+                                    .in_scope(|| tracing::trace!(peer_id = %peer_id_str, "pong finish failed"));
                                     continue;
                                 }
                                 sent_span.in_scope(|| {
-                                    info!(peer_id = %peer_id_str, "pong sent");
+                                    tracing::trace!(peer_id = %peer_id_str, "pong sent");
                                 });
                             }
                             Err(e) => {
-                                tracing::info_span!(
+                                tracing::trace_span!(
                                     "rafka.mesh.frame.sent_failed",
                                     node_id = %own_node_id,
                                     peer_id = %peer_id_str,
@@ -1229,13 +1519,13 @@ async fn run_frame_reader(
                                     error = %e,
                                     otel.kind = "producer",
                                 )
-                                .in_scope(|| info!(peer_id = %peer_id_str, "open_uni failed for pong"));
+                                .in_scope(|| tracing::trace!(peer_id = %peer_id_str, "open_uni failed for pong"));
                             }
                         }
                     }
                     Err(e) => {
                         let byte_len = bytes.len();
-                        tracing::info_span!(
+                        tracing::trace_span!(
                             "rafka.mesh.frame.decode_failed",
                             node_id = %own_node_id,
                             peer_id = %peer_id_str,
@@ -1243,12 +1533,13 @@ async fn run_frame_reader(
                             byte_len = byte_len,
                             otel.kind = "consumer",
                         )
-                        .in_scope(|| info!(peer_id = %peer_id_str, "frame decode failed"));
+                        .in_scope(|| tracing::trace!(peer_id = %peer_id_str, "frame decode failed"));
                     }
                 }
             }
             Err(_) => {
                 registry.remove(&peer_id_str);
+                mesh_id_registry.remove(&peer_id_str);
                 tracing::info_span!(
                     "rafka.mesh.peer.disconnected",
                     node_id = %own_node_id,
@@ -1262,7 +1553,6 @@ async fn run_frame_reader(
     }
 }
 
-#[instrument(skip_all)]
 async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
     let counters = mesh_counters();
     // 10s cadence: faster (3s) overloads the Jaeger ES backend with ~100
@@ -1396,7 +1686,7 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
         info!(path = ?identity_path, node_id = %secret_key.public(), "loaded existing identity");
         Ok(secret_key)
     } else {
-        let secret_key = SecretKey::generate(rand::rngs::OsRng);
+        let secret_key = SecretKey::generate();
         let identity = NodeIdentity {
             secret_key_hex: hex::encode(secret_key.to_bytes()),
         };
@@ -1411,9 +1701,10 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
 async fn create_endpoint(
     secret_key: SecretKey,
     bind_addr: SocketAddrV4,
+    mdns_enable: bool,
 ) -> Result<IrohMeshTransport> {
-    let transport = IrohMeshTransport::new(secret_key, bind_addr).await?;
-    info!(node_id = %transport.endpoint.node_id(), "iroh endpoint bound");
+    let transport = IrohMeshTransport::new(secret_key, bind_addr, mdns_enable).await?;
+    info!(node_id = %transport.endpoint.id(), mdns_enable = mdns_enable, "iroh endpoint bound");
     Ok(transport)
 }
 
@@ -1490,7 +1781,7 @@ async fn run_heartbeat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iroh::{Endpoint, Watcher};
+    use iroh::{Endpoint, endpoint::presets};
     use rafka_mesh_transport::ALPN;
 
     /// End-to-end bi-stream echo: two in-process iroh endpoints, A accepts +
@@ -1500,17 +1791,17 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn bi_stream_echo_e2e() {
         // Endpoint A (server)
-        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_a = Endpoint::builder()
+        let secret_a = iroh::SecretKey::generate();
+        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint A");
-        let addr_a = endpoint_a.node_addr().initialized().await;
-        let node_id_a = endpoint_a.node_id();
+        let addr_a = endpoint_a.addr();
+        let node_id_a = endpoint_a.id();
 
         // Accept loop on A: any incoming connection gets bi_echo_reader.
         let _accept_handle = {
@@ -1519,28 +1810,28 @@ mod tests {
             tokio::spawn(async move {
                 if let Some(incoming) = endpoint.accept().await {
                     let conn = incoming.await.expect("A accept");
-                    let peer = conn.remote_node_id().map(|i| i.to_string()).unwrap_or_default();
+                    let peer = conn.remote_id().to_string();
                     run_bi_echo_reader(conn, own, peer).await;
                 }
             })
         };
 
         // Endpoint B (client)
-        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_b = Endpoint::builder()
+        let secret_b = iroh::SecretKey::generate();
+        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint B");
-        // Add A as known peer so the dial resolves without DHT/mdns.
-        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+        // In iroh 0.98 there is no add_node_addr; pass the full EndpointAddr
+        // directly to bi_echo_roundtrip (it accepts impl Into<EndpointAddr>).
 
         // Round-trip via the public helper
         let payload = b"bi-stream-echo-test-payload".to_vec();
-        let echoed = bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone())
+        let echoed = bi_echo_roundtrip(&endpoint_b, addr_a, payload.clone())
             .await
             .expect("bi_echo_roundtrip");
 
@@ -1564,32 +1855,28 @@ mod tests {
     /// beyond what a single broker handshake demands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn backpressure_bi_stream_flood() {
-        let secret_a = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_a = Endpoint::builder()
+        let secret_a = iroh::SecretKey::generate();
+        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint A");
-        let addr_a = endpoint_a.node_addr().initialized().await;
-        let node_id_a = endpoint_a.node_id();
+        let addr_a = endpoint_a.addr();
 
         // Accept loop on A: keep accepting incoming connections; each gets a
         // run_bi_echo_reader spawned. Runs until the test drops the handle.
         let _accept_handle = {
             let endpoint = endpoint_a.clone();
-            let own = node_id_a.to_string();
+            let own = endpoint_a.id().to_string();
             tokio::spawn(async move {
                 while let Some(incoming) = endpoint.accept().await {
                     let own = own.clone();
                     tokio::spawn(async move {
                         if let Ok(conn) = incoming.await {
-                            let peer = conn
-                                .remote_node_id()
-                                .map(|i| i.to_string())
-                                .unwrap_or_default();
+                            let peer = conn.remote_id().to_string();
                             run_bi_echo_reader(conn, own, peer).await;
                         }
                     });
@@ -1597,16 +1884,18 @@ mod tests {
             })
         };
 
-        let secret_b = iroh::SecretKey::generate(rand::rngs::OsRng);
-        let endpoint_b = Endpoint::builder()
+        let secret_b = iroh::SecretKey::generate();
+        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
-            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .bind_addr("127.0.0.1:0").unwrap()
             .bind()
             .await
             .expect("endpoint B");
-        endpoint_b.add_node_addr(addr_a).expect("add node addr");
+        // In iroh 0.98, addr_a (EndpointAddr) is passed directly to connect()
+        // instead of using the removed add_node_addr API.
+        let addr_a_clone = addr_a.clone();
 
         let deadline =
             tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1617,10 +1906,11 @@ mod tests {
             let endpoint_b = endpoint_b.clone();
             let total = total.clone();
             let errors = errors.clone();
+            let addr = addr_a_clone.clone();
             workers.push(tokio::spawn(async move {
                 let payload = vec![0xAB_u8; 1024]; // 1 KiB per round-trip
                 while tokio::time::Instant::now() < deadline {
-                    match bi_echo_roundtrip(&endpoint_b, node_id_a, payload.clone()).await {
+                    match bi_echo_roundtrip(&endpoint_b, addr.clone(), payload.clone()).await {
                         Ok(_) => {
                             total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
@@ -1667,5 +1957,204 @@ async fn wait_for_signal() -> &'static str {
             info!("auto-shutdown timer fired");
             "auto_shutdown_timer"
         }
+    }
+}
+
+#[cfg(test)]
+mod gossip_digest_schema_tests {
+    use super::*;
+
+    #[test]
+    fn digest_carries_load_fields_through_postcard_roundtrip() {
+        let original = GossipDigest {
+            node_id: "abc123".into(),
+            node_name: "broker-1".into(),
+            mesh_id: "mesh-a".into(),
+            node_type: "broker".into(),
+            peer_count: 3,
+            peer_ids: vec!["peer1".into()],
+            frames_sent_total: 100,
+            frames_recv_total: 200,
+            wall_time_ms: 1_700_000_000_000,
+            cpu_used: 2.4,
+            cpu_budget: 4.0,
+            ram_used: 0.31,
+            ram_budget: 2.0,
+        };
+        let bytes = postcard::to_allocvec(&original).expect("encode");
+        let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
+        assert_eq!(decoded.cpu_used, 2.4);
+        assert_eq!(decoded.cpu_budget, 4.0);
+        assert_eq!(decoded.ram_used, 0.31_f32);
+        assert_eq!(decoded.ram_budget, 2.0);
+        // Wire-size budget: digest must remain under 200 bytes for typical
+        // small-mesh values to fit inside QUIC datagram MTU comfortably.
+        assert!(bytes.len() < 200, "digest is {} bytes, must stay under 200", bytes.len());
+    }
+}
+
+#[cfg(test)]
+mod staleness_pruner_tests {
+    use super::*;
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn mk_digest(node_id: &str, age_ms: u64) -> GossipDigest {
+        GossipDigest {
+            node_id: node_id.into(),
+            node_name: format!("test-{node_id}"),
+            mesh_id: "mesh-test".into(),
+            node_type: "broker".into(),
+            peer_count: 0,
+            peer_ids: vec![],
+            frames_sent_total: 0,
+            frames_recv_total: 0,
+            wall_time_ms: now_ms().saturating_sub(age_ms),
+            cpu_used: 0.0,
+            cpu_budget: 0.0,
+            ram_used: 0.0,
+            ram_budget: 0.0,
+        }
+    }
+
+    /// The pruner's actual logic, factored out of the loop so tests can
+    /// call it once instead of waiting 5 seconds. Mirrors the body of
+    /// `run_staleness_pruner` exactly (using last_seen_ms, not wall_time_ms).
+    /// Returns the number of entries pruned.
+    fn prune_once(staleness_ms: u64) -> usize {
+        let now = now_ms();
+        // Collect keys first (dropping shard locks) before looking up
+        // last_seen_ms to avoid holding DashMap shard locks across a second
+        // DashMap lookup (non-reentrant parking_lot RwLock would deadlock).
+        let all_keys: Vec<String> = live_digests()
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        let stale: Vec<String> = {
+            let seen = last_seen_ms().lock().unwrap();
+            all_keys
+                .into_iter()
+                .filter(|node_id| {
+                    let received = seen.get(node_id).copied().unwrap_or(0);
+                    now.saturating_sub(received) > staleness_ms
+                })
+                .collect()
+        };
+        for node_id in &stale {
+            live_digests().remove(node_id);
+            last_seen_ms().lock().unwrap().remove(node_id);
+        }
+        for mut topic_entry in topic_membership().iter_mut() {
+            for node_id in &stale {
+                topic_entry.value_mut().remove(node_id);
+            }
+        }
+        stale.len()
+    }
+
+    #[test]
+    fn prunes_stale_digest_keeps_fresh() {
+        // Use unique node_ids so this test doesn't conflict with anything
+        // else the process-global maps might hold during the run.
+        let fresh_id = format!("test-fresh-{}", std::process::id());
+        let stale_id = format!("test-stale-{}", std::process::id());
+
+        let now = now_ms();
+        live_digests().insert(fresh_id.clone(), mk_digest(&fresh_id, 1_000)); // 1s old
+        // Fresh entry was "received" 1s ago (local clock).
+        last_seen_ms().lock().unwrap().insert(fresh_id.clone(), now.saturating_sub(1_000));
+
+        live_digests().insert(stale_id.clone(), mk_digest(&stale_id, 60_000)); // 60s old
+        // Stale entry was "received" 60s ago (local clock).
+        last_seen_ms().lock().unwrap().insert(stale_id.clone(), now.saturating_sub(60_000));
+
+        topic_membership()
+            .entry("test-topic".into())
+            .or_insert_with(std::collections::HashSet::new)
+            .insert(fresh_id.clone());
+        topic_membership()
+            .entry("test-topic".into())
+            .or_insert_with(std::collections::HashSet::new)
+            .insert(stale_id.clone());
+
+        // Threshold = 30s; stale entry (60s old) goes, fresh entry (1s) stays.
+        let pruned = prune_once(30_000);
+        assert!(pruned >= 1, "expected at least 1 prune, got {pruned}");
+
+        assert!(live_digests().contains_key(&fresh_id), "fresh entry was pruned");
+        assert!(!live_digests().contains_key(&stale_id), "stale entry was kept");
+
+        {
+            let topic_set = topic_membership().get("test-topic").unwrap();
+            assert!(topic_set.contains(&fresh_id), "fresh node missing from topic");
+            assert!(!topic_set.contains(&stale_id), "stale node still in topic");
+        } // topic_set (Ref holding read lock) dropped here
+
+        // Cleanup so we don't pollute other tests.
+        live_digests().remove(&fresh_id);
+        last_seen_ms().lock().unwrap().remove(&fresh_id);
+        topic_membership().alter("test-topic", |_, mut set| {
+            set.remove(&fresh_id);
+            set
+        });
+    }
+
+    #[test]
+    fn empty_maps_no_panic() {
+        // Calling prune on no stale entries returns 0 and doesn't crash.
+        // Use a threshold so high that NOTHING in the maps qualifies.
+        let pruned = prune_once(u64::MAX);
+        assert_eq!(pruned, 0);
+    }
+}
+
+#[cfg(test)]
+mod node_runtime_builder_tests {
+    use super::*;
+
+    #[test]
+    fn default_runtime_has_no_budget() {
+        let rt = NodeRuntime::new("broker");
+        assert_eq!(rt.cpu_budget, None);
+        assert_eq!(rt.ram_budget, None);
+    }
+
+    #[test]
+    fn with_cpu_budget_sets_value() {
+        let rt = NodeRuntime::new("broker").with_cpu_budget(4.0);
+        assert_eq!(rt.cpu_budget, Some(4.0));
+        assert_eq!(rt.ram_budget, None);
+    }
+
+    #[test]
+    fn with_ram_budget_sets_value() {
+        let rt = NodeRuntime::new("broker").with_ram_budget(2.0);
+        assert_eq!(rt.cpu_budget, None);
+        assert_eq!(rt.ram_budget, Some(2.0));
+    }
+
+    #[test]
+    fn both_budgets_chain() {
+        let rt = NodeRuntime::new("broker")
+            .with_cpu_budget(4.0)
+            .with_ram_budget(2.0);
+        assert_eq!(rt.cpu_budget, Some(4.0));
+        assert_eq!(rt.ram_budget, Some(2.0));
+    }
+
+    #[test]
+    fn with_role_preserves_budgets() {
+        let rt = NodeRuntime::new("bridge")
+            .with_cpu_budget(1.0)
+            .with_ram_budget(0.5)
+            .with_role(Role::Bridge);
+        assert_eq!(rt.cpu_budget, Some(1.0));
+        assert_eq!(rt.ram_budget, Some(0.5));
+        assert!(matches!(rt.role, Role::Bridge));
     }
 }

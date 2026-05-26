@@ -974,6 +974,18 @@ struct SpawnedMeta {
     node_type: String,
     mesh_id: String,
     pid: u32,
+    /// hex-encoded iroh EndpointId (== public key) of this spawned child.
+    /// Pre-minted by admin-ui before launching the child process, so admin-ui
+    /// can use it as a seed for subsequent spawns.
+    node_id_hex: String,
+    /// TCP/UDP port assigned to this child by admin-ui's port pool. Combined
+    /// with localhost to form `RAFKA_SEED_NODES` entries.
+    bind_port: u16,
+    /// UNIX-ms timestamp when admin-ui spawned this child. Used by the UI to
+    /// render a monotonically-increasing "age" (lifetime), distinct from
+    /// `wall_time_ms` on GossipDigest which is the per-digest emit time
+    /// (staleness, bounces with gossip cadence).
+    spawned_at_ms: u64,
 }
 
 struct ChaosController {
@@ -1076,6 +1088,21 @@ struct AppState {
     /// Red-team A#3: serialize /api/bootstrap calls so parallel requests
     /// queue instead of all passing the cap check before any spawn lands.
     bootstrap_mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Monotonic counter for assigning bind ports to spawned children.
+    /// Each spawn gets `next_bind_port.fetch_add(1, Relaxed)` + a base.
+    /// Used to form deterministic `<id>@127.0.0.1:<port>` seed entries
+    /// before children even start.
+    next_bind_port: Arc<std::sync::atomic::AtomicU16>,
+    /// Admin-ui's own iroh node_id (hex / PublicKey::to_string format),
+    /// pre-minted before NodeRuntime starts so spawn_one can include
+    /// admin-ui in every child's RAFKA_SEED_NODES. Children dial admin-ui
+    /// at boot; admin-ui's NodeRuntime accept loop receives them and
+    /// iroh-gossip HyParView propagates digests on every observed topic.
+    admin_node_id_hex: String,
+    /// Port admin-ui's iroh endpoint is pinned to (default 14819, one
+    /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
+    /// before NodeRuntime starts.
+    admin_bind_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -1095,6 +1122,16 @@ struct SpawnRequest {
     /// primitives like clock_skew to inject behavior switches at restart.
     #[serde(default)]
     extra_env: Option<std::collections::HashMap<String, String>>,
+    /// Optional CPU budget in cores (fractional ok). When set, admin-ui
+    /// spawns the child with `--cpu-budget <value>`. The child resolves
+    /// it at hydration (CLI > env > sysinfo) and broadcasts it in its
+    /// GossipDigest. Blank UI input → None → no flag passed → child
+    /// falls through to its own .env.dev value or sysinfo.
+    #[serde(default)]
+    cpu_budget: Option<f32>,
+    /// Same pattern for RAM budget in GB.
+    #[serde(default)]
+    ram_budget: Option<f32>,
 }
 
 async fn handle_health() -> impl IntoResponse {
@@ -1818,15 +1855,27 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
     for entry in digests.iter() {
         let d = entry.value();
+        // Look up spawn time so the UI can render a monotonic "age" (lifetime)
+        // distinct from `wall_time_ms` which is per-digest emit time.
+        let spawn_time_ms = state
+            .spawned_meta
+            .get(&d.node_name)
+            .map(|e| e.value().spawned_at_ms);
         nodes.push(json!({
             "id": d.node_name,
             "node_id": d.node_id,
             "type": d.node_type,
             "mesh_id": d.mesh_id,
             "peer_count": d.peer_count,
+            "peer_ids": d.peer_ids,
             "frames_sent_total": d.frames_sent_total,
             "frames_recv_total": d.frames_recv_total,
             "wall_time_ms": d.wall_time_ms,
+            "spawn_time_ms": spawn_time_ms,
+            "cpu_used": d.cpu_used,
+            "cpu_budget": d.cpu_budget,
+            "ram_used": d.ram_used,
+            "ram_budget": d.ram_budget,
             "status": "live",
         }));
     }
@@ -1842,9 +1891,15 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "type": entry.value().node_type,
                 "mesh_id": entry.value().mesh_id,
                 "peer_count": 0,
+                "peer_ids": Vec::<String>::new(),
                 "frames_sent_total": 0,
                 "frames_recv_total": 0,
                 "wall_time_ms": 0,
+                "spawn_time_ms": entry.value().spawned_at_ms,
+                "cpu_used": 0.0,
+                "cpu_budget": 0.0,
+                "ram_used": 0.0,
+                "ram_budget": 0.0,
                 "status": "pending",
             }));
         }
@@ -2518,6 +2573,8 @@ async fn spawn_one(
     state: &AppState,
     node_type: &str,
     extra_env: HashMap<String, String>,
+    cpu_budget: Option<f32>,
+    ram_budget: Option<f32>,
 ) -> Result<(String, u32), String> {
     if !KNOWN_NODE_TYPES.contains(&node_type) {
         return Err(format!("unknown node_type: {node_type}"));
@@ -2559,9 +2616,15 @@ async fn spawn_one(
         return Err(format!("failed to create spawn dir: {e}"));
     }
 
+    // Default to debug builds (fast iteration). Set RAFKA_CHILD_BUILD_PROFILE=release
+    // to spawn release-optimized children — required for realistic per-node CPU
+    // numbers, since debug iroh-quinn-proto runs 5-20× slower than release. Real
+    // perf testing must use release; everyday dev iteration uses debug.
+    let profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
+        .unwrap_or_else(|_| "debug".to_string());
     let binary = format!(
-        "{}/debug/rafka-{}.exe",
-        state.cargo_target_dir, node_type
+        "{}/{}/rafka-{}.exe",
+        state.cargo_target_dir, profile, node_type
     );
 
     let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -2573,26 +2636,126 @@ async fn spawn_one(
         .cloned()
         .unwrap_or_else(|| "default".to_string());
 
+    // ---- pre-mint identity (so admin-ui knows the child's node_id) ----
+    let secret_key = iroh::SecretKey::generate();
+    let node_id_hex = secret_key.public().to_string();
+    let identity_json = serde_json::json!({
+        "secret_key_hex": hex::encode(secret_key.to_bytes())
+    });
+    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
+    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
+        return Err(format!("failed to write child identity: {e}"));
+    }
+
+    // ---- assign a unique bind port from the AppState pool ----
+    let bind_port = state
+        .next_bind_port
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bind_addr_str = format!("127.0.0.1:{}", bind_port);
+
+    // ---- build seed list from already-spawned same-mesh nodes ----
+    // Admin-ui is ALWAYS prepended as the first seed so every child can
+    // dial back to admin-ui at boot. Admin-ui's NodeRuntime accept loop
+    // receives the connection; iroh-gossip HyParView then propagates peer
+    // info on every topic admin-ui is subscribed to (mesh-a, mesh-b, bridge),
+    // giving admin-ui visibility into every child's gossip digests.
+    // Additional same-mesh seeds follow so peers can also reach each other.
+    let admin_seed = format!(
+        "{}@127.0.0.1:{}",
+        state.admin_node_id_hex, state.admin_bind_port
+    );
+    let seeds_csv = {
+        let mut all_seeds = vec![admin_seed];
+        if node_type == "bridge" {
+            for target_mesh in ["mesh-a", "mesh-b"] {
+                if let Some(seed) = state
+                    .spawned_meta
+                    .iter()
+                    .find(|e| e.value().mesh_id == target_mesh)
+                    .map(|e| {
+                        format!(
+                            "{}@127.0.0.1:{}",
+                            e.value().node_id_hex,
+                            e.value().bind_port
+                        )
+                    })
+                {
+                    all_seeds.push(seed);
+                }
+            }
+        } else {
+            let same_mesh: Vec<String> = state
+                .spawned_meta
+                .iter()
+                .filter(|e| e.value().mesh_id == mesh_id)
+                .take(2)
+                .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+                .collect();
+            all_seeds.extend(same_mesh);
+        }
+        all_seeds.join(",")
+    };
+
     let mut cmd = tokio::process::Command::new(&binary);
+    // admin-ui's own load_env_dev_from at startup populates RAFKA_DEV_* in
+    // admin-ui's process env (so admin-ui broadcasts its own budget). By
+    // default tokio::process::Command inherits the parent env, which would
+    // leak admin-ui's RAFKA_DEV_CPU_BUDGET=2.0 into every spawned child
+    // and override the child's own .env.dev. Strip them so each child
+    // resolves its budget from its own .env.dev (or from the explicit CLI
+    // flags we add later in spawn_one).
+    cmd.env_remove("RAFKA_DEV_CPU_BUDGET")
+        .env_remove("RAFKA_DEV_RAM_BUDGET")
+        .env_remove("RAFKA_DEV_CPU_USED")
+        .env_remove("RAFKA_DEV_RAM_USED");
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
         .env("OTEL_SERVICE_NAME", node_type)
         .env("RAFKA_DATA_DIR", &spawn_dir)
         .env("RAFKA_NODE_NAME", &node_name)
         .env("RUST_LOG", &rust_log);
+
     for (k, v) in &extra_env {
         cmd.env(k, v);
+    }
+
+    // ---- seed injection: set AFTER extra_env so admin-ui's values always win ----
+    // Disable mDNS for the child — we're using explicit seeds instead.
+    cmd.env("RAFKA_MDNS_ENABLE", "false");
+    // Assign the deterministic port we pre-allocated from the pool.
+    cmd.env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
+    if !seeds_csv.is_empty() {
+        cmd.env("RAFKA_SEED_NODES", &seeds_csv);
+    }
+
+    // Pass budgets as CLI flags (NOT env vars). The child binary parses
+    // these via rafka_node_base::parse_budget_cli_args(). The child
+    // resolves CLI > env > sysinfo at hydration; blank UI inputs upstream
+    // mean cpu_budget/ram_budget arrive as None here and no flag is added,
+    // so the child falls through to its own .env.dev or sysinfo defaults.
+    if let Some(c) = cpu_budget {
+        cmd.args(["--cpu-budget", &c.to_string()]);
+    }
+    if let Some(r) = ram_budget {
+        cmd.args(["--ram-budget", &r.to_string()]);
     }
 
     match cmd.spawn() {
         Ok(child) => {
             let pid = child.id().unwrap_or(0);
             state.processes.insert(node_name.clone(), Mutex::new(child));
+            let spawned_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
             state.spawned_meta.insert(
                 node_name.clone(),
                 SpawnedMeta {
                     node_type: node_type.to_string(),
                     mesh_id: mesh_id.clone(),
                     pid,
+                    node_id_hex: node_id_hex.clone(),
+                    bind_port,
+                    spawned_at_ms,
                 },
             );
             state.events.push(LocalEvent {
@@ -2657,7 +2820,7 @@ async fn handle_spawn(
         }
         extras.insert("RAFKA_MESH_ID".to_string(), m);
     }
-    match spawn_one(&state, &body.node_type, extras).await {
+    match spawn_one(&state, &body.node_type, extras, body.cpu_budget, body.ram_budget).await {
         Ok((node_name, pid)) => (
             StatusCode::CREATED,
             axum::Json(json!({"node_name": node_name, "pid": pid})),
@@ -2715,7 +2878,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
         for t in types {
             let mut env = HashMap::new();
             env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, t, env).await {
+            match spawn_one(&state, t, env, None, None).await {
                 Ok((name, _)) => spawned.push(name),
                 Err(e) => errors.push(e),
             }
@@ -2735,7 +2898,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
             "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
             "mesh-a,mesh-b".to_string(),
         );
-        match spawn_one(&state, "bridge", env).await {
+        match spawn_one(&state, "bridge", env, None, None).await {
             Ok((name, _)) => spawned.push(name),
             Err(e) => errors.push(e),
         }
@@ -3146,7 +3309,7 @@ async fn chaos_loop(state: AppState) {
         // Respawn replacement
         let mut env = HashMap::new();
         env.insert("RAFKA_MESH_ID".to_string(), meta_c.mesh_id.clone());
-        match spawn_one(&state, &meta_c.node_type, env).await {
+        match spawn_one(&state, &meta_c.node_type, env, None, None).await {
             Ok((new_name, _)) => {
                 state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
                 state.events.push(LocalEvent {
@@ -3542,9 +3705,13 @@ async fn observer_task(state: AppState) {
     use std::str::FromStr;
 
     tracing::info!("observer: bringing up iroh endpoint via IrohMeshTransport (same path nodes use)");
-    let secret = iroh::SecretKey::generate(rand::rngs::OsRng);
+    let secret = iroh::SecretKey::generate();
     let bind_addr: std::net::SocketAddrV4 = "127.0.0.1:0".parse().unwrap();
-    let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr).await {
+    let mdns_enable: bool = std::env::var("RAFKA_MDNS_ENABLE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true);
+    let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr, mdns_enable).await {
         Ok(t) => t,
         Err(err) => {
             tracing::error!(error = %err, "observer: IrohMeshTransport::new failed");
@@ -3552,7 +3719,7 @@ async fn observer_task(state: AppState) {
         }
     };
     let endpoint = transport.endpoint.clone();
-    let observer_node_id = endpoint.node_id().to_string();
+    let observer_node_id = endpoint.id().to_string();
     tracing::info!(
         observer_node_id = %observer_node_id,
         "observer: iroh endpoint bound; subscribing to mesh topics as they appear"
@@ -3669,7 +3836,7 @@ async fn observer_task(state: AppState) {
             let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
             // Best effort — collect peers from spawned_meta if their node_id is known.
             // For now leave empty; iroh mdns will surface them.
-            let _ = (topic_id, iroh::NodeId::from_str("0").is_ok()); // no-op to satisfy borrow
+            let _ = (topic_id, iroh::EndpointId::from_str("0").is_ok()); // no-op to satisfy borrow
         }
 
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -3841,14 +4008,89 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         // that distinguishes it from the placeholder "default".
         std::env::set_var("RAFKA_MESH_ID", "admin");
     }
+    // Pin admin-ui to a deterministic bind port so spawned children can
+    // include it in their RAFKA_SEED_NODES and dial back to it. Default 14819
+    // (one below the spawn-pool base 14820). Operator can override via the
+    // env var before launching admin-ui — we only set it when unset.
+    let admin_bind_port: u16 = if std::env::var("RAFKA_NODE_BIND_ADDR").is_err() {
+        std::env::set_var("RAFKA_NODE_BIND_ADDR", "127.0.0.1:14819");
+        14819
+    } else {
+        // Parse whatever the operator set so we can construct seed entries.
+        std::env::var("RAFKA_NODE_BIND_ADDR")
+            .unwrap()
+            .parse::<std::net::SocketAddr>()
+            .map(|a| a.port())
+            .unwrap_or(14819)
+    };
+    // Pre-mint admin-ui's iroh identity so we know its node_id before
+    // NodeRuntime starts. This mirrors the pattern spawn_one uses for children.
+    // NodeRuntime will load the same file (via RAFKA_DATA_DIR + node-identity.json)
+    // and boot with the same key → same node_id guaranteed.
+    let admin_data_dir = std::env::var("RAFKA_DATA_DIR")
+        .unwrap_or_else(|_| "./data/admin-ui".to_string());
+    let admin_data_path = std::path::PathBuf::from(&admin_data_dir);
+    let _ = std::fs::create_dir_all(&admin_data_path);
+    // Ensure NodeRuntime picks up this data dir.
+    std::env::set_var("RAFKA_DATA_DIR", &admin_data_dir);
+    let admin_identity_path = admin_data_path.join("node-identity.json");
+    let admin_node_id_hex: String = if admin_identity_path.exists() {
+        let raw = std::fs::read_to_string(&admin_identity_path)
+            .expect("read existing admin-ui identity");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("parse admin-ui identity JSON");
+        let hex_str = parsed["secret_key_hex"]
+            .as_str()
+            .expect("secret_key_hex field missing");
+        let bytes = hex::decode(hex_str).expect("hex decode of secret_key_hex");
+        let key_arr: [u8; 32] = bytes
+            .try_into()
+            .expect("secret_key_hex must be 32 bytes");
+        let sk = iroh::SecretKey::from_bytes(&key_arr);
+        sk.public().to_string()
+    } else {
+        let sk = iroh::SecretKey::generate();
+        let pubkey = sk.public().to_string();
+        let json = serde_json::json!({ "secret_key_hex": hex::encode(sk.to_bytes()) });
+        std::fs::write(&admin_identity_path, json.to_string())
+            .expect("write admin-ui identity");
+        pubkey
+    };
+    tracing::info!(
+        admin_node_id = %admin_node_id_hex,
+        admin_bind_port,
+        "admin-ui identity pre-minted; children will seed via this node"
+    );
+    // Load admin-ui's own .env.dev (dev preset for the observer process).
+    rafka_node_base::load_env_dev_from(env!("CARGO_MANIFEST_DIR"));
+
+    // Parse CLI budget flags (admin-ui itself accepts them when launched
+    // directly with --cpu-budget / --ram-budget, same as any other node).
+    let cli_budgets = rafka_node_base::parse_budget_cli_args();
+    let cpu_budget: Option<f32> = if cli_budgets.cpu_budget.is_some() {
+        cli_budgets.cpu_budget
+    } else {
+        rafka_node_base::read_dev_cpu_budget()
+    };
+    let ram_budget: Option<f32> = if cli_budgets.ram_budget.is_some() {
+        cli_budgets.ram_budget
+    } else {
+        rafka_node_base::read_dev_ram_budget()
+    };
+    rafka_node_base::announce_dev_state(cpu_budget, ram_budget);
+
     // Spawned as a tokio task so axum can run in parallel in this same
     // process. Same tokio runtime, same lifecycle.
-    let node_handle = tokio::spawn(async {
-        if let Err(e) = rafka_node_base::NodeRuntime::new("admin-ui")
-            .with_role(rafka_node_base::Role::Observer)
-            .run()
-            .await
-        {
+    let node_handle = tokio::spawn(async move {
+        let mut rt = rafka_node_base::NodeRuntime::new("admin-ui")
+            .with_role(rafka_node_base::Role::Observer);
+        if let Some(c) = cpu_budget {
+            rt = rt.with_cpu_budget(c);
+        }
+        if let Some(r) = ram_budget {
+            rt = rt.with_ram_budget(r);
+        }
+        if let Err(e) = rt.run().await {
             eprintln!("[admin-ui node] runtime exited: {e}");
         }
     });
@@ -3929,6 +4171,9 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
+        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(14820)),
+        admin_node_id_hex: admin_node_id_hex.clone(),
+        admin_bind_port,
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -4099,3 +4344,4 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         });
     }
 }
+

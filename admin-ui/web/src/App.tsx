@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { SpawnBar } from "./SpawnBar";
 import { Topology } from "./tabs/Topology";
 import { BootWaterfall } from "./tabs/BootWaterfall";
-import { Heartbeat } from "./tabs/Heartbeat";
+import { Nodes } from "./tabs/Nodes";
 import { Alerts } from "./tabs/Alerts";
 import { Chaos } from "./tabs/Chaos";
 import { Timeline } from "./tabs/Timeline";
@@ -12,7 +12,7 @@ import { api, type ClusterSummary } from "./api";
 
 const TABS = [
   "Topology",
-  "Heartbeat",
+  "Nodes",
   "Messages",
   "Boot Waterfall",
   "Chaos",
@@ -59,7 +59,7 @@ export function App() {
       </div>
       <main>
         {tab === "Topology" && <Topology />}
-        {tab === "Heartbeat" && <Heartbeat />}
+        {tab === "Nodes" && <Nodes />}
         {tab === "Boot Waterfall" && <BootWaterfall />}
         {tab === "Chaos" && <Chaos />}
         {tab === "Timeline" && <Timeline />}

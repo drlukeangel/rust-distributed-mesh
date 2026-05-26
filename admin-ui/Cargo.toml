@@ -37,7 +37,7 @@ urlencoding = "2"
 # - postcard: decode digest payloads
 # - futures-lite: stream adapters for the gossip receiver
 iroh = { workspace = true }
-iroh-gossip = "0.91"
+iroh-gossip = "0.98"
 rafka-node-base = { path = "../crates/rafka-node-base" }
 rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
 blake3 = "1"

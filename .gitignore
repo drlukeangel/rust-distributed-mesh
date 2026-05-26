@@ -2,3 +2,29 @@
 *.jsonl
 data/
 *.lock~
+
+# runtime artifacts from local canaries / soaks
+admin-ui-*.log
+admin-ui-panic.log
+*.log
+
+# flamegraphs + Windows perf captures (large binary blobs)
+flamegraph-*.folded
+*.folded
+*.etl
+
+# locally-built tools (kept out of repo)
+/analyze_flame.exe
+/analyze_flame.pdb
+*.pdb
+
+# IDE / tooling working directories
+.antigravitycli/
+.vscode/
+.idea/
+
+# Workflow scratch from agent tooling (specs, plans, etc. live under docs/plans)
+docs/superpowers/
+
+# node_modules (also under admin-ui/web)
+node_modules/

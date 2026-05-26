@@ -6,10 +6,23 @@ export interface TopologyNode {
   mesh_id: string;
   node_id?: string;
   peer_count?: number;
+  /// hex node_ids of every peer this node has an active iroh connection
+  /// to. Resolve to friendly names via the topology's id→name map.
+  peer_ids?: string[];
   /// monotonic frame counters from GossipDigest (live mesh, no Jaeger)
   frames_sent_total?: number;
   frames_recv_total?: number;
+  /// per-digest emit time (staleness, bounces with gossip cadence)
   wall_time_ms?: number;
+  /// UNIX-ms timestamp when admin-ui spawned this child. Used for the
+  /// "age" (lifetime) display — monotonically increasing.
+  spawn_time_ms?: number;
+  /// CPU + RAM from GossipDigest. cores / GB respectively. Optional
+  /// because pre-load-telemetry nodes (mid-rollout) may not populate them.
+  cpu_used?: number;
+  cpu_budget?: number;
+  ram_used?: number;
+  ram_budget?: number;
   status?: "live" | "pending";
   /// legacy — Jaeger-era, kept for back-compat
   frames_per_min?: number;
@@ -150,10 +163,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, seed }),
     }),
-  spawn: (node_type: NodeType, mesh_id: string) =>
+  spawn: (
+    node_type: NodeType,
+    mesh_id: string,
+    opts?: { cpu_budget?: number; ram_budget?: number; extra_env?: Record<string, string> },
+  ) =>
     j<{ node_name: string; pid: number }>("/api/nodes/spawn", {
       method: "POST",
-      body: JSON.stringify({ node_type, extra_env: { RAFKA_MESH_ID: mesh_id } }),
+      body: JSON.stringify({
+        node_type,
+        extra_env: { RAFKA_MESH_ID: mesh_id, ...(opts?.extra_env ?? {}) },
+        ...(opts?.cpu_budget !== undefined ? { cpu_budget: opts.cpu_budget } : {}),
+        ...(opts?.ram_budget !== undefined ? { ram_budget: opts.ram_budget } : {}),
+      }),
     }),
   kill: (node_name: string) =>
     j<{ node_name: string; reason: string }>(
