@@ -995,55 +995,96 @@ async fn dial_seeds(
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
+    const MAX_ATTEMPTS: u32 = 10;
+    const BASE_DELAY_MS: u64 = 1_000;
+    const MAX_DELAY_MS: u64 = 30_000;
+
     for seed in seeds {
         let peer_id_str = seed.id.to_string();
+        let endpoint = endpoint.clone();
+        let own_node_id = own_node_id.clone();
+        let registry = Arc::clone(&registry);
+        let mesh_id_registry = Arc::clone(&mesh_id_registry);
 
-        tracing::info_span!(
-            "rafka.mesh.peer.discovered",
-            node_id = %own_node_id,
-            peer_id = %peer_id_str,
-            peer_node_type = "unknown",
-            source = "seed",
-        )
-        .in_scope(|| {
-            info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
-        });
+        // Each seed dials in its own task so a slow/down seed doesn't block
+        // subsequent seeds from connecting.
+        tokio::spawn(async move {
+            tracing::info_span!(
+                "rafka.mesh.peer.discovered",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                peer_node_type = "unknown",
+                source = "seed",
+            )
+            .in_scope(|| {
+                info!(peer_id = %peer_id_str, addr = %seed.addr, "peer discovered via seed list");
+            });
 
-        let endpoint_addr = EndpointAddr::new(seed.id).with_ip_addr(seed.addr);
-        match endpoint.connect(endpoint_addr, ALPN).await {
-            Ok(conn) => {
-                tracing::info_span!(
-                    "rafka.mesh.peer.connected",
-                    node_id = %own_node_id,
-                    peer_id = %peer_id_str,
-                    peer_node_type = "unknown",
-                    direction = "outbound",
-                )
-                .in_scope(|| {
-                    info!(peer_id = %peer_id_str, "peer connected (outbound)");
-                });
-
-                if let Some((_, old_conn)) = registry.remove(&peer_id_str) {
-                    old_conn.close(0u32.into(), b"superseded by new connection");
+            let endpoint_addr = EndpointAddr::new(seed.id).with_ip_addr(seed.addr);
+            let mut attempt = 0u32;
+            loop {
+                if attempt >= MAX_ATTEMPTS {
+                    tracing::info_span!(
+                        "rafka.mesh.seed.giveup",
+                        node_id = %own_node_id,
+                        peer_id = %peer_id_str,
+                        attempts = attempt as i64,
+                    )
+                    .in_scope(|| {
+                        info!(peer_id = %peer_id_str, attempts = attempt, "seed gave up after max attempts");
+                    });
+                    break;
                 }
-                registry.insert(peer_id_str.clone(), conn.clone());
 
-                send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
+                match endpoint.connect(endpoint_addr.clone(), ALPN).await {
+                    Ok(conn) => {
+                        tracing::info_span!(
+                            "rafka.mesh.peer.connected",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            peer_node_type = "unknown",
+                            direction = "outbound",
+                        )
+                        .in_scope(|| {
+                            info!(peer_id = %peer_id_str, "peer connected (outbound)");
+                        });
 
-                let conn_bi = conn.clone();
-                let own_bi = own_node_id.clone();
-                let peer_bi = peer_id_str.clone();
-                tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+                        if let Some((_, old_conn)) = registry.remove(&peer_id_str) {
+                            old_conn.close(0u32.into(), b"superseded by new connection");
+                        }
+                        registry.insert(peer_id_str.clone(), conn.clone());
 
-                let own = own_node_id.clone();
-                let reg = Arc::clone(&registry);
-                let mesh_reg = Arc::clone(&mesh_id_registry);
-                tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
+                        send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
+
+                        let conn_bi = conn.clone();
+                        let own_bi = own_node_id.clone();
+                        let peer_bi = peer_id_str.clone();
+                        tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+
+                        let own = own_node_id.clone();
+                        let reg = Arc::clone(&registry);
+                        let mesh_reg = Arc::clone(&mesh_id_registry);
+                        tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
+                        break;
+                    }
+                    Err(e) => {
+                        attempt += 1;
+                        let delay_ms = (BASE_DELAY_MS * 2u64.pow(attempt.min(5))).min(MAX_DELAY_MS);
+                        tracing::info_span!(
+                            "rafka.mesh.seed.retry",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            attempt = attempt as i64,
+                            delay_ms = delay_ms as i64,
+                        )
+                        .in_scope(|| {
+                            info!(peer_id = %peer_id_str, attempt, delay_ms, error = %e, "seed dial failed, retrying");
+                        });
+                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
             }
-            Err(e) => {
-                info!(peer_id = %peer_id_str, error = %e, "seed dial failed");
-            }
-        }
+        });
     }
 }
 
