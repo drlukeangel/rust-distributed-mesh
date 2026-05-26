@@ -637,6 +637,24 @@ pub fn live_digests() -> &'static Arc<DashMap<String, GossipDigest>> {
     LIVE_DIGESTS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+/// Process-local receive timestamps keyed by node_id. Updated at every site
+/// that inserts into `live_digests` — once on our own self-injection and once
+/// per inbound gossip event. The staleness pruner compares `now - last_seen_ms`
+/// rather than `now - digest.wall_time_ms` to avoid clock-skew false positives:
+/// a peer whose wall clock is drifted by 2 minutes would otherwise appear stale
+/// even though we just received a live digest from it.
+///
+/// Uses a Mutex<HashMap> rather than DashMap to avoid holding a DashMap shard
+/// lock on live_digests while also needing a lock on last_seen_ms — a two-map
+/// DashMap access pattern that can deadlock under DashMap's custom RwLock impl.
+static LAST_SEEN_MS: std::sync::OnceLock<
+    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+> = std::sync::OnceLock::new();
+
+pub fn last_seen_ms() -> &'static Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> {
+    LAST_SEEN_MS.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+}
+
 /// Per-topic membership ledger. For each gossip topic we subscribe to,
 /// records the node_ids whose digests we've actually received on that
 /// topic in the last gossip cycle. This is the AUTHORITATIVE answer to
@@ -684,13 +702,26 @@ async fn run_staleness_pruner() {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
-        // Collect stale node_ids first (no map mutation during shard locks),
-        // then perform the removals.
-        let stale: Vec<String> = live_digests()
+        // Collect all known node_ids first (releasing shard locks before the
+        // staleness check to avoid holding DashMap shard locks across a second
+        // DashMap lookup, which can deadlock with parking_lot's non-reentrant
+        // RwLock). Compare against local receive-time (from last_seen_ms) rather
+        // than the sender's wall_time_ms to avoid clock-skew false positives.
+        let all_keys: Vec<String> = live_digests()
             .iter()
-            .filter(|e| now_ms.saturating_sub(e.value().wall_time_ms) > staleness_ms)
             .map(|e| e.key().clone())
             .collect();
+
+        let stale: Vec<String> = {
+            let seen = last_seen_ms().lock().unwrap();
+            all_keys
+                .into_iter()
+                .filter(|node_id| {
+                    let received = seen.get(node_id).copied().unwrap_or(0);
+                    now_ms.saturating_sub(received) > staleness_ms
+                })
+                .collect()
+        };
 
         if stale.is_empty() {
             continue;
@@ -698,6 +729,7 @@ async fn run_staleness_pruner() {
 
         for node_id in &stale {
             live_digests().remove(node_id);
+            last_seen_ms().lock().unwrap().remove(node_id);
         }
 
         // Topic membership is the dependent view — same node_ids that
@@ -893,6 +925,15 @@ async fn run_gossip(
                 // self-injection an admin-ui observer (or any node) is
                 // invisible in its own UI.
                 live_digests().insert(digest.node_id.clone(), digest.clone());
+                // Track local receive-time (not sender wall-clock) so the
+                // staleness pruner is immune to clock skew between nodes.
+                {
+                    let now_recv = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    last_seen_ms().lock().unwrap().insert(digest.node_id.clone(), now_recv);
+                }
                 topic_membership()
                     .entry(topic_label.to_string())
                     .or_insert_with(std::collections::HashSet::new)
@@ -950,6 +991,14 @@ async fn run_gossip(
                     // zero Jaeger dependency. The mesh IS the topology.
                     if let Some(d) = &digest {
                         live_digests().insert(d.node_id.clone(), d.clone());
+                        // Record local receive-time for clock-skew-safe staleness pruning.
+                        {
+                            let now_recv = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            last_seen_ms().lock().unwrap().insert(d.node_id.clone(), now_recv);
+                        }
                         // Authoritative topic-membership: we received d's digest
                         // ON THIS TOPIC (= the `mesh_id` param of this run_gossip
                         // task), so d is a member of that topic's swarm.
@@ -1975,16 +2024,30 @@ mod staleness_pruner_tests {
 
     /// The pruner's actual logic, factored out of the loop so tests can
     /// call it once instead of waiting 5 seconds. Mirrors the body of
-    /// `run_staleness_pruner` exactly. Returns the number of entries pruned.
+    /// `run_staleness_pruner` exactly (using last_seen_ms, not wall_time_ms).
+    /// Returns the number of entries pruned.
     fn prune_once(staleness_ms: u64) -> usize {
         let now = now_ms();
-        let stale: Vec<String> = live_digests()
+        // Collect keys first (dropping shard locks) before looking up
+        // last_seen_ms to avoid holding DashMap shard locks across a second
+        // DashMap lookup (non-reentrant parking_lot RwLock would deadlock).
+        let all_keys: Vec<String> = live_digests()
             .iter()
-            .filter(|e| now.saturating_sub(e.value().wall_time_ms) > staleness_ms)
             .map(|e| e.key().clone())
             .collect();
+        let stale: Vec<String> = {
+            let seen = last_seen_ms().lock().unwrap();
+            all_keys
+                .into_iter()
+                .filter(|node_id| {
+                    let received = seen.get(node_id).copied().unwrap_or(0);
+                    now.saturating_sub(received) > staleness_ms
+                })
+                .collect()
+        };
         for node_id in &stale {
             live_digests().remove(node_id);
+            last_seen_ms().lock().unwrap().remove(node_id);
         }
         for mut topic_entry in topic_membership().iter_mut() {
             for node_id in &stale {
@@ -2001,8 +2064,15 @@ mod staleness_pruner_tests {
         let fresh_id = format!("test-fresh-{}", std::process::id());
         let stale_id = format!("test-stale-{}", std::process::id());
 
+        let now = now_ms();
         live_digests().insert(fresh_id.clone(), mk_digest(&fresh_id, 1_000)); // 1s old
+        // Fresh entry was "received" 1s ago (local clock).
+        last_seen_ms().lock().unwrap().insert(fresh_id.clone(), now.saturating_sub(1_000));
+
         live_digests().insert(stale_id.clone(), mk_digest(&stale_id, 60_000)); // 60s old
+        // Stale entry was "received" 60s ago (local clock).
+        last_seen_ms().lock().unwrap().insert(stale_id.clone(), now.saturating_sub(60_000));
+
         topic_membership()
             .entry("test-topic".into())
             .or_insert_with(std::collections::HashSet::new)
@@ -2019,12 +2089,15 @@ mod staleness_pruner_tests {
         assert!(live_digests().contains_key(&fresh_id), "fresh entry was pruned");
         assert!(!live_digests().contains_key(&stale_id), "stale entry was kept");
 
-        let topic_set = topic_membership().get("test-topic").unwrap();
-        assert!(topic_set.contains(&fresh_id), "fresh node missing from topic");
-        assert!(!topic_set.contains(&stale_id), "stale node still in topic");
+        {
+            let topic_set = topic_membership().get("test-topic").unwrap();
+            assert!(topic_set.contains(&fresh_id), "fresh node missing from topic");
+            assert!(!topic_set.contains(&stale_id), "stale node still in topic");
+        } // topic_set (Ref holding read lock) dropped here
 
         // Cleanup so we don't pollute other tests.
         live_digests().remove(&fresh_id);
+        last_seen_ms().lock().unwrap().remove(&fresh_id);
         topic_membership().alter("test-topic", |_, mut set| {
             set.remove(&fresh_id);
             set
