@@ -28,10 +28,16 @@ impl IrohMeshTransport {
     /// during construction.
     #[instrument(skip(secret_key))]
     pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4, mdns_enable: bool) -> Result<Self> {
+        let transport_config = iroh::endpoint::QuicTransportConfig::builder()
+            .keep_alive_interval(std::time::Duration::from_secs(15))
+            .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()))
+            .build();
+
         let endpoint = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_key)
             .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)
+            .transport_config(transport_config)
             .bind_addr(std::net::SocketAddr::V4(bind_addr))?
             .bind()
             .await?;
