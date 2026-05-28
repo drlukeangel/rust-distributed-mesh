@@ -308,6 +308,8 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_DEV_RAM_BUDGET` | _(measured via sysinfo)_ | Override reported `ram_budget` in GB. Same gating as `RAFKA_DEV_CPU_BUDGET`. |
 | `RAFKA_DEV_CPU_USED` | _(measured via sysinfo)_ | Override reported `cpu_used` in cores. For deterministic routing/migration test scenarios (broker reports 95% load without actually being loaded). Same gating. |
 | `RAFKA_DEV_RAM_USED` | _(measured via sysinfo)_ | Override reported `ram_used` in GB. Same gating. |
+| `RAFKA_CPU_ALERT_THRESHOLD` | `0.10` | Cores. Admin-ui `/api/alerts` emits a warn-severity alert for any node whose latest `GossipDigest.cpu_used` exceeds this. Release-build empty-shell baseline is ~0.02 cores; default 0.10 = ~5× headroom. Read once per `/api/alerts` request. |
+| `RAFKA_RAM_ALERT_THRESHOLD_GB` | `0.5` | GB. Same shape as `RAFKA_CPU_ALERT_THRESHOLD` but for `ram_used`. Release baseline ~0.06 GB; default 0.5 = ~8× headroom. |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 

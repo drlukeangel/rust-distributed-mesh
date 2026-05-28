@@ -1,3 +1,9 @@
+// Workaround for rustc Linux toolchain (1.94 + 1.95) ICE in `check_mod_deathness`
+// when processing the unused `when_ago` / `observer_task` helpers and unused
+// struct fields. Windows MSVC toolchain compiles fine without this; Linux ICEs.
+// See memory `project_rustc_195_ice.md`.
+#![allow(dead_code)]
+
 use anyhow::Result;
 use axum::{
     Router,
@@ -1833,6 +1839,58 @@ async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
             }
         }
     }
+    // Resource threshold alerts — surface any node whose latest gossip digest
+    // reports resource use above the configured threshold. Empty-shell release
+    // nodes baseline ~0.02 cores CPU and ~0.06 GB RAM; thresholds default to
+    // 0.10 cores and 0.5 GB respectively (≥5× baseline). Read straight from
+    // live_digests(); no Jaeger round-trip.
+    let cpu_threshold: f32 = std::env::var("RAFKA_CPU_ALERT_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.10);
+    let ram_threshold: f32 = std::env::var("RAFKA_RAM_ALERT_THRESHOLD_GB")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.5);
+    let now_us: i64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or(0);
+    for entry in live_digests().iter() {
+        let d = entry.value();
+        // Skip admin-ui itself — it does extra HTTP/orchestration work beyond
+        // pure substrate participation (web server, chaos controller, JSON UI
+        // polls). Its baseline sits near 0.10 cores even at release-opt, so it
+        // trips the threshold without representing a regression. Substrate-only
+        // nodes are what the threshold is calibrated against.
+        if d.node_type == "admin-ui" {
+            continue;
+        }
+        if d.cpu_used > cpu_threshold {
+            alerts.push(json!({
+                "ts_us": now_us,
+                "severity": "warn",
+                "node_name": d.node_name.clone(),
+                "mesh_id": d.mesh_id.clone(),
+                "message": format!(
+                    "{} CPU {:.3} cores exceeds threshold {:.2}",
+                    d.node_type, d.cpu_used, cpu_threshold
+                ),
+            }));
+        }
+        if d.ram_used > ram_threshold {
+            alerts.push(json!({
+                "ts_us": now_us,
+                "severity": "warn",
+                "node_name": d.node_name.clone(),
+                "mesh_id": d.mesh_id.clone(),
+                "message": format!(
+                    "{} RAM {:.3} GB exceeds threshold {:.2}",
+                    d.node_type, d.ram_used, ram_threshold
+                ),
+            }));
+        }
+    }
     (StatusCode::OK, axum::Json(json!({"alerts": alerts}))).into_response()
 }
 
@@ -2623,8 +2681,8 @@ async fn spawn_one(
     let profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
         .unwrap_or_else(|_| "debug".to_string());
     let binary = format!(
-        "{}/{}/rafka-{}.exe",
-        state.cargo_target_dir, profile, node_type
+        "{}/{}/rafka-{}{}",
+        state.cargo_target_dir, profile, node_type, std::env::consts::EXE_SUFFIX
     );
 
     let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -3107,7 +3165,7 @@ async fn handle_test_run(
     Json(body): Json<RunTestRequest>,
 ) -> impl IntoResponse {
     let seed = body.seed.unwrap_or(42);
-    let rfa_bin = format!("{}/debug/rfa.exe", state.cargo_target_dir);
+    let rfa_bin = format!("{}/debug/rfa{}", state.cargo_target_dir, std::env::consts::EXE_SUFFIX);
     if !std::path::Path::new(&rfa_bin).exists() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -4116,7 +4174,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     tracing::info!(cargo_target_dir = %cargo_target_dir, "subprocess binary search root");
 
     // Preflight: every KNOWN_NODE_TYPES binary must exist under
-    // {cargo_target_dir}/debug/, or spawn_one will silently return os
+    // {cargo_target_dir}/{profile}/, or spawn_one will silently return os
     // error 2 from cmd.spawn() and bootstrap will report bogus errors.
     // Two specific failure modes this catches:
     //   - rafka-bridge was missing after `cargo build` ran without -p
@@ -4124,11 +4182,15 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     //     and bridges never appeared in topology (caused
     //     mesh-five-types-present + gossip-mesh-to-mesh to fail).
     //   - CARGO_TARGET_DIR redirected to a stale build dir.
-    // Loud at startup beats silent at bootstrap.
+    // Loud at startup beats silent at bootstrap. Honors
+    // RAFKA_CHILD_BUILD_PROFILE so release-built deployments preflight against
+    // {cargo_target_dir}/release/ instead of debug/.
     {
+        let preflight_profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
+            .unwrap_or_else(|_| "debug".to_string());
         let mut missing: Vec<String> = Vec::new();
         for nt in KNOWN_NODE_TYPES {
-            let p = format!("{cargo_target_dir}/debug/rafka-{nt}.exe");
+            let p = format!("{cargo_target_dir}/{preflight_profile}/rafka-{nt}{}", std::env::consts::EXE_SUFFIX);
             if !std::path::Path::new(&p).exists() {
                 missing.push(p);
             }

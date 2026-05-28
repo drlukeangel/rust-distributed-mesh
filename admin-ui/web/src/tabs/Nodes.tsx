@@ -185,6 +185,23 @@ export function Nodes() {
               status: {n.status ?? "?"}
             </div>
 
+            {(n.cpu_budget ?? 0) > 0 && (
+              <UtilBar
+                label="CPU"
+                used={n.cpu_used ?? 0}
+                budget={n.cpu_budget ?? 0}
+                unit="cores"
+              />
+            )}
+            {(n.ram_budget ?? 0) > 0 && (
+              <UtilBar
+                label="RAM"
+                used={n.ram_used ?? 0}
+                budget={n.ram_budget ?? 0}
+                unit="gb"
+              />
+            )}
+
             {isOpen && (
               <div
                 style={{
@@ -199,23 +216,6 @@ export function Nodes() {
                 >
                   node_id: {n.node_id || "(pending)"}
                 </div>
-
-                {(n.cpu_budget ?? 0) > 0 && (
-                  <UtilBar
-                    label="CPU"
-                    used={n.cpu_used ?? 0}
-                    budget={n.cpu_budget ?? 0}
-                    unit="cores"
-                  />
-                )}
-                {(n.ram_budget ?? 0) > 0 && (
-                  <UtilBar
-                    label="RAM"
-                    used={n.ram_used ?? 0}
-                    budget={n.ram_budget ?? 0}
-                    unit="gb"
-                  />
-                )}
 
                 <div
                   className="mono"
