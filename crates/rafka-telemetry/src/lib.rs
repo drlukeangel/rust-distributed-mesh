@@ -3,7 +3,7 @@ use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SimpleSpanProcessor, TracerProvider};
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 pub struct TelemetryGuard {
     provider: TracerProvider,
@@ -118,11 +118,22 @@ fn build_simple_provider(
 }
 
 fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
-    let otel_layer = OpenTelemetryLayer::new(tracer);
+    // Per-layer filters so stdout stays terse (INFO floor) while OTLP captures
+    // DEBUG by default — gives iroh's debug-level events (binding/path selection/
+    // socket transports/hyparview gossip internals) visibility in Jaeger as span
+    // events without flooding the terminal log. RUST_LOG overrides both layers
+    // via EnvFilter::from_default_env(); a more-specific directive (e.g.
+    // `iroh_quinn_proto=trace`) still wins over the per-layer floor.
+    let fmt_filter = EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into());
+    let otel_filter = EnvFilter::from_default_env()
+        .add_directive(tracing::Level::DEBUG.into());
+
+    let otel_layer = OpenTelemetryLayer::new(tracer)
+        .with_filter(otel_filter);
 
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_filter(fmt_filter))
         .with(otel_layer)
         .init();
 }
