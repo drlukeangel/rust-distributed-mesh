@@ -7,7 +7,7 @@
 //! calls them explicitly from main(); NodeRuntime never calls them.
 
 use std::sync::Mutex;
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::deployment::Deployment;
 
@@ -225,15 +225,27 @@ impl LoadSampler {
         cpu_used: Option<f32>,
         ram_used: Option<f32>,
     ) -> Self {
-        let refresh = RefreshKind::nothing()
-            .with_memory(sysinfo::MemoryRefreshKind::everything())
-            .with_processes(ProcessRefreshKind::everything().with_cpu());
-        let mut sys = System::new_with_specifics(refresh);
-        sys.refresh_memory();
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
         let pid = Pid::from_u32(std::process::id());
-        let host_cpu_count = sys.cpus().len() as f32;
+        // Start from an EMPTY System. The previous
+        // `new_with_specifics(with_processes(everything))` enumerated every OS
+        // process at construction and, with `remove_dead=false`, kept all of them
+        // in the process map for the System's lifetime — each carrying a Windows
+        // process-name `Wtf8Buf` (via `from_wide`). dhat pinned this as ~9 MB
+        // retained + the dominant per-tick alloc churn under chaos soak. We only
+        // ever sample our OWN pid, so we never enumerate the full table.
+        let mut sys = System::new();
+        sys.refresh_memory();
         let host_total_ram_bytes = sys.total_memory();
+        // Logical CPU count for the budget ceiling. `available_parallelism`
+        // avoids a CPU-list refresh, and core count is fixed at runtime.
+        let host_cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get() as f32)
+            .unwrap_or(1.0);
+        // Refresh ONLY our pid, ONLY cpu+memory — no name/exe/cmd (the `from_wide`
+        // fields) and no full-table enumeration. Prime once here so the first
+        // `cpu_usage()` delta in `sample()` is meaningful.
+        let proc_refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, proc_refresh);
         Self {
             sys: Mutex::new(sys),
             pid,
@@ -251,8 +263,11 @@ impl LoadSampler {
     /// is queried for a live measurement.
     pub fn sample(&self) -> NodeLoad {
         let mut sys = self.sys.lock().unwrap();
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[self.pid]), true);
-        sys.refresh_memory();
+        // Refresh ONLY our pid, ONLY cpu+memory — no enumeration, no name strings.
+        // ram_budget is the static host total captured at construction, so we no
+        // longer refresh system memory every tick either.
+        let proc_refresh = ProcessRefreshKind::nothing().with_cpu().with_memory();
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[self.pid]), false, proc_refresh);
 
         let (real_cpu_used, real_ram_used_bytes) = if let Some(p) = sys.process(self.pid) {
             // sysinfo cpu_usage() returns "% of one core" — values >100 mean
