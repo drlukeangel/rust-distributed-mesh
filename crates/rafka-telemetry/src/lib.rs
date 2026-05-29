@@ -118,16 +118,43 @@ fn build_simple_provider(
 }
 
 fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
-    // Per-layer filters so stdout stays terse (INFO floor) while OTLP captures
-    // DEBUG by default — gives iroh's debug-level events (binding/path selection/
-    // socket transports/hyparview gossip internals) visibility in Jaeger as span
-    // events without flooding the terminal log. RUST_LOG overrides both layers
-    // via EnvFilter::from_default_env(); a more-specific directive (e.g.
-    // `iroh_quinn_proto=trace`) still wins over the per-layer floor.
+    // Per-layer filters. Both layers floor at INFO. stdout stays terse; OTLP
+    // also floors at INFO (see the otel_filter note below for why DEBUG capture
+    // was a memory leak under churn). RUST_LOG can still raise either layer via
+    // EnvFilter::from_default_env() — a more-specific directive (e.g.
+    // `iroh_quinn_proto=trace`) wins over the per-layer floor, so debug
+    // visibility is opt-in per debugging session rather than always-on.
     let fmt_filter = EnvFilter::from_default_env()
         .add_directive(tracing::Level::INFO.into());
+    // OTLP layer floor is INFO, NOT debug. Under chaos churn, iroh/noq/gossip
+    // emit a DEBUG firehose (binding / path selection / socket transports /
+    // hyparview internals). tracing-opentelemetry's `on_event` appends every
+    // captured event to the *currently-active* span's event buffer, which is
+    // only freed when that span CLOSES. iroh's actor loops (magicsock, relay,
+    // gossip-net) are long-lived `#[instrument]` spans that never close for the
+    // process lifetime — so their event buffers grew without bound. dhat proved
+    // it: with QUIC connections bounded (leak #1 fixed), tracing/otel still grew
+    // 11.6 -> 29.2 MB (~1.6 MB/min, 68% of retained heap) via on_event, the
+    // single 2 MB allocation being one long-lived span's event Vec. An INFO floor
+    // drops the debug firehose at the filter, before it ever reaches on_event.
+    //
+    // SAFE: every span the topology UI consumes from Jaeger (node.ready,
+    // heartbeat, peer.connected/discovered/disconnected, cross.peer_connected) is
+    // emitted at INFO and survives. The per-frame frame.sent/received spans are
+    // TRACE (already below the old DEBUG floor) and are NOT load-bearing — the
+    // admin-ui edge-builder that once queried them is dead code behind an
+    // unconditional return; edges derive from gossip mesh_id labels. The =off
+    // directives below stay as belt-and-suspenders for any RUST_LOG=debug opt-in.
     let otel_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::DEBUG.into());
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("h2=off".parse().expect("static directive"))
+        .add_directive("hyper=off".parse().expect("static directive"))
+        .add_directive("hyper_util=off".parse().expect("static directive"))
+        .add_directive("tonic=off".parse().expect("static directive"))
+        .add_directive("tower=off".parse().expect("static directive"))
+        .add_directive("opentelemetry=off".parse().expect("static directive"))
+        .add_directive("opentelemetry_sdk=off".parse().expect("static directive"))
+        .add_directive("opentelemetry_otlp=off".parse().expect("static directive"));
 
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(otel_filter);
