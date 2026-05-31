@@ -2019,23 +2019,28 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         for i in 0..members.len() {
             for j in (i + 1)..members.len() {
                 let (a, b) = canon(&members[i], &members[j]);
-                // Edge classification (R2 guard — do NOT regress to a
-                // catch-all "cross"):
-                //   1. Both share primary mesh_id → "within"
-                //   2. DIFFERENT mesh_id → SUPPRESS. Without bridge nodes
-                //      there is no direct cross-mesh path to draw; a
-                //      different-mesh pair sharing a topic_membership entry
-                //      is almost always the observer (admin-ui) whose
-                //      primary mesh_id differs from real mesh peers.
-                //      Drawing it produces O(n²) spurious cross-mesh edges.
-                //      Real cross-mesh edges return in a later phase via the
-                //      gateway's multi-mesh observe.
-                //   3. Meta missing for either side → SUPPRESS.
+                // Edge classification (post-bridge, PRD §2 — R2 guard intact):
+                //   1. Both share primary mesh_id → "within".
+                //   2. DIFFERENT mesh_id AND one endpoint is a GATEWAY → "cross".
+                //      A gateway observes the other mesh's gossip (RAFKA_OBSERVER_MESHES),
+                //      so it co-occurs in the foreign mesh's topic_membership. That
+                //      membership is exactly what draws the direct gateway→broker
+                //      cross-mesh edge. This is the old bridge arm with "gateway"
+                //      in place of "bridge".
+                //   3. DIFFERENT mesh_id, NEITHER a gateway → SUPPRESS. Brokers never
+                //      observe foreign meshes, so a broker↔broker cross pair cannot
+                //      structurally co-occur in one topic entry; the only other
+                //      foreign-mesh member is admin-ui (filtered at render). This is
+                //      the R2 guard: do NOT regress to a catch-all "cross" (O(n²)).
+                //   4. Meta missing for either side → SUPPRESS.
                 let kind: Option<&'static str> = match (
                     name_to_meta.get(&a),
                     name_to_meta.get(&b),
                 ) {
                     (Some((am, _)), Some((bm, _))) if am == bm => Some("within"),
+                    (Some((_, at)), Some((_, bt))) if at == "gateway" || bt == "gateway" => {
+                        Some("cross")
+                    }
                     _ => None,
                 };
                 if let Some(k) = kind {
@@ -2778,6 +2783,45 @@ async fn spawn_one(
         "{}@127.0.0.1:{}",
         state.admin_node_id_hex, state.admin_bind_port
     );
+    // Gateways observe EVERY other known mesh (PRD §2 — replaces the bridge's
+    // cross-mesh role). We compute the set of OTHER meshes currently present in
+    // spawned_meta and (a) pass them as RAFKA_OBSERVER_MESHES so the gateway's
+    // process-global live_digests() spans both meshes, and (b) seed the gateway
+    // to one node in each other mesh so it can actually reach those gossip
+    // topics (topic isolation means admin-ui being in both topics does NOT
+    // cross-pollinate peers; the gateway needs its own reachable seed there).
+    let cross_mesh_seeds: Vec<String>;
+    let observer_meshes: Option<String>;
+    if node_type == "gateway" {
+        let mut other_meshes: Vec<String> = state
+            .spawned_meta
+            .iter()
+            .map(|e| e.value().mesh_id.clone())
+            .filter(|m| m.as_str() != mesh_id && m != "default" && !m.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        other_meshes.sort();
+        cross_mesh_seeds = other_meshes
+            .iter()
+            .filter_map(|om| {
+                state
+                    .spawned_meta
+                    .iter()
+                    .find(|e| &e.value().mesh_id == om)
+                    .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+            })
+            .collect();
+        observer_meshes = if other_meshes.is_empty() {
+            None
+        } else {
+            Some(other_meshes.join(","))
+        };
+    } else {
+        cross_mesh_seeds = Vec::new();
+        observer_meshes = None;
+    }
+
     let seeds_csv = {
         let mut all_seeds = vec![admin_seed];
         let same_mesh: Vec<String> = state
@@ -2788,6 +2832,8 @@ async fn spawn_one(
             .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
             .collect();
         all_seeds.extend(same_mesh);
+        // Cross-mesh seeds for gateways so they can reach the other meshes' topics.
+        all_seeds.extend(cross_mesh_seeds.iter().cloned());
         all_seeds.join(",")
     };
 
@@ -2820,6 +2866,11 @@ async fn spawn_one(
     cmd.env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
     if !seeds_csv.is_empty() {
         cmd.env("RAFKA_SEED_NODES", &seeds_csv);
+    }
+    // Gateways observe the other mesh(es) so their live_digests() spans both
+    // meshes (PRD §2). Set only when there IS another mesh to observe.
+    if let Some(om) = &observer_meshes {
+        cmd.env("RAFKA_OBSERVER_MESHES", om);
     }
 
     // Pass budgets as CLI flags (NOT env vars). The child binary parses
@@ -2936,8 +2987,11 @@ async fn handle_spawn(
 }
 
 /// POST /api/bootstrap — spawn the two-mesh demo topology: 2 of each node
-/// type into mesh-a, the same into mesh-b. Idempotent in spirit but each
-/// call adds another full set — the chaos loop / kill buttons remove drift.
+/// type into mesh1, the same into mesh2. Non-gateway nodes spawn FIRST in both
+/// meshes, then gateways last — so each gateway, at its spawn moment, can see a
+/// node in the other mesh and wire its cross-mesh observe/seed (PRD §2).
+/// Idempotent in spirit but each call adds another full set — the chaos loop /
+/// kill buttons remove drift.
 async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     // Red-team A#3: take the bootstrap mutex FIRST so concurrent callers
     // queue. Then check the pool cap — second caller will see the actual
@@ -2961,22 +3015,40 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     let mut spawned = Vec::new();
     let mut errors = Vec::new();
 
-    let mesh_assignments: Vec<(&str, &[&str])> = vec![
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
-    ];
+    // Two passes so gateways spawn LAST: a gateway wires its cross-mesh observe
+    // from a snapshot of spawned_meta at its spawn moment, so the other mesh's
+    // nodes must already exist. Pass 1 = all non-gateway types in both meshes;
+    // pass 2 = 1 gateway per mesh. 2× of each non-gateway + 2 gateways = 10 each
+    // pass... total here: (2 meshes × 3 non-gw types × 2) + (2 meshes × 1 gw × 2)
+    // = 12 + 4 = 16 nodes.
+    let meshes = ["mesh1", "mesh2"];
+    let non_gateway = ["broker", "compute", "registry"];
 
-    for (mesh, types) in mesh_assignments {
-        for t in types {
+    // Pass 1: non-gateway nodes, 2 of each type per mesh.
+    for mesh in meshes {
+        for t in non_gateway {
+            for _ in 0..2 {
+                let mut env = HashMap::new();
+                env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
+                match spawn_one(&state, t, env, None, None).await {
+                    Ok((name, _)) => spawned.push(name),
+                    Err(e) => errors.push(e),
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+
+    // Pass 2: gateways last (2 per mesh), now that the other mesh has nodes
+    // they can observe + cross-seed to.
+    for mesh in meshes {
+        for _ in 0..2 {
             let mut env = HashMap::new();
             env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, t, env, None, None).await {
+            match spawn_one(&state, "gateway", env, None, None).await {
                 Ok((name, _)) => spawned.push(name),
                 Err(e) => errors.push(e),
             }
-            // Tiny stagger so PIDs don't collide on Windows FS namespace lookups.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

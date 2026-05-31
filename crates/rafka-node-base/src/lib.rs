@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tracing::{info, instrument, Instrument, Span};
+use tracing::{info, instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 mod deployment;
@@ -110,10 +110,7 @@ type MeshIdRegistry = Arc<DashMap<String, String>>;
 
 async fn run_node(
     node_type: String,
-    // role currently has no behavioral branch inside run_node (the only consumer
-    // was the removed Role::Bridge path; run_ping_sender was already removed).
-    // Kept in the signature + NodeRuntime API for observability/future use.
-    _role: Role,
+    role: Role,
     cpu_budget: Option<f32>,
     ram_budget: Option<f32>,
 ) -> Result<()> {
@@ -188,27 +185,15 @@ async fn run_node(
     let node_type_str: &'static str = Box::leak(node_type.into_boxed_str());
 
     // Load identity before creating the iroh endpoint.
-    // All boot steps run under node.ready. create_endpoint is called OUTSIDE the span
-    // so iroh's background tasks don't inherit node.ready context — that would keep
-    // node.ready open indefinitely and prevent it from exporting.
+    // The REAL identity load MUST happen here (before node.ready) because we need
+    // node_id to populate node.ready's attributes. But the identity OBSERVATION
+    // span is emitted later as an in_scope child of node.ready (see below) so the
+    // full boot chain — including identity — lives in ONE trace per CLAUDE.md §10.
+    // create_endpoint is called OUTSIDE node.ready so iroh's background tasks don't
+    // inherit its context (which would keep node.ready open and block its export).
     let identity_path = data_dir.join("node-identity.json");
-    let secret_key = if identity_path.exists() {
-        load_or_mint_identity(&data_dir)
-            .instrument(tracing::info_span!(
-                "rafka.mesh.boot.identity_loaded",
-                node_id = tracing::field::Empty,
-                path = ?identity_path,
-            ))
-            .await?
-    } else {
-        load_or_mint_identity(&data_dir)
-            .instrument(tracing::info_span!(
-                "rafka.mesh.boot.identity_minted",
-                node_id = tracing::field::Empty,
-                path = ?identity_path,
-            ))
-            .await?
-    };
+    let identity_existed = identity_path.exists();
+    let secret_key = load_or_mint_identity(&data_dir).await?;
     let node_id = secret_key.public().to_string();
 
     // Create iroh endpoint: no tracing span active here so iroh background tasks
@@ -234,6 +219,18 @@ async fn run_node(
     )
     .in_scope(|| {
         info!(gossip_interval_ms, bind_addr = %actual_bind_addr, data_dir = ?data_dir, seed_count = seed_nodes.len(), node_id = %node_id, "boot config");
+
+        // Identity observation span — child of node.ready so the locked §10 boot
+        // chain (6 spans incl. identity) lives in ONE trace. The real identity
+        // load already happened above (we needed node_id); this is the in-trace
+        // marker, emitted identity_loaded vs identity_minted by whether the
+        // node-identity.json file existed at boot.
+        let identity_span = if identity_existed {
+            tracing::info_span!("rafka.mesh.boot.identity_loaded", node_id = %node_id, path = ?identity_path)
+        } else {
+            tracing::info_span!("rafka.mesh.boot.identity_minted", node_id = %node_id, path = ?identity_path)
+        };
+        identity_span.in_scope(|| info!(node_id = %node_id, path = ?identity_path, existed = identity_existed, "identity loaded"));
 
         tracing::info_span!(
             "rafka.mesh.boot.endpoint_created",
@@ -427,6 +424,22 @@ async fn run_node(
     // (keep-alive + idle timeout). rafka does not hand-roll a heartbeat
     // (Golden Principle #1). run_ping_sender removed entirely.
 
+    // Write-sim (mesh-v2 Phase 2, PRD §3): gateways periodically resolve target
+    // nodes from the gossiped topology cache (live_digests → location) and send a
+    // Write frame DIRECTLY (loopback) to each. Targets: mesh1.broker1 (intra) and
+    // mesh2.broker1 (cross-mesh). A copy also goes to admin-ui (the observer node)
+    // so the write surfaces in the Messages tab — admin-ui's message_ring only
+    // captures frames IT receives. The authoritative proof of delivery is the
+    // target broker's frames_recv_total incrementing (RX in Topology/Nodes).
+    let write_sim_handle = if matches!(role, Role::Gateway) {
+        let endpoint = transport.endpoint.clone();
+        let node_name_ws = node_name.to_string();
+        let node_id_ws = node_id.clone();
+        Some(tokio::spawn(run_write_sim(endpoint, node_id_ws, node_name_ws)))
+    } else {
+        None
+    };
+
     let stopping_reason = wait_for_signal().await;
 
     tracing::info_span!(
@@ -446,6 +459,9 @@ async fn run_node(
     if let Some(h) = dial_handle {
         h.abort();
     }
+    if let Some(h) = write_sim_handle {
+        h.abort();
+    }
 
     Ok(())
 }
@@ -458,6 +474,105 @@ async fn run_bi_echo_acceptor(endpoint: iroh::Endpoint, node_id: String) {
     let _ = &endpoint;
     let _ = &node_id;
     std::future::pending::<()>().await;
+}
+
+/// Write-sim sender (mesh-v2 Phase 2, PRD §3). Runs only on gateways. Every
+/// `RAFKA_WRITE_SIM_INTERVAL_MS` (default 5000) it resolves a fixed set of target
+/// node_names from the gossiped topology cache (`live_digests()` → `location`),
+/// opens a DIRECT iroh connection to each (loopback-reachable this round), and
+/// sends a `Write` frame. Targets: `mesh1.broker1` (intra-mesh) and
+/// `mesh2.broker1` (cross-mesh), plus `admin-ui` as an OBSERVER copy so the write
+/// surfaces in admin-ui's Messages tab (admin-ui's message_ring only captures
+/// frames it receives). The authoritative proof of cross-mesh delivery is the
+/// TARGET broker's frames_recv_total incrementing — not the admin-ui copy.
+async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_name: String) {
+    let interval_ms: u64 = std::env::var("RAFKA_WRITE_SIM_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5000);
+    // Fixed demo targets for Phase 2. The observer copy (admin-ui) is what makes
+    // the write visible in the Messages tab.
+    const TARGETS: &[&str] = &["mesh1.broker1", "mesh2.broker1", "admin-ui"];
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
+    let mut seq: u64 = 0;
+    // Small startup delay so the gossip cache has populated before the first send.
+    tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
+    loop {
+        tick.tick().await;
+        seq += 1;
+        for target_name in TARGETS {
+            // Resolve target from the gossiped cache: name → {node_id, location}.
+            let resolved = {
+                let digests = live_digests();
+                digests
+                    .iter()
+                    .find(|e| e.value().node_name == *target_name)
+                    .map(|e| (e.value().node_id.clone(), e.value().location.clone()))
+            };
+            let Some((target_node_id, location)) = resolved else {
+                // Target not in cache yet — skip this tick for it.
+                continue;
+            };
+            if target_node_id == own_node_id || location.is_empty() {
+                continue;
+            }
+            let pk = match PublicKey::from_str(&target_node_id) {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+            let addr = match location.parse::<SocketAddr>() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(addr);
+
+            let frame = InternalMeshFrame::Write {
+                from: own_node_name.clone(),
+                to: target_name.to_string(),
+                seq,
+            };
+            // frame.sent span carries op_kind="produce" per the locked §10 vocabulary.
+            let sent_span = tracing::info_span!(
+                "rafka.mesh.frame.sent",
+                node_id = %own_node_id,
+                peer_id = %target_node_id,
+                frame_kind = "write",
+                op_kind = "produce",
+                write_to = %target_name,
+                seq = seq,
+                otel.kind = "producer",
+            );
+            let _enter = sent_span.enter();
+            let ctx = Span::current().context();
+            let encoded = frame.encode_with_context(&ctx);
+            drop(_enter);
+
+            match endpoint.connect(endpoint_addr, ALPN).await {
+                Ok(conn) => match conn.open_uni().await {
+                    Ok(mut send) => {
+                        if send.write_all(&encoded).await.is_ok() && send.finish().is_ok() {
+                            mesh_counters()
+                                .frames_sent
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            sent_span.in_scope(|| {
+                                info!(target = %target_name, seq, "write-sim frame sent");
+                            });
+                        } else {
+                            sent_span.in_scope(|| {
+                                info!(target = %target_name, "write-sim write/finish failed");
+                            });
+                        }
+                    }
+                    Err(e) => sent_span.in_scope(|| {
+                        info!(target = %target_name, error = %e, "write-sim open_uni failed");
+                    }),
+                },
+                Err(e) => sent_span.in_scope(|| {
+                    info!(target = %target_name, error = %e, "write-sim connect failed");
+                }),
+            }
+        }
+    }
 }
 
 /// Per-connection bi-stream echo reader. Loops on `conn.accept_bi()`, reads a
@@ -1395,6 +1510,10 @@ async fn run_frame_reader(
                         "pong",
                         format!("[{peer_prefix}] Pong{{org_id={org_id}}}"),
                     ),
+                    Ok((_, InternalMeshFrame::Write { from, to, seq })) => (
+                        "write",
+                        format!("[{peer_prefix}] write-sim {from}→{to} #{seq}"),
+                    ),
                     Err(e) => ("decode_failed", format!("[{peer_prefix}] <decode_failed: {e}>")),
                 };
                 push_message(&peer_id_str, kind_tag, frame_size, summary);
@@ -1519,6 +1638,27 @@ async fn run_frame_reader(
                                 .in_scope(|| tracing::trace!(peer_id = %peer_id_str, "open_uni failed for pong"));
                             }
                         }
+                    }
+                    Ok((parent_ctx, InternalMeshFrame::Write { from, to, seq })) => {
+                        // Write-sim frame landed (mesh-v2 Phase 2). The frames_recv
+                        // counter already incremented above; this span is the
+                        // per-record observability marker. op_kind="produce" per
+                        // the locked §10 vocabulary.
+                        let recv_span = tracing::info_span!(
+                            "rafka.mesh.frame.received",
+                            node_id = %own_node_id,
+                            peer_id = %peer_id_str,
+                            frame_kind = "write",
+                            op_kind = "produce",
+                            write_from = %from,
+                            write_to = %to,
+                            seq = seq,
+                            otel.kind = "consumer",
+                        );
+                        recv_span.set_parent(parent_ctx);
+                        recv_span.in_scope(|| {
+                            info!(peer_id = %peer_id_str, write_from = %from, write_to = %to, seq, "write-sim frame received");
+                        });
                     }
                     Err(e) => {
                         let byte_len = bytes.len();

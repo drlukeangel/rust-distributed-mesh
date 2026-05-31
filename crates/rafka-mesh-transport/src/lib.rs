@@ -8,6 +8,7 @@ use iroh::{
 // `iroh-mdns-address-lookup` crate (same MdnsAddressLookup + DiscoveryEvent API).
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use std::net::SocketAddrV4;
+use std::str::FromStr;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
@@ -35,10 +36,33 @@ impl IrohMeshTransport {
             .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()))
             .build();
 
+        // Relay plumbing (mesh-v2 Phase 2, PRD §4): the relay is the cross-mesh
+        // transport that REPLACES the bridge structurally. It is stood up but
+        // IDLE this round — all writes are direct/loopback, nothing routes through
+        // it. When RAFKA_RELAY_URL is set we register it via RelayMode::Custom so
+        // the relay path EXISTS for the later forced-isolation round; default
+        // (unset) is RelayMode::Disabled = direct-only, the behavior this round
+        // actually exercises. Do NOT read this as "traffic flows through the relay."
+        let relay_mode = match std::env::var("RAFKA_RELAY_URL") {
+            Ok(url_str) if !url_str.trim().is_empty() => {
+                match iroh::RelayUrl::from_str(url_str.trim()) {
+                    Ok(url) => {
+                        tracing::info!(relay_url = %url_str, "RAFKA_RELAY_URL set — registering custom relay (idle this round; direct still wins for loopback)");
+                        RelayMode::Custom(url.into())
+                    }
+                    Err(e) => {
+                        tracing::warn!(relay_url = %url_str, error = %e, "RAFKA_RELAY_URL failed to parse — falling back to RelayMode::Disabled");
+                        RelayMode::Disabled
+                    }
+                }
+            }
+            _ => RelayMode::Disabled,
+        };
+
         let endpoint = Endpoint::builder(presets::N0DisableRelay)
             .secret_key(secret_key)
             .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
-            .relay_mode(RelayMode::Disabled)
+            .relay_mode(relay_mode)
             .transport_config(transport_config)
             .bind_addr(std::net::SocketAddr::V4(bind_addr))?
             .bind()

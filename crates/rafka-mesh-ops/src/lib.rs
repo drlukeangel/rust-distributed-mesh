@@ -16,6 +16,11 @@ pub enum InternalMeshFrame {
     /// emit a cross-mesh peer.connected span when meshes differ. Mesh-to-mesh phase
     /// 2 substrate per feature `mesh-to-mesh`.
     Hello { mesh_id: String, node_type: String },
+    /// Application write-sim frame (mesh-v2 Phase 2). A gateway resolves a target
+    /// node's location from the gossiped topology cache and sends this directly.
+    /// `from` is the sender's node_name, `to` the target's node_name, `seq` a
+    /// monotonic counter. Surfaces in the Messages tab; maps to op_kind="produce".
+    Write { from: String, to: String, seq: u64 },
 }
 
 /// Sender's OTel context embedded with every traced frame so the receiver can

@@ -77,7 +77,9 @@ export function Messages() {
                     ? "text-green-400"
                     : m.frame_kind === "hello"
                       ? "text-purple-400"
-                      : "text-red-400";
+                      : m.frame_kind === "write"
+                        ? "text-amber-400"
+                        : "text-red-400";
               return (
                 <tr
                   key={`${m.ts_ms}-${i}`}
