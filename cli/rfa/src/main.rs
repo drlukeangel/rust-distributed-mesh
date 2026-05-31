@@ -475,7 +475,7 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("backpressure-stream-flood", "chaos",    "32 concurrent bi-streams flood 1 KiB payloads for 10s; passes if 0 errors AND >= 200 round-trips (proves bi-stream plane back-pressures smoothly without OOM or stall)"),
     ("chaos-soak-9prim-1min",   "chaos",      "1-minute soak with 9-primitive pool; expects 100% pass; gates the substrate"),
     ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
-    ("mesh-five-types-present", "chaos",      "spawn 5 nodes (gateway+broker+compute+registry+bridge), verify all 5 visible in topology + heartbeats fresh"),
+    ("mesh-four-types-present", "chaos",      "spawn 4 nodes (gateway+broker+compute+registry), verify all 4 visible in topology + heartbeats fresh"),
     ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
     ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rafka.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
     ("gossip-mesh-to-mesh",     "chaos",      "spawn nodes in mesh-A + mesh-B; verify each mesh's gossip stays isolated (separate topic_id per mesh_id) AND cross.peer_connected spans fire"),
@@ -546,7 +546,7 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
         "backpressure-stream-flood" => run_cargo_test_for("rafka-node-base", "backpressure_bi_stream_flood").await,
         "chaos-soak-9prim-1min" => run_chaos_soak(api_url, "1m", "8s", seed).await,
         "chaos-soak-9prim-5min" => run_chaos_soak(api_url, "5m", "10s", seed).await,
-        "mesh-five-types-present" => run_mesh_five_types_present(api_url).await,
+        "mesh-four-types-present" => run_mesh_four_types_present(api_url).await,
         "remove-resilience" => run_remove_resilience(api_url).await,
         "gossip-swarm-forms" => run_gossip_swarm_forms(api_url).await,
         "gossip-mesh-to-mesh" => run_gossip_mesh_to_mesh(api_url).await,
@@ -909,10 +909,10 @@ async fn pick_node_of_type(api_url: &str, type_prefix: &str) -> Option<String> {
     names.first().cloned()
 }
 
-async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
+async fn run_mesh_four_types_present(api_url: &str) -> (&'static str, String) {
     use std::collections::HashSet;
     let client = reqwest::Client::new();
-    for t in ["gateway", "broker", "compute", "registry", "bridge"] {
+    for t in ["gateway", "broker", "compute", "registry"] {
         let _ = client
             .post(format!("{api_url}/api/nodes/spawn"))
             .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
@@ -938,13 +938,13 @@ async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
                 .collect()
         })
         .unwrap_or_default();
-    let expected: HashSet<String> = ["gateway", "broker", "compute", "registry", "bridge"]
+    let expected: HashSet<String> = ["gateway", "broker", "compute", "registry"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let missing: Vec<String> = expected.difference(&types).cloned().collect();
     if missing.is_empty() {
-        ("passed", format!("all 5 types present: {types:?}"))
+        ("passed", format!("all 4 types present: {types:?}"))
     } else {
         ("failed", format!("missing types: {missing:?}; saw {types:?}"))
     }
@@ -1006,14 +1006,13 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
     }
     tokio::time::sleep(std::time::Duration::from_secs(12)).await;
     // cross.peer_connected fires when Hello frames carry mismatched mesh_ids.
-    // Post-bridge architecture (sprint after this test was written):
-    // mesh-a-{type} no longer connects directly to mesh-b-{type} — the bridge
-    // sits between them and is the only node receiving cross-mesh Hellos.
-    // So the span fires on service=bridge, not service=gateway. Query every
-    // peer service and aggregate; a hit on any service is proof the cross-
-    // mesh handshake is happening somewhere.
+    // Post-bridge architecture (mesh-v2): the bridge is gone — cross-mesh
+    // awareness comes from the GATEWAY observing both meshes (RAFKA_OBSERVER_MESHES),
+    // so the cross.peer_connected span fires on service=gateway. Query every peer
+    // service and aggregate; a hit on any service is proof the cross-mesh
+    // handshake is happening somewhere.
     let mut cross_count: i64 = 0;
-    for svc in ["bridge", "gateway", "broker", "compute", "registry"] {
+    for svc in ["gateway", "broker", "compute", "registry"] {
         let url = format!(
             "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.cross.peer_connected&limit=20&lookback=2m"
         );
@@ -1031,7 +1030,7 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
         cross_count += n;
     }
     if cross_count >= 1 {
-        ("passed", format!("{cross_count} cross.peer_connected spans across all services — mesh-A and mesh-B see each other (via bridge)"))
+        ("passed", format!("{cross_count} cross.peer_connected spans across all services — mesh-A and mesh-B see each other (via gateway observing both meshes)"))
     } else {
         ("failed", "no cross.peer_connected spans on any service — mesh-to-mesh isolation/discovery broken".into())
     }
@@ -1045,11 +1044,7 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
     // names we spawn and only count survivors WITHIN that set.
     let client = reqwest::Client::new();
     let mut my_spawn_names: Vec<String> = Vec::new();
-    // Red-team R7 fix part 2: was [gateway, broker x2, compute, registry,
-    // bridge]. The bridge spawn requires mesh_id="bridge" AND
-    // RAFKA_BRIDGE_TARGET_MESHES env; spawning a bridge in mesh-a with no
-    // target meshes either fails validation or starts and immediately exits.
-    // Use 6 non-bridge types in mesh-a so all 6 spawn cleanly.
+    // 6 nodes in mesh-a (bridge type removed in mesh-v2; these all spawn cleanly).
     for t in ["gateway", "gateway", "broker", "broker", "compute", "registry"] {
         let resp = client
             .post(format!("{api_url}/api/nodes/spawn"))
