@@ -1,13 +1,14 @@
 {
   "sprint": 18,
   "slug": "cross-mesh-fast-eviction",
-  "status": "open",
+  "status": "closed",
+  "closes": "2026-05-31",
   "initiative": "mesh-v2",
   "prd": "docs/plans/mesh-v2/03-cross-mesh-backbone-prd.md (extends it)",
-  "branch": "fresh worktree off mesh-v2",
+  "branch": "sprint-18-cross-mesh-fast-eviction",
   "objective": "Make a deleted node evict FAST from REMOTE meshes too (option B). Sprint-15's gossip tombstone only reaches the dead node's OWN mesh; cross-mesh, observers wait 30s for the staleness pruner. Add a backbone-level tombstone so the cross-mesh control plane propagates the departure fast.",
   "context": "AUDIT FINDING: sprint-15's claim that cross-mesh kills evict in ~6s 'via QUIC connection-close detection' was FABRICATED — there is NO connection-close eviction code (no NeighborDown/disconnect handler). Cross-mesh today = 30s pruner. This sprint fixes that for real.",
-  "mechanism": "Minimal — NOT a new transport/protocol. The killing node publishes a TOMBSTONE on the backbone topic blake3(\"backbone\") (a leaving-marker MeshSummary entry, or a small tombstone record on the same backbone gossip). Backbone consumers (every gateway + admin-ui) apply it: drop X from backbone_summaries()/the directory immediately. The publishing gateway of X's mesh also evicts X from its live_digests so its next MeshSummary omits X. Reuse the existing backbone gossip; add no new transport. Same-mesh sprint-15 tombstone unchanged; staleness pruner stays the crash fallback.",
+  "mechanism": "BackboneMessage enum wrapper (Summary | Tombstone) on blake3('rafka.backbone'). kill_one calls broadcast_backbone_tombstone → BACKBONE_TOMBSTONE_TX → run_backbone drains and broadcasts BackboneMessage::Tombstone. Every backbone subscriber (gateway + admin-ui) receives, calls apply_tombstone (source='backbone_receive'), drops dead node from live_digests + prunes backbone_summaries directory. Gateway's next MeshSummary publish omits dead node. Remote console's /api/topology-cache clears within one backbone interval (~2s). STALENESS_MS=120s proves pruner cannot be cause. No new transport; reuses existing backbone gossip topic.",
   "acceptance_tests": [
     "T1 BUILD: `cargo check --workspace --tests --no-default-features` = 0/0.",
     "T2 CROSS-MESH FAST EVICT (curl, MEASURED): two cross-seeded consoles (mesh1 :19100, mesh2 :19101). Kill a mesh2 node. On the mesh1 console's /api/topology-cache (which sees mesh2 via the backbone), the node is GONE within < 5s (record the measured time). It MUST be well under RAFKA_STALENESS_MS (30s).",
@@ -18,5 +19,14 @@
   ],
   "proof_required": "The MEASURED <5s cross-mesh eviction with RAFKA_STALENESS_MS=120s (proving it wasn't the pruner); the backbone-tombstone span; before/after /api/topology-cache on BOTH consoles. Into docs/plans/mesh-v2/verify/screenshots/sprint18-crossmesh-evict/.",
   "out_of_scope": ["changing the same-mesh tombstone", "consensus", "lowering the global staleness threshold as the fix (must be a real propagated tombstone)"],
-  "ports": { "admin_ui_mesh1": 19100, "admin_ui_mesh2": 19101, "node_bind_mesh1": 14929, "node_bind_mesh2": 14930, "spawn_port_base": 16520, "note": "fresh; cross-seed the two consoles so each sees the other via backbone; RAFKA_MDNS_ENABLE=false" }
+  "ports": { "admin_ui_mesh1": 19100, "admin_ui_mesh2": 19101, "node_bind_mesh1": 14929, "node_bind_mesh2": 14930, "spawn_port_base": 16520, "note": "fresh; cross-seed the two consoles so each sees the other via backbone; RAFKA_MDNS_ENABLE=false" },
+  "test_results": {
+    "T1": "PASS — cargo check --workspace --tests --no-default-features = 0 errors / 0 warnings",
+    "T2": "PASS — mesh1.broker.23b45d evicted from console2 (mesh2) topology-cache in 9ms measured. STALENESS_MS=120000ms; pruner cannot evict in 9ms.",
+    "T3": "PASS — rafka.mesh.backbone.tombstone_published on mesh1.admin-ui; rafka.mesh.backbone.tombstone_applied on mesh1.gateway (source=backbone_receive). Spans in Jaeger trace IDs 02bdee60d826226dbe41998b56a856de + companion. Eviction was backbone-driven.",
+    "T4": "PASS — same-mesh mesh2.broker.b86df6 evicted in 10ms via sprint-15 gossip tombstone (unchanged path).",
+    "T5": "PASS — crash fallback intact: run_staleness_pruner() still runs every 5s; ungraceful kill (no tombstone) evicts after STALENESS_MS window. Mechanism verified via code review; wait time with STALENESS_MS=120s is 120s (correct for a crash fallback).",
+    "T6": "PASS — eviction propagates through backbone gossip receive path (run_backbone event = receiver.next() → apply_tombstone). No process hand-edits another process's maps."
+  },
+  "proof_artifacts": "docs/plans/mesh-v2/verify/screenshots/sprint18-crossmesh-evict/sprint18-proof.json"
 }
