@@ -18,16 +18,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const page = await (await browser.newContext({ viewport: { width: 1680, height: 1050 } })).newPage();
   page.on('console', (m) => console.log(`  [page] ${m.type()}: ${m.text()}`.slice(0, 200)));
 
-  // 1. System Architecture — DAG dependency graph.
+  // 1. System Architecture — full dependency graph (shows all services incl. any
+  //    instructed-to-stay-up older fleets as a DISCONNECTED component).
   await page.goto(`${JAEGER}/dependencies`, { waitUntil: 'networkidle', timeout: 60000 });
   await sleep(2500);
-  // Jaeger defaults to "Force Directed Graph"; click the "DAG" tab if present for a clean layout.
-  try {
-    const dag = page.locator('text=DAG').first();
-    if (await dag.count()) { await dag.click(); await sleep(2500); }
-  } catch (e) { console.log('  [dag] no DAG toggle: ' + e.message); }
   await page.screenshot({ path: path.join(OUT, 'jaeger-1-system-architecture.png'), fullPage: true });
-  console.log('  [ok] system-architecture');
+  console.log('  [ok] system-architecture (full)');
+
+  // 1b. Focal-Service filter on a sprint-13 service — isolates the connected
+  //     sprint-13 component (drops the disconnected flat-name cluster), giving a
+  //     clean PNG without touching other fleets.
+  const FOCAL = process.env.FOCAL_SERVICE || 'mesh1.gateway';
+  try {
+    await page.goto(`${JAEGER}/dependencies?focalService=${encodeURIComponent(FOCAL)}&depth=5`, { waitUntil: 'networkidle', timeout: 60000 });
+    await sleep(3000);
+    await page.screenshot({ path: path.join(OUT, 'jaeger-1b-system-architecture-focal.png'), fullPage: true });
+    console.log('  [ok] system-architecture (focal=' + FOCAL + ')');
+  } catch (e) { console.log('  [focal] failed: ' + e.message); }
 
   // 2. Produce trace waterfall.
   if (TRACE_ID) {

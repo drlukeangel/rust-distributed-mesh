@@ -1,7 +1,8 @@
 {
   "sprint_id": "sprint-13",
-  "status": "open",
+  "status": "closed",
   "opens": "2026-05-31",
+  "closes": "2026-05-31",
   "initiative": "mesh-v2",
   "phase": 2.5,
   "title": "Telemetry hierarchy + honest topology",
