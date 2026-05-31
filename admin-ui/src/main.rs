@@ -1784,6 +1784,10 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_NODE_BIND_ADDR",
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
+    // Sprint-18: allow operator to inject cross-mesh seed for backbone connectivity.
+    // Needed when two admin-ui consoles cross-seed so nodes find both consoles'
+    // iroh endpoints and the backbone gossip topic spans meshes.
+    "RAFKA_SEED_NODES",
 ];
 
 fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
@@ -1960,8 +1964,22 @@ async fn spawn_one(
     cmd.env("RAFKA_MDNS_ENABLE", "false");
     // Assign the deterministic port we pre-allocated from the pool.
     cmd.env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
-    if !seeds_csv.is_empty() {
-        cmd.env("RAFKA_SEED_NODES", &seeds_csv);
+    // Sprint-18: if extra_env contained RAFKA_SEED_NODES (cross-mesh seeds),
+    // MERGE them with the admin-ui's automatic seed list rather than overwriting.
+    let merged_seeds = {
+        let extra_seeds = extra_env.get("RAFKA_SEED_NODES").cloned().unwrap_or_default();
+        let mut all: Vec<&str> = Vec::new();
+        if !seeds_csv.is_empty() {
+            all.extend(seeds_csv.split(',').filter(|s| !s.is_empty()));
+        }
+        if !extra_seeds.is_empty() {
+            all.extend(extra_seeds.split(',').filter(|s| !s.is_empty()));
+        }
+        all.dedup();
+        all.join(",")
+    };
+    if !merged_seeds.is_empty() {
+        cmd.env("RAFKA_SEED_NODES", &merged_seeds);
     }
     // Sprint-14 B5: no RAFKA_OBSERVER_MESHES injection. Gateways learn other meshes
     // from the backbone, not by subscribing to their gossip.
