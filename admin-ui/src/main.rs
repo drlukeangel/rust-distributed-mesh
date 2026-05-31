@@ -31,7 +31,7 @@ use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
-const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 // dhat heap profiling — OFF by default, only built with --features dhat-heap.
 // The profiler is held in a static so a timer can drop it (which writes
@@ -1120,6 +1120,11 @@ struct AppState {
     /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
     /// before NodeRuntime starts.
     admin_bind_port: u16,
+    /// Per-`(mesh_id, node_type)` monotonic counters for deterministic node
+    /// naming. Key format: `"{mesh_id}.{node_type}"`. Value is the last
+    /// index assigned (1-based). In-process only — resets on restart.
+    /// Used by `spawn_one` to generate `mesh1.broker1`, `mesh1.broker2`, …
+    name_counters: Arc<DashMap<String, u32>>,
 }
 
 #[derive(Deserialize)]
@@ -1661,27 +1666,24 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // every 3s; the Jaeger-backed version was 5+ serial queries adding 10s of
     // latency on every poll and starving the rest of the UI.
     let spawned_count = state.processes.iter().count() as i64;
-    // EXCLUDE the "bridge" + "default" sentinels — those aren't real meshes,
-    // they're "bridge has no mesh" / "node spawned without RAFKA_MESH_ID".
+    // EXCLUDE "admin" (admin-ui's own mesh) + "default" sentinels — those aren't real meshes.
     let meshes: std::collections::HashSet<String> = state
         .spawned_meta
         .iter()
         .filter(|e| {
             let m = &e.value().mesh_id;
-            m != "bridge" && m != "default"
+            m != "admin" && m != "default"
         })
         .map(|e| e.value().mesh_id.clone())
         .collect();
     let mut meshes_vec: Vec<String> = meshes.into_iter().collect();
     meshes_vec.sort();
 
-    // Mean peer count: pull from spawned_meta if heartbeats are slow.
-    // Counts non-bridge nodes' actual peer counts.
+    // Mean peer count: pull from gossip digests where available.
     let mean_peers = {
         let snap: Vec<i64> = state
             .spawned_meta
             .iter()
-            .filter(|e| e.value().node_type != "bridge")
             .map(|_| 0i64) // placeholder; real values come from heartbeat enrichment
             .collect();
         // Approximate: peer_count for each non-bridge node is roughly
@@ -2016,28 +2018,17 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         for i in 0..members.len() {
             for j in (i + 1)..members.len() {
                 let (a, b) = canon(&members[i], &members[j]);
-                // QA postfix R2 fix: enforce bridge-architecture invariant in
-                // the edge generator itself. Possible classifications:
-                //   1. Either endpoint is a bridge → "cross" (legitimate
-                //      cross-mesh through bridge)
-                //   2. Both share primary mesh_id → "within"
-                //   3. Both non-bridge, DIFFERENT mesh_id → SUPPRESS
-                //      (non-bridge cross-mesh peers cannot directly
-                //      connect in the bridge architecture; if both appear
-                //      in the same topic_membership entry, one of them is
-                //      almost certainly an observer (admin-ui) whose
-                //      primary mesh_id differs from real mesh peers)
-                //   4. Meta missing for either side → SUPPRESS (don't
-                //      classify with incomplete info; was producing
-                //      spurious "cross" via the old catch-all)
+                // Edge classification (mesh-v2, no bridge nodes):
+                //   1. Both share primary mesh_id → "within"
+                //   2. Both are known nodes on different meshes, and at least
+                //      one is a gateway subscribing to multiple meshes → "cross"
+                //   3. Meta missing for either side → SUPPRESS
                 let kind: Option<&'static str> = match (
                     name_to_meta.get(&a),
                     name_to_meta.get(&b),
                 ) {
-                    (Some((_, at)), Some((_, bt))) if at == "bridge" || bt == "bridge" => {
-                        Some("cross")
-                    }
                     (Some((am, _)), Some((bm, _))) if am == bm => Some("within"),
+                    (Some((am, _)), Some((bm, _))) if am != bm => Some("cross"),
                     _ => None,
                 };
                 if let Some(k) = kind {
@@ -2405,6 +2396,33 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// `GET /api/topology-cache` — the gossiped directory: `name → {mesh, type, location}`.
+/// Built from `live_digests()` which is populated in real time by every gossip
+/// broadcast received by this process. Returns all nodes currently visible in the
+/// mesh (excluding entries where node_name is empty or "<unspawned>").
+/// Powers the Cache tab added in mesh-v2 Phase 1.
+async fn handle_topology_cache() -> impl IntoResponse {
+    let digests = live_digests();
+    let mut entries: Vec<Value> = Vec::new();
+    for entry in digests.iter() {
+        let d = entry.value();
+        if d.node_name.is_empty() || d.node_name == "<unspawned>" {
+            continue;
+        }
+        entries.push(json!({
+            "name":     d.node_name,
+            "mesh":     d.mesh_id,
+            "type":     d.node_type,
+            "location": d.location,
+            "node_id":  d.node_id,
+        }));
+    }
+    entries.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+    (StatusCode::OK, axum::Json(json!({"entries": entries}))).into_response()
+}
+
 async fn handle_nodes(State(state): State<AppState>) -> impl IntoResponse {
     let url = format!("{}/api/services", state.jaeger_url);
     let span = info_span!("rafka.ui.jaeger.query", endpoint = "/api/services", "otel.kind" = "client");
@@ -2674,11 +2692,15 @@ async fn spawn_one(
         return Err(format!("pool cap {POOL_CAP} reached — refusing spawn"));
     }
 
-    let suffix: String = {
-        let mut rng = rand::thread_rng();
-        (0..8).map(|_| format!("{:x}", rng.gen::<u8>() & 0xf)).collect()
+    // Deterministic naming: <mesh_id>.<node_type><N>  e.g. mesh1.broker1
+    // Per-process counter is sufficient for Phase 1 (no persistence across restarts needed).
+    let counter_key = format!("{}.{}", mesh_id, node_type);
+    let idx = {
+        let mut entry = state.name_counters.entry(counter_key).or_insert(0);
+        *entry += 1;
+        *entry
     };
-    let node_name = format!("{}-{}", node_type, suffix);
+    let node_name = format!("{}.{}{}", mesh_id, node_type, idx);
 
     let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
     if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
@@ -2735,33 +2757,16 @@ async fn spawn_one(
     );
     let seeds_csv = {
         let mut all_seeds = vec![admin_seed];
-        if node_type == "bridge" {
-            for target_mesh in ["mesh-a", "mesh-b"] {
-                if let Some(seed) = state
-                    .spawned_meta
-                    .iter()
-                    .find(|e| e.value().mesh_id == target_mesh)
-                    .map(|e| {
-                        format!(
-                            "{}@127.0.0.1:{}",
-                            e.value().node_id_hex,
-                            e.value().bind_port
-                        )
-                    })
-                {
-                    all_seeds.push(seed);
-                }
-            }
-        } else {
-            let same_mesh: Vec<String> = state
-                .spawned_meta
-                .iter()
-                .filter(|e| e.value().mesh_id == mesh_id)
-                .take(2)
-                .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
-                .collect();
-            all_seeds.extend(same_mesh);
-        }
+        // Include up to 2 already-spawned same-mesh nodes as additional seeds
+        // so peers can also reach each other (not just admin-ui).
+        let same_mesh: Vec<String> = state
+            .spawned_meta
+            .iter()
+            .filter(|e| e.value().mesh_id == mesh_id)
+            .take(2)
+            .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+            .collect();
+        all_seeds.extend(same_mesh);
         all_seeds.join(",")
     };
 
@@ -2909,24 +2914,23 @@ async fn handle_spawn(
     }
 }
 
-/// POST /api/bootstrap — spawn the full two-mesh demo topology: 2 of each node
-/// type into mesh-a, the same into mesh-b, plus 2 bridges that don't carry a
-/// specific mesh tag (they bridge ALL meshes). Idempotent in spirit but each
-/// call adds another full set — the chaos loop / kill buttons remove drift.
+/// POST /api/bootstrap — spawn the two-mesh demo topology (mesh-v2): 2 of each
+/// node type into mesh1, the same into mesh2. Bridge nodes are gone (mesh-v2
+/// uses the relay for cross-mesh transport instead). 16 nodes total.
 async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     // Red-team A#3: take the bootstrap mutex FIRST so concurrent callers
     // queue. Then check the pool cap — second caller will see the actual
     // post-first-bootstrap count. Without the mutex, 5 parallel callers all
-    // saw current=0, passed the check, and all spawned 18 → 90 total → tokio
+    // saw current=0, passed the check, and all spawned 16 → 80 total → tokio
     // deadlock.
     let _guard = state.bootstrap_mutex.lock().await;
     let current = state.spawned_meta.iter().count();
     const POOL_CAP: usize = 50;
-    if current + 18 > POOL_CAP {
+    if current + 16 > POOL_CAP {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({
-                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=18"),
+                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=16"),
                 "current": current,
                 "cap": POOL_CAP,
             })),
@@ -2937,10 +2941,10 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     let mut errors = Vec::new();
 
     let mesh_assignments: Vec<(&str, &[&str])> = vec![
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
+        ("mesh1", &["gateway", "broker", "compute", "registry"]),
+        ("mesh1", &["gateway", "broker", "compute", "registry"]),
+        ("mesh2", &["gateway", "broker", "compute", "registry"]),
+        ("mesh2", &["gateway", "broker", "compute", "registry"]),
     ];
 
     for (mesh, types) in mesh_assignments {
@@ -2954,24 +2958,6 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
             // Tiny stagger so PIDs don't collide on Windows FS namespace lookups.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }
-
-    // 2 bridges — bridges live on the "bridge" mesh (their primary topic)
-    // AND subscribe to mesh-a + mesh-b via RAFKA_BRIDGE_TARGET_MESHES so
-    // they actually receive cross-mesh gossip. Without that env they're
-    // just orphan nodes on the bridge topic that no one watches.
-    for _ in 0..2 {
-        let mut env = HashMap::new();
-        env.insert("RAFKA_MESH_ID".to_string(), "bridge".to_string());
-        env.insert(
-            "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
-            "mesh-a,mesh-b".to_string(),
-        );
-        match spawn_one(&state, "bridge", env, None, None).await {
-            Ok((name, _)) => spawned.push(name),
-            Err(e) => errors.push(e),
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     info_span!(
@@ -4077,10 +4063,10 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // means admin-ui only sees one mesh's digests at a time. We default to
     // mesh-a + mesh-b (bootstrap composition); operator can override.
     if std::env::var("RAFKA_OBSERVER_MESHES").is_err() {
-        // Watch every legit mesh: the two bootstrap meshes plus the bridge
-        // mesh (bridges live there). No "default" anymore — spawn_one now
-        // rejects nodes without an explicit RAFKA_MESH_ID.
-        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b,bridge");
+        // Watch every legit mesh: mesh1 + mesh2 are the mesh-v2 defaults.
+        // Operator can override via RAFKA_OBSERVER_MESHES before launch.
+        // No "bridge" anymore — bridge nodes are gone in mesh-v2 (relay replaces them).
+        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh1,mesh2");
     }
     // QA postfix NF-4 fix: admin-ui was appearing in topology/heartbeats with
     // id=`<unspawned>` and mesh_id=`default` because NodeRuntime falls back to
@@ -4228,7 +4214,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
             for p in &missing {
                 eprintln!("  - {p}");
             }
-            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry -p rafka-bridge");
+            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry");
             anyhow::bail!(
                 "preflight failed: {} peer binary/binaries missing under {}",
                 missing.len(),
@@ -4249,6 +4235,14 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .build()
         .expect("reqwest client");
 
+    // Spawn-pool base port. Override via RAFKA_SPAWN_PORT_BASE so different
+    // admin-ui instances don't fight over the same ports. Default 15820 is
+    // below the legacy baseline's 16820 range (baseline uses 16820-16838).
+    let spawn_port_base: u16 = std::env::var("RAFKA_SPAWN_PORT_BASE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15820);
+
     let state = AppState {
         http,
         jaeger_url,
@@ -4261,9 +4255,10 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
-        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(16820)),
+        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(spawn_port_base)),
         admin_node_id_hex: admin_node_id_hex.clone(),
         admin_bind_port,
+        name_counters: Arc::new(DashMap::new()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -4334,6 +4329,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
+        .route("/api/topology-cache", get(handle_topology_cache))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))

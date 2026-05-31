@@ -8,6 +8,7 @@ import { Chaos } from "./tabs/Chaos";
 import { Timeline } from "./tabs/Timeline";
 import { Tests } from "./tabs/Tests";
 import { Messages } from "./tabs/Messages";
+import { Cache } from "./tabs/Cache";
 import { api, type ClusterSummary } from "./api";
 
 const TABS = [
@@ -19,6 +20,7 @@ const TABS = [
   "Timeline",
   "Alerts",
   "Tests",
+  "Cache",
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -66,6 +68,7 @@ export function App() {
         {tab === "Alerts" && <Alerts />}
         {tab === "Tests" && <Tests />}
         {tab === "Messages" && <Messages />}
+        {tab === "Cache" && <Cache />}
       </main>
     </div>
   );

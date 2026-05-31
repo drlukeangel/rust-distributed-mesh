@@ -310,6 +310,11 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_DEV_RAM_USED` | _(measured via sysinfo)_ | Override reported `ram_used` in GB. Same gating. |
 | `RAFKA_CPU_ALERT_THRESHOLD` | `0.10` | Cores. Admin-ui `/api/alerts` emits a warn-severity alert for any node whose latest `GossipDigest.cpu_used` exceeds this. Release-build empty-shell baseline is ~0.02 cores; default 0.10 = ~5× headroom. Read once per `/api/alerts` request. |
 | `RAFKA_RAM_ALERT_THRESHOLD_GB` | `0.5` | GB. Same shape as `RAFKA_CPU_ALERT_THRESHOLD` but for `ram_used`. Release baseline ~0.06 GB; default 0.5 = ~8× headroom. |
+| `RAFKA_SPAWN_PORT_BASE` | `15820` | Admin-ui spawn-pool starting port. Children receive sequentially assigned ports starting from this base (one per spawn). Default 15820 keeps Phase 1 away from the legacy baseline port range (16820+). Override when multiple admin-ui instances run on one host. Added mesh-v2 Phase 1. |
+
+**`GossipDigest.location` field (added mesh-v2 Phase 1):** String field `location` appended to `GossipDigest`. Value = the node's `RAFKA_NODE_BIND_ADDR` at startup (e.g. `"127.0.0.1:15820"`). If `RAFKA_NODE_BIND_ADDR` was `0.0.0.0:<port>`, location is rewritten to `127.0.0.1:<port>` so loopback-local peers can actually dial it. Consumed by `/api/topology-cache` as the directory's `location` field. Old digests (pre-Phase 1) will have `location: ""` since it's the last postcard field.
+
+**`RAFKA_NODE_NAME` format change (mesh-v2 Phase 1):** Admin-ui now assigns deterministic names `<mesh_id>.<node_type><N>` (e.g. `mesh1.broker1`, `mesh1.broker2`). The counter is per-`(mesh_id, node_type)` pair, in-process, 1-based. Old random-hex names (`broker-3f3735a2`) are gone. The name is passed as `RAFKA_NODE_NAME` env to each child, appears in GossipDigest, spans, and the topology cache.
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 

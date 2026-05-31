@@ -1,4 +1,5 @@
-export type NodeType = "gateway" | "broker" | "compute" | "registry" | "bridge";
+// bridge removed in mesh-v2 — cross-mesh transport is the relay, not a bridge node.
+export type NodeType = "gateway" | "broker" | "compute" | "registry";
 
 export interface TopologyNode {
   id: string;
@@ -141,8 +142,23 @@ export interface MessagesResponse {
   messages: MeshMessage[];
 }
 
+/// A single entry in the gossiped topology cache directory.
+/// `name` is deterministic (mesh1.broker1 style); `location` is the
+/// node's reachable bind address from GossipDigest.location.
+export interface TopologyCacheEntry {
+  name: string;
+  mesh: string;
+  type: string;
+  location: string;
+  node_id: string;
+}
+export interface TopologyCacheResponse {
+  entries: TopologyCacheEntry[];
+}
+
 export const api = {
   topology: () => j<TopologyResponse>("/api/topology"),
+  topologyCache: () => j<TopologyCacheResponse>("/api/topology-cache"),
   heartbeats: () => j<HeartbeatsResponse>("/api/heartbeats"),
   summary: () => j<ClusterSummary>("/api/cluster/summary"),
   messages: () => j<MessagesResponse>("/api/messages"),

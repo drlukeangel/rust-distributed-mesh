@@ -291,6 +291,19 @@ async fn run_node(
         info!(mesh_id, topic_id = %hex::encode(topic_bytes), "iroh-gossip subscribed (HyParView+Plumtree)");
     });
 
+    // Build the location string once — reused by every run_gossip task.
+    // Prefer `127.0.0.1:<port>` over `0.0.0.0:<port>` so peers can
+    // actually dial back on loopback; on a real routable interface the
+    // bind_addr already contains the right host.
+    let location_str: String = {
+        let raw = bind_addr.to_string();
+        if bind_addr.ip().is_unspecified() && bind_addr.port() != 0 {
+            format!("127.0.0.1:{}", bind_addr.port())
+        } else {
+            raw
+        }
+    };
+
     let gossip_handle = {
         let node_id_g = node_id.clone();
         let registry_for_digest = Arc::clone(&peer_registry);
@@ -308,6 +321,7 @@ async fn run_node(
             mesh_id, // primary task: topic_label = mesh_id (digests filed under our own mesh)
             cpu_budget,
             ram_budget,
+            location_str.clone(),
         ))
     };
 
@@ -372,6 +386,7 @@ async fn run_node(
                 extra_mesh_static, // topic_label = actual subscription topic (NOT primary)
                 cpu_budget,
                 ram_budget,
+                location_str.clone(),
             ));
         }
     }
@@ -603,6 +618,14 @@ pub struct GossipDigest {
     /// RAM budget in GB (cgroup-aware on Linux, host total elsewhere).
     /// May be overridden by RAFKA_DEV_RAM_BUDGET in dev.
     pub ram_budget: f32,
+    /// Reachable bind address for this node (e.g. "127.0.0.1:15820").
+    /// Sourced from RAFKA_NODE_BIND_ADDR at startup. Used by the topology
+    /// cache as the `location` field: a peer that wants to connect to this
+    /// node resolves its name → location and dials that address directly.
+    /// Added in mesh-v2 Phase 1; absent in old digests (postcard compat:
+    /// only nodes on the same gossip topic = same build = same struct layout).
+    #[serde(default)]
+    pub location: String,
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -820,6 +843,9 @@ async fn run_gossip(
     topic_label: &'static str,
     cpu_budget: Option<f32>,
     ram_budget: Option<f32>,
+    // Reachable bind address string broadcast in GossipDigest.location
+    // so peers can look up this node's address from the topology cache.
+    location: String,
 ) {
     let counters = mesh_counters();
     let load_sampler = LoadSampler::new(cpu_budget, ram_budget, None, None);
@@ -892,6 +918,7 @@ async fn run_gossip(
                     cpu_budget: load.cpu_budget,
                     ram_used: load.ram_used,
                     ram_budget: load.ram_budget,
+                    location: location.clone(),
                 };
                 
                 let mut should_broadcast = false;
@@ -1860,6 +1887,7 @@ mod gossip_digest_schema_tests {
             cpu_budget: 4.0,
             ram_used: 0.31,
             ram_budget: 2.0,
+            location: "127.0.0.1:14820".into(),
         };
         let bytes = postcard::to_allocvec(&original).expect("encode");
         let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
@@ -1899,6 +1927,7 @@ mod staleness_pruner_tests {
             cpu_budget: 0.0,
             ram_used: 0.0,
             ram_budget: 0.0,
+            location: String::new(),
         }
     }
 
