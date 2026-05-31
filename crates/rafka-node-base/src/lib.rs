@@ -490,9 +490,72 @@ async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_n
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5000);
-    // Fixed demo targets for Phase 2. The observer copy (admin-ui) is what makes
-    // the write visible in the Messages tab.
-    const TARGETS: &[&str] = &["mesh1.broker1", "mesh2.broker1", "admin-ui"];
+    // Real write targets for Phase 2: mesh1.broker1 (intra) + mesh2.broker1 (cross).
+    const WRITE_TARGETS: &[&str] = &["mesh1.broker1", "mesh2.broker1"];
+    // Observer node: admin-ui's message_ring only captures frames IT receives, so
+    // we cc admin-ui a copy of each real write (carrying the REAL target's name in
+    // the `to` field) — that surfaces "write-sim mesh1.gateway1→mesh2.broker1" in
+    // the Messages tab. The authoritative delivery proof is the real target's RX.
+    const OBSERVER: &str = "admin-ui";
+
+    // Resolve a node_name → (EndpointAddr) from the gossiped cache. None if absent,
+    // self, or unparseable.
+    let resolve = |name: &str| -> Option<(String, EndpointAddr)> {
+        let (nid, location) = {
+            let digests = live_digests();
+            digests
+                .iter()
+                .find(|e| e.value().node_name == name)
+                .map(|e| (e.value().node_id.clone(), e.value().location.clone()))?
+        };
+        if nid == own_node_id || location.is_empty() {
+            return None;
+        }
+        let pk = PublicKey::from_str(&nid).ok()?;
+        let addr = location.parse::<SocketAddr>().ok()?;
+        Some((nid, EndpointAddr::new(pk).with_ip_addr(addr)))
+    };
+
+    // Send one Write frame labeled `to=label` to the node at `dest`. Increments
+    // frames_sent on success. Emits a frame.sent span (op_kind="produce", §10).
+    let send_write = |endpoint: iroh::Endpoint,
+                      own_node_id: String,
+                      own_node_name: String,
+                      dest_node_id: String,
+                      dest_addr: EndpointAddr,
+                      label: String,
+                      seq: u64| async move {
+        let frame = InternalMeshFrame::Write { from: own_node_name, to: label.clone(), seq };
+        let sent_span = tracing::info_span!(
+            "rafka.mesh.frame.sent",
+            node_id = %own_node_id,
+            peer_id = %dest_node_id,
+            frame_kind = "write",
+            op_kind = "produce",
+            write_to = %label,
+            seq = seq,
+            otel.kind = "producer",
+        );
+        let _enter = sent_span.enter();
+        let ctx = Span::current().context();
+        let encoded = frame.encode_with_context(&ctx);
+        drop(_enter);
+        match endpoint.connect(dest_addr, ALPN).await {
+            Ok(conn) => match conn.open_uni().await {
+                Ok(mut send) => {
+                    if send.write_all(&encoded).await.is_ok() && send.finish().is_ok() {
+                        mesh_counters().frames_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        sent_span.in_scope(|| info!(target = %label, seq, "write-sim frame sent"));
+                    } else {
+                        sent_span.in_scope(|| info!(target = %label, "write-sim write/finish failed"));
+                    }
+                }
+                Err(e) => sent_span.in_scope(|| info!(target = %label, error = %e, "write-sim open_uni failed")),
+            },
+            Err(e) => sent_span.in_scope(|| info!(target = %label, error = %e, "write-sim connect failed")),
+        }
+    };
+
     let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
     let mut seq: u64 = 0;
     // Small startup delay so the gossip cache has populated before the first send.
@@ -500,76 +563,35 @@ async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_n
     loop {
         tick.tick().await;
         seq += 1;
-        for target_name in TARGETS {
-            // Resolve target from the gossiped cache: name → {node_id, location}.
-            let resolved = {
-                let digests = live_digests();
-                digests
-                    .iter()
-                    .find(|e| e.value().node_name == *target_name)
-                    .map(|e| (e.value().node_id.clone(), e.value().location.clone()))
-            };
-            let Some((target_node_id, location)) = resolved else {
-                // Target not in cache yet — skip this tick for it.
-                continue;
-            };
-            if target_node_id == own_node_id || location.is_empty() {
-                continue;
-            }
-            let pk = match PublicKey::from_str(&target_node_id) {
-                Ok(pk) => pk,
-                Err(_) => continue,
-            };
-            let addr = match location.parse::<SocketAddr>() {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            let endpoint_addr = EndpointAddr::new(pk).with_ip_addr(addr);
-
-            let frame = InternalMeshFrame::Write {
-                from: own_node_name.clone(),
-                to: target_name.to_string(),
+        let observer = resolve(OBSERVER);
+        for target_name in WRITE_TARGETS {
+            let Some((dest_id, dest_addr)) = resolve(target_name) else { continue };
+            // 1. Real direct write to the target broker (intra or cross-mesh).
+            send_write(
+                endpoint.clone(),
+                own_node_id.clone(),
+                own_node_name.clone(),
+                dest_id,
+                dest_addr,
+                target_name.to_string(),
                 seq,
-            };
-            // frame.sent span carries op_kind="produce" per the locked §10 vocabulary.
-            let sent_span = tracing::info_span!(
-                "rafka.mesh.frame.sent",
-                node_id = %own_node_id,
-                peer_id = %target_node_id,
-                frame_kind = "write",
-                op_kind = "produce",
-                write_to = %target_name,
-                seq = seq,
-                otel.kind = "producer",
-            );
-            let _enter = sent_span.enter();
-            let ctx = Span::current().context();
-            let encoded = frame.encode_with_context(&ctx);
-            drop(_enter);
-
-            match endpoint.connect(endpoint_addr, ALPN).await {
-                Ok(conn) => match conn.open_uni().await {
-                    Ok(mut send) => {
-                        if send.write_all(&encoded).await.is_ok() && send.finish().is_ok() {
-                            mesh_counters()
-                                .frames_sent
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            sent_span.in_scope(|| {
-                                info!(target = %target_name, seq, "write-sim frame sent");
-                            });
-                        } else {
-                            sent_span.in_scope(|| {
-                                info!(target = %target_name, "write-sim write/finish failed");
-                            });
-                        }
-                    }
-                    Err(e) => sent_span.in_scope(|| {
-                        info!(target = %target_name, error = %e, "write-sim open_uni failed");
-                    }),
-                },
-                Err(e) => sent_span.in_scope(|| {
-                    info!(target = %target_name, error = %e, "write-sim connect failed");
-                }),
+            )
+            .await;
+            // 2. Observer copy to admin-ui, carrying the REAL target name so the
+            //    Messages tab shows "write-sim <gw>→<target>". This is a separate
+            //    frame to a separate node; it does NOT prove delivery to the
+            //    target (the target's RX does).
+            if let Some((obs_id, obs_addr)) = observer.clone() {
+                send_write(
+                    endpoint.clone(),
+                    own_node_id.clone(),
+                    own_node_name.clone(),
+                    obs_id,
+                    obs_addr,
+                    target_name.to_string(),
+                    seq,
+                )
+                .await;
             }
         }
     }

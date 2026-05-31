@@ -26,7 +26,7 @@ use std::{
     },
     time::Duration,
 };
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
@@ -4434,7 +4434,16 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/tests/run", post(handle_test_run))
         .route("/api/messages", get(handle_messages))
         .route("/api/nodes/{node_name}", delete(handle_kill))
-        .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
+        // SPA fallback (PRD §6a): real files (/, /assets/*, /favicon.svg, …) are
+        // served by ServeDir; any OTHER path (a client-router deep link like
+        // /cache or /topology) falls through to index.html so the React app boots
+        // and routes client-side. /api/* routes are registered ABOVE this, so the
+        // fallback never shadows them. ServeFile sets text/html on index.html.
+        .fallback_service(
+            ServeDir::new(&static_dir)
+                .append_index_html_on_directories(true)
+                .fallback(ServeFile::new(format!("{static_dir}/index.html"))),
+        )
         .with_state(state)
         .layer(middleware::from_fn(trace_middleware));
 

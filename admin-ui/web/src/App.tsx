@@ -24,9 +24,49 @@ const TABS = [
 ] as const;
 type Tab = (typeof TABS)[number];
 
+// Clean path-based routing (PRD §6a). Each tab maps to a path slug so tabs are
+// directly linkable: /topology, /nodes, /messages, /boot-waterfall, /timeline,
+// /alerts, /chaos, /tests, /cache. The server SPA-fallback (main.rs) serves
+// index.html for any non-/api, non-asset GET so deep links boot the app.
+const TAB_TO_SLUG: Record<Tab, string> = {
+  Topology: "topology",
+  Nodes: "nodes",
+  Messages: "messages",
+  "Boot Waterfall": "boot-waterfall",
+  Chaos: "chaos",
+  Timeline: "timeline",
+  Alerts: "alerts",
+  Tests: "tests",
+  Cache: "cache",
+};
+const SLUG_TO_TAB: Record<string, Tab> = Object.fromEntries(
+  (Object.entries(TAB_TO_SLUG) as [Tab, string][]).map(([t, s]) => [s, t]),
+) as Record<string, Tab>;
+
+function tabFromPath(pathname: string): Tab {
+  const slug = pathname.replace(/^\/+/, "").split("/")[0].toLowerCase();
+  return SLUG_TO_TAB[slug] ?? "Topology";
+}
+
 export function App() {
-  const [tab, setTab] = useState<Tab>("Topology");
+  const [tab, setTab] = useState<Tab>(() => tabFromPath(window.location.pathname));
   const [summary, setSummary] = useState<ClusterSummary | null>(null);
+
+  // Back/forward navigation: sync tab from the URL on popstate.
+  useEffect(() => {
+    const onPop = () => setTab(tabFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Clicking a tab updates the address bar without a reload (pushState).
+  const selectTab = (t: Tab) => {
+    setTab(t);
+    const path = `/${TAB_TO_SLUG[t]}`;
+    if (window.location.pathname !== path) {
+      window.history.pushState({ tab: t }, "", path);
+    }
+  };
 
   useEffect(() => {
     const refresh = () =>
@@ -53,7 +93,7 @@ export function App() {
           <div
             key={t}
             className={"tab" + (tab === t ? " active" : "")}
-            onClick={() => setTab(t)}
+            onClick={() => selectTab(t)}
           >
             {t}
           </div>
