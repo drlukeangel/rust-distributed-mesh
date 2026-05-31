@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sprint 14 — Release Report (cross-mesh backbone)</title>
+<style>
+  body { background:#0d1117; color:#c9d1d9; font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif; max-width:1100px; margin:0 auto; padding:32px; }
+  h1 { color:#58a6ff; } h2 { color:#79c0ff; border-bottom:1px solid #21262d; padding-bottom:6px; margin-top:36px; }
+  h3 { color:#d2a8ff; margin-top:24px; }
+  a { color:#58a6ff; } code { background:#161b22; padding:1px 5px; border-radius:4px; color:#a5d6ff; }
+  img { width:100%; border:1px solid #30363d; border-radius:8px; margin:8px 0 12px; display:block; }
+  blockquote { color:#d29922; border-left:3px solid #9e6a03; margin:0 0 20px; padding:4px 14px; background:#1a1505; }
+  table { border-collapse:collapse; margin:12px 0; } td,th { border:1px solid #30363d; padding:6px 12px; text-align:left; }
+  .ok { color:#3fb950; } .meta { color:#8b949e; } ul { margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>Sprint 14 — Release Report</h1>
+<p class="meta"><b>Initiative:</b> mesh-v2 · <b>Cross-mesh backbone (control plane) + admin-ui normalization</b><br/>
+<b>Status:</b> <span class="ok">✅ Verified by team lead</span> · <b>Date:</b> 2026-05-31<br/>
+<b>PRD:</b> <code>docs/plans/mesh-v2/03-cross-mesh-backbone-prd.md</code> · <b>Branch:</b> <code>worktree-agent-a4b669faab9e8336b</code> · tip <code>4822b85</code></p>
+
+<blockquote><b>Completion note:</b> the build agent finished the work and captured the proofs below, then
+its session ended on a transient API <b>rate-limit before writing a final report</b>. The code was
+committed (<code>4822b85</code>); the team lead verified it independently rather than trusting an agent report.</blockquote>
+
+<h2>Live links</h2>
+<ul>
+  <li><b>Admin-ui — mesh1:</b> <a href="http://localhost:19094">:19094</a> · <b>mesh2:</b> <a href="http://localhost:19095">:19095</a> (UI per mesh)</li>
+  <li><b>Jaeger System Architecture:</b> <a href="http://localhost:16686/dependencies">/dependencies</a></li>
+  <li><b>Jaeger backbone publishes:</b> <a href="http://localhost:16686/search?service=mesh1.gateway&amp;operation=rafka.mesh.backbone.published&amp;lookback=1h">mesh1.gateway / backbone.published</a></li>
+</ul>
+
+<h2>What was done</h2>
+<ul>
+  <li><b>Backbone topic</b> <code>blake3("rafka.backbone")</code> carrying per-mesh <b>MeshSummary</b> (directory + aggregate metrics); gateways aggregate their own mesh and publish.</li>
+  <li><b>Soft-lease publisher</b> (no election): claim + TTL + renew; <code>min(node_id)</code> only for a vacant seat; failover on expiry.</li>
+  <li><b>Cross-mesh writes resolve via the backbone directory</b> — gateways no longer join the other mesh's full gossip.</li>
+  <li><b>admin-ui normalized</b> — a normal node: <code>RAFKA_MESH_ID</code> set, <code>node_type=admin-ui</code>, self-names <code>mesh1.admin-ui.&lt;6hex&gt;</code>, consumes the backbone. No flat <code>admin-ui</code>/<code>admin</code> special-case.</li>
+  <li><b>UI per mesh</b> — admin-ui in mesh1 (:19094) and mesh2 (:19095).</li>
+  <li><b>§10:</b> <code>rafka.mesh.backbone.published</code>/<code>.received</code> + per-mesh aggregate metrics.</li>
+</ul>
+
+<h2>Verification (team lead, independent — agent gave no report)</h2>
+<ul>
+  <li><code>cargo check --workspace --tests --no-default-features</code> → <span class="ok">0/0</span> on the merged tree.</li>
+  <li><b>admin-ui normalized, live:</b> <code>/api/topology-cache</code> → <code>mesh1.admin-ui.0abe86</code> + <code>mesh2.admin-ui.244b5d</code> (not flat); all nodes <code>&lt;mesh&gt;.&lt;type&gt;.&lt;6hex&gt;</code>.</li>
+  <li><b>Backbone emitting:</b> <code>backbone.published</code> spans, steady one-per-interval cadence per mesh (single publisher, not flapping).</li>
+  <li><b>System Architecture:</b> distinct per-mesh nodes, bidirectional, no admin-ui edge in the mesh cluster.</li>
+  <li>Both admin-ui instances up (:19094 / :19095).</li>
+  <li><i>Not independently re-derived: span-by-span publisher-uniqueness under contention — relied on the agent's captured failover (jaeger-6).</i></li>
+</ul>
+<p>Also folded in: the dead <code>_HTML_LEGACY_REMOVED</code> legacy-HTML const (938 lines, incl. the <code>+ Spawn bridge</code> button) was <b>deleted</b> from <code>admin-ui/src/main.rs</code> — the last bridge string is gone.</p>
+
+<h2>Proof</h2>
+<h3>System Architecture — distinct per-mesh nodes, bidirectional</h3><img src="screenshots/jaeger-5-system-architecture.png"/>
+<h3>Backbone — mesh1 publishes (steady cadence = single publisher)</h3><img src="screenshots/jaeger-1-mesh1-published.png"/>
+<h3>Failover — publisher killed, another takes over</h3><img src="screenshots/jaeger-6-failover-published.png"/>
+<h3>Cross-mesh produce trace still stitches (write path intact)</h3><img src="screenshots/jaeger-4-crossmesh-produce-trace.png"/>
+<h3>admin-ui normalized + cache (mesh1 instance)</h3><img src="screenshots/mesh1-ui/9-cache.png"/>
+
+<h2>Acceptance — met</h2>
+<table>
+<tr><th>Criterion</th><th>Result</th></tr>
+<tr><td>cargo check 0/0</td><td class="ok">✅ lead re-ran</td></tr>
+<tr><td>Backbone per-mesh summaries</td><td class="ok">✅</td></tr>
+<tr><td>Soft-lease publisher (no election)</td><td class="ok">✅ cadence + failover capture</td></tr>
+<tr><td>Cross-mesh write via backbone directory</td><td class="ok">✅ write path intact</td></tr>
+<tr><td>admin-ui normalized mesh1.admin-ui.&lt;6hex&gt;</td><td class="ok">✅</td></tr>
+<tr><td>UI per mesh (:19094 + :19095)</td><td class="ok">✅</td></tr>
+<tr><td>Dead bridge string scrubbed</td><td class="ok">✅</td></tr>
+</table>
+
+<h2>Deferred</h2>
+<p>add/delete → <b>sprint-15</b> · forced relay → <b>16</b> · chaos → <b>17</b>.</p>
+</body>
+</html>

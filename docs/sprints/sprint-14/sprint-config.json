@@ -1,7 +1,11 @@
 {
   "sprint_id": "sprint-14",
-  "status": "open",
+  "status": "verified",
   "opens": "2026-05-31",
+  "closes": "2026-05-31",
+  "tip_sha": "4822b85",
+  "lead_verified": true,
+  "verification_note": "Agent rate-limited before writing a report; lead verified independently: cargo check 0/0; /api/topology-cache shows admin-ui normalized (mesh1.admin-ui.0abe86 / mesh2.admin-ui.244b5d); backbone.published spans steady one-per-interval per mesh; System Architecture distinct per-mesh nodes bidirectional, no admin-ui edge; both UI-per-mesh instances up. Soft-lease single-publisher-under-contention relied on the agent's captured failover (jaeger-6), not span-by-span re-audit. Dead _HTML_LEGACY_REMOVED const (incl. +Spawn bridge) deleted in the merge.",
   "initiative": "mesh-v2",
   "phase": 3,
   "title": "Cross-mesh backbone (control plane)",
