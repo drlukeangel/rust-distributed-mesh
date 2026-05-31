@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type MeshMessage } from "../api";
 
-/// Messages tab — live data-plane traffic flowing through admin-ui.
-/// Polls /api/messages every 1s; server returns the latest 500 frames
-/// the admin-ui node has received via run_frame_reader. Newest first.
+/// Messages tab — live per-node data-plane traffic, derived from the gossiped
+/// frame counters (sprint-13 B4: the gateway→admin-ui CC was removed, so this no
+/// longer shows per-frame rows captured by admin-ui; it shows each node's
+/// TX/RX totals from its GossipDigest). Polls /api/messages every 1s.
 export function Messages() {
   const [msgs, setMsgs] = useState<MeshMessage[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -37,7 +38,7 @@ export function Messages() {
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <div className="text-sm text-gray-400">
-          live frames received by admin-ui from peers · {msgs.length} shown ·
+          per-node traffic (TX/RX) from gossip · {msgs.length} nodes ·
           updates every 1s
         </div>
         <button
@@ -79,7 +80,9 @@ export function Messages() {
                       ? "text-purple-400"
                       : m.frame_kind === "write"
                         ? "text-amber-400"
-                        : "text-red-400";
+                        : m.frame_kind === "traffic"
+                          ? "text-cyan-400"
+                          : "text-red-400";
               return (
                 <tr
                   key={`${m.ts_ms}-${i}`}
@@ -98,7 +101,7 @@ export function Messages() {
             {msgs.length === 0 && (
               <tr>
                 <td colSpan={5} className="p-4 text-center text-gray-600">
-                  no messages yet — wait for peer ping cycle (~10s)
+                  no nodes in gossip yet — spawn or bootstrap a fleet
                 </td>
               </tr>
             )}

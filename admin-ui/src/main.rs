@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -3233,11 +3233,36 @@ struct RunTestRequest {
 /// Returns the last 500 frames received via run_frame_reader. Newest first.
 /// Source: rafka_node_base::message_ring() (process-global VecDeque).
 async fn handle_messages() -> impl IntoResponse {
-    let ring = message_ring();
-    let guard = ring.lock().unwrap();
-    let mut items: Vec<_> = guard.iter().cloned().collect();
-    drop(guard);
-    items.reverse(); // newest first
+    // Sprint-13 B4: the gateway→admin-ui write CC is GONE, so admin-ui's
+    // process-local message_ring no longer captures data-plane produces (those
+    // land on the broker that receives them, in the broker's own process). Derive
+    // the Messages view from the LEGITIMATE gossiped per-node frame counters
+    // (`frames_sent_total` / `frames_recv_total` in each GossipDigest) instead —
+    // one row per live node summarizing its real traffic. No node special-cases
+    // copies to the observer; this is pure observation of gossiped state.
+    let digests = live_digests();
+    let mut items: Vec<MeshMessage> = digests
+        .iter()
+        .filter(|e| {
+            let d = e.value();
+            !d.node_name.is_empty() && d.node_name != "<unspawned>" && d.node_name != "admin-ui"
+        })
+        .map(|e| {
+            let d = e.value();
+            MeshMessage {
+                ts_ms: d.wall_time_ms,
+                from_peer_id: d.node_id.clone(),
+                frame_kind: "traffic".to_string(),
+                bytes: 0,
+                summary: format!(
+                    "{} [{}] TX={} RX={}",
+                    d.node_name, d.node_type, d.frames_sent_total, d.frames_recv_total
+                ),
+            }
+        })
+        .collect();
+    // Newest digest first.
+    items.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
     items.truncate(500);
     (StatusCode::OK, axum::Json(json!({"messages": items}))).into_response()
 }
