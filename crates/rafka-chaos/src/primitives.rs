@@ -375,16 +375,90 @@ impl ChaosPrimitive for BurstKill {
     }
 }
 
-/// `wedge_node` — Windows: Suspend-Process. Substrate criterion: survivors detect the
-/// wedged node as stale (peer.disconnected within a deadline OR heartbeat peer_count
-/// drops on at least one survivor).
+/// Suspend the first OS process named `binary_name` (without the platform exe
+/// suffix). Returns its pid as a string. Cross-platform: NtSuspendProcess via
+/// PowerShell on Windows, SIGSTOP via `kill -STOP` on Unix. Err on no process.
+#[cfg(windows)]
+async fn os_suspend_process(binary_name: &str) -> Result<String, ChaosError> {
+    let ps_script = format!(
+        "$p = Get-Process -Name '{binary_name}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) {{ \
+            Add-Type -Name 'NT' -Namespace 'Win32' -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr p);'; \
+            [Win32.NT]::NtSuspendProcess($p.Handle); Write-Output $p.Id \
+        }} else {{ Write-Error 'no process' }}"
+    );
+    let output = tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &ps_script])
+        .output()
+        .await
+        .map_err(|e| ChaosError::Execution(format!("powershell suspend: {e}")))?;
+    if !output.status.success() {
+        return Err(ChaosError::InvalidTarget(format!(
+            "{binary_name} vanished between check and suspend"
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[cfg(unix)]
+async fn os_suspend_process(binary_name: &str) -> Result<String, ChaosError> {
+    // pgrep -n = newest matching process. -x = exact comm match.
+    let out = tokio::process::Command::new("pgrep")
+        .args(["-nx", binary_name])
+        .output()
+        .await
+        .map_err(|e| ChaosError::Execution(format!("pgrep: {e}")))?;
+    let pid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if pid.is_empty() {
+        return Err(ChaosError::InvalidTarget(format!(
+            "{binary_name} vanished between check and suspend"
+        )));
+    }
+    let status = tokio::process::Command::new("kill")
+        .args(["-STOP", &pid])
+        .status()
+        .await
+        .map_err(|e| ChaosError::Execution(format!("kill -STOP: {e}")))?;
+    if !status.success() {
+        return Err(ChaosError::InvalidTarget(format!(
+            "kill -STOP {pid} failed (process gone?)"
+        )));
+    }
+    Ok(pid)
+}
+
+/// Resume a process suspended by [`os_suspend_process`]. Best-effort.
+#[cfg(windows)]
+async fn os_resume_process(pid: &str) {
+    let ps_script = format!(
+        "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ \
+            Add-Type -Name 'NT2' -Namespace 'Win32' -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtResumeProcess(IntPtr p);'; \
+            [Win32.NT2]::NtResumeProcess($p.Handle) | Out-Null \
+        }}"
+    );
+    let _ = tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &ps_script])
+        .output()
+        .await;
+}
+
+#[cfg(unix)]
+async fn os_resume_process(pid: &str) {
+    let _ = tokio::process::Command::new("kill")
+        .args(["-CONT", pid])
+        .status()
+        .await;
+}
+
+/// `wedge_node` — suspend a node's OS process so it stops responding (the
+/// portable proxy for "unresponsive/degraded link"). Substrate criterion:
+/// survivors detect the wedged node as stale (peer.disconnected within a
+/// deadline OR heartbeat peer_count drops on at least one survivor).
 ///
-/// Implementation: shell out to PowerShell `Suspend-Process -Id <pid>`. Reverted via
-/// `Resume-Process -Id <pid>`. The pid is obtained from the spawn response stored in
-/// topology-ui — but topology-ui only exposes node_names, not pids, via /api/spawned.
-/// Workaround: query Get-Process for `rafka-<type>` and pick one — imprecise but works
-/// for single-target chaos. A future improvement adds /api/nodes/spawned-detail returning
-/// {name, pid} pairs.
+/// Cross-platform: NtSuspendProcess (Windows) / SIGSTOP (Unix) via
+/// `os_suspend_process`, reverted via `os_resume_process`. The pid is found by
+/// matching the `rafka-<type>` process name — imprecise but fine for
+/// single-target chaos. A future improvement adds /api/nodes/spawned-detail
+/// returning {name, pid} pairs so we can target an exact subprocess.
 pub struct WedgeNode {
     pub target_node_type: String,
     pub duration_ms: u64,
@@ -420,26 +494,10 @@ impl ChaosPrimitive for WedgeNode {
             }
         };
         let binary_name = format!("rafka-{}", actual_type);
-        let ps_script = format!(
-            "$p = Get-Process -Name '{binary_name}' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($p) {{ \
-                Add-Type -Name 'NT' -Namespace 'Win32' -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr p);'; \
-                [Win32.NT]::NtSuspendProcess($p.Handle); Write-Output $p.Id \
-            }} else {{ Write-Error 'no process' }}"
-        );
-        let output = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_script])
-            .output()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("powershell suspend: {e}")))?;
-        if !output.status.success() {
-            // Race lost — process died between the spawned-list check and the
-            // Get-Process call. Treat as InvalidTarget so the soak counts it as a
-            // soft skip rather than an assertion failure.
-            return Err(ChaosError::InvalidTarget(format!(
-                "wedge_node: rafka-{actual_type} vanished between check and suspend"
-            )));
-        }
-        let pid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Race lost (process died between the spawned-list check and suspend) is
+        // surfaced as InvalidTarget by os_suspend_process, so the soak counts it
+        // as a soft skip rather than an assertion failure.
+        let pid = os_suspend_process(&binary_name).await?;
         Ok(ChaosOutcome {
             primitive_name: "wedge_node".into(),
             targets: vec![format!("{}:{}", actual_type, pid)],
@@ -481,16 +539,7 @@ impl ChaosPrimitive for WedgeNode {
         if pid.is_empty() {
             return Ok(());
         }
-        let ps_script = format!(
-            "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ \
-                Add-Type -Name 'NT2' -Namespace 'Win32' -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtResumeProcess(IntPtr p);'; \
-                [Win32.NT2]::NtResumeProcess($p.Handle) | Out-Null \
-            }}"
-        );
-        let _ = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_script])
-            .output()
-            .await;
+        os_resume_process(pid).await;
         Ok(())
     }
 }
@@ -1228,55 +1277,13 @@ impl ChaosPrimitive for NatShift {
     }
 }
 
-/// `slow_link` — restart target node with `RAFKA_LINK_SLOW_MS` env so node-base
-/// sleeps that many ms before each outbound frame send (substrate-level latency
-/// injection). Detection: new subprocess appears in `/api/spawned`.
-pub struct SlowLink {
-    pub target: Option<String>,
-    pub latency_ms: u64,
-}
-
-#[async_trait]
-impl ChaosPrimitive for SlowLink {
-    fn name(&self) -> &str {
-        "slow_link"
-    }
-
-    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
-        respawn_with_env(ctx, self.target.as_deref(), "slow_link", &[
-            ("RAFKA_LINK_SLOW_MS", self.latency_ms.to_string()),
-        ]).await
-    }
-
-    async fn detect(&self, ctx: &ChaosContext, outcome: &ChaosOutcome, deadline_ms: u64) -> Result<DetectionResult, ChaosError> {
-        detect_respawned(ctx, outcome, deadline_ms, "slow_link").await
-    }
-}
-
-/// `lossy_link` — restart target node with `RAFKA_LINK_LOSS_PCT` env so node-base
-/// drops that percentage of outbound frames. Detection: new subprocess appears in
-/// `/api/spawned`.
-pub struct LossyLink {
-    pub target: Option<String>,
-    pub loss_pct: u8,
-}
-
-#[async_trait]
-impl ChaosPrimitive for LossyLink {
-    fn name(&self) -> &str {
-        "lossy_link"
-    }
-
-    async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
-        respawn_with_env(ctx, self.target.as_deref(), "lossy_link", &[
-            ("RAFKA_LINK_LOSS_PCT", self.loss_pct.to_string()),
-        ]).await
-    }
-
-    async fn detect(&self, ctx: &ChaosContext, outcome: &ChaosOutcome, deadline_ms: u64) -> Result<DetectionResult, ChaosError> {
-        detect_respawned(ctx, outcome, deadline_ms, "lossy_link").await
-    }
-}
+// slow_link / lossy_link primitives retired: they injected fake app-level
+// latency/drop on the now-disabled ping traffic. Real network-fault injection is
+// the transport's (iroh-quinn's) domain to handle + test, not rafka's
+// (Golden Principle #1). The rafka-relevant resilience property — does the mesh
+// detect and react to a degraded/unreachable peer — is covered by wedge_node
+// (unresponsive peer) + partition_pair + kill_node. A future OS/Gremlin-based
+// network-chaos investigation can revisit real loss/latency injection.
 
 /// Shared helper: kill `target` and respawn the same node_type via topology-ui
 /// with the provided extra_env. Returns ChaosOutcome with targets=[old, new].

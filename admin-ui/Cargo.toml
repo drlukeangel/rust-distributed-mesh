@@ -37,10 +37,19 @@ urlencoding = "2"
 # - postcard: decode digest payloads
 # - futures-lite: stream adapters for the gossip receiver
 iroh = { workspace = true }
-iroh-gossip = "0.98"
+iroh-gossip = "0.100"
 rafka-node-base = { path = "../crates/rafka-node-base" }
 rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
 blake3 = "1"
 postcard = { version = "1", features = ["alloc"] }
 futures-lite = "2"
 hex = { workspace = true }
+dhat = { version = "0.3.3", optional = true }
+mimalloc = "0.1.52"
+
+[features]
+# dhat heap profiling is OFF by default. dhat installs a global allocator that
+# records EVERY allocation in an ever-growing table — on a busy process like
+# admin-ui that reads as a ~2 MB/min "leak" that isn't one. Enable only to
+# profile: cargo build -p rafka-admin-ui --release --features dhat-heap
+dhat-heap = ["dep:dhat"]

@@ -1,21 +1,13 @@
 //! Soak runner — picks a random primitive every N seconds, executes, detects, records.
 //! Per chaos PRD §3. Sprint 11 phase 1 ships a smoke variant (5min run with 10 events).
 
-use crate::primitives::{BurstKill, ClockSkew, DiskFull, KillNode, LossyLink, NatShift, RestartNode, SlowLink, WedgeNode};
+use crate::primitives::{BurstKill, ClockSkew, DiskFull, KillNode, NatShift, RestartNode, WedgeNode};
 use crate::{ChaosContext, ChaosOutcome, ChaosPrimitive, DetectionResult};
 use rand::Rng;
 use serde::Serialize;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-/// Minimum target pool size — if /api/spawned drops below this, soak tops up by
-/// spawning fresh subprocesses before the next primitive. Keeps long soaks viable
-/// (otherwise kill-heavy primitives drain the pool and remaining events all fail
-/// with InvalidTarget).
-/// Minimum pool size before maintain_pool tops up. Must be >= NODE_TYPES.len() so
-/// the pool can actually hold one of each type simultaneously — otherwise we
-/// never converge to a full mesh.
-const MIN_POOL_SIZE: usize = 5;
 const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
 
 #[derive(Serialize)]
@@ -73,11 +65,14 @@ pub async fn run_soak(
         // Top up target pool if it's too thin — keeps long soaks viable.
         maintain_pool(ctx).await;
 
-        // pick a primitive from the full pool. PartitionPair excluded — needs admin
-        // perms. WedgeNode picks a node_type and suspends one matching OS process.
+        // pick a primitive from the reaction-test pool. PartitionPair excluded —
+        // needs admin perms. slow_link/lossy_link retired (app-level fake on dead
+        // ping traffic; real network fault is iroh's domain, not rafka's — tracked
+        // for a future OS/Gremlin-based network-chaos investigation). WedgeNode
+        // suspends a matching OS process (cross-platform: SIGSTOP/NtSuspendProcess).
         let (pick, wedge_type_idx): (u8, usize) = {
             let mut rng = ctx.rng.lock().await;
-            (rng.gen_range(0..9), rng.gen_range(0..4))
+            (rng.gen_range(0..7), rng.gen_range(0..4))
         };
         let primitive: Box<dyn ChaosPrimitive> = match pick {
             0 => Box::new(KillNode { target: None }),
@@ -85,9 +80,7 @@ pub async fn run_soak(
             2 => Box::new(BurstKill { count: 2 }),
             3 => Box::new(DiskFull { target: None, max_bytes: 4 * 1024 * 1024 }),
             4 => Box::new(ClockSkew { target: None, skew_ms: 30_000 }),
-            5 => Box::new(SlowLink { target: None, latency_ms: 250 }),
-            6 => Box::new(LossyLink { target: None, loss_pct: 15 }),
-            7 => Box::new(NatShift { target: None }),
+            5 => Box::new(NatShift { target: None }),
             _ => Box::new(WedgeNode {
                 target_node_type: ["gateway","broker","compute","registry"][wedge_type_idx].to_string(),
                 duration_ms: 3_000,

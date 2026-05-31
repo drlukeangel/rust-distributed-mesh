@@ -154,24 +154,6 @@ enum ChaosCmd {
         #[arg(long, default_value = "10000")]
         deadline_ms: u64,
     },
-    /// Restart target with RAFKA_LINK_SLOW_MS env (default 250ms)
-    SlowLink {
-        #[arg(long)]
-        target: Option<String>,
-        #[arg(long, default_value = "250")]
-        latency_ms: u64,
-        #[arg(long, default_value = "10000")]
-        deadline_ms: u64,
-    },
-    /// Restart target with RAFKA_LINK_LOSS_PCT env (default 15%)
-    LossyLink {
-        #[arg(long)]
-        target: Option<String>,
-        #[arg(long, default_value = "15")]
-        loss_pct: u8,
-        #[arg(long, default_value = "10000")]
-        deadline_ms: u64,
-    },
     /// Restart target with new RAFKA_NODE_BIND_ADDR (random ephemeral port)
     NatShift {
         #[arg(long)]
@@ -371,14 +353,6 @@ fn describe_command(cmd: &Cmd) -> (String, String) {
                     "mesh chaos clock-skew".into(),
                     format!("--target {} --skew-ms {skew_ms}", target.clone().unwrap_or_else(|| "<random>".into())),
                 ),
-                ChaosCmd::SlowLink { target, latency_ms, .. } => (
-                    "mesh chaos slow-link".into(),
-                    format!("--target {} --latency-ms {latency_ms}", target.clone().unwrap_or_else(|| "<random>".into())),
-                ),
-                ChaosCmd::LossyLink { target, loss_pct, .. } => (
-                    "mesh chaos lossy-link".into(),
-                    format!("--target {} --loss-pct {loss_pct}", target.clone().unwrap_or_else(|| "<random>".into())),
-                ),
                 ChaosCmd::NatShift { target, .. } => (
                     "mesh chaos nat-shift".into(),
                     target.clone().unwrap_or_else(|| "<random>".into()),
@@ -458,12 +432,6 @@ async fn run_command(cli: &Cli, client: &reqwest::Client) -> Result<()> {
                 ChaosCmd::ClockSkew { target, skew_ms, deadline_ms } => {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::ClockSkew { target: target.clone(), skew_ms: *skew_ms }), *deadline_ms).await
                 }
-                ChaosCmd::SlowLink { target, latency_ms, deadline_ms } => {
-                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::SlowLink { target: target.clone(), latency_ms: *latency_ms }), *deadline_ms).await
-                }
-                ChaosCmd::LossyLink { target, loss_pct, deadline_ms } => {
-                    cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::LossyLink { target: target.clone(), loss_pct: *loss_pct }), *deadline_ms).await
-                }
                 ChaosCmd::NatShift { target, deadline_ms } => {
                     cmd_chaos_primitive(&cli.api_url, Box::new(rafka_chaos::primitives::NatShift { target: target.clone() }), *deadline_ms).await
                 }
@@ -524,10 +492,6 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("wedge-gateway-5s",        "chaos",      "WedgeNode gateway for 5s; longer wedge tests stale-peer expiry"),
     ("clock-skew-5s",           "chaos",      "ClockSkew target node by +5s; restart with RAFKA_CLOCK_SKEW_MS=5000"),
     ("clock-skew-60s",          "chaos",      "ClockSkew target node by +60s; bigger skew stresses heartbeat staleness logic"),
-    ("slow-link-100ms",         "chaos",      "SlowLink: restart node with RAFKA_LINK_SLOW_MS=100; verify ping spans show latency"),
-    ("slow-link-500ms",         "chaos",      "SlowLink: restart node with RAFKA_LINK_SLOW_MS=500; aggressive latency injection"),
-    ("lossy-link-10pct",        "chaos",      "LossyLink: restart node with RAFKA_LINK_LOSS_PCT=10; expect rafka.mesh.frame.dropped_by_fault_inject spans"),
-    ("lossy-link-25pct",        "chaos",      "LossyLink: restart node with RAFKA_LINK_LOSS_PCT=25; verify mesh resilience to packet loss"),
     ("nat-shift",               "chaos",      "NatShift: restart target with new random RAFKA_NODE_BIND_ADDR (simulates NAT rebind)"),
     // === Soak variants of increasing duration ===
     ("chaos-soak-9prim-2min",   "chaos",      "2-minute soak with 9-primitive pool; medium-duration substrate check"),
@@ -599,10 +563,6 @@ async fn cmd_test_run(api_url: &str, name: &str, seed: u64) -> Result<()> {
         "wedge-gateway-5s" => run_one_primitive(api_url, "wedge_gateway_5000", None).await,
         "clock-skew-5s"   => run_one_primitive(api_url, "clock_skew_5000", None).await,
         "clock-skew-60s"  => run_one_primitive(api_url, "clock_skew_60000", None).await,
-        "slow-link-100ms" => run_one_primitive(api_url, "slow_link_100", None).await,
-        "slow-link-500ms" => run_one_primitive(api_url, "slow_link_500", None).await,
-        "lossy-link-10pct" => run_one_primitive(api_url, "lossy_link_10", None).await,
-        "lossy-link-25pct" => run_one_primitive(api_url, "lossy_link_25", None).await,
         "nat-shift"       => run_one_primitive(api_url, "nat_shift", None).await,
         "chaos-soak-9prim-2min"  => run_chaos_soak(api_url, "2m", "8s", seed).await,
         "chaos-soak-9prim-10min" => run_chaos_soak(api_url, "10m", "10s", seed).await,
@@ -764,7 +724,7 @@ async fn run_one_primitive(
 ) -> (&'static str, String) {
     use rafka_chaos::{
         primitives::{
-            BurstKill, ClockSkew, KillNode, LossyLink, NatShift, RestartNode, SlowLink, WedgeNode,
+            BurstKill, ClockSkew, KillNode, NatShift, RestartNode, WedgeNode,
         },
         ChaosPrimitive, DetectionResult,
     };
@@ -825,24 +785,6 @@ async fn run_one_primitive(
         s if s.starts_with("clock_skew_") => {
             let skew_ms: i64 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(5000);
             let p = ClockSkew { target: None, skew_ms };
-            outcome_result = p.execute(&ctx).await;
-            match outcome_result {
-                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
-                Err(e) => return ("failed", format!("execute: {e}")),
-            }
-        }
-        s if s.starts_with("slow_link_") => {
-            let latency_ms: u64 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(100);
-            let p = SlowLink { target: None, latency_ms };
-            outcome_result = p.execute(&ctx).await;
-            match outcome_result {
-                Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
-                Err(e) => return ("failed", format!("execute: {e}")),
-            }
-        }
-        s if s.starts_with("lossy_link_") => {
-            let pct: u8 = s.rsplit('_').next().and_then(|n| n.parse().ok()).unwrap_or(10);
-            let p = LossyLink { target: None, loss_pct: pct };
             outcome_result = p.execute(&ctx).await;
             match outcome_result {
                 Ok(o) => p.detect(&ctx, &o, deadline_ms).await,
@@ -1283,8 +1225,6 @@ async fn cmd_chaos_catalog() -> Result<()> {
         ("disk_full",         false, "fill spawn data dir until writes fail",            "rfa mesh chaos disk-full --max-mb 4"),
         ("wedge_node",        false, "Suspend the OS process via NtSuspendProcess",      "rfa mesh chaos wedge --target-type broker"),
         ("clock_skew",        false, "restart node with RAFKA_CLOCK_SKEW_MS env",        "rfa mesh chaos clock-skew --skew-ms 30000"),
-        ("slow_link",         false, "restart node with RAFKA_LINK_SLOW_MS env",         "rfa mesh chaos slow-link --latency-ms 250"),
-        ("lossy_link",        false, "restart node with RAFKA_LINK_LOSS_PCT env",        "rfa mesh chaos lossy-link --loss-pct 15"),
         ("nat_shift",         false, "restart with random RAFKA_NODE_BIND_ADDR port",    "rfa mesh chaos nat-shift"),
         ("partition_pair",    true,  "Windows firewall block outbound UDP for 2 progs",  "rfa mesh chaos partition-pair --a gateway --b broker"),
         ("partition_subset",  true,  "split node_type catalog: K types blocked from rest","rfa mesh chaos partition-subset --size 2"),

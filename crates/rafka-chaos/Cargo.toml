@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,3 +14,7 @@ rand = { workspace = true }
 rand_chacha = "0.3.1"
 async-trait = "0.1.83"
 thiserror = "2.0"
+dhat = "0.3.3"
+iroh.workspace = true
+iroh-gossip = "0.100.0"
+tracing-subscriber.workspace = true

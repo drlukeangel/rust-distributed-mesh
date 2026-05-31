@@ -12,7 +12,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 iroh = { workspace = true }
-iroh-gossip = "0.98"
+iroh-gossip = "0.100"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,3 +24,5 @@ futures-lite = "2"
 blake3 = "1"
 sysinfo = "0.38.4"
 tracing-flame = "0.2.0"
+dhat = "0.3.3"
+iroh-base = "1.0.0-rc.1"

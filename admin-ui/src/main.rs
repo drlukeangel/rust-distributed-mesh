@@ -33,6 +33,17 @@ use tracing::{info, info_span, Instrument};
 
 const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
 
+// dhat heap profiling — OFF by default, only built with --features dhat-heap.
+// The profiler is held in a static so a timer can drop it (which writes
+// dhat-heap.json) and exit cleanly — admin-ui has no graceful-shutdown path,
+// and dhat only dumps on Profiler::drop.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
+#[cfg(feature = "dhat-heap")]
+static DHAT_PROFILER: std::sync::Mutex<Option<dhat::Profiler>> = std::sync::Mutex::new(None);
+
 // Legacy inline HTML — replaced by the React app under web/dist. Kept commented
 // out for one revision so the migration diff is reviewable; delete in next pass.
 #[allow(dead_code)]
@@ -2617,8 +2628,8 @@ fn is_safe_mesh_id(m: &str) -> bool {
     if m.is_empty() || m.len() > 64 {
         return false;
     }
-    let is_safe_char = |c: char| (c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    let is_safe_first = |c: char| (c.is_ascii_lowercase() || c.is_ascii_digit());
+    let is_safe_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+    let is_safe_first = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
     let mut chars = m.chars();
     let first = chars.next().unwrap();
     if !is_safe_first(first) {
@@ -4013,6 +4024,10 @@ fn install_panic_hook() -> std::path::PathBuf {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    {
+        *DHAT_PROFILER.lock().unwrap() = Some(dhat::Profiler::builder().build());
+    }
     // SPEC §7 #1 + red-team R5 root-cause fix: install panic hook BEFORE
     // any threads exist. Previous attempt installed the hook inside async
     // fn main (i.e. after #[tokio::main] had already started worker
@@ -4038,6 +4053,19 @@ fn main() -> Result<()> {
 
 async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed (pre-runtime)");
+    #[cfg(feature = "dhat-heap")]
+    {
+        let secs: u64 = std::env::var("RAFKA_DHAT_DUMP_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(360);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            let _ = DHAT_PROFILER.lock().unwrap().take(); // drop -> writes dhat-heap.json
+            eprintln!("[dhat] heap profile written to dhat-heap.json after {secs}s; exiting");
+            std::process::exit(0);
+        });
+    }
     // admin-ui IS a node. The NodeRuntime call below owns telemetry
     // initialization + iroh endpoint + gossip subscription + heartbeat
     // broadcast — same path the broker / gateway / compute / registry /
@@ -4233,7 +4261,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
         bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
-        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(14820)),
+        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(16820)),
         admin_node_id_hex: admin_node_id_hex.clone(),
         admin_bind_port,
     };
@@ -4346,7 +4374,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     use tower::limit::ConcurrencyLimitLayer;
     use tower_http::timeout::TimeoutLayer;
     let app = app
-        .layer(TimeoutLayer::new(std::time::Duration::from_secs(60)))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, std::time::Duration::from_secs(60)))
         .layer(ConcurrencyLimitLayer::new(64));
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_nodelay(true)?;

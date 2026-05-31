@@ -4,8 +4,18 @@ use rafka_node_base::{
     read_dev_ram_budget, NodeRuntime, Role,
 };
 
+
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::builder()
+        .file_name(format!("dhat-heap-bridge-{}.json", std::process::id()))
+        .build();
+
     // 1. Populate process env from this crate's .env.dev (no-op in prod
     //    deployments where the file isn't shipped).
     load_env_dev_from(env!("CARGO_MANIFEST_DIR"));

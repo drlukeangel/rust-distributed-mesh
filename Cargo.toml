@@ -30,11 +30,11 @@ opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.27"
 
-# iroh 0.98 — iroh team confirmed 0.91 / iroh-quinn-proto 0.13.0 has a real
-# perf bug at scale (18 nodes pegged an 80-logical-core box at ~92%). 0.98
-# fixes both the perf and the GSO/TLP debug-assertion panic. Feature
-# `discovery-local-network` was renamed to `address-lookup-mdns` in 0.98.
-iroh = { version = "0.98", features = ["address-lookup-mdns"] }
+# iroh 1.0.0-rc.1 + iroh-gossip 0.100 — bumped to pick up the iroh-gossip
+# passive-peer eviction fix (handle_connection_closed now removes dead peers
+# from passive_view + peer_data) that resolves the per-node_id memory leak
+# under churn observed on 0.98. See windows-findings.md / linux-findings.md.
+iroh = { version = "1.0.0-rc.1" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }
@@ -52,3 +52,16 @@ dashmap = "6"
 # iroh-quinn-proto patch block removed on the iroh 0.98 bump: the
 # GSO/TLP segment-size assertion is fixed upstream as of 0.98's bundled
 # iroh-quinn-proto, so the local fork override is no longer needed.
+
+[patch.crates-io]
+# Churn-memory-leak fixes live in standalone repos at E:/<repo> (branch
+# fix/churn-memory-leak), one clone per upstream crate — no nested vendor/ copies.
+# Each crate-family is patched from its OWN repo so iroh + iroh-base resolve to one
+# source (else cargo double-sources iroh-base -> two PublicKey types), same for noq*.
+# To publish PRs: push each repo's branch to a fork and swap `path` -> `git`+`branch`.
+iroh = { path = "E:/iroh/iroh" }
+iroh-base = { path = "E:/iroh/iroh-base" }
+iroh-gossip = { path = "E:/iroh-gossip" }
+noq = { path = "E:/noq/noq" }
+noq-proto = { path = "E:/noq/noq-proto" }
+noq-udp = { path = "E:/noq/noq-udp" }

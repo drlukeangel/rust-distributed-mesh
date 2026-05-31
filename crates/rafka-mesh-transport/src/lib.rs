@@ -2,9 +2,11 @@ use anyhow::Result;
 use futures_lite::StreamExt as _;
 use iroh::{
     Endpoint, RelayMode, SecretKey,
-    address_lookup::{DiscoveryEvent, MdnsAddressLookup},
     endpoint::{Connection, ConnectionError, presets},
 };
+// mDNS local-network discovery moved out of iroh core in 1.0-rc into the
+// `iroh-mdns-address-lookup` crate (same MdnsAddressLookup + DiscoveryEvent API).
+use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use std::net::SocketAddrV4;
 use tokio::sync::mpsc;
 use tracing::instrument;

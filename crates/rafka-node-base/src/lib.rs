@@ -9,6 +9,7 @@ use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 /// receiver decodes, sends it back identically. Round-trip proves the
 /// bi-stream substrate works end-to-end before any real compute lands.
 pub const TAG_BI_ECHO: u8 = 0x11;
+
 use serde::{Deserialize, Serialize};
 use std::{
     net::{SocketAddr, SocketAddrV4},
@@ -17,7 +18,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::signal;
 use tracing::{info, instrument, Instrument, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -36,6 +36,7 @@ pub use load::{
     NodeLoad,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Gateway,
     Broker,
@@ -269,9 +270,8 @@ async fn run_node(
 
     // Background pruner: drops stale entries from the process-global
     // `live_digests` and `topic_membership` maps. Without it both grow
-    // monotonically with the count of unique node_ids ever observed —
-    // every cluster restart, peer churn, or admin-ui respawn adds entries
-    // that never leave. See `run_staleness_pruner` for the TTL semantics.
+    // monotonically with the count of unique node_ids ever observed. See
+    // `run_staleness_pruner` for the TTL semantics.
     tokio::spawn(run_staleness_pruner());
 
     // Bootstrap iroh-gossip on the existing endpoint. Topic ID = blake3(mesh_id)
@@ -375,6 +375,7 @@ async fn run_node(
             ));
         }
     }
+
     let mdns_rx = std::mem::replace(
         &mut transport.mdns_discovered,
         tokio::sync::mpsc::channel(1).1,
@@ -434,10 +435,9 @@ async fn run_node(
         tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, node_name, is_bridge, registry, mesh_reg))
     };
 
-    // EVERY role runs the ping sender. topology-ui (Role::Observer) is just
-    // another node – it pings like everything else.
-    // [DISABLED]: The QUIC transport now handles keep-alives internally. Pings disabled.
-    let ping_handle: Option<tokio::task::JoinHandle<()>> = None; // Some(tokio::spawn(run_ping_sender(node_id.clone(), Arc::clone(&peer_registry))));
+    // No application-level ping/pong: iroh-quinn owns connection liveness
+    // (keep-alive + idle timeout). rafka does not hand-roll a heartbeat
+    // (Golden Principle #1). run_ping_sender removed entirely.
 
     let stopping_reason = wait_for_signal().await;
 
@@ -455,9 +455,6 @@ async fn run_node(
     mdns_handle.abort();
     gossip_handle.abort();
     bi_echo_handle.abort();
-    if let Some(h) = ping_handle {
-        h.abort();
-    }
     if let Some(h) = dial_handle {
         h.abort();
     }
@@ -1553,123 +1550,6 @@ async fn run_frame_reader(
     }
 }
 
-async fn run_ping_sender(own_node_id: String, registry: PeerRegistry) {
-    let counters = mesh_counters();
-    // 10s cadence: faster (3s) overloads the Jaeger ES backend with ~100
-    // spans/sec across 18 nodes and stalls /api/topology resolution. 10s
-    // gives ~30 spans/sec sustained which Jaeger handles fine. The UI's
-    // 60s lookback still accumulates ~6 frame.sent spans per peer pair —
-    // enough to weight edges visibly.
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
-    // Link fault-injection envs read once at boot. Chaos primitives slow_link/
-    // lossy_link restart the node with these set; node-base applies them on
-    // outbound ping sends so the substrate behaves as if the link were degraded.
-    let link_slow_ms: u64 = std::env::var("RAFKA_LINK_SLOW_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let link_loss_pct: u8 = std::env::var("RAFKA_LINK_LOSS_PCT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    loop {
-        interval.tick().await;
-
-        let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
-
-        for peer_id_str in peer_ids {
-            let conn = match registry.get(&peer_id_str) {
-                Some(c) => c.clone(),
-                None => continue,
-            };
-
-            // lossy_link: roll dice; if loss, emit `dropped` span and skip the send.
-            if link_loss_pct > 0 {
-                let roll: u8 = rand::random::<u8>() % 100;
-                if roll < link_loss_pct {
-                    tracing::info_span!(
-                        "rafka.mesh.frame.dropped_by_fault_inject",
-                        node_id = %own_node_id,
-                        peer_id = %peer_id_str,
-                        frame_kind = "ping",
-                        link_loss_pct = link_loss_pct as i64,
-                        otel.kind = "producer",
-                    )
-                    .in_scope(|| info!(peer_id = %peer_id_str, link_loss_pct, "ping dropped by lossy_link fault inject"));
-                    continue;
-                }
-            }
-            // slow_link: sleep before write to simulate latency.
-            if link_slow_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(link_slow_ms)).await;
-            }
-
-            let frame = InternalMeshFrame::Ping { org_id: 0 };
-
-            // Enter frame.sent span BEFORE encoding — the embedded context must carry
-            // THIS span's trace_id/span_id, not its parent's.
-            let sent_span = tracing::info_span!(
-                "rafka.mesh.frame.sent",
-                node_id = %own_node_id,
-                peer_id = %peer_id_str,
-                frame_kind = "ping",
-                org_id = 0u64,
-                otel.kind = "producer",
-            );
-            let _enter = sent_span.enter();
-            let ctx = Span::current().context();
-            let encoded = frame.encode_with_context(&ctx);
-            drop(_enter);
-
-            match conn.open_uni().await {
-                Ok(mut send) => {
-                    if let Err(e) = send.write_all(&encoded).await {
-                        tracing::info_span!(
-                            "rafka.mesh.frame.sent_failed",
-                            node_id = %own_node_id,
-                            peer_id = %peer_id_str,
-                            frame_kind = "ping",
-                            error = %e,
-                            otel.kind = "producer",
-                        )
-                        .in_scope(|| info!(peer_id = %peer_id_str, "ping write failed"));
-                        continue;
-                    }
-                    if let Err(e) = send.finish() {
-                        tracing::info_span!(
-                            "rafka.mesh.frame.sent_failed",
-                            node_id = %own_node_id,
-                            peer_id = %peer_id_str,
-                            frame_kind = "ping",
-                            error = %e,
-                            otel.kind = "producer",
-                        )
-                        .in_scope(|| info!(peer_id = %peer_id_str, "ping finish failed"));
-                        continue;
-                    }
-                    sent_span.in_scope(|| {
-                        info!(peer_id = %peer_id_str, "ping sent");
-                    });
-                    counters
-                        .frames_sent
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                Err(e) => {
-                    tracing::info_span!(
-                        "rafka.mesh.frame.sent_failed",
-                        node_id = %own_node_id,
-                        peer_id = %peer_id_str,
-                        frame_kind = "ping",
-                        error = %e,
-                        otel.kind = "producer",
-                    )
-                    .in_scope(|| info!(peer_id = %peer_id_str, "open_uni failed for ping"));
-                }
-            }
-        }
-    }
-}
-
 #[instrument(skip_all)]
 async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
     tokio::fs::create_dir_all(data_dir).await?;
@@ -1944,7 +1824,7 @@ async fn wait_for_signal() -> &'static str {
         .and_then(|s| s.parse::<u64>().ok())
         .map(std::time::Duration::from_secs);
     tokio::select! {
-        _ = signal::ctrl_c() => {
+        _ = async { while !std::path::Path::new("E:\\evidence-soak\\STOP").exists() { tokio::time::sleep(std::time::Duration::from_secs(2)).await; } } => {
             info!("ctrl_c received, shutting down");
             "signal"
         }

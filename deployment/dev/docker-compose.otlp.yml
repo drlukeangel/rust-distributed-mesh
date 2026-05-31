@@ -1,10 +1,19 @@
+# v2-owned OTLP/telemetry stack. Single lean Jaeger all-in-one — no SkyWalking, no separate collector.
+# Nodes export DIRECTLY to Jaeger on OTLP/gRPC 4316 (OTEL_EXPORTER_OTLP_ENDPOINT default = http://localhost:4316).
+#
+# Why MEMORY_MAX_TRACES: the previous shared instance ran SPAN_STORAGE_TYPE=memory with NO cap, so under the
+# span firehose (every async fn #[instrument]'d) it grew to 10.81 GB / 1500% CPU and went "jaeger unreachable".
+# Bounding the in-memory trace ring keeps RAM flat regardless of churn volume.
 services:
-  jaeger-v2:
-    image: jaegertracing/all-in-one:1.58
-    ports:
-      - "16687:16686"   # Jaeger UI (v2) — http://localhost:16687
-      - "4327:4317"     # OTLP gRPC (v2) — gateway exports here
-      - "4328:4318"     # OTLP HTTP (v2)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: rafka-test-jaeger
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=memory
+      - MEMORY_MAX_TRACES=50000
+    ports:
+      - "4316:4317"     # OTLP gRPC  — nodes export here
+      - "4315:4318"     # OTLP HTTP
+      - "16686:16686"   # Jaeger UI  — http://localhost:16686
     restart: unless-stopped
