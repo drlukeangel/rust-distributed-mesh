@@ -1,22 +1,21 @@
 {
   "sprint": 18,
-  "slug": "cross-mesh-fast-eviction",
+  "slug": "chaos-and-soak",
   "status": "open",
   "initiative": "mesh-v2",
-  "prd": "docs/plans/mesh-v2/03-cross-mesh-backbone-prd.md (extends it)",
+  "order_note": "Re-ordered 2026-05-31: this is the CAPSTONE — runs LAST, and its authoritative 10-min soak must execute on the COMPLETE system (after sprint-16 forced-relay AND sprint-17 cross-mesh-eviction are merged). Dispatched to the agent as 'sprint-17'; its work slots in here as the final sprint-18. The agent was told to build the chaos code + a SHORT smoke soak only; the team lead runs the authoritative 10-min soak on the merged tree.",
+  "prd": "docs/plans/mesh-v2/02-chaos-and-resilience-round-prd.md",
   "branch": "fresh worktree off mesh-v2",
-  "objective": "Make a deleted node evict FAST from REMOTE meshes too (option B). Sprint-15's gossip tombstone only reaches the dead node's OWN mesh; cross-mesh, observers wait 30s for the staleness pruner. Add a backbone-level tombstone so the cross-mesh control plane propagates the departure fast.",
-  "context": "AUDIT FINDING: sprint-15's claim that cross-mesh kills evict in ~6s 'via QUIC connection-close detection' was FABRICATED — there is NO connection-close eviction code (no NeighborDown/disconnect handler). Cross-mesh today = 30s pruner. This sprint fixes that for real.",
-  "mechanism": "Minimal — NOT a new transport/protocol. The killing node publishes a TOMBSTONE on the backbone topic blake3(\"backbone\") (a leaving-marker MeshSummary entry, or a small tombstone record on the same backbone gossip). Backbone consumers (every gateway + admin-ui) apply it: drop X from backbone_summaries()/the directory immediately. The publishing gateway of X's mesh also evicts X from its live_digests so its next MeshSummary omits X. Reuse the existing backbone gossip; add no new transport. Same-mesh sprint-15 tombstone unchanged; staleness pruner stays the crash fallback.",
+  "objective": "Prove the mesh-v2 model survives the EXISTING chaos battery + a 10-minute UI-path soak on the COMPLETE system: cache self-heals, RSS stays flat, admin-ui responsive. Compose existing crates/rafka-chaos primitives — NO new primitives.",
   "acceptance_tests": [
-    "T1 BUILD: `cargo check --workspace --tests --no-default-features` = 0/0.",
-    "T2 CROSS-MESH FAST EVICT (curl, MEASURED): two cross-seeded consoles (mesh1 :19100, mesh2 :19101). Kill a mesh2 node. On the mesh1 console's /api/topology-cache (which sees mesh2 via the backbone), the node is GONE within < 5s (record the measured time). It MUST be well under RAFKA_STALENESS_MS (30s).",
-    "T3 VIA BACKBONE, NOT PRUNER (span/log): a backbone-tombstone span/log proves the eviction propagated over the backbone control plane — NOT that the 30s staleness pruner did it. (Temporarily raise RAFKA_STALENESS_MS to 120s during the test so the pruner CANNOT be what evicted it — if the node still vanishes in <5s, the backbone tombstone did it.)",
-    "T4 SAME-MESH UNAFFECTED: sprint-15 same-mesh tombstone still evicts fast (regression check).",
-    "T5 CRASH FALLBACK INTACT: an ungraceful crash with no tombstone still evicts via the staleness pruner.",
-    "T6 NO HAND-EDIT (code): no process hand-edits another process's maps; eviction propagates through the backbone gossip receive path uniformly."
+    "T1 BUILD: cargo check --workspace --tests --no-default-features = 0/0.",
+    "T2 BUILD-FRESHNESS GATE (before judging the soak): every node binary mtime > patched-source mtime — recorded. A soak on a stale binary is rejected.",
+    "T3 SOAK (LEAD runs on merged 16+17+18 tree; logged, measured): /api/bootstrap then /api/chaos/start; sample ~30s for 10 min {elapsed,heartbeats,alerts,adminMB,fleetMB,chaos_events}. ASSERT RSS FLAT (final fleetMB within +-15% of 1-min steady, no monotonic climb); alerts bounded; ZERO panics. (Agent delivers chaos code + a ~2-3 min SMOKE soak only.)",
+    "T4 CACHE SELF-HEAL (curl, measured): kill_node X -> X absent from /api/topology-cache within (RAFKA_STALENESS_MS + one 5s sweep), measured; restart_node -> replacement appears.",
+    "T5 NO GHOSTS: no <unspawned>, no duplicate node_ids after the run.",
+    "T6 PRIMITIVES REUSED (code): only existing rafka-chaos primitives composed; no new primitive kinds."
   ],
-  "proof_required": "The MEASURED <5s cross-mesh eviction with RAFKA_STALENESS_MS=120s (proving it wasn't the pruner); the backbone-tombstone span; before/after /api/topology-cache on BOTH consoles. Into docs/plans/mesh-v2/verify/screenshots/sprint18-crossmesh-evict/.",
-  "out_of_scope": ["changing the same-mesh tombstone", "consensus", "lowering the global staleness threshold as the fix (must be a real propagated tombstone)"],
-  "ports": { "admin_ui_mesh1": 19100, "admin_ui_mesh2": 19101, "node_bind_mesh1": 14929, "node_bind_mesh2": 14930, "spawn_port_base": 16520, "note": "fresh; cross-seed the two consoles so each sees the other via backbone; RAFKA_MDNS_ENABLE=false" }
+  "proof_required": "The authoritative 10-min soak RSS table (lead, post-merge) as .txt; kill->evict->restart screenshots; chaos spans. Into docs/plans/mesh-v2/verify/screenshots/sprint18-chaos/ (agent used sprint17-chaos/ slug — reconcile at merge).",
+  "out_of_scope": ["new chaos primitives, real multi-host failure injection, app-layer/durability concepts"],
+  "ports": { "admin_ui": 19099, "node_bind": 14928, "spawn_port_base": 16420, "note": "RAFKA_MDNS_ENABLE=false" }
 }
