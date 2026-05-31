@@ -2470,30 +2470,35 @@ async fn handle_boot_trace(
     Query(params): Query<BootTraceQuery>,
 ) -> impl IntoResponse {
     let svc = &params.service;
-    // `svc` is the per-instance node_name (e.g. "mesh1.broker1" in mesh-v2 deterministic
-    // naming, or the legacy "broker-abc123" form). Derive the Jaeger service from the
-    // node_type component (broker/gateway/…) and filter via the node_name tag so each
-    // spawned subprocess returns its OWN boot trace rather than collapsing to the most-recent.
+    // `svc` is the per-instance node_name. Sprint-13 B1 form is
+    // `<mesh>.<type>.<6hex>` (e.g. "mesh1.broker.bb8030"); the Jaeger service.name
+    // is the FIRST TWO segments `<mesh>.<type>` (e.g. "mesh1.broker"). We query
+    // that service and filter by the node_name tag so each instance returns its
+    // OWN boot trace. The "admin-ui" Observer is flat (service == node_name).
     //
-    // Naming formats to support:
-    //   mesh-v2:  "mesh1.broker1" → node_type = "broker"  (split on '.', second segment, strip trailing digits)
-    //   legacy:   "broker-abc123" → node_type = "broker"  (starts_with check)
-    let node_type: &str = {
-        // Try mesh-v2 format first: <mesh>.<type><N>
-        // Split on '.': ["mesh1", "broker1"] → take second segment, strip trailing digits.
-        if let Some(dot_part) = svc.splitn(2, '.').nth(1) {
+    // Fallbacks tolerate older forms: 2-segment `mesh1.broker1` (Phase-1) and
+    // flat `broker-abc123` (legacy) → bare node_type service.
+    let jaeger_service: String = {
+        let segs: Vec<&str> = svc.splitn(3, '.').collect();
+        if segs.len() >= 3 && KNOWN_NODE_TYPES.contains(&segs[1]) {
+            // B1: <mesh>.<type>.<hex> → service.name = <mesh>.<type>
+            format!("{}.{}", segs[0], segs[1])
+        } else if svc == "admin-ui" {
+            "admin-ui".to_string()
+        } else if let Some(dot_part) = svc.splitn(2, '.').nth(1) {
+            // Phase-1 2-segment fallback: mesh1.broker1 → broker
             KNOWN_NODE_TYPES
                 .iter()
                 .find(|t| dot_part.starts_with(*t))
-                .copied()
-                .unwrap_or(dot_part.trim_end_matches(char::is_numeric))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| dot_part.trim_end_matches(char::is_numeric).to_string())
         } else {
-            // Legacy format: starts_with check or full name fallback
+            // Legacy flat fallback
             KNOWN_NODE_TYPES
                 .iter()
                 .find(|t| svc.starts_with(*t))
-                .copied()
-                .unwrap_or(svc.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| svc.to_string())
         }
     };
     let tags_json = serde_json::to_string(&serde_json::json!({"node_name": svc}))
@@ -2501,7 +2506,7 @@ async fn handle_boot_trace(
     let tags_enc = urlencoding::encode(&tags_json);
     let url = format!(
         "{}/api/traces?service={}&operation=rafka.mesh.node.ready&limit=1&lookback=2h&tags={}",
-        state.jaeger_url, node_type, tags_enc
+        state.jaeger_url, jaeger_service, tags_enc
     );
     let span = info_span!(
         "rafka.ui.jaeger.query",
