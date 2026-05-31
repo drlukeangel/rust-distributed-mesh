@@ -51,6 +51,32 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       }
       await tab.click();
       await sleep(3500); // let the panel's fetch + render complete
+
+      // For Boot Waterfall: select a broker node (mesh1.broker1) in the node dropdown
+      // so the screenshot proves the spawned broker's boot chain, not admin-ui's.
+      // The node dropdown is labeled "node:" and is inside <main>, not the spawn bar.
+      if (tabText === 'Boot Waterfall') {
+        // The node dropdown in the waterfall panel has the label "node:" adjacent to it.
+        // Use the label text to locate the correct select element.
+        const nodeLabel = page.locator('label.muted', { hasText: 'node:' }).first();
+        if ((await nodeLabel.count()) > 0) {
+          // The select is a sibling following the label
+          const sel = page.locator('main select').first();
+          if ((await sel.count()) > 0) {
+            const opts = await sel.locator('option').allTextContents();
+            console.log(`  [boot-waterfall] node dropdown options: ${opts.join(', ')}`);
+            // Prefer a broker1 entry; fall back to any non-admin-ui entry
+            const preferred = opts.find((o) => o.includes('broker1'))
+              || opts.find((o) => !o.includes('admin'));
+            if (preferred) {
+              await sel.selectOption({ label: preferred });
+              console.log(`  [boot-waterfall] selected node: ${preferred}`);
+              await sleep(5000); // wait for Jaeger round-trip
+            }
+          }
+        }
+      }
+
       const file = path.join(OUT, `${label}.png`);
       await page.screenshot({ path: file, fullPage: true });
       console.log(`  [ok] ${label} -> ${file}`);

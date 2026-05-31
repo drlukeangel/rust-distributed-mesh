@@ -1,5 +1,4 @@
-// bridge removed in mesh-v2 — cross-mesh transport is the relay, not a bridge node.
-export type NodeType = "gateway" | "broker" | "compute" | "registry";
+export type NodeType = "gateway" | "broker" | "compute" | "registry" | "bridge";
 
 export interface TopologyNode {
   id: string;

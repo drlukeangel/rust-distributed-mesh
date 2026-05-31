@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type NodeType } from "./api";
 
-// bridge removed in mesh-v2 — cross-mesh transport is the relay, not a bridge node.
-const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry"];
+const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry", "bridge"];
 
 export function SpawnBar() {
   const [mesh, setMesh] = useState("mesh1");
