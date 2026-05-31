@@ -1,0 +1,44 @@
+{
+  "sprint_id": "sprint-14",
+  "status": "open",
+  "opens": "2026-05-31",
+  "initiative": "mesh-v2",
+  "phase": 3,
+  "title": "Cross-mesh backbone (control plane)",
+  "prd": "docs/plans/mesh-v2/03-cross-mesh-backbone-prd.md (supersedes 00 §2)",
+  "branch": "off mesh-v2 after sprint-13 lands",
+  "parent_branch": "mesh-v2",
+  "objective": "Replace 'gateway observes the whole other mesh' with a backbone gossip topic carrying per-mesh SUMMARIES (directory + aggregate metrics). Gateways aggregate their own mesh and publish; everyone reads summaries. Scales to hundreds of gateways/mesh; the admin-ui stops being a special all-mesh subscriber.",
+  "size": "medium — single engineer",
+  "in_scope": [
+    "Backbone topic: a dedicated iroh-gossip topic blake3(\"rafka.backbone\") (reuse the gossip primitive; NO new mesh infra, NO DHT)",
+    "MeshSummary record: {mesh_id, directory[name->{type,location}], aggregate{node_count, cpu_used/budget, ram_used/budget, frames_per_sec}, published_by, wall_time_ms, expires_at_ms}",
+    "Aggregation on the gateway: sum its own mesh's live_digests() locally; assemble the directory; publish MeshSummary to the backbone each interval",
+    "Publisher selection = SOFT LEASE (NOT an election): publisher stamps published_by+expires_at and renews; others defer to a live claim; min(node_id) over live gateways ONLY breaks ties for a vacant/expired seat; failover when the claim expires (dead-man's switch). No consensus, no QUIC election.",
+    "Gateway cross-mesh write resolves the target location from the BACKBONE DIRECTORY (no longer joins the other mesh's full gossip)",
+    "admin-ui consumes the backbone for the global view (per-mesh aggregates+directory) + its home mesh's gossip for local per-node detail; remove the all-mesh RAFKA_OBSERVER_MESHES cross-subscription as the default cross-mesh path",
+    "Telemetry: rafka.mesh.backbone.published / .received spans + per-mesh aggregate metrics; add to CLAUDE.md §10 (append-only) in the same commit"
+  ],
+  "out_of_scope": [
+    "Add/delete multi-node polish (sprint-15)",
+    "Forced relay data-plane (sprint-16)",
+    "Chaos+soak (sprint-17)",
+    "Any consensus / leader-election protocol, DHT, or self-organizing global cache"
+  ],
+  "exit_criteria": [
+    "cargo check --workspace --tests --no-default-features = 0/0",
+    "A cross-mesh write resolves the target via the backbone directory while the gateway is NOT in the remote mesh's gossip (verify: gateway topic_membership has only its own mesh)",
+    "Exactly ONE publisher per mesh in steady state; kill the publisher -> another gateway takes over within ~TTL; no permanent double-publish",
+    "Scale: with N gateways in a mesh, backbone publish rate is ~1/mesh, not N/mesh",
+    "admin-ui shows per-mesh aggregates + directory sourced from the backbone (not all-mesh gossip)",
+    "rafka.mesh.backbone.published/.received visible in Jaeger; UI + Jaeger screenshots in docs/sprints/sprint-14/screenshots/; TEAM LEAD personally verified",
+    "sprint-release.md/.html with embedded screenshots + Jaeger/admin links, opened"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.backbone.published",
+    "rafka.mesh.backbone.received"
+  ],
+  "verification": { "lead_verified": false },
+  "depends_on": "sprint-13 (telemetry hierarchy: service.name=<mesh>.<type>, W3C propagation, self-naming, mesh_id-required) lands first; the backbone summary uses those names",
+  "deliverable_url": "http://localhost:16686/search?service=mesh1.gateway&operation=rafka.mesh.backbone.published&lookback=1h"
+}

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sprint 13 — Release Report (telemetry hierarchy + honest topology)</title>
+<style>
+  body { background:#0d1117; color:#c9d1d9; font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif; max-width:1100px; margin:0 auto; padding:32px; }
+  h1 { color:#58a6ff; } h2 { color:#79c0ff; border-bottom:1px solid #21262d; padding-bottom:6px; margin-top:36px; }
+  h3 { color:#d2a8ff; margin-top:24px; }
+  a { color:#58a6ff; } code { background:#161b22; padding:1px 5px; border-radius:4px; color:#a5d6ff; }
+  img { width:100%; border:1px solid #30363d; border-radius:8px; margin:8px 0 12px; display:block; }
+  blockquote { color:#8b949e; border-left:3px solid #30363d; margin:0 0 20px; padding:4px 14px; }
+  table { border-collapse:collapse; margin:12px 0; } td,th { border:1px solid #30363d; padding:6px 12px; text-align:left; }
+  .ok { color:#3fb950; } .meta { color:#8b949e; } ul { margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>Sprint 13 — Release Report</h1>
+<p class="meta"><b>Initiative:</b> mesh-v2 · <b>Telemetry hierarchy + honest topology</b><br/>
+<b>Status:</b> <span class="ok">✅ Verified by team lead</span> · <b>Date:</b> 2026-05-31<br/>
+<b>Spec:</b> <code>docs/telemetry.md</code> Part B · <b>Branch:</b> <code>worktree-agent-a4b669faab9e8336b</code> · tip <code>d96af4c</code></p>
+
+<h2>Live links</h2>
+<ul>
+  <li><b>Admin-ui:</b> <a href="http://localhost:19093">http://localhost:19093</a> — <a href="http://localhost:19093/topology">/topology</a> · <a href="http://localhost:19093/cache">/cache</a> · <a href="http://localhost:19093/messages">/messages</a></li>
+  <li><b>Jaeger System Architecture:</b> <a href="http://localhost:16686/dependencies">/dependencies</a></li>
+  <li><b>Jaeger per-mesh service:</b> <a href="http://localhost:16686/search?service=mesh2.broker&amp;lookback=1h">service=mesh2.broker</a></li>
+</ul>
+
+<h2>What was done</h2>
+<ul>
+  <li><b>B1 self-naming hierarchy:</b> <code>node_name=&lt;mesh&gt;.&lt;type&gt;.&lt;6hex&gt;</code> (e.g. <code>mesh1.broker.239dc9</code>), <code>service.name=&lt;mesh&gt;.&lt;type&gt;</code>, <code>service.namespace=&lt;mesh&gt;</code>, <code>service.instance.id=node_id</code>; node self-names; ordinal counter gone; <b><code>RAFKA_MESH_ID</code> required, fail-fast, no default.</b></li>
+  <li><b>B2 full resource:</b> <code>Resource::default().merge(service.name)</code> so namespace + instance.id survive.</li>
+  <li><b>B3 W3C over QUIC:</b> hand-rolled context replaced by a <code>W3CCarrier</code> via the global propagator (traceparent + <b>tracestate</b>).</li>
+  <li><b>B4 CC dropped:</b> no gateway→admin-ui CC; Messages from gossiped <code>frames_sent/recv_total</code>.</li>
+  <li><b>B5 broker work + ack:</b> <code>open_bi</code>; broker emits <code>produce.handle</code>+<code>produce.ack</code> (W3C-parented); gateway reads the ack → reverse edge.</li>
+  <li><b>B6 CLAUDE.md §10:</b> service-name contract, <code>produce.handle</code>/<code>produce.ack</code>, <code>op_kind="ack"</code>.</li>
+</ul>
+
+<h2>Verification (team lead, independent)</h2>
+<ul>
+  <li><code>cargo check --workspace --tests --no-default-features</code> → <span class="ok">0 errors, 0 warnings</span> (re-ran).</li>
+  <li>Live <code>/api/dependencies</code>: distinct per-mesh nodes; <b>bidirectional</b> <code>mesh1.gateway↔mesh2.broker</code> (36 each); <b>mesh-qualified→admin-ui = 0</b> (CC gone; the only admin-ui edge has a flat <code>gateway</code> parent = old :19092 fleet).</li>
+  <li>Cross-mesh trace inspected: <code>frame.sent → produce.handle → produce.ack → frame.received</code>, Services 2.</li>
+  <li>Cache shows self-derived <code>mesh1.broker.239dc9</code>-style names, hex matching node_id.</li>
+</ul>
+
+<h2>Telemetry — raw Jaeger UI</h2>
+<h3>Cross-mesh produce trace — broker work + ack in one trace (load-bearing proof)</h3>
+<img src="screenshots/jaeger-2-produce-trace.png"/>
+<h3>System Architecture — distinct per-mesh nodes, arrows both ways</h3>
+<img src="screenshots/jaeger-1-system-architecture.png"/>
+<blockquote>The mesh-qualified cluster (all 38/38 bidirectional, <b>no admin-ui edge</b>) is sprint-13. The
+separate <code>gateway→admin-ui</code>/<code>gateway→broker</code> component is the still-running
+pre-sprint-13 <code>:19092</code> fleet (flat names + old CC) — verified via 0 mesh-qualified→admin-ui edges.</blockquote>
+
+<h2>UI</h2>
+<h3>Cache — self-derived <code>&lt;mesh&gt;.&lt;type&gt;.&lt;6hex&gt;</code> names</h3>
+<img src="screenshots/9-cache.png"/>
+<h3>Messages — gossip-derived per-node TX/RX (no CC)</h3>
+<img src="screenshots/3-messages.png"/>
+
+<h2>Acceptance — met</h2>
+<table>
+<tr><th>Criterion</th><th>Result</th></tr>
+<tr><td>cargo check 0/0</td><td class="ok">✅ lead re-ran</td></tr>
+<tr><td>Distinct per-mesh service nodes</td><td class="ok">✅</td></tr>
+<tr><td>Cross-mesh write + ack reverse arrow</td><td class="ok">✅ 36/36</td></tr>
+<tr><td>Broker work in trace (produce.handle→ack)</td><td class="ok">✅</td></tr>
+<tr><td>W3C traceparent + tracestate over QUIC</td><td class="ok">✅</td></tr>
+<tr><td>No mesh-qualified → admin-ui (CC gone)</td><td class="ok">✅ 0 edges</td></tr>
+<tr><td>Self-named, mesh_id required</td><td class="ok">✅</td></tr>
+</table>
+
+<h2>Honest notes / follow-ups</h2>
+<ul>
+  <li><b>admin-ui still flat (<code>admin-ui</code>/<code>admin</code> mesh) — NOT normalized.</b> "Node like any other" lands in <b>sprint-14 (backbone)</b>: until the backbone gives it per-mesh summaries it must special-observe every mesh to render the global view. Deferred there, not dropped.</li>
+  <li>The visible <code>gateway → admin-ui</code> edge is the old <code>:19092</code> fleet (0 mesh-qualified→admin-ui).</li>
+  <li><code>4-boot-waterfall.png</code> empty — Jaeger search-index flakiness; <code>/api/boot-trace</code> returns the full 6-span chain. Not a sprint-13 exit criterion.</li>
+</ul>
+
+<h2>Deferred</h2>
+<p>Backbone control plane → <b>sprint-14</b> (also normalizes admin-ui) · add/delete → <b>15</b> · forced relay → <b>16</b> · chaos → <b>17</b>.</p>
+</body>
+</html>

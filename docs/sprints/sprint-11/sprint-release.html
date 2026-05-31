@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sprint 11 — Release Report (mesh-v2 Phase 1)</title>
+<style>
+  body { background:#0d1117; color:#c9d1d9; font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif; max-width:1100px; margin:0 auto; padding:32px; }
+  h1 { color:#58a6ff; } h2 { color:#79c0ff; border-bottom:1px solid #21262d; padding-bottom:6px; margin-top:36px; }
+  h3 { color:#d2a8ff; margin-top:24px; }
+  code { background:#161b22; padding:1px 5px; border-radius:4px; color:#a5d6ff; }
+  img { width:100%; border:1px solid #30363d; border-radius:8px; margin:8px 0 20px; display:block; }
+  table { border-collapse:collapse; margin:12px 0; } td,th { border:1px solid #30363d; padding:6px 12px; text-align:left; }
+  .ok { color:#3fb950; } .meta { color:#8b949e; }
+  ul { margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>Sprint 11 — Release Report</h1>
+<p class="meta"><b>Initiative:</b> mesh-v2 · <b>Phase 1</b> — Base UI + topology cache (one mesh)<br/>
+<b>Status:</b> <span class="ok">✅ Verified by team lead</span> · <b>Date:</b> 2026-05-31<br/>
+<b>PRD:</b> <code>docs/plans/mesh-v2/00-topology-cache-and-base-ui-prd.md</code> (§8 milestone 1)<br/>
+<b>Branch:</b> <code>worktree-agent-a4b669faab9e8336b</code> → to merge into <code>mesh-v2</code></p>
+
+<h2>Live links</h2>
+<ul>
+  <li><b>Admin-ui (this sprint's instance):</b> <a href="http://localhost:19091">http://localhost:19091</a></li>
+  <li><b>Jaeger — broker boot trace:</b> <a href="http://localhost:16686/search?service=broker&amp;operation=rafka.mesh.node.ready&amp;lookback=1h">service=broker / rafka.mesh.node.ready</a></li>
+  <li><b>Jaeger — all rafka services:</b> <a href="http://localhost:16686">http://localhost:16686</a></li>
+</ul>
+
+<h2>What was done</h2>
+<p>A single, deterministically-named broker (<code>mesh1.broker1</code>) can be spawned from the admin-ui
+and is visible <b>live</b> across every surface, including a new <b>Cache</b> view, with its boot
+telemetry flowing to Jaeger.</p>
+<ul>
+  <li><b>Deterministic naming</b> <code>&lt;mesh&gt;.&lt;role&gt;&lt;N&gt;</code> → <code>mesh1.broker1</code> (per-mesh/per-role counter via <code>RAFKA_NODE_NAME</code>).</li>
+  <li><b><code>GossipDigest.location</code></b> — node's reachable bind address, broadcast in gossip.</li>
+  <li><b><code>GET /api/topology-cache</code></b> — directory <code>name → {mesh,type,location}</code> from <code>live_digests()</code> (real gossip, not hardcoded).</li>
+  <li><b>Cache tab</b> — new React/Vite tab rendering the directory.</li>
+  <li><b>CPU/RAM bars</b> preserved on node cards.</li>
+</ul>
+
+<h2>Verification (team lead, independent)</h2>
+<ul>
+  <li><code>cargo check --workspace --tests --no-default-features</code> → <span class="ok">0 errors, 0 warnings</span>.</li>
+  <li>Curled <code>:19091/api/topology-cache</code> → live JSON, <code>mesh1.broker1 @ 127.0.0.1:15820</code>.</li>
+  <li>Read <code>handle_topology_cache</code> + <code>GossipDigest.location</code> — genuinely gossip-derived.</li>
+  <li>Captured + eyeballed every screenshot below.</li>
+</ul>
+
+<h2>UI — <code>mesh1.broker1</code> live across all surfaces</h2>
+<h3>Topology</h3><img src="screenshots/ui-1-topology.png" alt="Topology"/>
+<h3>Nodes (CPU/RAM bars)</h3><img src="screenshots/ui-2-nodes.png" alt="Nodes"/>
+<h3>Messages</h3><img src="screenshots/ui-3-messages.png" alt="Messages"/>
+<h3>Boot Waterfall</h3><img src="screenshots/ui-4-boot-waterfall.png" alt="Boot Waterfall"/>
+<h3>Timeline</h3><img src="screenshots/ui-5-timeline.png" alt="Timeline"/>
+<h3>Cache (new)</h3><img src="screenshots/ui-6-cache.png" alt="Cache"/>
+
+<h2>Telemetry — raw Jaeger UI (localhost:16686)</h2>
+<h3>Search: service=broker, operation=rafka.mesh.node.ready — 5 traces × 5 spans</h3>
+<img src="screenshots/jaeger-search.png" alt="Jaeger search"/>
+<h3>Trace detail: the boot-span chain</h3>
+<img src="screenshots/jaeger-trace.png" alt="Jaeger trace"/>
+
+<h2>Acceptance criteria — met</h2>
+<table>
+<tr><th>Criterion</th><th>Result</th></tr>
+<tr><td>cargo check clean (0/0)</td><td class="ok">✅</td></tr>
+<tr><td>+broker → mesh1.broker1 in all 5 surfaces + Cache</td><td class="ok">✅</td></tr>
+<tr><td>/api/topology-cache returns live gossip-derived entry</td><td class="ok">✅</td></tr>
+<tr><td>UI screenshots in sprint folder</td><td class="ok">✅</td></tr>
+<tr><td>Jaeger telemetry screenshot in sprint folder</td><td class="ok">✅</td></tr>
+<tr><td>Team lead personally verified screenshots</td><td class="ok">✅</td></tr>
+</table>
+
+<h2>Deferred to later sprints</h2>
+<ul>
+  <li>Two-mesh / cross-mesh + <b>bridge removal</b> → <b>sprint-12</b></li>
+  <li>Add/delete multi-node → <b>sprint-13</b></li>
+  <li>Forced relay (relay carries cross-mesh) → <b>sprint-14</b></li>
+  <li>Chaos + resilience soak → <b>sprint-15</b></li>
+</ul>
+</body>
+</html>

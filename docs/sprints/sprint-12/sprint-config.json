@@ -1,0 +1,60 @@
+{
+  "sprint_id": "sprint-12",
+  "status": "verified",
+  "opens": "2026-05-31",
+  "closes": "2026-05-31",
+  "initiative": "mesh-v2",
+  "phase": 2,
+  "prd": "docs/plans/mesh-v2/00-topology-cache-and-base-ui-prd.md (§2,§3,§4,§5,§8.2,§6a)",
+  "branch": "worktree-agent-a4b669faab9e8336b (to merge into mesh-v2)",
+  "tip_sha": "61f2a46",
+  "parent_branch": "mesh-v2",
+  "objective": "Two-mesh cross-mesh topology cache with the bridge REMOVED: the gateway observes both meshes so its cache spans both; mesh1.gateway1 resolves mesh2.broker1 from the cache and writes to it directly; plus direct-URL tab routing and the complete (6-span) boot chain.",
+  "size": "medium — single engineer, one worktree branch (continues sprint-11)",
+  "in_scope": [
+    "Remove the bridge ENTIRELY: deleted bridge/ crate + workspace member, Role::Bridge, RAFKA_BRIDGE_TARGET_MESHES, +bridge button, bridge in KNOWN_NODE_TYPES/bootstrap/seeds/topology/colors/chaos/cli",
+    "Cross-mesh awareness without a bridge: gateway gets RAFKA_OBSERVER_MESHES = other meshes + a cross-mesh seed; live_digests() spans both meshes (PRD §2)",
+    "Cross-mesh write-sim: mesh1.gateway1 -> mesh2.broker1 direct (loopback), op_kind=produce, InternalMeshFrame::Write (PRD §3)",
+    "Direct-URL tab routing (PRD §6a): clean paths /topology.../cache, client router + axum SPA fallback for non-/api non-asset GETs",
+    "Boot-chain telemetry fix: identity_loaded span moved INTO node.ready's trace -> 6 spans (was 5)",
+    "Relay plumbing: RAFKA_RELAY_URL -> RelayMode::Custom, default Disabled (idle this round per PRD §4)"
+  ],
+  "out_of_scope": [
+    "Add/delete multi-node polish (sprint-13)",
+    "Standing up a live iroh-relay binary + forcing relay (sprint-14)",
+    "Chaos + soak (sprint-15)"
+  ],
+  "exit_criteria": [
+    "cargo check --workspace --tests --no-default-features = 0 errors, 0 new warnings (lead re-ran: PASS)",
+    "NO bridge anywhere: /api/topology-cache has 0 bridge entries; no +bridge button; bridge/ crate deleted (lead verified)",
+    "Cache spans both meshes: 17 entries (8 mesh1 + 8 mesh2 + admin-ui) (lead curled)",
+    "Cross-mesh delivery REAL: mesh2.broker1 frames_recv_total climbing (lead saw 155) from mesh1.gateway1's write-sim",
+    "Boot chain = 6 spans incl. rafka.mesh.boot.identity_loaded (lead verified in RAW Jaeger trace 324cb0b)",
+    "Direct-URL tab routing: GET /cache -> HTTP 200 SPA, renders Cache tab (lead curled + screenshot)",
+    "UI + JAEGER screenshots in this folder; TEAM LEAD personally verified every screenshot"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.node.ready",
+    "rafka.mesh.boot.identity_loaded",
+    "rafka.mesh.boot.endpoint_created",
+    "rafka.mesh.boot.alpn_registered",
+    "rafka.mesh.boot.gossip_started",
+    "rafka.mesh.boot.accept_loop_started",
+    "rafka.mesh.frame.received"
+  ],
+  "verification": {
+    "method": "Lead independently: cargo check (PASS), curled /api/topology-cache (17 entries, 0 bridge, both meshes), curled /api/heartbeats (mesh2.broker1 frames_recv_total=155), GET /cache (HTTP 200 SPA), captured raw Jaeger 6-span trace via jaeger-shot.js, read every screenshot.",
+    "ui_screenshots": "screenshots/ui-1-topology.png ... ui-5-cache-deeplink.png",
+    "jaeger_screenshots": "screenshots/jaeger-search.png, screenshots/jaeger-trace.png (trace 324cb0b, 6 spans)",
+    "lead_verified": true
+  },
+  "known_followups": [
+    "Dead-code _HTML_LEGACY_REMOVED const in admin-ui/src/main.rs still contains a '+ Spawn bridge' string (never served; #[allow(dead_code)]) — delete in a cleanup pass",
+    "Observer needs RAFKA_MDNS_ENABLE=false on a shared host or it mDNS-discovers foreign fleets' digests on the same blake3(mesh_id) topic"
+  ],
+  "infrastructure": {
+    "admin_ui": "http://localhost:19092 (Phase 2 instance; :19090 baseline + :19091 Phase-1 untouched)",
+    "jaeger_ui": "http://localhost:16686"
+  },
+  "deliverable_url": "http://localhost:16686/search?service=broker&operation=rafka.mesh.node.ready&lookback=1h"
+}

@@ -1,0 +1,57 @@
+{
+  "sprint_id": "sprint-11",
+  "status": "verified",
+  "opens": "2026-05-31",
+  "closes": "2026-05-31",
+  "initiative": "mesh-v2",
+  "phase": 1,
+  "prd": "docs/plans/mesh-v2/00-topology-cache-and-base-ui-prd.md (§8 milestone 1)",
+  "branch": "worktree-agent-a4b669faab9e8336b (to merge into mesh-v2)",
+  "parent_branch": "mesh-v2",
+  "objective": "Base UI + topology cache for ONE mesh: spawn a single deterministically-named broker (mesh1.broker1) and prove it is visible live across all admin-ui surfaces plus a new Cache view, with its boot telemetry landing in Jaeger.",
+  "size": "small — single engineer, one worktree branch",
+  "in_scope": [
+    "Deterministic node naming <mesh>.<role><N> (mesh1.broker1), assigned by admin-ui on spawn via RAFKA_NODE_NAME (per-mesh/per-role counter)",
+    "GossipDigest.location field — node's reachable bind addr, broadcast in gossip; loopback rewrite for 0.0.0.0",
+    "GET /api/topology-cache — directory name -> {mesh,type,location} built from live_digests()",
+    "Cache tab in the React/Vite admin-ui (admin-ui/web/src) showing the gossiped directory",
+    "Single mesh + (+broker) -> mesh1.broker1 visible live in Topology, Nodes, Messages, Boot Waterfall, Timeline, Cache",
+    "CPU/RAM usage bars preserved on node cards",
+    "RAFKA_SPAWN_PORT_BASE env (default 15820)"
+  ],
+  "out_of_scope": [
+    "Two-mesh / cross-mesh (sprint-12)",
+    "Bridge removal (sprint-12)",
+    "Relay (sprint-14)",
+    "Add/delete multi-node polish (sprint-13)"
+  ],
+  "exit_criteria": [
+    "cargo check --workspace --tests --no-default-features = 0 errors, 0 new warnings",
+    "One mesh + (+broker) -> mesh1.broker1 appears in all 5 admin-ui surfaces + the new Cache view",
+    "/api/topology-cache returns mesh1.broker1 with a real location (gossip-derived, not hardcoded)",
+    "UI SCREENSHOTS captured + in this sprint folder (screenshots/ui-*.png)",
+    "JAEGER SCREENSHOT captured + in this folder proving telemetry: service=broker, operation=rafka.mesh.node.ready, the 5-span boot chain (screenshots/jaeger-*.png)",
+    "TEAM LEAD personally verified every screenshot",
+    "Sprint release doc (sprint-release.md) with embedded screenshots"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.node.ready",
+    "rafka.mesh.boot.endpoint_created",
+    "rafka.mesh.boot.alpn_registered",
+    "rafka.mesh.boot.gossip_started",
+    "rafka.mesh.boot.accept_loop_started",
+    "rafka.mesh.heartbeat"
+  ],
+  "verification": {
+    "method": "Playwright headless Chromium (docs/plans/mesh-v2/verify/) + raw Jaeger UI capture (jaeger-shot.js); team lead independently ran cargo check, curled /api/topology-cache, and eyeballed every PNG",
+    "ui_screenshots": "screenshots/ui-1-topology.png ... ui-6-cache.png",
+    "jaeger_screenshots": "screenshots/jaeger-search.png, screenshots/jaeger-trace.png",
+    "lead_verified": true
+  },
+  "infrastructure": {
+    "admin_ui": "http://localhost:19091 (Phase 1 instance; baseline on :19090 untouched)",
+    "jaeger_ui": "http://localhost:16686",
+    "otlp_endpoint_default": "http://localhost:4316"
+  },
+  "deliverable_url": "http://localhost:16686/search?service=broker&operation=rafka.mesh.node.ready&lookback=1h"
+}

@@ -49,7 +49,9 @@ Each node binary does exactly one thing: be a mesh participant of its type. Don'
 - No knobs nobody needs
 - No traits over op kinds, no macros generating modules
 - One file per node-type binary at first; split only when split is needed
-- Plain HTML+JS for the UI (no SPA framework, no node_modules, no transpilation)
+- UI: the admin-ui is a **React + react-flow SPA** built by Vite (`admin-ui/web/`, served from
+  `web/dist`). The earlier "plain HTML+JS only, no SPA, no node_modules, no transpilation" rule was
+  **dropped 2026-05-31** — build UI in `admin-ui/web/src/` (TSX) and rebuild with `npm run build`.
 - Reuse primitives; grep before proposing new crates
 
 ### #5 — Chaos-pass replaces "tests pass" (from Sprint 02 onward)

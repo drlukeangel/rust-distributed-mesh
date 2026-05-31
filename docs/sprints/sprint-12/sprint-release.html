@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sprint 12 — Release Report (mesh-v2 Phase 2)</title>
+<style>
+  body { background:#0d1117; color:#c9d1d9; font:15px/1.6 -apple-system,Segoe UI,Roboto,sans-serif; max-width:1100px; margin:0 auto; padding:32px; }
+  h1 { color:#58a6ff; } h2 { color:#79c0ff; border-bottom:1px solid #21262d; padding-bottom:6px; margin-top:36px; }
+  h3 { color:#d2a8ff; margin-top:24px; }
+  a { color:#58a6ff; } code { background:#161b22; padding:1px 5px; border-radius:4px; color:#a5d6ff; }
+  img { width:100%; border:1px solid #30363d; border-radius:8px; margin:8px 0 20px; display:block; }
+  table { border-collapse:collapse; margin:12px 0; } td,th { border:1px solid #30363d; padding:6px 12px; text-align:left; }
+  .ok { color:#3fb950; } .meta { color:#8b949e; } ul { margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>Sprint 12 — Release Report</h1>
+<p class="meta"><b>Initiative:</b> mesh-v2 · <b>Phase 2</b> — Two-mesh cross-mesh cache, bridge removed<br/>
+<b>Status:</b> <span class="ok">✅ Verified by team lead</span> · <b>Date:</b> 2026-05-31<br/>
+<b>PRD:</b> <code>docs/plans/mesh-v2/00-topology-cache-and-base-ui-prd.md</code> (§2,§3,§4,§5,§8.2,§6a)<br/>
+<b>Branch:</b> <code>worktree-agent-a4b669faab9e8336b</code> · tip <code>61f2a46</code> → to merge into <code>mesh-v2</code></p>
+
+<h2>Live links</h2>
+<ul>
+  <li><b>Admin-ui:</b> <a href="http://localhost:19092">http://localhost:19092</a></li>
+  <li><b>Tabs (direct URLs):</b>
+    <a href="http://localhost:19092/topology">/topology</a> ·
+    <a href="http://localhost:19092/nodes">/nodes</a> ·
+    <a href="http://localhost:19092/messages">/messages</a> ·
+    <a href="http://localhost:19092/cache">/cache</a> ·
+    <a href="http://localhost:19092/boot-waterfall">/boot-waterfall</a></li>
+  <li><b>Jaeger — broker boot trace:</b> <a href="http://localhost:16686/search?service=broker&amp;operation=rafka.mesh.node.ready&amp;lookback=1h">service=broker / rafka.mesh.node.ready</a></li>
+  <li><b>Jaeger — all services:</b> <a href="http://localhost:16686">http://localhost:16686</a></li>
+</ul>
+
+<h2>What was done</h2>
+<p>The <b>bridge is gone</b>, and two meshes share a cross-mesh topology cache with real cross-mesh
+delivery — plus direct-URL tab routing and a completed boot-span chain.</p>
+<ul>
+  <li><b>Bridge removed entirely</b> — deleted the <code>bridge/</code> crate + member, <code>Role::Bridge</code>, <code>RAFKA_BRIDGE_TARGET_MESHES</code>, the <code>+bridge</code> button, and every bridge reference in bootstrap/seeds/topology/colors/chaos/cli.</li>
+  <li><b>Cross-mesh without a bridge (PRD §2)</b> — a spawned <code>gateway</code> gets <code>RAFKA_OBSERVER_MESHES</code> = the other meshes + a cross-mesh seed, so its <code>live_digests()</code> spans both meshes and draws the direct gateway→broker edge.</li>
+  <li><b>Cross-mesh write-sim (PRD §3)</b> — <code>mesh1.gateway1</code> resolves <code>mesh2.broker1</code> from the cache and writes directly (<code>op_kind=produce</code>).</li>
+  <li><b>Direct-URL tab routing (PRD §6a)</b> — clean paths (<code>/cache</code>…), client router + axum SPA fallback.</li>
+  <li><b>Boot chain completed</b> — <code>identity_loaded</code> moved into <code>node.ready</code>'s trace → <b>6 spans</b> (was 5).</li>
+</ul>
+
+<h2>Verification (team lead, independent)</h2>
+<ul>
+  <li><code>cargo check --workspace --tests --no-default-features</code> → <span class="ok">0 errors, 0 warnings</span> (re-ran).</li>
+  <li><code>/api/topology-cache</code> → <b>17 entries, 0 bridge, both meshes</b>.</li>
+  <li><code>/api/heartbeats</code> → <code>mesh2.broker1.frames_recv_total = 155</code> (cross-mesh write lands).</li>
+  <li><code>GET /cache</code> → <b>HTTP 200</b> SPA (routing + fallback).</li>
+  <li>Captured the <b>raw Jaeger</b> 6-span trace <code>324cb0b</code>; spawned <code>mesh1.broker3</code> (counter increments).</li>
+</ul>
+
+<h2>UI</h2>
+<h3>Topology — two meshes, no bridge, cross-mesh edges</h3><img src="screenshots/ui-1-topology.png"/>
+<h3>Nodes — 16 nodes + admin-ui, CPU/RAM bars</h3><img src="screenshots/ui-2-nodes.png"/>
+<h3>Messages — cross-mesh write-sim frames</h3><img src="screenshots/ui-3-messages.png"/>
+<h3>Boot Waterfall — 6 spans (identity_loaded included)</h3><img src="screenshots/ui-4-boot-waterfall.png"/>
+<h3>Cache via direct <code>/cache</code> URL — 17 entries, no bridge, no +bridge button</h3><img src="screenshots/ui-5-cache-deeplink.png"/>
+
+<h2>Telemetry — raw Jaeger UI (localhost:16686)</h2>
+<h3>Search: service=broker / rafka.mesh.node.ready</h3><img src="screenshots/jaeger-search.png"/>
+<h3>Trace 324cb0b — the COMPLETE 6-span boot chain</h3><img src="screenshots/jaeger-trace.png"/>
+
+<h2>Acceptance criteria — met</h2>
+<table>
+<tr><th>Criterion</th><th>Result</th></tr>
+<tr><td>cargo check clean (0/0)</td><td class="ok">✅ lead re-ran</td></tr>
+<tr><td>No bridge anywhere (cache, button, crate)</td><td class="ok">✅</td></tr>
+<tr><td>Cache spans both meshes (17 entries)</td><td class="ok">✅</td></tr>
+<tr><td>Cross-mesh delivery real (mesh2.broker1 RX)</td><td class="ok">✅ 155 frames</td></tr>
+<tr><td>Boot chain = 6 spans incl. identity</td><td class="ok">✅ raw Jaeger 324cb0b</td></tr>
+<tr><td>Direct-URL tab routing (/cache)</td><td class="ok">✅ HTTP 200 SPA</td></tr>
+<tr><td>UI + Jaeger screenshots; lead verified</td><td class="ok">✅</td></tr>
+</table>
+
+<h2>Known follow-ups (honest)</h2>
+<ul>
+  <li>Dead-code <code>_HTML_LEGACY_REMOVED</code> const in <code>admin-ui/src/main.rs</code> still has a <code>+ Spawn bridge</code> string — never served (<code>#[allow(dead_code)]</code>). Cosmetic; delete next pass.</li>
+  <li>Observer needs <code>RAFKA_MDNS_ENABLE=false</code> on a shared host or it mDNS-discovers other fleets' digests. Operational, not a code bug.</li>
+</ul>
+
+<h2>Deferred</h2>
+<ul><li>Add/delete → <b>sprint-13</b> · Forced relay → <b>sprint-14</b> · Chaos + soak → <b>sprint-15</b></li></ul>
+</body>
+</html>
