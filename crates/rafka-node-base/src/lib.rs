@@ -519,6 +519,15 @@ async fn run_node(
         None
     };
 
+    // Sprint-18: backbone tombstone outbox. run_backbone's select! loop owns
+    // the receiver. broadcast_backbone_tombstone() pushes tombstones here;
+    // run_backbone drains them and broadcasts BackboneMessage::Tombstone on
+    // the backbone topic. Unbounded so a kill burst before run_backbone starts
+    // doesn't block the caller.
+    let (backbone_tombstone_tx, backbone_tombstone_rx) =
+        tokio::sync::mpsc::unbounded_channel::<BackboneTombstone>();
+    let _ = BACKBONE_TOMBSTONE_TX.set(backbone_tombstone_tx);
+
     // Cross-mesh backbone (sprint-14, PRD 03). Gateways + the admin-ui observer
     // subscribe to the single backbone topic blake3("rafka.backbone"); ONLY
     // gateways publish their mesh's MeshSummary (soft lease). Brokers/computes/
@@ -542,8 +551,14 @@ async fn run_node(
             is_publisher,
             backbone_interval_ms,
             registry_bb,
+            backbone_tombstone_rx,
         )))
     } else {
+        // Not a backbone participant — drop the receiver so the channel is
+        // cleaned up. Tombstone pushes via broadcast_backbone_tombstone will
+        // hit BACKBONE_TOMBSTONE_TX.get() = None on non-backbone nodes (which
+        // is fine — only admin-ui / gateways call it).
+        drop(backbone_tombstone_rx);
         None
     };
 
@@ -773,18 +788,24 @@ async fn produce_once(
     }
 }
 
-/// Cross-mesh backbone task (sprint-14, PRD 03). ONE task per gateway + admin-ui.
+/// Cross-mesh backbone task (sprint-14, PRD 03; extended sprint-18).
+/// ONE task per gateway + admin-ui.
 /// Subscribes to the single backbone topic `blake3("rafka.backbone")` and, each
 /// interval:
-///   - drains received `MeshSummary` records into `backbone_summaries()` (keyed by
-///     mesh_id, last-writer-wins) + emits `rafka.mesh.backbone.received`. This is
-///     SEPARATE from `topic_membership`: receiving mesh2's summary does NOT make us
-///     a member of mesh2's gossip (PRD 03 §9 verify).
-///   - if `is_publisher` (gateway only): runs the SOFT LEASE (§4) and, when it
-///     holds or wins the lease, aggregates its own mesh from `live_digests()`,
-///     assembles the directory, publishes a `MeshSummary`, and emits
+///   - drains received `BackboneMessage` records:
+///       • `Summary(s)` → store into `backbone_summaries()` + emit
+///         `rafka.mesh.backbone.received`. SEPARATE from `topic_membership`.
+///       • `Tombstone(t)` → call `apply_tombstone` + emit
+///         `rafka.mesh.backbone.tombstone_applied`. The dead node is evicted
+///         from `live_digests` so the next Summary publish omits it.
+///   - if `is_publisher` (gateway only): runs the SOFT LEASE (§4) and, when
+///     it holds or wins the lease, aggregates its own mesh from `live_digests()`,
+///     publishes a `BackboneMessage::Summary`, and emits
 ///     `rafka.mesh.backbone.published`. Self-injects its own claim (iroh-gossip
 ///     does not echo the sender's own broadcast).
+///   - drains backbone tombstone outbox (`backbone_tombstone_rx`): for each
+///     `BackboneTombstone`, broadcasts `BackboneMessage::Tombstone` and emits
+///     `rafka.mesh.backbone.tombstone_published` (sprint-18).
 ///
 /// NOT an election: leadership is the lease on the wire. `min(node_id)` over live
 /// gateways breaks a tie ONLY for a vacant/expired seat; a live claim is never
@@ -797,6 +818,7 @@ async fn run_backbone(
     is_publisher: bool,
     interval_ms: u64,
     registry: PeerRegistry,
+    mut backbone_tombstone_rx: tokio::sync::mpsc::UnboundedReceiver<BackboneTombstone>,
 ) {
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
@@ -923,7 +945,9 @@ async fn run_backbone(
                 // own lease claim is visible to our next-tick lease check.
                 backbone_summaries().insert(mesh_id.to_string(), summary.clone());
 
-                match postcard::to_allocvec(&summary) {
+                // Sprint-18: wrap in BackboneMessage enum before encoding.
+                let msg = BackboneMessage::Summary(summary);
+                match postcard::to_allocvec(&msg) {
                     Ok(bytes) => {
                         if let Err(e) = sender.broadcast(bytes.into()).await {
                             tracing::info_span!("rafka.mesh.backbone.broadcast_failed", node_id = %node_id, error = %e)
@@ -951,23 +975,106 @@ async fn run_backbone(
                     }
                 }
             }
+            // Sprint-18: backbone tombstone outbox drain. kill_one pushes via
+            // broadcast_backbone_tombstone → BACKBONE_TOMBSTONE_TX → here.
+            // We broadcast BackboneMessage::Tombstone so every backbone
+            // subscriber (gateways in ALL meshes) receives it, calls
+            // apply_tombstone, and evicts the dead node from live_digests.
+            // The gateway's next Summary publish then omits it → remote
+            // topology-cache clears. This is the cross-mesh fast-eviction path
+            // (T2/T3 acceptance tests). Self-apply happens before we push
+            // (broadcast_backbone_tombstone already called apply_tombstone
+            // via broadcast_tombstone on the mesh topic, and prunes
+            // backbone_summaries locally). The backbone broadcast reaches the
+            // REMOTE mesh's gateway, which is what the mesh-gossip tombstone
+            // misses in the single-console scenario.
+            Some(t) = backbone_tombstone_rx.recv() => {
+                let dead_id = t.node_id.clone();
+                let dead_mesh = t.mesh_id.clone();
+                let pb = t.published_by.clone();
+                let msg = BackboneMessage::Tombstone(t);
+                match postcard::to_allocvec(&msg) {
+                    Ok(bytes) => {
+                        if let Err(e) = sender.broadcast(bytes.into()).await {
+                            tracing::info_span!(
+                                "rafka.mesh.backbone.tombstone_broadcast_failed",
+                                node_id = %node_id,
+                                dead_node_id = %dead_id,
+                                error = %e,
+                            )
+                            .in_scope(|| info!(dead_node_id = %dead_id, error = %e, "backbone tombstone broadcast failed"));
+                        } else {
+                            tracing::info_span!(
+                                "rafka.mesh.backbone.tombstone_published",
+                                node_id = %node_id,
+                                dead_node_id = %dead_id,
+                                dead_mesh_id = %dead_mesh,
+                                published_by = %pb,
+                                "otel.kind" = "producer",
+                            )
+                            .in_scope(|| info!(dead_node_id = %dead_id, dead_mesh_id = %dead_mesh, "backbone tombstone published"));
+                        }
+                    }
+                    Err(e) => {
+                        info!(dead_node_id = %dead_id, error = %e, "backbone tombstone encode failed");
+                    }
+                }
+            }
             event = receiver.next() => {
                 let Some(event) = event else { break };
                 let event = match event { Ok(e) => e, Err(_) => continue };
                 if let Event::Received(msg) = event {
-                    if let Ok(summary) = postcard::from_bytes::<MeshSummary>(&msg.content) {
-                        let summary_mesh = summary.mesh_id.clone();
-                        let publisher = summary.published_by.clone();
-                        let node_count = summary.aggregate.node_count;
-                        backbone_summaries().insert(summary_mesh.clone(), summary);
-                        tracing::info_span!(
-                            "rafka.mesh.backbone.received",
-                            node_id = %node_id,
-                            mesh_id = %summary_mesh,
-                            publisher = %publisher,
-                            node_count = node_count as i64,
-                        )
-                        .in_scope(|| info!(mesh_id = %summary_mesh, publisher = %publisher, "backbone summary received"));
+                    match postcard::from_bytes::<BackboneMessage>(&msg.content) {
+                        Ok(BackboneMessage::Summary(summary)) => {
+                            let summary_mesh = summary.mesh_id.clone();
+                            let publisher = summary.published_by.clone();
+                            let node_count = summary.aggregate.node_count;
+                            backbone_summaries().insert(summary_mesh.clone(), summary);
+                            tracing::info_span!(
+                                "rafka.mesh.backbone.received",
+                                node_id = %node_id,
+                                mesh_id = %summary_mesh,
+                                publisher = %publisher,
+                                node_count = node_count as i64,
+                            )
+                            .in_scope(|| info!(mesh_id = %summary_mesh, publisher = %publisher, "backbone summary received"));
+                        }
+                        Ok(BackboneMessage::Tombstone(t)) => {
+                            // Sprint-18: cross-mesh fast eviction receive path.
+                            // Uniformly applied on EVERY backbone consumer (T6:
+                            // no hand-editing another process's maps — this runs
+                            // via the backbone gossip receive path, identical for
+                            // all consumers). apply_tombstone evicts the dead node
+                            // from live_digests + topic_membership + last_seen_ms.
+                            // Crucially, on the dead node's HOME-MESH GATEWAY,
+                            // this removes X from live_digests so the next
+                            // backbone Summary publish omits X → remote consoles
+                            // see X vanish within one backbone interval (~2s).
+                            apply_tombstone(&t.node_id, "backbone_receive");
+                            // Also prune the local backbone_summaries directory
+                            // for instant feedback on THIS consumer (does not
+                            // wait for the next clean Summary from the gateway).
+                            backbone_summaries()
+                                .entry(t.mesh_id.clone())
+                                .and_modify(|summary| {
+                                    summary.directory.retain(|e| e.node_id != t.node_id);
+                                });
+                            tracing::info_span!(
+                                "rafka.mesh.backbone.tombstone_applied",
+                                node_id = %node_id,
+                                dead_node_id = %t.node_id,
+                                dead_mesh_id = %t.mesh_id,
+                                published_by = %t.published_by,
+                                "otel.kind" = "consumer",
+                            )
+                            .in_scope(|| info!(dead_node_id = %t.node_id, dead_mesh_id = %t.mesh_id, "backbone tombstone applied — cross-mesh fast eviction"));
+                        }
+                        Err(_) => {
+                            // Silently ignore decode failures (e.g. old build
+                            // that still sends bare MeshSummary). They won't
+                            // appear after the first full rebuild but are
+                            // harmless — the fallback is the staleness pruner.
+                        }
                     }
                 }
             }
@@ -1445,6 +1552,79 @@ pub fn backbone_summaries() -> &'static Arc<DashMap<String, MeshSummary>> {
 /// id — one additional iroh-gossip topic shared by ALL meshes (PRD 03 §1). Not a
 /// DHT, not a new mesh primitive: the same gossip plane, a new topic.
 pub const BACKBONE_TOPIC_NAME: &str = "rafka.backbone";
+
+// ===========================================================================
+// Sprint-18: Backbone tombstone — cross-mesh fast eviction
+// ===========================================================================
+
+/// Wire message type for the backbone topic. Replaces the old bare
+/// `postcard(MeshSummary)` encoding with a tagged enum so Summaries and
+/// Tombstones share the same topic without a separate discriminant byte.
+///
+/// All backbone nodes must be on the same build (same binary version) so
+/// postcard cross-version compat is not a concern.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum BackboneMessage {
+    /// Normal per-mesh aggregate + directory, published each interval by the
+    /// soft-lease gateway (sprint-14, PRD 03 §3/§4). Unchanged semantics.
+    Summary(MeshSummary),
+    /// Fast cross-mesh eviction signal (sprint-18). Published by any backbone
+    /// participant (admin-ui or gateway) that kills a node. Every backbone
+    /// consumer — including X's home-mesh gateway — receives this and calls
+    /// `apply_tombstone`, which drops X from `live_digests` so the gateway's
+    /// next `MeshSummary` publish omits X.
+    Tombstone(BackboneTombstone),
+}
+
+/// Identifies the node being evicted via the backbone control plane.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BackboneTombstone {
+    /// iroh `node_id` (hex public key) of the dead node.
+    pub node_id: String,
+    /// The dead node's home mesh, so consumers can also prune
+    /// `backbone_summaries` eagerly without waiting for a fresh Summary.
+    pub mesh_id: String,
+    /// node_id of the process publishing this tombstone (for tracing).
+    pub published_by: String,
+}
+
+/// Process-global backbone tombstone outbox. `kill_one` (admin-ui) pushes
+/// a `BackboneTombstone` here; `run_backbone`'s select! loop drains it and
+/// broadcasts a `BackboneMessage::Tombstone` on the backbone topic. Every
+/// backbone subscriber (gateways in ALL meshes + other admin-ui consoles)
+/// receives it and calls `apply_tombstone` → the dead node is evicted from
+/// each gateway's `live_digests` → the gateway's next `MeshSummary` publish
+/// omits it → remote admin-ui topology-cache clears X.
+///
+/// Unbounded so a kill burst before `run_backbone` starts doesn't block.
+static BACKBONE_TOMBSTONE_TX: std::sync::OnceLock<
+    tokio::sync::mpsc::UnboundedSender<BackboneTombstone>,
+> = std::sync::OnceLock::new();
+
+/// Enqueue a backbone tombstone for the dead node. Called by `kill_one` in
+/// the admin-ui. `run_backbone` drains this channel and broadcasts via the
+/// backbone gossip topic. Also directly prunes `backbone_summaries` to give
+/// the LOCAL console instant feedback without waiting for the gateway to
+/// republish.
+pub fn broadcast_backbone_tombstone(node_id: &str, mesh_id: &str, published_by: &str) {
+    // Eagerly prune the local backbone_summaries so the killing console's
+    // own /api/topology-cache clears immediately — the remote gateway will
+    // republish a clean summary within one backbone interval anyway, but this
+    // avoids a flash of stale data on the same console that fired the kill.
+    backbone_summaries()
+        .entry(mesh_id.to_string())
+        .and_modify(|summary| {
+            summary.directory.retain(|e| e.node_id != node_id);
+        });
+
+    if let Some(tx) = BACKBONE_TOMBSTONE_TX.get() {
+        let _ = tx.send(BackboneTombstone {
+            node_id: node_id.to_string(),
+            mesh_id: mesh_id.to_string(),
+            published_by: published_by.to_string(),
+        });
+    }
+}
 
 /// Default staleness window for the process-global mesh-state pruner. A
 /// `GossipDigest` whose `wall_time_ms` is older than this is treated as
