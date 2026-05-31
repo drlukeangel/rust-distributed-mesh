@@ -65,11 +65,27 @@ fn resolve_endpoint_and_service(service_name: &str) -> (String, String) {
     (otlp_endpoint, resolved_service_name)
 }
 
+/// Build the OTel Resource (sprint-13 B2).
+///
+/// The old code was `Resource::new(vec![SERVICE_NAME])`, which REPLACES env
+/// detection — so `OTEL_RESOURCE_ATTRIBUTES` (carrying `service.namespace` +
+/// `service.instance.id`) was silently dropped and Jaeger had no hierarchy.
+///
+/// `Resource::default()` runs the SDK detectors INCLUDING `EnvResourceDetector`,
+/// which parses `OTEL_RESOURCE_ATTRIBUTES` (k=v,k=v) and `OTEL_SERVICE_NAME`. We
+/// then `merge` an explicit `service.name` on top (merge gives the `other`
+/// resource priority) so the resolved service name always wins even if the env
+/// var is unset. Net: `service.name` + `service.namespace` + `service.instance.id`
+/// all reach Jaeger, which is what splits `mesh1.broker` from `mesh2.broker` in
+/// the System Architecture graph.
 fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
-    opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
+    let explicit = opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
         opentelemetry_semantic_conventions::resource::SERVICE_NAME,
         service_name.to_string(),
-    )])
+    )]);
+    // default() detects env (OTEL_RESOURCE_ATTRIBUTES + OTEL_SERVICE_NAME);
+    // merging `explicit` last ensures our resolved service.name takes priority.
+    opentelemetry_sdk::Resource::default().merge(&explicit)
 }
 
 fn build_exporter(endpoint: String) -> SpanExporter {

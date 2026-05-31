@@ -1,0 +1,65 @@
+{
+  "sprint_id": "sprint-13",
+  "status": "open",
+  "opens": "2026-05-31",
+  "initiative": "mesh-v2",
+  "phase": 2.5,
+  "title": "Telemetry hierarchy + honest topology",
+  "prd": "docs/telemetry.md (Part B), docs/plans/mesh-v2/00-topology-cache-and-base-ui-prd.md",
+  "branch": "continues worktree-agent-a4b669faab9e8336b (stacks on sprint-12)",
+  "parent_branch": "mesh-v2",
+  "objective": "Make Jaeger's System Architecture graph reflect REAL two-mesh topology: per-mesh service nodes (service.name=<mesh>.<type>), standard W3C trace propagation over QUIC, and removal of the admin-ui observability CC. No half measures.",
+  "size": "small-medium — single engineer, stacks on sprint-12",
+  "naming_convention": {
+    "node_name": "<mesh>.<type>.<abbrev><N>  e.g. mesh1.gateway.gw1, mesh2.broker.br1",
+    "abbrev": { "gateway": "gw", "broker": "br", "compute": "cp", "registry": "rg" },
+    "service_name": "<mesh>.<type>  (Jaeger graph node, e.g. mesh1.broker)",
+    "service_namespace": "<mesh>  (mesh1 / mesh2)",
+    "service_instance_id": "<abbrev><N>  (gw1 / br1 / br2)"
+  },
+  "in_scope": [
+    "B1: deterministic node_name = <mesh>.<type>.<abbrev><N> (mesh1.gateway.gw1); admin-ui assigns + passes RAFKA_NODE_NAME and derives the 3 OTel fields from the 3 segments",
+    "B1: per-child OTEL_SERVICE_NAME=<mesh>.<type> + OTEL_RESOURCE_ATTRIBUTES=service.namespace=<mesh>,service.instance.id=<abbrev><N> (admin-ui/src/main.rs:2853)",
+    "B2: rafka-telemetry build_resource() must emit service.namespace + service.instance.id (currently only SERVICE_NAME; Resource::new replaces env detection so OTEL_RESOURCE_ATTRIBUTES is dropped today)",
+    "B3: replace hand-rolled TracedFrame context with the global W3C propagator (inject/extract traceparent + tracestate) over the QUIC frame carrier (rafka-mesh-ops encode/decode_with_context)",
+    "B4: remove the gateway->admin-ui write CC; derive the Messages tab from a legit observation path (gossiped frames_recv_total or a real read subscription)",
+    "B5 (REQUIRED — missing broker activity is a telemetry flaw): write-sim moves open_uni -> open_bi; broker extracts the W3C context and opens its own action span(s) (produce.handle) parented to it, then writes an ACK back; the ACK carries the broker's span context so the gateway's ack-receive is a child -> broker->gateway edge. Full produce->handle->ack trace visible.",
+    "B6: add the service-name contract (B1 table) + the new produce.handle/ack spans + op_kind to CLAUDE.md §10 in the same commit"
+  ],
+  "out_of_scope": [
+    "Add/delete multi-node polish (moved to sprint-14)",
+    "Forced relay (sprint-15), chaos+soak (sprint-16)"
+  ],
+  "exit_criteria": [
+    "cargo check --workspace --tests --no-default-features = 0 errors, 0 new warnings",
+    "Jaeger System Architecture shows DISTINCT per-mesh nodes: mesh1.gateway, mesh1.broker, mesh2.broker (+ compute/registry per mesh) — NOT a single collapsed 'broker'",
+    "The cross-mesh write is visible as mesh1.gateway -> mesh2.broker AND the ack as mesh2.broker -> mesh1.gateway (arrows BOTH ways)",
+    "A produce trace shows the broker's own work: gateway produce -> broker handle -> broker ack, one trace, broker spans parented by the propagated W3C context",
+    "NO gateway -> admin-ui artifact edge in the dependency graph",
+    "QUIC frames carry W3C traceparent + tracestate; a cross-mesh trace stitches end-to-end (verify in a Jaeger trace spanning gateway+broker across meshes)",
+    "node_name shows as mesh1.gateway.gw1-style in cache/topology/UI",
+    "UI + JAEGER screenshots (incl. the System Architecture graph) in docs/sprints/sprint-13/screenshots/",
+    "TEAM LEAD personally verified every screenshot; sprint-release.md/.html with embedded screenshots + Jaeger/admin links, opened"
+  ],
+  "spans_to_emit": [
+    "rafka.mesh.node.ready",
+    "rafka.mesh.boot.identity_loaded",
+    "rafka.mesh.boot.endpoint_created",
+    "rafka.mesh.boot.alpn_registered",
+    "rafka.mesh.boot.gossip_started",
+    "rafka.mesh.boot.accept_loop_started",
+    "rafka.mesh.frame.sent",
+    "rafka.mesh.frame.received",
+    "rafka.mesh.produce.handle (NEW — broker's own work, child of the propagated context)",
+    "rafka.mesh.produce.ack (NEW — broker->gateway ack; add to CLAUDE.md §10)"
+  ],
+  "verification": {
+    "method": "Playwright UI capture + raw Jaeger UI capture INCLUDING the System Architecture dependency graph (jaeger-shot.js + a dependency-graph shot); team lead reruns cargo check, inspects a cross-mesh trace for traceparent/tracestate, eyeballs every PNG",
+    "lead_verified": false
+  },
+  "infrastructure": {
+    "admin_ui": "fresh port (e.g. :19093) so :19090/:19091/:19092 stay up",
+    "jaeger_ui": "http://localhost:16686 (System Architecture tab is the key proof)"
+  },
+  "deliverable_url": "http://localhost:16686/dependencies"
+}

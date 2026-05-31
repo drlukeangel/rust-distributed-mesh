@@ -103,10 +103,28 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.frame.sent` | `node_id` (src), `peer_id` (dst), `op_kind`, `bytes`, `trace_id` |
 | `rafka.mesh.frame.received` | `node_id` (dst), `peer_id` (src), `op_kind`, `bytes`, `trace_id` |
 | `rafka.mesh.frame.decode_failed` | `node_id`, `peer_id`, `bytes`, `error` |
+| `rafka.mesh.produce.handle` (sprint-13 B5) | `node_id`, `peer_id`, `op_kind` (`"produce"`), `write_from`, `write_to`, `seq` — broker's own work, parented to the gateway's propagated W3C context |
+| `rafka.mesh.produce.ack` (sprint-13 B5) | `node_id`, `peer_id`, `op_kind` (`"ack"`), `seq` — broker→gateway ack; its W3C context is injected into the Ack frame so the gateway's ack-receive parents onto the broker (reverse edge) |
 
-**`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
+**`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`, `"ack"` (sprint-13 B5 — broker→gateway acknowledgement). Future op classes append; never reuse a string for a different meaning.
 
 **`node_type` enum (locked):** `"gateway"`, `"broker"`, `"compute"`, `"registry"`. Future node types append.
+
+**Service-name contract (locked, sprint-13 B1).** Each node SELF-NAMES from its own `node_id` (the iroh public key, known after identity load at boot). `node_name = <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>` (full type word, NO ordinal/abbrev/symbol; `NODE_NAME_HEX_LEN=6`). `service.name` is mesh-qualified so Jaeger's System Architecture graph renders one node per mesh+type (NOT a single collapsed `broker`):
+
+| node_type | node_name (self-derived) | `service.name` (`OTEL_SERVICE_NAME`) | `service.namespace` | `service.instance.id` |
+|---|---|---|---|---|
+| gateway  | `mesh1.gateway.3a23aa`  | `mesh1.gateway`  | `mesh1` | `<full node_id>` |
+| broker   | `mesh2.broker.ccff65`   | `mesh2.broker`   | `mesh2` | `<full node_id>` |
+| compute  | `mesh1.compute.61c8f1`  | `mesh1.compute`  | `mesh1` | `<full node_id>` |
+| registry | `mesh1.registry.cba58f` | `mesh1.registry` | `mesh1` | `<full node_id>` |
+| admin-ui (Observer) | `admin-ui` | `admin-ui` | `admin` | (env-detected host) |
+
+- **The node owns its identity.** Before `init_telemetry`, the node loads its identity, computes `service.name`/`service.namespace`/`service.instance.id`, and sets `OTEL_SERVICE_NAME` + `OTEL_RESOURCE_ATTRIBUTES` itself. admin-ui passes only `RAFKA_MESH_ID` + the node_type (the binary) at spawn — it does NOT pass `RAFKA_NODE_NAME` / `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES`. admin-ui pre-mints the child identity (for seeding) so it can derive the identical name for its own bookkeeping.
+- **The Observer (admin-ui) is the documented exception:** flat `service.name`/`node_name` = `admin-ui` (gated on `Role::Observer`), so the `mesh_id=="admin"` / `node_name=="admin-ui"` UI filters keep working.
+- **`RAFKA_MESH_ID` is REQUIRED** — a node with it unset/empty FAILS FAST and refuses to boot. No silent `"default"` mesh.
+- `rafka-telemetry::build_resource()` merges env-detected attributes (`OTEL_RESOURCE_ATTRIBUTES`) with an explicit `service.name` via `Resource::default().merge(...)` (it must NOT use bare `Resource::new`, which replaces env detection).
+- QUIC mesh hops propagate trace context via the **global W3C `TextMapPropagator`** (traceparent + tracestate) embedded in the frame carrier — the SAME mechanism as HTTP hops. No hand-rolled context struct.
 
 **Substrate metric contract (locked):**
 
@@ -322,7 +340,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 
 **`GossipDigest.location` field (added mesh-v2 Phase 1):** String field `location` appended to `GossipDigest`. Value = the node's `RAFKA_NODE_BIND_ADDR` at startup (e.g. `"127.0.0.1:15820"`). If `RAFKA_NODE_BIND_ADDR` was `0.0.0.0:<port>`, location is rewritten to `127.0.0.1:<port>` so loopback-local peers can actually dial it. Consumed by `/api/topology-cache` as the directory's `location` field. Old digests (pre-Phase 1) will have `location: ""` since it's the last postcard field.
 
-**`RAFKA_NODE_NAME` format change (mesh-v2 Phase 1):** Admin-ui now assigns deterministic names `<mesh_id>.<node_type><N>` (e.g. `mesh1.broker1`, `mesh1.broker2`). The counter is per-`(mesh_id, node_type)` pair, in-process, 1-based. Old random-hex names (`broker-3f3735a2`) are gone. The name is passed as `RAFKA_NODE_NAME` env to each child, appears in GossipDigest, spans, and the topology cache.
+**`RAFKA_NODE_NAME` format (sprint-13 B1, supersedes Phase 1):** Admin-ui assigns deterministic names `<mesh>.<type>.<abbrev><N>` (e.g. `mesh1.gateway.gw1`, `mesh2.broker.br1`). The counter is per-`(mesh_id, node_type)` pair, in-process, 1-based; abbrev = gateway→gw, broker→br, compute→cp, registry→rg. The three dotted segments derive the three OTel fields (see the Service-name contract in §10). Supersedes the Phase-1 `mesh1.broker1` two-segment form. The name is passed as `RAFKA_NODE_NAME` to each child and appears in GossipDigest, spans, and the topology cache. The gateway write-sim resolves targets `mesh1.broker.br1` / `mesh2.broker.br1` by this name.
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 

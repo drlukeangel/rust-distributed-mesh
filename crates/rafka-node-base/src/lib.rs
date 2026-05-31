@@ -88,9 +88,79 @@ impl NodeRuntime {
     }
 
     pub async fn run(self) -> Result<()> {
-        let _guard = rafka_telemetry::init_telemetry(&self.node_type);
+        // Sprint-13 B1: the node SELF-NAMES from its own node_id, and its OTel
+        // identity (service.name / .namespace / .instance.id) must be in place
+        // BEFORE init_telemetry builds the resource. node_id is only known after
+        // identity load, so we load it HERE (early) — before telemetry init —
+        // derive the three OTel fields, and export them via the standard OTel env
+        // vars that rafka-telemetry::build_resource reads.
+        //
+        // mesh_id is REQUIRED (no "default"): fail fast so a misconfigured node
+        // never joins a phantom mesh.
+        let mesh_id = resolve_required_mesh_id()?;
+
+        // Pin RAFKA_DATA_DIR to the resolved path so the identity is loaded from
+        // ONE file across this early load AND run_node's later load — otherwise an
+        // unset data_dir would mint two different random keys (two node_ids).
+        let data_dir = resolve_data_dir();
+        // SAFETY: single-threaded startup, before any tasks spawn.
+        std::env::set_var("RAFKA_DATA_DIR", &data_dir);
+
+        let secret_key = load_or_mint_identity(&data_dir).await?;
+        let node_id = secret_key.public().to_string();
+
+        // service.name = <mesh>.<type> (the Jaeger graph node); namespace = mesh;
+        // instance.id = the FULL node_id (the iroh public key). The node owns these.
+        //
+        // EXCEPTION (locked B1 table): the Observer console (admin-ui) stays FLAT —
+        // service.name="admin-ui", node_name="admin-ui" — so it renders as a single
+        // node and every existing mesh_id=="admin"/node_name=="admin-ui" filter
+        // keeps working. service.instance.id is left to env-detected default (host).
+        let is_observer = matches!(self.role, Role::Observer);
+        let service_name = if is_observer {
+            self.node_type.clone()
+        } else {
+            format!("{}.{}", mesh_id, self.node_type)
+        };
+        std::env::set_var("OTEL_SERVICE_NAME", &service_name);
+        if !is_observer {
+            std::env::set_var(
+                "OTEL_RESOURCE_ATTRIBUTES",
+                format!("service.namespace={mesh_id},service.instance.id={node_id}"),
+            );
+        }
+
+        let _guard = rafka_telemetry::init_telemetry(&service_name);
         run_node(self.node_type, self.role, self.cpu_budget, self.ram_budget).await
     }
+}
+
+/// Sprint-13 B1: number of hex chars of the node_id used in the self-derived
+/// node_name (`<mesh>.<type>.<first N hex>`). Tunable in one place.
+pub const NODE_NAME_HEX_LEN: usize = 6;
+
+/// Resolve `RAFKA_MESH_ID` or fail fast (sprint-13 B1 — no silent "default").
+fn resolve_required_mesh_id() -> Result<&'static str> {
+    let mesh_id = std::env::var("RAFKA_MESH_ID").unwrap_or_default();
+    let mesh_id = mesh_id.trim();
+    if mesh_id.is_empty() {
+        anyhow::bail!(
+            "RAFKA_MESH_ID is required and must be non-empty — refusing to boot. \
+             Every node must explicitly declare its mesh (no 'default' fallback)."
+        );
+    }
+    Ok(Box::leak(mesh_id.to_string().into_boxed_str()))
+}
+
+/// Resolve the data dir (identity storage). Default `./data/node-<random>` only
+/// when unset — admin-ui always sets it explicitly.
+fn resolve_data_dir() -> PathBuf {
+    std::env::var("RAFKA_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let id: u32 = rand::random();
+            PathBuf::from(format!("./data/node-{id:08x}"))
+        })
 }
 
 struct SeedNode {
@@ -114,27 +184,16 @@ async fn run_node(
     cpu_budget: Option<f32>,
     ram_budget: Option<f32>,
 ) -> Result<()> {
-    // mesh_id is a logical cluster identifier. Multiple physical nodes with the
-    // same mesh_id form one mesh; cross-mesh awareness comes from a node
-    // observing additional meshes via RAFKA_OBSERVER_MESHES (e.g. a gateway
-    // watching both meshes' gossip). Defaults to "default" so single-mesh
-    // dev/test work uninstrumented.
-    let mesh_id = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "default".to_string());
-    let mesh_id: &'static str = Box::leak(mesh_id.into_boxed_str());
+    // mesh_id is a logical cluster identifier. REQUIRED (no "default" — sprint-13
+    // B1): cross-mesh awareness comes from a node observing additional meshes via
+    // RAFKA_OBSERVER_MESHES. Fail fast if unset (run() already validated, but
+    // run_node can be reached on a manual/test launch too).
+    let mesh_id = resolve_required_mesh_id()?;
 
-    // node_name is the topology-ui-assigned spawn name (e.g. "broker-abc123").
-    // Surfaces as a span attribute so topology-ui can show ONE NODE PER SPAWNED
-    // SUBPROCESS in the Topology tab instead of collapsing all of a type into
-    // a single entry. Defaults to "<unspawned>" for direct/manual launches.
-    let node_name = std::env::var("RAFKA_NODE_NAME").unwrap_or_else(|_| "<unspawned>".to_string());
-    let node_name: &'static str = Box::leak(node_name.into_boxed_str());
-
-    let data_dir = std::env::var("RAFKA_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let id: u32 = rand::random();
-            PathBuf::from(format!("./data/node-{id:08x}"))
-        });
+    // data_dir resolved identically to run()'s early load. run() pins
+    // RAFKA_DATA_DIR before init_telemetry, so this read returns the SAME path and
+    // load_or_mint_identity below loads the SAME identity → consistent node_id.
+    let data_dir = resolve_data_dir();
 
     let bind_addr: SocketAddrV4 = std::env::var("RAFKA_NODE_BIND_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:0".to_string())
@@ -195,6 +254,22 @@ async fn run_node(
     let identity_existed = identity_path.exists();
     let secret_key = load_or_mint_identity(&data_dir).await?;
     let node_id = secret_key.public().to_string();
+
+    // Sprint-13 B1: the node SELF-NAMES from its own node_id. node_name =
+    // <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>, e.g.
+    // "mesh2.broker.ccff65". Full type word, no ordinal, no symbol. Broadcast in
+    // the gossip digest; admin-ui learns the final name from gossip (it only
+    // passes RAFKA_MESH_ID + node_type at spawn). RAFKA_NODE_NAME is ignored now.
+    //
+    // EXCEPTION (locked B1 table): the Observer console (admin-ui) keeps the FLAT
+    // node_name == node_type ("admin-ui") so the mesh_id=="admin"/"admin-ui"
+    // filters across the UI keep working unchanged.
+    let node_name: &'static str = if matches!(role, Role::Observer) {
+        node_type_str
+    } else {
+        let hex_suffix: String = node_id.chars().take(NODE_NAME_HEX_LEN).collect();
+        Box::leak(format!("{mesh_id}.{node_type_str}.{hex_suffix}").into_boxed_str())
+    };
 
     // Create iroh endpoint: no tracing span active here so iroh background tasks
     // are NOT attached to node.ready.
@@ -385,7 +460,7 @@ async fn run_node(
     );
 
     let accept_handle =
-        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone()).await;
+        start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, node_name, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone()).await;
 
     // Dedicated bidirectional QUIC stream echo accept loop — the data plane
     // sanity surface for the new framed wire grammar (tag 0x11). Lives in its
@@ -402,7 +477,7 @@ async fn run_node(
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
         let mesh_reg = Arc::clone(&mesh_id_registry);
-        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, mesh_id, node_type_str, registry, mesh_reg)))
+        Some(tokio::spawn(dial_seeds(endpoint, seed_nodes, node_id_dial, mesh_id, node_type_str, node_name, registry, mesh_reg)))
     } else {
         None
     };
@@ -412,7 +487,7 @@ async fn run_node(
         let endpoint = transport.endpoint.clone();
         let registry = Arc::clone(&peer_registry);
         let mesh_reg = Arc::clone(&mesh_id_registry);
-        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, mesh_id, node_type_str, registry, mesh_reg))
+        tokio::spawn(watch_mdns(mdns_rx, endpoint, node_id_mdns, mesh_id, node_type_str, node_name, registry, mesh_reg))
     };
 
     let heartbeat_handle = {
@@ -424,13 +499,14 @@ async fn run_node(
     // (keep-alive + idle timeout). rafka does not hand-roll a heartbeat
     // (Golden Principle #1). run_ping_sender removed entirely.
 
-    // Write-sim (mesh-v2 Phase 2, PRD §3): gateways periodically resolve target
-    // nodes from the gossiped topology cache (live_digests → location) and send a
-    // Write frame DIRECTLY (loopback) to each. Targets: mesh1.broker1 (intra) and
-    // mesh2.broker1 (cross-mesh). A copy also goes to admin-ui (the observer node)
-    // so the write surfaces in the Messages tab — admin-ui's message_ring only
-    // captures frames IT receives. The authoritative proof of delivery is the
-    // target broker's frames_recv_total incrementing (RX in Topology/Nodes).
+    // Write-sim (sprint-13 B4+B5): gateways periodically resolve target brokers
+    // from the gossiped topology cache (live_digests → location) and send a Write
+    // over a BIDIRECTIONAL stream (request/response). Targets: mesh1.broker.br1
+    // (intra) + mesh2.broker.br1 (cross-mesh). The broker continues the W3C trace
+    // (produce.handle) and writes an ACK back carrying ITS span context; the
+    // gateway reads the ACK as a child of the broker's ack span → the dependency
+    // graph shows BOTH arrows. The admin-ui CC is GONE (B4) — no observer special-
+    // case; the Messages tab derives from gossiped frames_recv_total instead.
     let write_sim_handle = if matches!(role, Role::Gateway) {
         let endpoint = transport.endpoint.clone();
         let node_name_ws = node_name.to_string();
@@ -476,134 +552,193 @@ async fn run_bi_echo_acceptor(endpoint: iroh::Endpoint, node_id: String) {
     std::future::pending::<()>().await;
 }
 
-/// Write-sim sender (mesh-v2 Phase 2, PRD §3). Runs only on gateways. Every
-/// `RAFKA_WRITE_SIM_INTERVAL_MS` (default 5000) it resolves a fixed set of target
-/// node_names from the gossiped topology cache (`live_digests()` → `location`),
-/// opens a DIRECT iroh connection to each (loopback-reachable this round), and
-/// sends a `Write` frame. Targets: `mesh1.broker1` (intra-mesh) and
-/// `mesh2.broker1` (cross-mesh), plus `admin-ui` as an OBSERVER copy so the write
-/// surfaces in admin-ui's Messages tab (admin-ui's message_ring only captures
-/// frames it receives). The authoritative proof of cross-mesh delivery is the
-/// TARGET broker's frames_recv_total incrementing — not the admin-ui copy.
+/// Write-sim sender (sprint-13 B4+B5). Runs only on gateways. Every
+/// `RAFKA_WRITE_SIM_INTERVAL_MS` (default 5000) it resolves the target brokers
+/// from the gossiped topology cache (`live_digests()` → `location`) and, for each,
+/// opens a **bidirectional** iroh stream (request/response):
+///   1. writes a `Write` (produce) frame carrying the gateway's W3C context;
+///   2. reads the broker's `Ack` back on the response half;
+///   3. opens an `ack-receive` span PARENTED to the broker's ack span context
+///      (extracted from the ack frame) — that child-of-broker link is what draws
+///      the reverse `broker → gateway` edge in Jaeger's System Architecture graph.
+/// No admin-ui CC (B4): the Messages tab now derives from gossiped frame counters.
 async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_name: String) {
     let interval_ms: u64 = std::env::var("RAFKA_WRITE_SIM_INTERVAL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5000);
-    // Real write targets for Phase 2: mesh1.broker1 (intra) + mesh2.broker1 (cross).
-    const WRITE_TARGETS: &[&str] = &["mesh1.broker1", "mesh2.broker1"];
-    // Observer node: admin-ui's message_ring only captures frames IT receives, so
-    // we cc admin-ui a copy of each real write (carrying the REAL target's name in
-    // the `to` field) — that surfaces "write-sim mesh1.gateway1→mesh2.broker1" in
-    // the Messages tab. The authoritative delivery proof is the real target's RX.
-    const OBSERVER: &str = "admin-ui";
+    // Target brokers by (mesh, type) — NOT by name. Sprint-13 B1 names carry the
+    // node_id hex (e.g. mesh2.broker.ccff65), which is non-deterministic and
+    // unknowable at compile time. We resolve the FIRST live broker in each target
+    // mesh from gossip. The Jaeger dependency edge is service-level
+    // (mesh1.gateway → mesh2.broker), so which broker instance we hit is immaterial.
+    //   (mesh1, broker) = intra-mesh ; (mesh2, broker) = cross-mesh.
+    const WRITE_TARGETS: &[(&str, &str)] = &[("mesh1", "broker"), ("mesh2", "broker")];
 
-    // Resolve a node_name → (EndpointAddr) from the gossiped cache. None if absent,
-    // self, or unparseable.
-    let resolve = |name: &str| -> Option<(String, EndpointAddr)> {
-        let (nid, location) = {
+    // Resolve the first live (mesh_id, node_type) node from the gossiped cache →
+    // (node_name, node_id, EndpointAddr). None if absent/self/unparseable.
+    let resolve = |mesh: &str, node_type: &str| -> Option<(String, String, EndpointAddr)> {
+        let (name, nid, location) = {
             let digests = live_digests();
             digests
                 .iter()
-                .find(|e| e.value().node_name == name)
-                .map(|e| (e.value().node_id.clone(), e.value().location.clone()))?
+                .find(|e| {
+                    let d = e.value();
+                    d.mesh_id == mesh && d.node_type == node_type && d.node_id != own_node_id
+                })
+                .map(|e| {
+                    let d = e.value();
+                    (d.node_name.clone(), d.node_id.clone(), d.location.clone())
+                })?
         };
-        if nid == own_node_id || location.is_empty() {
+        if location.is_empty() {
             return None;
         }
         let pk = PublicKey::from_str(&nid).ok()?;
         let addr = location.parse::<SocketAddr>().ok()?;
-        Some((nid, EndpointAddr::new(pk).with_ip_addr(addr)))
-    };
-
-    // Send one Write frame labeled `to=label` to the node at `dest`. Increments
-    // frames_sent on success. Emits a frame.sent span (op_kind="produce", §10).
-    let send_write = |endpoint: iroh::Endpoint,
-                      own_node_id: String,
-                      own_node_name: String,
-                      dest_node_id: String,
-                      dest_addr: EndpointAddr,
-                      label: String,
-                      seq: u64| async move {
-        let frame = InternalMeshFrame::Write { from: own_node_name, to: label.clone(), seq };
-        let sent_span = tracing::info_span!(
-            "rafka.mesh.frame.sent",
-            node_id = %own_node_id,
-            peer_id = %dest_node_id,
-            frame_kind = "write",
-            op_kind = "produce",
-            write_to = %label,
-            seq = seq,
-            otel.kind = "producer",
-        );
-        let _enter = sent_span.enter();
-        let ctx = Span::current().context();
-        let encoded = frame.encode_with_context(&ctx);
-        drop(_enter);
-        match endpoint.connect(dest_addr, ALPN).await {
-            Ok(conn) => match conn.open_uni().await {
-                Ok(mut send) => {
-                    if send.write_all(&encoded).await.is_ok() && send.finish().is_ok() {
-                        mesh_counters().frames_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        sent_span.in_scope(|| info!(target = %label, seq, "write-sim frame sent"));
-                    } else {
-                        sent_span.in_scope(|| info!(target = %label, "write-sim write/finish failed"));
-                    }
-                }
-                Err(e) => sent_span.in_scope(|| info!(target = %label, error = %e, "write-sim open_uni failed")),
-            },
-            Err(e) => sent_span.in_scope(|| info!(target = %label, error = %e, "write-sim connect failed")),
-        }
+        Some((name, nid, EndpointAddr::new(pk).with_ip_addr(addr)))
     };
 
     let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
     let mut seq: u64 = 0;
-    // Small startup delay so the gossip cache has populated before the first send.
+    // Startup delay so the gossip cache has populated before the first send.
     tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
     loop {
         tick.tick().await;
         seq += 1;
-        let observer = resolve(OBSERVER);
-        for target_name in WRITE_TARGETS {
-            let Some((dest_id, dest_addr)) = resolve(target_name) else { continue };
-            // 1. Real direct write to the target broker (intra or cross-mesh).
-            send_write(
-                endpoint.clone(),
-                own_node_id.clone(),
-                own_node_name.clone(),
-                dest_id,
+        for (mesh, node_type) in WRITE_TARGETS {
+            let Some((target_name, dest_id, dest_addr)) = resolve(mesh, node_type) else { continue };
+            produce_once(
+                &endpoint,
+                &own_node_id,
+                &own_node_name,
+                &dest_id,
                 dest_addr,
-                target_name.to_string(),
+                &target_name,
                 seq,
             )
             .await;
-            // 2. Observer copy to admin-ui, carrying the REAL target name so the
-            //    Messages tab shows "write-sim <gw>→<target>". This is a separate
-            //    frame to a separate node; it does NOT prove delivery to the
-            //    target (the target's RX does).
-            if let Some((obs_id, obs_addr)) = observer.clone() {
-                send_write(
-                    endpoint.clone(),
-                    own_node_id.clone(),
-                    own_node_name.clone(),
-                    obs_id,
-                    obs_addr,
-                    target_name.to_string(),
-                    seq,
-                )
-                .await;
-            }
         }
     }
 }
 
-/// Per-connection bi-stream echo reader. Loops on `conn.accept_bi()`, reads a
-/// complete framed payload (tag + varint length + postcard bytes), and if tag
-/// is `TAG_BI_ECHO` (0x11), echoes the same bytes back on the send half and
-/// finishes. Other tags are dropped with a span. This is the data-plane sanity
-/// surface — proves bi-stream open + read + write + close cycle works end-to-
-/// end before any real broker/compute logic lands.
-async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: String, peer_id_str: String) {
+/// One produce request/response round-trip (sprint-13 B5). Opens a bi-stream,
+/// sends a `Write` frame (op_kind="produce") with the gateway's W3C context, then
+/// reads the broker's `Ack` and opens an `ack-receive` span parented to the
+/// broker's ack context. Bounded by a read timeout so a dead broker can't wedge
+/// the loop.
+async fn produce_once(
+    endpoint: &iroh::Endpoint,
+    own_node_id: &str,
+    own_node_name: &str,
+    dest_node_id: &str,
+    dest_addr: EndpointAddr,
+    target_name: &str,
+    seq: u64,
+) {
+    let frame = InternalMeshFrame::Write {
+        from: own_node_name.to_string(),
+        to: target_name.to_string(),
+        seq,
+    };
+    // produce frame.sent — op_kind="produce" (locked §10). This span is the trace
+    // root for the whole produce→handle→ack→ack-receive chain; its context is what
+    // the broker extracts and parents produce.handle onto.
+    let sent_span = tracing::info_span!(
+        "rafka.mesh.frame.sent",
+        node_id = %own_node_id,
+        peer_id = %dest_node_id,
+        frame_kind = "write",
+        op_kind = "produce",
+        write_to = %target_name,
+        seq = seq,
+        otel.kind = "producer",
+    );
+    let _enter = sent_span.enter();
+    let ctx = Span::current().context();
+    let encoded = frame.encode_with_context(&ctx);
+    drop(_enter);
+
+    let conn = match endpoint.connect(dest_addr, ALPN).await {
+        Ok(c) => c,
+        Err(e) => {
+            sent_span.in_scope(|| info!(target = %target_name, error = %e, "produce connect failed"));
+            return;
+        }
+    };
+    let (mut send, mut recv) = match conn.open_bi().await {
+        Ok(pair) => pair,
+        Err(e) => {
+            sent_span.in_scope(|| info!(target = %target_name, error = %e, "produce open_bi failed"));
+            return;
+        }
+    };
+    if send.write_all(&encoded).await.is_err() || send.finish().is_err() {
+        sent_span.in_scope(|| info!(target = %target_name, "produce write/finish failed"));
+        return;
+    }
+    mesh_counters().frames_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    sent_span.in_scope(|| info!(target = %target_name, seq, "produce frame sent (bi)"));
+
+    // Read the broker's ACK on the response half, bounded so a silent broker
+    // can't stall the write-sim loop.
+    let ack_bytes = match tokio::time::timeout(
+        tokio::time::Duration::from_secs(3),
+        recv.read_to_end(4096),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            sent_span.in_scope(|| info!(target = %target_name, error = %e, "produce ack read failed"));
+            return;
+        }
+        Err(_) => {
+            sent_span.in_scope(|| info!(target = %target_name, "produce ack timed out"));
+            return;
+        }
+    };
+    match InternalMeshFrame::decode_with_context(&ack_bytes) {
+        Ok((broker_ack_ctx, InternalMeshFrame::Ack { from, seq: ack_seq })) => {
+            mesh_counters().frames_recv.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // ack-receive parented to the BROKER's ack span (extracted) — this is
+            // the cross-service link that produces the broker→gateway edge.
+            let ack_span = tracing::info_span!(
+                "rafka.mesh.frame.received",
+                node_id = %own_node_id,
+                peer_id = %dest_node_id,
+                frame_kind = "ack",
+                op_kind = "ack",
+                ack_from = %from,
+                seq = ack_seq,
+                otel.kind = "consumer",
+            );
+            ack_span.set_parent(broker_ack_ctx);
+            ack_span.in_scope(|| info!(target = %target_name, ack_from = %from, seq = ack_seq, "produce ack received"));
+        }
+        Ok((_, other)) => {
+            sent_span.in_scope(|| info!(target = %target_name, ?other, "produce got non-ack response"));
+        }
+        Err(e) => {
+            sent_span.in_scope(|| info!(target = %target_name, error = %e, "produce ack decode failed"));
+        }
+    }
+}
+
+/// Per-connection bi-stream reader. Loops on `conn.accept_bi()`, reads a complete
+/// framed payload, and demuxes by tag:
+///   - `0x11` (`TAG_BI_ECHO`) → echo the bytes back (data-plane sanity, unchanged).
+///   - `0x10` (`TAG_LEGACY_FRAME`) carrying a `Write` → the **produce handler**
+///     (sprint-13 B5): extract the gateway's W3C context, open `produce.handle`
+///     parented to it, then `produce.ack` as a child, and write an `Ack` back with
+///     produce.ack's context injected so the gateway's ack-receive is a child of
+///     the broker → reverse `broker → gateway` edge.
+async fn run_bi_reader(
+    conn: iroh::endpoint::Connection,
+    own_node_id: String,
+    own_node_name: &'static str,
+    peer_id_str: String,
+) {
     loop {
         let (mut send, mut recv) = match conn.accept_bi().await {
             Ok(pair) => pair,
@@ -625,8 +760,30 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
         if bytes.is_empty() {
             continue;
         }
+        // Demux by tag. (if/else, not match: framer::TAG_LEGACY_FRAME is a path
+        // const, which a match arm would treat as a catch-all binding.)
         let tag = bytes[0];
-        if tag != TAG_BI_ECHO {
+        if tag == TAG_BI_ECHO {
+            let recv_span = tracing::trace_span!(
+                "rafka.mesh.bi.echo_received",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                size_bytes = bytes.len() as i64,
+            );
+            recv_span.in_scope(|| tracing::trace!(size = bytes.len(), "bi echo received"));
+            if send.write_all(&bytes).await.is_err() || send.finish().is_err() {
+                tracing::trace_span!(
+                    "rafka.mesh.bi.write_failed",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                )
+                .in_scope(|| tracing::trace!("bi echo write/finish failed"));
+                continue;
+            }
+        } else if tag == framer::TAG_LEGACY_FRAME {
+            // B5: a produce arriving on a bi-stream. Decode + handle + ACK.
+            handle_produce_bi(&own_node_id, own_node_name, &peer_id_str, &bytes, &mut send).await;
+        } else {
             tracing::trace_span!(
                 "rafka.mesh.bi.unknown_tag",
                 node_id = %own_node_id,
@@ -635,45 +792,103 @@ async fn run_bi_echo_reader(conn: iroh::endpoint::Connection, own_node_id: Strin
                 size_bytes = bytes.len() as i64,
             )
             .in_scope(|| tracing::trace!(tag, "bi-stream unknown tag — dropping"));
-            continue;
         }
-        let recv_span = tracing::trace_span!(
-            "rafka.mesh.bi.echo_received",
-            node_id = %own_node_id,
-            peer_id = %peer_id_str,
-            size_bytes = bytes.len() as i64,
-        );
-        recv_span.in_scope(|| tracing::trace!(size = bytes.len(), "bi echo received"));
-
-        // Echo back identical bytes (tag + varint + payload).
-        if let Err(e) = send.write_all(&bytes).await {
-            tracing::trace_span!(
-                "rafka.mesh.bi.write_failed",
-                node_id = %own_node_id,
-                peer_id = %peer_id_str,
-                error = %e,
-            )
-            .in_scope(|| tracing::trace!(error = %e, "bi echo write failed"));
-            continue;
-        }
-        if let Err(e) = send.finish() {
-            tracing::trace_span!(
-                "rafka.mesh.bi.finish_failed",
-                node_id = %own_node_id,
-                peer_id = %peer_id_str,
-                error = %e,
-            )
-            .in_scope(|| tracing::trace!(error = %e, "bi echo finish failed"));
-            continue;
-        }
-        tracing::trace_span!(
-            "rafka.mesh.bi.echo_sent",
-            node_id = %own_node_id,
-            peer_id = %peer_id_str,
-            size_bytes = bytes.len() as i64,
-        )
-        .in_scope(|| tracing::trace!(size = bytes.len(), "bi echo sent"));
     }
+}
+
+/// Broker-side produce handler (sprint-13 B5). Given the raw `Write` frame bytes
+/// read off a bi-stream, this:
+///   1. extracts the gateway's W3C context from the frame;
+///   2. opens `rafka.mesh.produce.handle` PARENTED to it (the broker's own work
+///      becomes visible in the gateway's trace — `gateway → broker` edge);
+///   3. opens `rafka.mesh.produce.ack` as a child of handle, and writes an `Ack`
+///      frame back carrying produce.ack's OWN context (NOT the echoed gateway
+///      context) so the gateway's ack-receive parents onto the broker → the
+///      reverse `broker → gateway` edge appears.
+async fn handle_produce_bi(
+    own_node_id: &str,
+    own_node_name: &str,
+    peer_id_str: &str,
+    bytes: &[u8],
+    send: &mut iroh::endpoint::SendStream,
+) {
+    let (parent_ctx, frame) = match InternalMeshFrame::decode_with_context(bytes) {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::info_span!(
+                "rafka.mesh.frame.decode_failed",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                error = %e,
+                otel.kind = "consumer",
+            )
+            .in_scope(|| info!(peer_id = %peer_id_str, "produce decode failed"));
+            return;
+        }
+    };
+    let (write_from, write_to, seq) = match frame {
+        InternalMeshFrame::Write { from, to, seq } => (from, to, seq),
+        other => {
+            tracing::trace!(peer_id = %peer_id_str, ?other, "bi 0x10 frame not a Write — ignoring");
+            return;
+        }
+    };
+    mesh_counters().frames_recv.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Surface in the (now CC-free) Messages ring too — this is a REAL received frame.
+    let peer_prefix: String = peer_id_str.chars().take(8).collect();
+    push_message(
+        peer_id_str,
+        "write",
+        bytes.len(),
+        format!("[{peer_prefix}] produce {write_from}→{write_to} #{seq}"),
+    );
+
+    // produce.handle — the broker's own work, parented to the gateway's context.
+    let handle_span = tracing::info_span!(
+        "rafka.mesh.produce.handle",
+        node_id = %own_node_id,
+        peer_id = %peer_id_str,
+        op_kind = "produce",
+        write_from = %write_from,
+        write_to = %write_to,
+        seq = seq,
+        otel.kind = "consumer",
+    );
+    handle_span.set_parent(parent_ctx);
+
+    // Build + send the ACK from WITHIN a produce.ack span that is a child of
+    // produce.handle. Inject produce.ack's OWN context into the ack frame.
+    let encoded_ack = handle_span.in_scope(|| {
+        info!(write_from = %write_from, seq, "produce handled");
+        let ack_span = tracing::info_span!(
+            "rafka.mesh.produce.ack",
+            node_id = %own_node_id,
+            peer_id = %peer_id_str,
+            op_kind = "ack",
+            seq = seq,
+            otel.kind = "producer",
+        );
+        ack_span.in_scope(|| {
+            let ack = InternalMeshFrame::Ack { from: own_node_name.to_string(), seq };
+            // inject THIS span (produce.ack) so the gateway parents onto the broker.
+            let ctx = Span::current().context();
+            ack.encode_with_context(&ctx)
+        })
+    });
+
+    if send.write_all(&encoded_ack).await.is_err() || send.finish().is_err() {
+        tracing::info_span!(
+            "rafka.mesh.frame.sent_failed",
+            node_id = %own_node_id,
+            peer_id = %peer_id_str,
+            frame_kind = "ack",
+            otel.kind = "producer",
+        )
+        .in_scope(|| info!(peer_id = %peer_id_str, "ack write/finish failed"));
+        return;
+    }
+    mesh_counters().frames_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    handle_span.in_scope(|| info!(seq, "produce ack sent"));
 }
 
 /// Standalone bi-stream client: open a bi-stream to `peer`, write a framed
@@ -1175,6 +1390,7 @@ async fn dial_seeds(
     own_node_id: String,
     own_mesh_id: &'static str,
     own_node_type: &'static str,
+    own_node_name: &'static str,
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
@@ -1242,7 +1458,7 @@ async fn dial_seeds(
                         let conn_bi = conn.clone();
                         let own_bi = own_node_id.clone();
                         let peer_bi = peer_id_str.clone();
-                        tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+                        tokio::spawn(run_bi_reader(conn_bi, own_bi, own_node_name, peer_bi));
 
                         let own = own_node_id.clone();
                         let reg = Arc::clone(&registry);
@@ -1277,6 +1493,7 @@ async fn watch_mdns(
     own_node_id: String,
     own_mesh_id: &'static str,
     own_node_type: &'static str,
+    own_node_name: &'static str,
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
@@ -1329,7 +1546,7 @@ async fn watch_mdns(
                     let conn_bi = conn.clone();
                     let own_bi = own.clone();
                     let peer_bi = peer_id_str.clone();
-                    tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+                    tokio::spawn(run_bi_reader(conn_bi, own_bi, own_node_name, peer_bi));
 
                     run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg).await;
                 }
@@ -1347,6 +1564,7 @@ async fn start_accept_loop(
     own_node_id: String,
     own_mesh_id: &'static str,
     own_node_type: &'static str,
+    own_node_name: &'static str,
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
     gossip: iroh_gossip::net::Gossip,
@@ -1405,11 +1623,13 @@ async fn start_accept_loop(
 
                             send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
 
-                            // Per-connection bi-stream echo reader (data plane sanity).
+                            // Per-connection bi-stream reader. Demuxes by tag:
+                            // 0x11 = echo (data-plane sanity); 0x10 Write = produce
+                            // handler that continues the W3C trace + ACKs (B5).
                             let conn_bi = conn.clone();
                             let own_bi = own_id.clone();
                             let peer_bi = peer_id.clone();
-                            tokio::spawn(run_bi_echo_reader(conn_bi, own_bi, peer_bi));
+                            tokio::spawn(run_bi_reader(conn_bi, own_bi, own_node_name, peer_bi));
 
                             run_frame_reader(own_id, own_mesh_id, peer_id.clone(), conn, reg, mesh_reg).await;
                         }
@@ -1536,6 +1756,10 @@ async fn run_frame_reader(
                         "write",
                         format!("[{peer_prefix}] write-sim {from}→{to} #{seq}"),
                     ),
+                    Ok((_, InternalMeshFrame::Ack { from, seq })) => (
+                        "ack",
+                        format!("[{peer_prefix}] ack {from} #{seq}"),
+                    ),
                     Err(e) => ("decode_failed", format!("[{peer_prefix}] <decode_failed: {e}>")),
                 };
                 push_message(&peer_id_str, kind_tag, frame_size, summary);
@@ -1661,26 +1885,16 @@ async fn run_frame_reader(
                             }
                         }
                     }
-                    Ok((parent_ctx, InternalMeshFrame::Write { from, to, seq })) => {
-                        // Write-sim frame landed (mesh-v2 Phase 2). The frames_recv
-                        // counter already incremented above; this span is the
-                        // per-record observability marker. op_kind="produce" per
-                        // the locked §10 vocabulary.
-                        let recv_span = tracing::info_span!(
-                            "rafka.mesh.frame.received",
-                            node_id = %own_node_id,
-                            peer_id = %peer_id_str,
-                            frame_kind = "write",
-                            op_kind = "produce",
-                            write_from = %from,
-                            write_to = %to,
-                            seq = seq,
-                            otel.kind = "consumer",
-                        );
-                        recv_span.set_parent(parent_ctx);
-                        recv_span.in_scope(|| {
-                            info!(peer_id = %peer_id_str, write_from = %from, write_to = %to, seq, "write-sim frame received");
-                        });
+                    Ok((_parent_ctx, InternalMeshFrame::Write { from, to, seq })) => {
+                        // Sprint-13 B5: produce now travels on BI-streams (handled
+                        // by handle_produce_bi). A Write on a UNI stream is legacy /
+                        // unexpected — record at trace, don't emit a produce span
+                        // (that would be a duplicate handle without an ack path).
+                        tracing::trace!(peer_id = %peer_id_str, %from, %to, seq, "unexpected Write on uni stream (produce is bi now)");
+                    }
+                    Ok((_parent_ctx, InternalMeshFrame::Ack { from, seq })) => {
+                        // Acks travel on the produce bi-stream response half, not uni.
+                        tracing::trace!(peer_id = %peer_id_str, %from, seq, "unexpected Ack on uni stream");
                     }
                     Err(e) => {
                         let byte_len = bytes.len();
@@ -1827,7 +2041,7 @@ mod tests {
                 if let Some(incoming) = endpoint.accept().await {
                     let conn = incoming.await.expect("A accept");
                     let peer = conn.remote_id().to_string();
-                    run_bi_echo_reader(conn, own, peer).await;
+                    run_bi_reader(conn, own, "test.node.t1", peer).await;
                 }
             })
         };
@@ -1893,7 +2107,7 @@ mod tests {
                     tokio::spawn(async move {
                         if let Ok(conn) = incoming.await {
                             let peer = conn.remote_id().to_string();
-                            run_bi_echo_reader(conn, own, peer).await;
+                            run_bi_reader(conn, own, "test.node.t1", peer).await;
                         }
                     });
                 }

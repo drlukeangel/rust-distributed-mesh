@@ -3448,6 +3448,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "opentelemetry",
+ "opentelemetry_sdk",
  "postcard",
  "proptest",
  "serde",

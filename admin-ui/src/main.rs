@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership};
+use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership, NODE_NAME_HEX_LEN};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -1120,11 +1120,6 @@ struct AppState {
     /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
     /// before NodeRuntime starts.
     admin_bind_port: u16,
-    /// Per-`(mesh_id, node_type)` monotonic counters for deterministic node
-    /// naming. Key format: `"{mesh_id}.{node_type}"`. Value is the last
-    /// index assigned (1-based). In-process only — resets on restart.
-    /// Used by `spawn_one` to generate `mesh1.broker1`, `mesh1.broker2`, …
-    name_counters: Arc<DashMap<String, u32>>,
 }
 
 #[derive(Deserialize)]
@@ -2720,19 +2715,28 @@ async fn spawn_one(
         return Err(format!("pool cap {POOL_CAP} reached — refusing spawn"));
     }
 
-    // Deterministic naming: <mesh_id>.<node_type><N>  e.g. mesh1.broker1
-    // Per-process counter is sufficient for Phase 1 (no persistence across restarts needed).
-    let counter_key = format!("{}.{}", mesh_id, node_type);
-    let idx = {
-        let mut entry = state.name_counters.entry(counter_key).or_insert(0);
-        *entry += 1;
-        *entry
-    };
-    let node_name = format!("{}.{}{}", mesh_id, node_type, idx);
+    // ---- pre-mint identity FIRST (sprint-13 B1) ----
+    // The node SELF-NAMES from its node_id as <mesh>.<type>.<first 6 hex>. admin-ui
+    // pre-mints the child's identity for seeding, so it already knows node_id and
+    // derives the IDENTICAL name for its own bookkeeping (spawned_meta key, spawn
+    // dir, topology "pending" rows) — it does NOT pass the name to the child; the
+    // child computes the same value itself and broadcasts it via gossip. No ordinal
+    // counter, no abbreviation: full type word + node_id hex.
+    let secret_key = iroh::SecretKey::generate();
+    let node_id_hex = secret_key.public().to_string();
+    let hex_suffix: String = node_id_hex.chars().take(NODE_NAME_HEX_LEN).collect();
+    let node_name = format!("{}.{}.{}", mesh_id, node_type, hex_suffix); // mesh2.broker.ccff65
 
     let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
     if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
         return Err(format!("failed to create spawn dir: {e}"));
+    }
+    let identity_json = serde_json::json!({
+        "secret_key_hex": hex::encode(secret_key.to_bytes())
+    });
+    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
+    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
+        return Err(format!("failed to write child identity: {e}"));
     }
 
     // Default to debug builds (fast iteration). Set RAFKA_CHILD_BUILD_PROFILE=release
@@ -2749,22 +2753,6 @@ async fn spawn_one(
     let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:4316".to_string());
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-
-    let mesh_id = extra_env
-        .get("RAFKA_MESH_ID")
-        .cloned()
-        .unwrap_or_else(|| "default".to_string());
-
-    // ---- pre-mint identity (so admin-ui knows the child's node_id) ----
-    let secret_key = iroh::SecretKey::generate();
-    let node_id_hex = secret_key.public().to_string();
-    let identity_json = serde_json::json!({
-        "secret_key_hex": hex::encode(secret_key.to_bytes())
-    });
-    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
-    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
-        return Err(format!("failed to write child identity: {e}"));
-    }
 
     // ---- assign a unique bind port from the AppState pool ----
     let bind_port = state
@@ -2827,7 +2815,7 @@ async fn spawn_one(
         let same_mesh: Vec<String> = state
             .spawned_meta
             .iter()
-            .filter(|e| e.value().mesh_id == mesh_id)
+            .filter(|e| &e.value().mesh_id == mesh_id)
             .take(2)
             .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
             .collect();
@@ -2849,10 +2837,14 @@ async fn spawn_one(
         .env_remove("RAFKA_DEV_RAM_BUDGET")
         .env_remove("RAFKA_DEV_CPU_USED")
         .env_remove("RAFKA_DEV_RAM_USED");
+    // Sprint-13 B1: the NODE owns its OTel identity + name. admin-ui passes only
+    // RAFKA_MESH_ID (via extra_env) + node_type (the binary) + data dir; the node
+    // derives service.name=<mesh>.<type>, service.namespace, service.instance.id
+    // (full node_id) and node_name (<mesh>.<type>.<6hex>) itself at boot and sets
+    // its own OTEL_* env before init_telemetry. We do NOT set OTEL_SERVICE_NAME /
+    // OTEL_RESOURCE_ATTRIBUTES / RAFKA_NODE_NAME here.
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
-        .env("OTEL_SERVICE_NAME", node_type)
         .env("RAFKA_DATA_DIR", &spawn_dir)
-        .env("RAFKA_NODE_NAME", &node_name)
         .env("RUST_LOG", &rust_log);
 
     for (k, v) in &extra_env {
@@ -4348,7 +4340,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(spawn_port_base)),
         admin_node_id_hex: admin_node_id_hex.clone(),
         admin_bind_port,
-        name_counters: Arc::new(DashMap::new()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-

@@ -42,12 +42,14 @@ function nodeTypeColor(type: string): string {
 }
 
 function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
-  // Filter out admin-ui's own observer node (mesh_id="admin") — not a mesh participant.
-  const observable = t.nodes.filter((n) => (n.mesh_id || "default") !== "admin");
+  // Filter out admin-ui's own observer node (mesh_id="admin") — not a mesh
+  // participant. mesh_id is always present now (sprint-13 B1: nodes fail fast
+  // without RAFKA_MESH_ID — no "default" fallback).
+  const observable = t.nodes.filter((n) => n.mesh_id !== "admin");
 
   const byMesh = new Map<string, typeof observable>();
   for (const n of observable) {
-    const m = n.mesh_id || "default";
+    const m = n.mesh_id;
     if (!byMesh.has(m)) byMesh.set(m, []);
     byMesh.get(m)!.push(n);
   }
