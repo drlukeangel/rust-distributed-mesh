@@ -1319,25 +1319,39 @@ fn recently_tombstoned(
 /// self-apply in `broadcast_tombstone`; the `source` attribute distinguishes
 /// them).
 pub fn apply_tombstone(node_id: &str, source: &str) {
-    live_digests().remove(node_id);
+    // Attempt removal from live_digests. Gate the span + log on whether the
+    // node was actually present: Plumtree fanout delivers the same tombstone
+    // ~17 times per observer (once per spanning-tree relay hop), so emitting
+    // a span on every delivery would flood Jaeger with ~17 duplicate entries
+    // per kill. The FIRST removal succeeds (returns Some); all subsequent
+    // deliveries find the entry already gone (returns None) and are no-ops.
+    // The recently_tombstoned guard is always updated regardless — so in-flight
+    // live digests are blocked even if the node was never in live_digests here
+    // (e.g. the tombstone arrived before the first digest).
+    let was_present = live_digests().remove(node_id).is_some();
     last_seen_ms().lock().unwrap().remove(node_id);
     for mut entry in topic_membership().iter_mut() {
         entry.value_mut().remove(node_id);
     }
-    // Record in the guard set with the current time so resurrection is blocked.
+    // Record in the guard set unconditionally (see above — blocks resurrections
+    // even if the node wasn't present in live_digests on this observer yet).
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     recently_tombstoned().lock().unwrap().insert(node_id.to_string(), now_ms);
 
-    tracing::info_span!(
-        "rafka.mesh.tombstone.applied",
-        node_id = node_id,
-        source = source,
-        "otel.kind" = "internal",
-    )
-    .in_scope(|| info!(node_id, source, "tombstone applied — node evicted from all gossip maps"));
+    // Only emit the proof span on the FIRST eviction (was_present), not on
+    // the 16 subsequent Plumtree relay deliveries. One clean span per observer.
+    if was_present {
+        tracing::info_span!(
+            "rafka.mesh.tombstone.applied",
+            node_id = node_id,
+            source = source,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| info!(node_id, source, "tombstone applied — node evicted from all gossip maps"));
+    }
 }
 
 /// Enqueue a tombstone broadcast for `node_id` on the process's primary mesh
@@ -1484,6 +1498,15 @@ async fn run_staleness_pruner() {
                 })
                 .collect()
         };
+
+        // Sprint-15: expire old recently_tombstoned entries every sweep so
+        // the map doesn't grow unbounded under churn. Entries older than
+        // TOMBSTONE_GUARD_MS are past the resurrection window and can be
+        // removed without risk of allowing a re-insert of the dead node.
+        {
+            let mut guard = recently_tombstoned().lock().unwrap();
+            guard.retain(|_, &mut ts_ms| now_ms.saturating_sub(ts_ms) < TOMBSTONE_GUARD_MS);
+        }
 
         if stale.is_empty() {
             continue;
