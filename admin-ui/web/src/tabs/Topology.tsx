@@ -13,6 +13,7 @@ const TYPE_COLOR: Record<NodeType, string> = {
   broker: "#f0883e",
   compute: "#3fb950",
   registry: "#bc8cff",
+  "admin-ui": "#8b949e",
 };
 
 function meshColor(mesh: string): string {
@@ -42,10 +43,11 @@ function nodeTypeColor(type: string): string {
 }
 
 function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
-  // Filter out admin-ui's own observer node (mesh_id="admin") — not a mesh
-  // participant. mesh_id is always present now (sprint-13 B1: nodes fail fast
-  // without RAFKA_MESH_ID — no "default" fallback).
-  const observable = t.nodes.filter((n) => n.mesh_id !== "admin");
+  // Sprint-14 B6: the admin-ui is a NORMAL node now (mesh_id=mesh1, type=admin-ui)
+  // and renders in its home mesh like everyone. The legacy mesh_id=="admin"
+  // observer is gone, so no special filter. Remote-mesh nodes carry
+  // source:"backbone" (summary detail from the backbone, no per-node CPU/RAM).
+  const observable = t.nodes;
 
   const byMesh = new Map<string, typeof observable>();
   for (const n of observable) {
