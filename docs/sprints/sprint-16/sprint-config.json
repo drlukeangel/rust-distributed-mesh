@@ -1,0 +1,22 @@
+{
+  "sprint": 16,
+  "slug": "forced-relay",
+  "status": "open",
+  "initiative": "mesh-v2",
+  "prd": "docs/plans/mesh-v2/01-forced-relay-round-prd.md",
+  "branch": "fresh worktree off mesh-v2",
+  "objective": "Prove the relay CARRIES the cross-mesh write when there is no direct path — forced purely via iroh address config (relay-only EndpointAddr), NO Docker, NO firewall, NO killing nodes (the POC-3 confound).",
+  "mechanism": "RAFKA_FORCE_RELAY=1 makes a node advertise a RELAY-ONLY location (its relay URL, no direct addr) in its gossiped digest; the gateway dials the cross-mesh target via EndpointAddr::new(id).with_relay_url(url) (no direct addr). RAFKA_RELAY_URL points at a locally-run iroh-relay (E:/iroh/iroh-relay; iroh/docs/local_relays.md). Default off = sprint-14 direct behavior.",
+  "acceptance_tests": [
+    "T1 BUILD: `cargo check --workspace --tests --no-default-features` = 0 errors, 0 new warnings.",
+    "T2 RELAY-ONLY ADDR (curl): with RAFKA_FORCE_RELAY=1, `GET /api/topology-cache` shows the target broker's `location` is the RELAY URL (or empty/relay-marked) — NOT a 127.0.0.1 loopback addr. With FORCE off, it IS a loopback addr.",
+    "T3 DELIVERY VIA RELAY (curl, measured): with FORCE_RELAY=1 + a running iroh-relay, the cross-mesh target broker's `frames_recv_total` (via /api/heartbeats) CLIMBS over a 60s window — the write lands with NO direct path available.",
+    "T4 RELAY NOT IDLE (observable): the iroh-relay shows it carried traffic (relay process log line / metric / a span attribute path=relay) — distinct from sprint-14 where the relay was idle.",
+    "T5 NO-CONFOUND (code): relay is forced ONLY via address/relay config; grep proves no node is killed to force relay, no firewall call, no Docker.",
+    "T6 TOGGLE-OFF (curl): with RAFKA_FORCE_RELAY unset, the same write goes DIRECT (target location is loopback) — no regression to sprint-14."
+  ],
+  "proof_required": "Jaeger trace of a forced-relay cross-mesh write; the curl outputs for T2/T3/T6 saved as .json; relay-active evidence for T4. Screenshots into docs/plans/mesh-v2/verify/screenshots/sprint16-forced-relay/.",
+  "env_vars_to_document_in_CLAUDE_md": ["RAFKA_FORCE_RELAY", "RAFKA_RELAY_URL"],
+  "out_of_scope": ["multi-relay, relay failover, real cross-host NAT, app-layer/partition concepts"],
+  "ports": { "admin_ui": 19098, "node_bind": 14927, "spawn_port_base": 16320, "note": "fresh; leave other instances up; RAFKA_MDNS_ENABLE=false" }
+}

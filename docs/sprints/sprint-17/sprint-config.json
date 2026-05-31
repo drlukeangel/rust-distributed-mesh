@@ -1,0 +1,20 @@
+{
+  "sprint": 17,
+  "slug": "chaos-and-soak",
+  "status": "open",
+  "initiative": "mesh-v2",
+  "prd": "docs/plans/mesh-v2/02-chaos-and-resilience-round-prd.md",
+  "branch": "fresh worktree off mesh-v2",
+  "objective": "Prove the mesh-v2 model survives the EXISTING chaos battery + a 10-minute UI-path soak: cache self-heals, RSS stays flat, admin-ui stays responsive. Compose existing crates/rafka-chaos primitives — NO new primitives.",
+  "acceptance_tests": [
+    "T1 BUILD: `cargo check --workspace --tests --no-default-features` = 0/0.",
+    "T2 BUILD-FRESHNESS GATE (mandatory before judging the soak): every node binary's build mtime > the patched sources' mtime — record the proof. A soak on a stale binary is rejected.",
+    "T3 SOAK (logged, measured): POST /api/bootstrap then /api/chaos/start; sample every ~30s for 10 min: {elapsed, heartbeats, alerts, adminMB, fleetMB, chaos_events}. ASSERT: RSS FLAT (final fleetMB within +-15% of the 1-min steady value, NO monotonic climb); alerts bounded; ZERO node panics. Save the full table.",
+    "T4 CACHE SELF-HEAL (curl, measured): kill_node X -> X is ABSENT from /api/topology-cache within (RAFKA_STALENESS_MS + one 5s sweep); record the measured eviction time. restart_node -> a replacement node appears in the cache (measured).",
+    "T5 NO GHOSTS: after the chaos run, /api/topology has no <unspawned> and no duplicate node_ids.",
+    "T6 PRIMITIVES REUSED (code): only existing rafka-chaos primitives (kill_node/restart_node/burst_kill/wedge_node/partition_pair/flap_link/slow_link/lossy_link) are composed; no new primitive kinds added."
+  ],
+  "proof_required": "The 10-min soak log (RSS table) as a .txt; kill->evict->restart screenshots (Topology+Cache before/after); chaos spans in Jaeger. Into docs/plans/mesh-v2/verify/screenshots/sprint17-chaos/.",
+  "out_of_scope": ["new chaos primitives, real multi-host failure injection, app-layer/durability concepts"],
+  "ports": { "admin_ui": 19099, "node_bind": 14928, "spawn_port_base": 16420, "note": "fresh; RAFKA_MDNS_ENABLE=false" }
+}
