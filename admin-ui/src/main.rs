@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -1971,14 +1971,47 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             }));
         }
     }
+    // Sprint-14 B6: REMOTE meshes (not our home mesh) come from the BACKBONE
+    // directory, NOT from all-mesh gossip. For each backbone summary whose mesh
+    // we don't already have locally, add its directory entries as nodes tagged
+    // `source:"backbone"` (summary detail: name/type/mesh/location, no per-node
+    // CPU/RAM — that never leaves the remote mesh). This is the cross-mesh global
+    // view without subscribing to the remote mesh's firehose.
+    let local_meshes: std::collections::HashSet<String> =
+        digests.iter().map(|e| e.value().mesh_id.clone()).collect();
+    for summary_entry in backbone_summaries().iter() {
+        let summary = summary_entry.value();
+        if local_meshes.contains(&summary.mesh_id) {
+            continue; // we have full per-node detail for our own mesh already
+        }
+        for d in &summary.directory {
+            nodes.push(json!({
+                "id": d.node_name,
+                "node_id": d.node_id,
+                "type": d.node_type,
+                "mesh_id": summary.mesh_id,
+                "peer_count": 0,
+                "peer_ids": Vec::<String>::new(),
+                "frames_sent_total": 0,
+                "frames_recv_total": 0,
+                "wall_time_ms": summary.wall_time_ms,
+                "spawn_time_ms": Value::Null,
+                "cpu_used": 0.0,
+                "cpu_budget": 0.0,
+                "ram_used": 0.0,
+                "ram_budget": 0.0,
+                "status": "live",
+                "source": "backbone",
+            }));
+        }
+    }
+
     // Edges = authoritative gossip-topic membership intersections.
     // For each topic we've subscribed to (from topic_membership()):
     //   - All nodes whose digests landed on that topic are co-members
     //   - Draw an edge between every pair of co-members
     // Edge kind = "within" if the pair share their primary mesh_id; "cross"
-    // if either endpoint is a bridge (a bridge sits in multiple topics by
-    // design, so cross-topic edges incident on it are real cross-mesh
-    // connections).
+    // if either endpoint is a gateway (cross-mesh write path).
     //
     // This replaces the peer_ids approach which conflated iroh-mdns
     // discovery (everyone-sees-everyone) with gossip-topic membership.
@@ -2403,14 +2436,15 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// `GET /api/topology-cache` — the gossiped directory: `name → {mesh, type, location}`.
-/// Built from `live_digests()` which is populated in real time by every gossip
-/// broadcast received by this process. Returns all nodes currently visible in the
-/// mesh (excluding entries where node_name is empty or "<unspawned>").
-/// Powers the Cache tab added in mesh-v2 Phase 1.
+/// `GET /api/topology-cache` — the directory `name → {mesh, type, location}`.
+/// HOME-mesh entries come from `live_digests()` (full local gossip detail);
+/// REMOTE-mesh entries come from the BACKBONE directory (sprint-14 B6 — no
+/// all-mesh subscription). `source` distinguishes them. Powers the Cache tab.
 async fn handle_topology_cache() -> impl IntoResponse {
     let digests = live_digests();
     let mut entries: Vec<Value> = Vec::new();
+    let local_meshes: std::collections::HashSet<String> =
+        digests.iter().map(|e| e.value().mesh_id.clone()).collect();
     for entry in digests.iter() {
         let d = entry.value();
         if d.node_name.is_empty() || d.node_name == "<unspawned>" {
@@ -2422,7 +2456,25 @@ async fn handle_topology_cache() -> impl IntoResponse {
             "type":     d.node_type,
             "location": d.location,
             "node_id":  d.node_id,
+            "source":   "gossip",
         }));
+    }
+    // Remote meshes from the backbone directory (skip meshes we already hold locally).
+    for summary_entry in backbone_summaries().iter() {
+        let summary = summary_entry.value();
+        if local_meshes.contains(&summary.mesh_id) {
+            continue;
+        }
+        for d in &summary.directory {
+            entries.push(json!({
+                "name":     d.node_name,
+                "mesh":     summary.mesh_id,
+                "type":     d.node_type,
+                "location": d.location,
+                "node_id":  d.node_id,
+                "source":   "backbone",
+            }));
+        }
     }
     entries.sort_by(|a, b| {
         a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
@@ -2480,10 +2532,14 @@ async fn handle_boot_trace(
     // flat `broker-abc123` (legacy) → bare node_type service.
     let jaeger_service: String = {
         let segs: Vec<&str> = svc.splitn(3, '.').collect();
-        if segs.len() >= 3 && KNOWN_NODE_TYPES.contains(&segs[1]) {
+        // Sprint-14 B6: the admin-ui is a normal node now — its node_name is
+        // "mesh1.admin-ui.<hex>", so accept "admin-ui" as a valid type segment in
+        // addition to the spawnable KNOWN_NODE_TYPES.
+        if segs.len() >= 3 && (KNOWN_NODE_TYPES.contains(&segs[1]) || segs[1] == "admin-ui") {
             // B1: <mesh>.<type>.<hex> → service.name = <mesh>.<type>
             format!("{}.{}", segs[0], segs[1])
         } else if svc == "admin-ui" {
+            // Legacy flat admin-ui (pre-B6 instances).
             "admin-ui".to_string()
         } else if let Some(dot_part) = svc.splitn(2, '.').nth(1) {
             // Phase-1 2-segment fallback: mesh1.broker1 → broker
@@ -2776,45 +2832,13 @@ async fn spawn_one(
         "{}@127.0.0.1:{}",
         state.admin_node_id_hex, state.admin_bind_port
     );
-    // Gateways observe EVERY other known mesh (PRD §2 — replaces the bridge's
-    // cross-mesh role). We compute the set of OTHER meshes currently present in
-    // spawned_meta and (a) pass them as RAFKA_OBSERVER_MESHES so the gateway's
-    // process-global live_digests() spans both meshes, and (b) seed the gateway
-    // to one node in each other mesh so it can actually reach those gossip
-    // topics (topic isolation means admin-ui being in both topics does NOT
-    // cross-pollinate peers; the gateway needs its own reachable seed there).
-    let cross_mesh_seeds: Vec<String>;
-    let observer_meshes: Option<String>;
-    if node_type == "gateway" {
-        let mut other_meshes: Vec<String> = state
-            .spawned_meta
-            .iter()
-            .map(|e| e.value().mesh_id.clone())
-            .filter(|m| m.as_str() != mesh_id && m != "default" && !m.is_empty())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        other_meshes.sort();
-        cross_mesh_seeds = other_meshes
-            .iter()
-            .filter_map(|om| {
-                state
-                    .spawned_meta
-                    .iter()
-                    .find(|e| &e.value().mesh_id == om)
-                    .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
-            })
-            .collect();
-        observer_meshes = if other_meshes.is_empty() {
-            None
-        } else {
-            Some(other_meshes.join(","))
-        };
-    } else {
-        cross_mesh_seeds = Vec::new();
-        observer_meshes = None;
-    }
-
+    // Sprint-14 B5: gateways NO LONGER observe other meshes' full gossip. Cross-
+    // mesh awareness now rides the backbone (a single summary topic), so a gateway's
+    // topic_membership contains ONLY its own mesh. We drop the old
+    // RAFKA_OBSERVER_MESHES + cross-mesh-seed injection. Cross-fleet iroh
+    // connectivity (needed for the backbone swarm to span meshes) is provided by
+    // cross-seeding the admin-uis at launch (admin-ui↔admin-ui), so each fleet's
+    // gateways reach the backbone transitively via their local admin-ui hub.
     let seeds_csv = {
         let mut all_seeds = vec![admin_seed];
         let same_mesh: Vec<String> = state
@@ -2825,8 +2849,6 @@ async fn spawn_one(
             .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
             .collect();
         all_seeds.extend(same_mesh);
-        // Cross-mesh seeds for gateways so they can reach the other meshes' topics.
-        all_seeds.extend(cross_mesh_seeds.iter().cloned());
         all_seeds.join(",")
     };
 
@@ -2864,11 +2886,8 @@ async fn spawn_one(
     if !seeds_csv.is_empty() {
         cmd.env("RAFKA_SEED_NODES", &seeds_csv);
     }
-    // Gateways observe the other mesh(es) so their live_digests() spans both
-    // meshes (PRD §2). Set only when there IS another mesh to observe.
-    if let Some(om) = &observer_meshes {
-        cmd.env("RAFKA_OBSERVER_MESHES", om);
-    }
+    // Sprint-14 B5: no RAFKA_OBSERVER_MESHES injection. Gateways learn other meshes
+    // from the backbone, not by subscribing to their gossip.
 
     // Pass budgets as CLI flags (NOT env vars). The child binary parses
     // these via rafka_node_base::parse_budget_cli_args(). The child
@@ -4170,29 +4189,17 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // binaries take. We DO NOT init telemetry separately here;
     // tracing_subscriber's global init would panic on the second call.
     //
-    // RAFKA_OBSERVER_MESHES: admin-ui subscribes to every mesh's gossip
-    // topic, not just its own. Without this, iroh-gossip's topic isolation
-    // means admin-ui only sees one mesh's digests at a time. We default to
-    // mesh-a + mesh-b (bootstrap composition); operator can override.
-    if std::env::var("RAFKA_OBSERVER_MESHES").is_err() {
-        // Watch the two bootstrap meshes. No "default" anymore — spawn_one now
-        // rejects nodes without an explicit RAFKA_MESH_ID.
-        // Override via RAFKA_OBSERVER_MESHES before launch for other mesh sets
-        // (e.g. RAFKA_OBSERVER_MESHES=mesh1,mesh2 for mesh-v2 Phase 1 testing).
-        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b");
-    }
-    // QA postfix NF-4 fix: admin-ui was appearing in topology/heartbeats with
-    // id=`<unspawned>` and mesh_id=`default` because NodeRuntime falls back to
-    // those placeholders when env vars are missing. Set them explicitly so
-    // admin-ui has identifiable values that say "this IS the admin-ui process".
-    if std::env::var("RAFKA_NODE_NAME").is_err() {
-        std::env::set_var("RAFKA_NODE_NAME", "admin-ui");
-    }
-    if std::env::var("RAFKA_MESH_ID").is_err() {
-        // admin-ui is not on any single mesh — give it a dedicated identifier
-        // that distinguishes it from the placeholder "default".
-        std::env::set_var("RAFKA_MESH_ID", "admin");
-    }
+    // Sprint-14 B6: the admin-ui is NORMALIZED — a node like any other. It joins
+    // its HOME mesh's gossip for full per-node detail and consumes the BACKBONE
+    // (Role::Observer subscribes to blake3("rafka.backbone")) for the cross-mesh
+    // view. It does NOT all-mesh-subscribe via RAFKA_OBSERVER_MESHES anymore (that
+    // was the O(meshes²) firehose PRD 03 replaces).
+    //
+    // RAFKA_MESH_ID is REQUIRED (a real mesh, e.g. mesh1) — no "admin" magic, no
+    // "default". The node self-names "mesh1.admin-ui.<6hex>" (B6); we no longer set
+    // RAFKA_NODE_NAME. Fail-fast in NodeRuntime enforces the mesh_id requirement.
+    // (Per PRD 03 §6, RAFKA_OBSERVER_MESHES still WORKS if an operator sets it for
+    // explicit deep-observe of a specific mesh — we just don't set it by default.)
     // Pin admin-ui to a deterministic bind port so spawned children can
     // include it in their RAFKA_SEED_NODES and dial back to it. Default 14819
     // (one below the spawn-pool base 14820). Operator can override via the

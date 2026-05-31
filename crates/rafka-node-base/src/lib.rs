@@ -110,25 +110,15 @@ impl NodeRuntime {
         let node_id = secret_key.public().to_string();
 
         // service.name = <mesh>.<type> (the Jaeger graph node); namespace = mesh;
-        // instance.id = the FULL node_id (the iroh public key). The node owns these.
-        //
-        // EXCEPTION (locked B1 table): the Observer console (admin-ui) stays FLAT —
-        // service.name="admin-ui", node_name="admin-ui" — so it renders as a single
-        // node and every existing mesh_id=="admin"/node_name=="admin-ui" filter
-        // keeps working. service.instance.id is left to env-detected default (host).
-        let is_observer = matches!(self.role, Role::Observer);
-        let service_name = if is_observer {
-            self.node_type.clone()
-        } else {
-            format!("{}.{}", mesh_id, self.node_type)
-        };
+        // instance.id = the FULL node_id (the iroh public key). EVERY node owns
+        // these — sprint-14 B6 normalized the admin-ui: it is a node like any other
+        // (RAFKA_MESH_ID=mesh1, service.name="mesh1.admin-ui"), NO flat special case.
+        let service_name = format!("{}.{}", mesh_id, self.node_type);
         std::env::set_var("OTEL_SERVICE_NAME", &service_name);
-        if !is_observer {
-            std::env::set_var(
-                "OTEL_RESOURCE_ATTRIBUTES",
-                format!("service.namespace={mesh_id},service.instance.id={node_id}"),
-            );
-        }
+        std::env::set_var(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            format!("service.namespace={mesh_id},service.instance.id={node_id}"),
+        );
 
         let _guard = rafka_telemetry::init_telemetry(&service_name);
         run_node(self.node_type, self.role, self.cpu_budget, self.ram_budget).await
@@ -138,6 +128,14 @@ impl NodeRuntime {
 /// Sprint-13 B1: number of hex chars of the node_id used in the self-derived
 /// node_name (`<mesh>.<type>.<first N hex>`). Tunable in one place.
 pub const NODE_NAME_HEX_LEN: usize = 6;
+
+/// Milliseconds since the UNIX epoch (0 on the impossible clock-before-1970 case).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Resolve `RAFKA_MESH_ID` or fail fast (sprint-13 B1 — no silent "default").
 fn resolve_required_mesh_id() -> Result<&'static str> {
@@ -255,18 +253,12 @@ async fn run_node(
     let secret_key = load_or_mint_identity(&data_dir).await?;
     let node_id = secret_key.public().to_string();
 
-    // Sprint-13 B1: the node SELF-NAMES from its own node_id. node_name =
-    // <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>, e.g.
+    // Sprint-13 B1 / sprint-14 B6: EVERY node SELF-NAMES from its own node_id.
+    // node_name = <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>, e.g.
     // "mesh2.broker.ccff65". Full type word, no ordinal, no symbol. Broadcast in
-    // the gossip digest; admin-ui learns the final name from gossip (it only
-    // passes RAFKA_MESH_ID + node_type at spawn). RAFKA_NODE_NAME is ignored now.
-    //
-    // EXCEPTION (locked B1 table): the Observer console (admin-ui) keeps the FLAT
-    // node_name == node_type ("admin-ui") so the mesh_id=="admin"/"admin-ui"
-    // filters across the UI keep working unchanged.
-    let node_name: &'static str = if matches!(role, Role::Observer) {
-        node_type_str
-    } else {
+    // the gossip digest. The admin-ui is normalized (B6): it self-names
+    // "mesh1.admin-ui.<6hex>" like everyone — NO flat Observer exception.
+    let node_name: &'static str = {
         let hex_suffix: String = node_id.chars().take(NODE_NAME_HEX_LEN).collect();
         Box::leak(format!("{mesh_id}.{node_type_str}.{hex_suffix}").into_boxed_str())
     };
@@ -516,6 +508,34 @@ async fn run_node(
         None
     };
 
+    // Cross-mesh backbone (sprint-14, PRD 03). Gateways + the admin-ui observer
+    // subscribe to the single backbone topic blake3("rafka.backbone"); ONLY
+    // gateways publish their mesh's MeshSummary (soft lease). Brokers/computes/
+    // registries stay pure intra-mesh participants — no backbone task.
+    let backbone_interval_ms: u64 = std::env::var("RAFKA_BACKBONE_INTERVAL_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2000);
+    let backbone_handle = if matches!(role, Role::Gateway | Role::Observer) {
+        let backbone_bytes: [u8; 32] = *blake3::hash(BACKBONE_TOPIC_NAME.as_bytes()).as_bytes();
+        let backbone_topic = iroh_gossip::proto::TopicId::from_bytes(backbone_bytes);
+        let is_publisher = matches!(role, Role::Gateway);
+        let gossip_bb = gossip.clone();
+        let node_id_bb = node_id.clone();
+        let registry_bb = Arc::clone(&peer_registry);
+        Some(tokio::spawn(run_backbone(
+            gossip_bb,
+            backbone_topic,
+            node_id_bb,
+            mesh_id,
+            is_publisher,
+            backbone_interval_ms,
+            registry_bb,
+        )))
+    } else {
+        None
+    };
+
     let stopping_reason = wait_for_signal().await;
 
     tracing::info_span!(
@@ -536,6 +556,9 @@ async fn run_node(
         h.abort();
     }
     if let Some(h) = write_sim_handle {
+        h.abort();
+    }
+    if let Some(h) = backbone_handle {
         h.abort();
     }
 
@@ -567,29 +590,43 @@ async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_n
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5000);
-    // Target brokers by (mesh, type) — NOT by name. Sprint-13 B1 names carry the
-    // node_id hex (e.g. mesh2.broker.ccff65), which is non-deterministic and
-    // unknowable at compile time. We resolve the FIRST live broker in each target
-    // mesh from gossip. The Jaeger dependency edge is service-level
-    // (mesh1.gateway → mesh2.broker), so which broker instance we hit is immaterial.
-    //   (mesh1, broker) = intra-mesh ; (mesh2, broker) = cross-mesh.
-    const WRITE_TARGETS: &[(&str, &str)] = &[("mesh1", "broker"), ("mesh2", "broker")];
+    // Own mesh (intra) is resolved from live_digests(); the OTHER mesh (cross) is
+    // resolved from the BACKBONE DIRECTORY (sprint-14, PRD 03 §5) — the gateway no
+    // longer joins the other mesh's full gossip, so its live_digests() does not hold
+    // remote nodes. We learn this gateway's own mesh from its own digest.
+    let own_mesh: String = live_digests()
+        .get(&own_node_id)
+        .map(|e| e.value().mesh_id.clone())
+        .unwrap_or_default();
+    // Demo targets: a broker in mesh1 + a broker in mesh2. The mesh that is NOT our
+    // own resolves via the backbone; our own resolves via local gossip.
+    const TARGET_MESHES: &[&str] = &["mesh1", "mesh2"];
+    const TARGET_TYPE: &str = "broker";
 
-    // Resolve the first live (mesh_id, node_type) node from the gossiped cache →
-    // (node_name, node_id, EndpointAddr). None if absent/self/unparseable.
-    let resolve = |mesh: &str, node_type: &str| -> Option<(String, String, EndpointAddr)> {
-        let (name, nid, location) = {
-            let digests = live_digests();
-            digests
+    // Resolve the first live broker in `mesh`. If `mesh` is our own, use
+    // live_digests(); otherwise use the backbone directory.
+    let resolve = |mesh: &str| -> Option<(String, String, EndpointAddr)> {
+        let (name, nid, location) = if mesh == own_mesh {
+            // Intra-mesh: full per-node detail is in our own gossip.
+            live_digests()
                 .iter()
                 .find(|e| {
                     let d = e.value();
-                    d.mesh_id == mesh && d.node_type == node_type && d.node_id != own_node_id
+                    d.mesh_id == mesh && d.node_type == TARGET_TYPE && d.node_id != own_node_id
                 })
                 .map(|e| {
                     let d = e.value();
                     (d.node_name.clone(), d.node_id.clone(), d.location.clone())
                 })?
+        } else {
+            // Cross-mesh: resolve from the backbone directory (control plane).
+            let summary = backbone_summaries().get(mesh)?;
+            let entry = summary
+                .value()
+                .directory
+                .iter()
+                .find(|e| e.node_type == TARGET_TYPE)?;
+            (entry.node_name.clone(), entry.node_id.clone(), entry.location.clone())
         };
         if location.is_empty() {
             return None;
@@ -606,8 +643,8 @@ async fn run_write_sim(endpoint: iroh::Endpoint, own_node_id: String, own_node_n
     loop {
         tick.tick().await;
         seq += 1;
-        for (mesh, node_type) in WRITE_TARGETS {
-            let Some((target_name, dest_id, dest_addr)) = resolve(mesh, node_type) else { continue };
+        for mesh in TARGET_MESHES {
+            let Some((target_name, dest_id, dest_addr)) = resolve(mesh) else { continue };
             produce_once(
                 &endpoint,
                 &own_node_id,
@@ -721,6 +758,208 @@ async fn produce_once(
         }
         Err(e) => {
             sent_span.in_scope(|| info!(target = %target_name, error = %e, "produce ack decode failed"));
+        }
+    }
+}
+
+/// Cross-mesh backbone task (sprint-14, PRD 03). ONE task per gateway + admin-ui.
+/// Subscribes to the single backbone topic `blake3("rafka.backbone")` and, each
+/// interval:
+///   - drains received `MeshSummary` records into `backbone_summaries()` (keyed by
+///     mesh_id, last-writer-wins) + emits `rafka.mesh.backbone.received`. This is
+///     SEPARATE from `topic_membership`: receiving mesh2's summary does NOT make us
+///     a member of mesh2's gossip (PRD 03 §9 verify).
+///   - if `is_publisher` (gateway only): runs the SOFT LEASE (§4) and, when it
+///     holds or wins the lease, aggregates its own mesh from `live_digests()`,
+///     assembles the directory, publishes a `MeshSummary`, and emits
+///     `rafka.mesh.backbone.published`. Self-injects its own claim (iroh-gossip
+///     does not echo the sender's own broadcast).
+///
+/// NOT an election: leadership is the lease on the wire. `min(node_id)` over live
+/// gateways breaks a tie ONLY for a vacant/expired seat; a live claim is never
+/// preempted by a lower-id joiner.
+async fn run_backbone(
+    gossip: iroh_gossip::net::Gossip,
+    backbone_topic: iroh_gossip::proto::TopicId,
+    node_id: String,
+    mesh_id: &'static str,
+    is_publisher: bool,
+    interval_ms: u64,
+    registry: PeerRegistry,
+) {
+    use futures_lite::StreamExt;
+    use iroh_gossip::api::Event;
+
+    // Lease TTL = LEASE_MULTIPLIER × interval, so one missed renew does NOT trigger
+    // failover but a dead publisher does within ~TTL.
+    const LEASE_MULTIPLIER: u64 = 3;
+    let ttl_ms = interval_ms.saturating_mul(LEASE_MULTIPLIER).max(3_000);
+
+    let topic = match gossip.subscribe(backbone_topic, Vec::new()).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::info_span!("rafka.mesh.backbone.subscribe_failed", node_id = %node_id, error = %e)
+                .in_scope(|| info!(error = %e, "backbone subscribe failed; backbone disabled for this node"));
+            return;
+        }
+    };
+    let (sender, mut receiver) = topic.split();
+
+    tracing::info_span!(
+        "rafka.mesh.backbone.subscribed",
+        node_id = %node_id,
+        mesh_id = mesh_id,
+        is_publisher = is_publisher,
+    )
+    .in_scope(|| info!(mesh_id, is_publisher, "backbone topic subscribed"));
+
+    // Track which peers we've fed to the gossip swarm (same join-peers discipline
+    // as run_gossip — join only NEW peers, not every tick).
+    let mut joined_peers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(interval_ms));
+    // Warm-up: let live_digests() + the backbone swarm populate before first publish.
+    tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
+
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                // Feed any peers reachable on our iroh endpoint into the backbone
+                // swarm so it forms across meshes (the underlay is shared; the
+                // topic is what's mesh-spanning here). Same join-only-NEW-peers
+                // discipline as run_gossip.
+                let mut new_peers: Vec<iroh::EndpointId> = Vec::new();
+                for entry in registry.iter() {
+                    let key = entry.key();
+                    if !joined_peers.contains(key) {
+                        if let Ok(id) = iroh::EndpointId::from_str(key) {
+                            new_peers.push(id);
+                            joined_peers.insert(key.clone());
+                        }
+                    }
+                }
+                joined_peers.retain(|p| registry.contains_key(p));
+                if !new_peers.is_empty() {
+                    let _ = sender.join_peers(new_peers).await;
+                }
+
+                if !is_publisher {
+                    continue;
+                }
+
+                let now_ms = now_unix_ms();
+
+                // ---- SOFT LEASE (PRD 03 §4) ----
+                let claim = backbone_summaries().get(mesh_id).map(|e| {
+                    (e.value().published_by.clone(), e.value().expires_at_ms)
+                });
+                let should_publish = match claim {
+                    // Live claim held by SOMEONE ELSE → stay quiet (no preemption).
+                    Some((holder, exp)) if now_ms < exp && holder != node_id => false,
+                    // Live claim held by US → renew.
+                    Some((holder, exp)) if now_ms < exp && holder == node_id => true,
+                    // Vacant/expired seat → contend: lowest live gateway id wins.
+                    _ => {
+                        let mut live_gw_ids: Vec<String> = live_digests()
+                            .iter()
+                            .filter(|e| {
+                                let d = e.value();
+                                d.mesh_id == mesh_id && d.node_type == "gateway"
+                            })
+                            .map(|e| e.value().node_id.clone())
+                            .collect();
+                        live_gw_ids.push(node_id.clone()); // include self
+                        live_gw_ids.sort();
+                        live_gw_ids.first().map(|m| m == &node_id).unwrap_or(true)
+                    }
+                };
+
+                if !should_publish {
+                    continue;
+                }
+
+                // ---- AGGREGATE our own mesh from live_digests() (local sum) ----
+                let mut agg = MeshAggregate::default();
+                let mut directory: Vec<MeshDirectoryEntry> = Vec::new();
+                for e in live_digests().iter() {
+                    let d = e.value();
+                    if d.mesh_id != mesh_id { continue; }
+                    agg.node_count += 1;
+                    agg.cpu_used += d.cpu_used;
+                    agg.cpu_budget += d.cpu_budget;
+                    agg.ram_used += d.ram_used;
+                    agg.ram_budget += d.ram_budget;
+                    if !d.location.is_empty() {
+                        directory.push(MeshDirectoryEntry {
+                            node_name: d.node_name.clone(),
+                            node_type: d.node_type.clone(),
+                            node_id: d.node_id.clone(),
+                            location: d.location.clone(),
+                        });
+                    }
+                }
+                directory.sort_by(|a, b| a.node_name.cmp(&b.node_name));
+
+                let summary = MeshSummary {
+                    mesh_id: mesh_id.to_string(),
+                    directory,
+                    aggregate: agg.clone(),
+                    published_by: node_id.clone(),
+                    wall_time_ms: now_ms,
+                    expires_at_ms: now_ms + ttl_ms,
+                };
+
+                // Self-inject (iroh-gossip does not echo our own broadcast) so our
+                // own lease claim is visible to our next-tick lease check.
+                backbone_summaries().insert(mesh_id.to_string(), summary.clone());
+
+                match postcard::to_allocvec(&summary) {
+                    Ok(bytes) => {
+                        if let Err(e) = sender.broadcast(bytes.into()).await {
+                            tracing::info_span!("rafka.mesh.backbone.broadcast_failed", node_id = %node_id, error = %e)
+                                .in_scope(|| info!(error = %e, "backbone broadcast failed"));
+                        } else {
+                            // PRD 03 §7 span: aggregate metrics ride as attributes
+                            // (spans-only stack; no separate metrics SDK).
+                            tracing::info_span!(
+                                "rafka.mesh.backbone.published",
+                                node_id = %node_id,
+                                mesh_id = mesh_id,
+                                publisher = %node_id,
+                                node_count = agg.node_count as i64,
+                                cpu_used = agg.cpu_used as f64,
+                                cpu_budget = agg.cpu_budget as f64,
+                                ram_used = agg.ram_used as f64,
+                                ram_budget = agg.ram_budget as f64,
+                            )
+                            .in_scope(|| info!(mesh_id, node_count = agg.node_count, "backbone summary published"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::info_span!("rafka.mesh.backbone.encode_failed", node_id = %node_id, error = %e)
+                            .in_scope(|| info!(error = %e, "backbone summary encode failed"));
+                    }
+                }
+            }
+            event = receiver.next() => {
+                let Some(event) = event else { break };
+                let event = match event { Ok(e) => e, Err(_) => continue };
+                if let Event::Received(msg) = event {
+                    if let Ok(summary) = postcard::from_bytes::<MeshSummary>(&msg.content) {
+                        let summary_mesh = summary.mesh_id.clone();
+                        let publisher = summary.published_by.clone();
+                        let node_count = summary.aggregate.node_count;
+                        backbone_summaries().insert(summary_mesh.clone(), summary);
+                        tracing::info_span!(
+                            "rafka.mesh.backbone.received",
+                            node_id = %node_id,
+                            mesh_id = %summary_mesh,
+                            publisher = %publisher,
+                            node_count = node_count as i64,
+                        )
+                        .in_scope(|| info!(mesh_id = %summary_mesh, publisher = %publisher, "backbone summary received"));
+                    }
+                }
+            }
         }
     }
 }
@@ -1014,6 +1253,72 @@ pub fn topic_membership(
 ) -> &'static Arc<DashMap<String, std::collections::HashSet<String>>> {
     TOPIC_MEMBERSHIP.get_or_init(|| Arc::new(DashMap::new()))
 }
+
+// ===========================================================================
+// Cross-mesh backbone (sprint-14, PRD 03)
+// ===========================================================================
+
+/// One directory entry in a `MeshSummary`: how to reach a node in that mesh.
+///
+/// PRD 03 §2 lists `{node_name, node_type, location}`. We ALSO carry `node_id`:
+/// iroh is identity-based — `endpoint.connect` needs the target's PublicKey, and
+/// `node_name` only embeds 6 hex of the id (not reconstructable). Without it a
+/// cross-mesh write resolved from the backbone could not actually connect. Still
+/// low-churn summary data (changes only on spawn/kill), consistent with §2's intent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MeshDirectoryEntry {
+    pub node_name: String,
+    pub node_type: String,
+    pub node_id: String,
+    pub location: String,
+}
+
+/// Mesh-level rollup carried on the backbone (PRD 03 §2). The heavy per-node
+/// churn (every broker's CPU each tick) never leaves its mesh — only this sum does.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct MeshAggregate {
+    pub node_count: u64,
+    pub cpu_used: f32,
+    pub cpu_budget: f32,
+    pub ram_used: f32,
+    pub ram_budget: f32,
+    pub frames_per_sec: f32,
+}
+
+/// One record per mesh, published to the backbone topic each interval by that
+/// mesh's elected (soft-lease) gateway. Consumers key by `mesh_id` (last-writer-
+/// wins). `published_by` + `expires_at_ms` carry the soft lease (PRD 03 §4).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MeshSummary {
+    pub mesh_id: String,
+    pub directory: Vec<MeshDirectoryEntry>,
+    pub aggregate: MeshAggregate,
+    /// node_id of the publishing gateway (the soft-lease holder).
+    pub published_by: String,
+    pub wall_time_ms: u64,
+    /// Soft-lease expiry: a claim is LIVE while `now < expires_at_ms`. A live
+    /// claim is NOT preempted by a lower-id gateway; leadership changes only when
+    /// the claim expires (dead-man's switch).
+    pub expires_at_ms: u64,
+}
+
+/// Process-global map of the latest `MeshSummary` per mesh_id, received over the
+/// backbone topic (and self-injected by the publisher, since iroh-gossip does not
+/// echo a node's own broadcast). This is the CONTROL-PLANE view: every gateway +
+/// admin-ui reads it to resolve cross-mesh writes (directory) and render the
+/// global view (aggregate). It is SEPARATE from `topic_membership` — a backbone
+/// summary received from mesh2 does NOT make this node a member of mesh2's gossip.
+static BACKBONE_SUMMARIES: std::sync::OnceLock<Arc<DashMap<String, MeshSummary>>> =
+    std::sync::OnceLock::new();
+
+pub fn backbone_summaries() -> &'static Arc<DashMap<String, MeshSummary>> {
+    BACKBONE_SUMMARIES.get_or_init(|| Arc::new(DashMap::new()))
+}
+
+/// The fixed backbone topic name. `blake3("rafka.backbone")` is the gossip topic
+/// id — one additional iroh-gossip topic shared by ALL meshes (PRD 03 §1). Not a
+/// DHT, not a new mesh primitive: the same gossip plane, a new topic.
+pub const BACKBONE_TOPIC_NAME: &str = "rafka.backbone";
 
 /// Default staleness window for the process-global mesh-state pruner. A
 /// `GossipDigest` whose `wall_time_ms` is older than this is treated as

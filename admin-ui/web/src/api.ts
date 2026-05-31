@@ -1,4 +1,4 @@
-export type NodeType = "gateway" | "broker" | "compute" | "registry";
+export type NodeType = "gateway" | "broker" | "compute" | "registry" | "admin-ui";
 
 export interface TopologyNode {
   id: string;
@@ -24,6 +24,9 @@ export interface TopologyNode {
   ram_used?: number;
   ram_budget?: number;
   status?: "live" | "pending";
+  /// sprint-14: "gossip" (home-mesh full detail) or "backbone" (remote-mesh
+  /// summary directory entry — no per-node CPU/RAM).
+  source?: "gossip" | "backbone";
   /// legacy — Jaeger-era, kept for back-compat
   frames_per_min?: number;
 }
