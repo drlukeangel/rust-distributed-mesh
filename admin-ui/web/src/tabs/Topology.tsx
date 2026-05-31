@@ -13,12 +13,11 @@ const TYPE_COLOR: Record<NodeType, string> = {
   broker: "#f0883e",
   compute: "#3fb950",
   registry: "#bc8cff",
-  bridge: "#e3b341",
 };
 
 function meshColor(mesh: string): string {
-  if (mesh === "mesh-a") return "#bc8cff";
-  if (mesh === "mesh-b") return "#f0883e";
+  if (mesh === "mesh1" || mesh === "mesh-a") return "#bc8cff";
+  if (mesh === "mesh2" || mesh === "mesh-b") return "#f0883e";
   if (mesh === "default") return "#8b949e";
   // hash-derived for arbitrary meshes
   let h = 0;
@@ -38,19 +37,19 @@ function utilColor(used: number | undefined, budget: number | undefined): string
   return "#f85149";
 }
 
-function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
-  // The admin-ui process registers itself with mesh_id="admin" (see
-  // admin-ui/src/main.rs ~3842). It's an observer, not a mesh participant —
-  // showing it as its own swim lane both clutters the view and breaks bridge
-  // centering (with 3 sorted meshes [admin, mesh-a, mesh-b], the row center
-  // lands exactly on mesh-a, so bridges render on top of the wrong group).
-  const observable = t.nodes.filter((n) => (n.mesh_id || "default") !== "admin");
-  const bridges = observable.filter((n) => n.type === "bridge");
-  const members = observable.filter((n) => n.type !== "bridge");
+function nodeTypeColor(type: string): string {
+  return TYPE_COLOR[type as NodeType] ?? "#8b949e";
+}
 
-  const byMesh = new Map<string, typeof members>();
-  for (const n of members) {
-    const m = n.mesh_id || "default";
+function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
+  // Filter out admin-ui's own observer node (mesh_id="admin") — not a mesh
+  // participant. mesh_id is always present now (sprint-13 B1: nodes fail fast
+  // without RAFKA_MESH_ID — no "default" fallback).
+  const observable = t.nodes.filter((n) => n.mesh_id !== "admin");
+
+  const byMesh = new Map<string, typeof observable>();
+  for (const n of observable) {
+    const m = n.mesh_id;
     if (!byMesh.has(m)) byMesh.set(m, []);
     byMesh.get(m)!.push(n);
   }
@@ -108,6 +107,7 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
     const NODE_H = 86;
     list.forEach((n, idx) => {
       const ang = (2 * Math.PI * idx) / Math.max(1, list.length) - Math.PI / 2;
+      const color = nodeTypeColor(n.type);
       nodes.push({
         id: n.id,
         parentNode: `group-${m}`,
@@ -155,8 +155,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
           ),
         },
         style: {
-          background: `${TYPE_COLOR[n.type]}33`,
-          border: `2px solid ${TYPE_COLOR[n.type]}`,
+          background: `${color}33`,
+          border: `2px solid ${color}`,
           color: "#fff",
           width: NODE_W,
           height: NODE_H,
@@ -169,83 +169,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
     });
   });
 
-  // Bridge nodes — placed ABOVE the mesh groups, centered horizontally
-  // across the row of meshes. Bridges visibly sit "on top of" everything
-  // they bridge, not jammed in the gap between meshes.
-  const BRIDGE_W = 110;
-  const BRIDGE_H = 86;
-  bridges.forEach((b, i) => {
-    const centerOfAllMeshes =
-      meshes.length > 0
-        ? 80 + (meshes.length - 1) * meshGap * 0.5 + meshWidth / 2
-        : 400;
-    // spread multiple bridges horizontally around the center
-    const spread = 130;
-    const x =
-      centerOfAllMeshes - BRIDGE_W / 2 + (i - (bridges.length - 1) / 2) * spread;
-    // y above the mesh group tops with some padding
-    const y = Math.max(20, meshTop - 120);
-
-    nodes.push({
-      id: b.id,
-      position: { x, y },
-      data: {
-        label: (
-          <div style={{ textAlign: "center", lineHeight: 1.15 }}>
-            <div
-              style={{
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 10,
-                color: "#c9d1d9",
-              }}
-            >
-              {b.id.length > 14 ? b.id.slice(0, 12) + "…" : b.id}
-            </div>
-            <div style={{ fontSize: 9, color: "#e3b341", marginTop: 2 }}>
-              bridge
-            </div>
-            {(b.frames_sent_total ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: "#3fb950" }}>
-                TX:{b.frames_sent_total}
-              </div>
-            )}
-            {(b.frames_recv_total ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: "#58a6ff" }}>
-                RX:{b.frames_recv_total}
-              </div>
-            )}
-            {(b.cpu_budget ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: utilColor(b.cpu_used, b.cpu_budget) }}>
-                CPU:{(b.cpu_used ?? 0).toFixed(1)}/{(b.cpu_budget ?? 0).toFixed(1)}
-              </div>
-            )}
-            {(b.ram_budget ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: utilColor(b.ram_used, b.ram_budget) }}>
-                MEM:{(b.ram_used ?? 0).toFixed(2)}/{(b.ram_budget ?? 0).toFixed(2)}gb
-              </div>
-            )}
-          </div>
-        ),
-      },
-      style: {
-        background: `${TYPE_COLOR.bridge}33`,
-        border: `2px solid ${TYPE_COLOR.bridge}`,
-        color: "#fff",
-        width: BRIDGE_W,
-        height: BRIDGE_H,
-        borderRadius: 8,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      },
-    });
-  });
-
-  // Edges: server emits within-mesh full clique + bridge→anchor cross edges.
-  // Render within = dim gray (architectural, not animated). Cross = gold
-  // dashed + animated (visually distinguishes the bridge link).
-  // Drop edges that reference the filtered-out observer node (admin-ui),
-  // otherwise React Flow renders them with missing endpoints.
+  // Edges: within-mesh (dim gray) and cross-mesh (gold dashed, animated).
+  // Drop edges that reference the filtered-out observer node (admin-ui).
   const visibleNodeIds = new Set(observable.map((n) => n.id));
   const edges: Edge[] = t.edges
     .filter((e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to))

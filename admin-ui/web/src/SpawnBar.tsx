@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type NodeType } from "./api";
 
-const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry", "bridge"];
+const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry"];
 
 export function SpawnBar() {
-  const [mesh, setMesh] = useState("mesh-a");
+  const [mesh, setMesh] = useState("mesh1");
   const [chaosRunning, setChaosRunning] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
@@ -26,7 +26,7 @@ export function SpawnBar() {
 
   const onMeshChange = (v: string) => {
     if (v === "__new__") {
-      const name = prompt("new mesh id (e.g. mesh-c)");
+      const name = prompt("new mesh id (e.g. mesh2)");
       if (name && name.trim()) setMesh(name.trim());
     } else {
       setMesh(v);
@@ -89,9 +89,9 @@ export function SpawnBar() {
     <div className="spawn-bar">
       <label className="muted">mesh:</label>
       <select value={mesh} onChange={(e) => onMeshChange(e.target.value)}>
-        <option value="mesh-a">mesh-a (primary)</option>
-        <option value="mesh-b">mesh-b (secondary)</option>
-        {mesh !== "mesh-a" && mesh !== "mesh-b" && (
+        <option value="mesh1">mesh1 (primary)</option>
+        <option value="mesh2">mesh2 (secondary)</option>
+        {mesh !== "mesh1" && mesh !== "mesh2" && (
           <option value={mesh}>{mesh}</option>
         )}
         <option value="__new__">+ new mesh…</option>
@@ -139,7 +139,7 @@ export function SpawnBar() {
         className="primary"
         disabled={busy === "bootstrap"}
         onClick={doBootstrap}
-        title="Spawn full two-mesh topology (4×each type per mesh + 2 bridges)"
+        title="Spawn full two-mesh topology (4×each type per mesh)"
       >
         bootstrap 2-mesh
       </button>
