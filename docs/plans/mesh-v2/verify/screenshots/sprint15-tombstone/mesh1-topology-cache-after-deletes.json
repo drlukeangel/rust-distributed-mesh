@@ -1,0 +1,124 @@
+{
+  "entries": [
+    {
+      "location": "127.0.0.1:14925",
+      "mesh": "mesh1",
+      "name": "mesh1.admin-ui.5aac87",
+      "node_id": "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+      "source": "gossip",
+      "type": "admin-ui"
+    },
+    {
+      "location": "127.0.0.1:16220",
+      "mesh": "mesh1",
+      "name": "mesh1.broker.ce7180",
+      "node_id": "ce71805cbd849c7aa6567061f12633ad78946ab18acfcaf596347955e4d8f287",
+      "source": "gossip",
+      "type": "broker"
+    },
+    {
+      "location": "127.0.0.1:16222",
+      "mesh": "mesh1",
+      "name": "mesh1.compute.1369f8",
+      "node_id": "1369f86540db58c8b1313ac73fc72f594286dd5125cf2834dfe1aaabf977d05c",
+      "source": "gossip",
+      "type": "compute"
+    },
+    {
+      "location": "127.0.0.1:16223",
+      "mesh": "mesh1",
+      "name": "mesh1.compute.675208",
+      "node_id": "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6",
+      "source": "gossip",
+      "type": "compute"
+    },
+    {
+      "location": "127.0.0.1:16232",
+      "mesh": "mesh1",
+      "name": "mesh1.gateway.10bb84",
+      "node_id": "10bb8448eeede5f977e057cb9011e9aec3e5bd4c66f10c0f4b520d2a5612d0cf",
+      "source": "gossip",
+      "type": "gateway"
+    },
+    {
+      "location": "127.0.0.1:16233",
+      "mesh": "mesh1",
+      "name": "mesh1.gateway.e67650",
+      "node_id": "e676506f38b3dfe660dd9b9adb83a1645ae9c54c12518ef9a511af6d14bd6fd0",
+      "source": "gossip",
+      "type": "gateway"
+    },
+    {
+      "location": "127.0.0.1:16225",
+      "mesh": "mesh1",
+      "name": "mesh1.registry.87bc26",
+      "node_id": "87bc267d3fac3d98ab370a07fd7e65b52ed9fb9c46104a97181ff29b95e743ab",
+      "source": "gossip",
+      "type": "registry"
+    },
+    {
+      "location": "127.0.0.1:16224",
+      "mesh": "mesh1",
+      "name": "mesh1.registry.cf829d",
+      "node_id": "cf829d63cf06f0232aa024510b8dac43e9f42b0f7f9ace8dd50f074280130120",
+      "source": "gossip",
+      "type": "registry"
+    },
+    {
+      "location": "127.0.0.1:16227",
+      "mesh": "mesh2",
+      "name": "mesh2.broker.0f643b",
+      "node_id": "0f643b874abd0ca30de7831ae76a9e17f63c356b4667dba57539109c494c5a74",
+      "source": "backbone",
+      "type": "broker"
+    },
+    {
+      "location": "127.0.0.1:16229",
+      "mesh": "mesh2",
+      "name": "mesh2.compute.8576c9",
+      "node_id": "8576c972d05431b1fb1c178772f988792755067b82125c2134f9508395e5d600",
+      "source": "backbone",
+      "type": "compute"
+    },
+    {
+      "location": "127.0.0.1:16228",
+      "mesh": "mesh2",
+      "name": "mesh2.compute.9c5de1",
+      "node_id": "9c5de14e6f8652e5e42fbd3d5394ce9814584d3d5551475509f50d786a53d8ec",
+      "source": "backbone",
+      "type": "compute"
+    },
+    {
+      "location": "127.0.0.1:16235",
+      "mesh": "mesh2",
+      "name": "mesh2.gateway.363930",
+      "node_id": "363930835598fcc9fff5c9c5a118250d104010e81cb2253795afcdb318f6b3cc",
+      "source": "backbone",
+      "type": "gateway"
+    },
+    {
+      "location": "127.0.0.1:16234",
+      "mesh": "mesh2",
+      "name": "mesh2.gateway.c59b24",
+      "node_id": "c59b24210067a67ef3af409d5caaa7f9d0150050ee66b3f09b257e3a10a1002d",
+      "source": "backbone",
+      "type": "gateway"
+    },
+    {
+      "location": "127.0.0.1:16230",
+      "mesh": "mesh2",
+      "name": "mesh2.registry.5d1f4e",
+      "node_id": "5d1f4e2a1a9d70e4f11576fc0313bb94d4c50f50bd434e6a7f461d41565b4392",
+      "source": "backbone",
+      "type": "registry"
+    },
+    {
+      "location": "127.0.0.1:16231",
+      "mesh": "mesh2",
+      "name": "mesh2.registry.cdc874",
+      "node_id": "cdc874e7bacc96ee007745a2c4fdf51f55d54bc7d41ef6ba812dfe8baca98792",
+      "source": "backbone",
+      "type": "registry"
+    }
+  ]
+}

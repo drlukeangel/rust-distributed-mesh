@@ -1,0 +1,586 @@
+{
+  "edges": [
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.compute.1369f8",
+      "kind": "within",
+      "to": "mesh1.gateway.10bb84"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.gateway.e67650"
+    },
+    {
+      "from": "mesh1.gateway.e67650",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.compute.1369f8",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.gateway.e67650"
+    },
+    {
+      "from": "mesh1.compute.1369f8",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.gateway.e67650",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.compute.1369f8"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.gateway.10bb84"
+    },
+    {
+      "from": "mesh1.compute.1369f8",
+      "kind": "within",
+      "to": "mesh1.gateway.e67650"
+    },
+    {
+      "from": "mesh1.compute.675208",
+      "kind": "within",
+      "to": "mesh1.gateway.10bb84"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.compute.675208"
+    },
+    {
+      "from": "mesh1.compute.675208",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.compute.675208",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.gateway.10bb84",
+      "kind": "within",
+      "to": "mesh1.gateway.e67650"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.gateway.10bb84"
+    },
+    {
+      "from": "mesh1.compute.1369f8",
+      "kind": "within",
+      "to": "mesh1.compute.675208"
+    },
+    {
+      "from": "mesh1.gateway.10bb84",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.compute.1369f8"
+    },
+    {
+      "from": "mesh1.gateway.10bb84",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.broker.ce7180",
+      "kind": "within",
+      "to": "mesh1.registry.87bc26"
+    },
+    {
+      "from": "mesh1.registry.87bc26",
+      "kind": "within",
+      "to": "mesh1.registry.cf829d"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.compute.675208"
+    },
+    {
+      "from": "mesh1.compute.675208",
+      "kind": "within",
+      "to": "mesh1.gateway.e67650"
+    },
+    {
+      "from": "mesh1.admin-ui.5aac87",
+      "kind": "within",
+      "to": "mesh1.broker.ce7180"
+    }
+  ],
+  "nodes": [
+    {
+      "cpu_budget": 1.0,
+      "cpu_used": 0.027355503290891647,
+      "frames_recv_total": 7,
+      "frames_sent_total": 0,
+      "id": "mesh1.compute.675208",
+      "mesh_id": "mesh1",
+      "node_id": "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6",
+      "peer_count": 6,
+      "peer_ids": [
+        "e676506f38b3dfe660dd9b9adb83a1645ae9c54c12518ef9a511af6d14bd6fd0",
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+        "1369f86540db58c8b1313ac73fc72f594286dd5125cf2834dfe1aaabf977d05c",
+        "87bc267d3fac3d98ab370a07fd7e65b52ed9fb9c46104a97181ff29b95e743ab",
+        "10bb8448eeede5f977e057cb9011e9aec3e5bd4c66f10c0f4b520d2a5612d0cf",
+        "cf829d63cf06f0232aa024510b8dac43e9f42b0f7f9ace8dd50f074280130120"
+      ],
+      "ram_budget": 0.5,
+      "ram_used": 0.0286865234375,
+      "spawn_time_ms": 1780267862715,
+      "status": "live",
+      "type": "compute",
+      "wall_time_ms": 1780268108840
+    },
+    {
+      "cpu_budget": 2.0,
+      "cpu_used": 0.02811291627585888,
+      "frames_recv_total": 16,
+      "frames_sent_total": 0,
+      "id": "mesh1.admin-ui.5aac87",
+      "mesh_id": "mesh1",
+      "node_id": "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+      "peer_count": 14,
+      "peer_ids": [
+        "ce71805cbd849c7aa6567061f12633ad78946ab18acfcaf596347955e4d8f287",
+        "87bc267d3fac3d98ab370a07fd7e65b52ed9fb9c46104a97181ff29b95e743ab",
+        "363930835598fcc9fff5c9c5a118250d104010e81cb2253795afcdb318f6b3cc",
+        "9c5de14e6f8652e5e42fbd3d5394ce9814584d3d5551475509f50d786a53d8ec",
+        "cf829d63cf06f0232aa024510b8dac43e9f42b0f7f9ace8dd50f074280130120",
+        "10bb8448eeede5f977e057cb9011e9aec3e5bd4c66f10c0f4b520d2a5612d0cf",
+        "1369f86540db58c8b1313ac73fc72f594286dd5125cf2834dfe1aaabf977d05c",
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6",
+        "c59b24210067a67ef3af409d5caaa7f9d0150050ee66b3f09b257e3a10a1002d",
+        "cdc874e7bacc96ee007745a2c4fdf51f55d54bc7d41ef6ba812dfe8baca98792",
+        "e676506f38b3dfe660dd9b9adb83a1645ae9c54c12518ef9a511af6d14bd6fd0",
+        "5d1f4e2a1a9d70e4f11576fc0313bb94d4c50f50bd434e6a7f461d41565b4392",
+        "0f643b874abd0ca30de7831ae76a9e17f63c356b4667dba57539109c494c5a74",
+        "8576c972d05431b1fb1c178772f988792755067b82125c2134f9508395e5d600"
+      ],
+      "ram_budget": 1.0,
+      "ram_used": 0.04184722900390625,
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "admin-ui",
+      "wall_time_ms": 1780268135953
+    },
+    {
+      "cpu_budget": 2.0,
+      "cpu_used": 0.01795717515051365,
+      "frames_recv_total": 3,
+      "frames_sent_total": 0,
+      "id": "mesh1.registry.cf829d",
+      "mesh_id": "mesh1",
+      "node_id": "cf829d63cf06f0232aa024510b8dac43e9f42b0f7f9ace8dd50f074280130120",
+      "peer_count": 2,
+      "peer_ids": [
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6",
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb"
+      ],
+      "ram_budget": 1.0,
+      "ram_used": 0.034786224365234375,
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "registry",
+      "wall_time_ms": 1780268107791
+    },
+    {
+      "cpu_budget": 2.0,
+      "cpu_used": 0.03200749307870865,
+      "frames_recv_total": 109,
+      "frames_sent_total": 106,
+      "id": "mesh1.gateway.10bb84",
+      "mesh_id": "mesh1",
+      "node_id": "10bb8448eeede5f977e057cb9011e9aec3e5bd4c66f10c0f4b520d2a5612d0cf",
+      "peer_count": 2,
+      "peer_ids": [
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6"
+      ],
+      "ram_budget": 1.0,
+      "ram_used": 0.036346435546875,
+      "spawn_time_ms": 1780267864994,
+      "status": "live",
+      "type": "gateway",
+      "wall_time_ms": 1780268135146
+    },
+    {
+      "cpu_budget": 1.0,
+      "cpu_used": 0.009384348057210445,
+      "frames_recv_total": 4,
+      "frames_sent_total": 0,
+      "id": "mesh1.compute.1369f8",
+      "mesh_id": "mesh1",
+      "node_id": "1369f86540db58c8b1313ac73fc72f594286dd5125cf2834dfe1aaabf977d05c",
+      "peer_count": 3,
+      "peer_ids": [
+        "ce71805cbd849c7aa6567061f12633ad78946ab18acfcaf596347955e4d8f287",
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6",
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb"
+      ],
+      "ram_budget": 0.5,
+      "ram_used": 0.03534698486328125,
+      "spawn_time_ms": 1780267862645,
+      "status": "live",
+      "type": "compute",
+      "wall_time_ms": 1780268108795
+    },
+    {
+      "cpu_budget": 2.0,
+      "cpu_used": 0.016407852992415428,
+      "frames_recv_total": 3,
+      "frames_sent_total": 0,
+      "id": "mesh1.registry.87bc26",
+      "mesh_id": "mesh1",
+      "node_id": "87bc267d3fac3d98ab370a07fd7e65b52ed9fb9c46104a97181ff29b95e743ab",
+      "peer_count": 2,
+      "peer_ids": [
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6"
+      ],
+      "ram_budget": 1.0,
+      "ram_used": 0.027820587158203125,
+      "spawn_time_ms": 1780267863715,
+      "status": "live",
+      "type": "registry",
+      "wall_time_ms": 1780268107823
+    },
+    {
+      "cpu_budget": 2.0,
+      "cpu_used": 0.023419661447405815,
+      "frames_recv_total": 109,
+      "frames_sent_total": 106,
+      "id": "mesh1.gateway.e67650",
+      "mesh_id": "mesh1",
+      "node_id": "e676506f38b3dfe660dd9b9adb83a1645ae9c54c12518ef9a511af6d14bd6fd0",
+      "peer_count": 2,
+      "peer_ids": [
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+        "675208b3b1341122de7141295b0f7e760732e56edda72ff30c42e52bcfddb6d6"
+      ],
+      "ram_budget": 1.0,
+      "ram_used": 0.0293426513671875,
+      "spawn_time_ms": 1780267865056,
+      "status": "live",
+      "type": "gateway",
+      "wall_time_ms": 1780268135178
+    },
+    {
+      "cpu_budget": 4.0,
+      "cpu_used": 0.018776772543787956,
+      "frames_recv_total": 198,
+      "frames_sent_total": 195,
+      "id": "mesh1.broker.ce7180",
+      "mesh_id": "mesh1",
+      "node_id": "ce71805cbd849c7aa6567061f12633ad78946ab18acfcaf596347955e4d8f287",
+      "peer_count": 2,
+      "peer_ids": [
+        "5aac8720260a05f07d6ed9fd20f1e74e8c341a885f45d2c88f1fb1c52f75b6eb",
+        "1369f86540db58c8b1313ac73fc72f594286dd5125cf2834dfe1aaabf977d05c"
+      ],
+      "ram_budget": 2.0,
+      "ram_used": 0.0354461669921875,
+      "spawn_time_ms": 1780267861668,
+      "status": "live",
+      "type": "broker",
+      "wall_time_ms": 1780268135816
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.compute.9c5de1",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267863883,
+      "status": "pending",
+      "type": "compute",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.broker.0f643b",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267863827,
+      "status": "pending",
+      "type": "broker",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.compute.8576c9",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267863949,
+      "status": "pending",
+      "type": "compute",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh1.registry.7c29d3",
+      "mesh_id": "mesh1",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267863648,
+      "status": "pending",
+      "type": "registry",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.registry.5d1f4e",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267864009,
+      "status": "pending",
+      "type": "registry",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.registry.cdc874",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267864070,
+      "status": "pending",
+      "type": "registry",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.gateway.363930",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267865225,
+      "status": "pending",
+      "type": "gateway",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.gateway.c59b24",
+      "mesh_id": "mesh2",
+      "node_id": "",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "spawn_time_ms": 1780267865154,
+      "status": "pending",
+      "type": "gateway",
+      "wall_time_ms": 0
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.broker.0f643b",
+      "mesh_id": "mesh2",
+      "node_id": "0f643b874abd0ca30de7831ae76a9e17f63c356b4667dba57539109c494c5a74",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "broker",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.compute.8576c9",
+      "mesh_id": "mesh2",
+      "node_id": "8576c972d05431b1fb1c178772f988792755067b82125c2134f9508395e5d600",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "compute",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.compute.9c5de1",
+      "mesh_id": "mesh2",
+      "node_id": "9c5de14e6f8652e5e42fbd3d5394ce9814584d3d5551475509f50d786a53d8ec",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "compute",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.gateway.363930",
+      "mesh_id": "mesh2",
+      "node_id": "363930835598fcc9fff5c9c5a118250d104010e81cb2253795afcdb318f6b3cc",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "gateway",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.gateway.c59b24",
+      "mesh_id": "mesh2",
+      "node_id": "c59b24210067a67ef3af409d5caaa7f9d0150050ee66b3f09b257e3a10a1002d",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "gateway",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.registry.5d1f4e",
+      "mesh_id": "mesh2",
+      "node_id": "5d1f4e2a1a9d70e4f11576fc0313bb94d4c50f50bd434e6a7f461d41565b4392",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "registry",
+      "wall_time_ms": 1780268135318
+    },
+    {
+      "cpu_budget": 0.0,
+      "cpu_used": 0.0,
+      "frames_recv_total": 0,
+      "frames_sent_total": 0,
+      "id": "mesh2.registry.cdc874",
+      "mesh_id": "mesh2",
+      "node_id": "cdc874e7bacc96ee007745a2c4fdf51f55d54bc7d41ef6ba812dfe8baca98792",
+      "peer_count": 0,
+      "peer_ids": [],
+      "ram_budget": 0.0,
+      "ram_used": 0.0,
+      "source": "backbone",
+      "spawn_time_ms": null,
+      "status": "live",
+      "type": "registry",
+      "wall_time_ms": 1780268135318
+    }
+  ],
+  "source": "gossip"
+}
