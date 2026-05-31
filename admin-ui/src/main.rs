@@ -1739,20 +1739,38 @@ async fn handle_heartbeat(
 /// Shared spawn helper used by handle_spawn, handle_bootstrap, and the chaos
 /// loop. Returns the spawned node_name + pid on success, or an error string.
 /// Validate a node_name received from a URL path segment OR an operator-supplied
-/// body field. Must match the exact format `spawn_one` produces:
-/// `<type>-<8 lowercase hex>`. Rejects path traversal (`..`, `/`, `\`),
-/// uppercase, unicode, empty, oversize.
+/// body field. Must match the sprint-13+ format `spawn_one` produces:
+/// `<mesh>.<type>.<6 lowercase hex>` (e.g. `mesh1.broker.ccff65`).
+/// Rejects path traversal (`..`, `/`, `\`), uppercase, unicode, empty, oversize.
 fn is_valid_node_name(n: &str) -> bool {
-    let mut parts = n.splitn(2, '-');
-    let type_part = match parts.next() { Some(p) if !p.is_empty() => p, _ => return false };
-    let suffix = match parts.next() { Some(p) => p, _ => return false };
-    if !KNOWN_NODE_TYPES.contains(&type_part) {
+    // Reject clearly unsafe chars early — defense-in-depth before segment parsing.
+    if n.contains('/') || n.contains('\\') || n.contains("..") {
         return false;
     }
-    if suffix.len() != 8 {
+    let parts: Vec<&str> = n.splitn(3, '.').collect();
+    if parts.len() != 3 {
         return false;
     }
-    suffix.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    let (mesh_seg, type_seg, hex_seg) = (parts[0], parts[1], parts[2]);
+    // mesh segment: same rules as is_safe_mesh_id (lowercase alnum + dash).
+    if mesh_seg.is_empty() || mesh_seg.len() > 64 {
+        return false;
+    }
+    let is_mesh_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
+    let is_mesh_first = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let mut mesh_chars = mesh_seg.chars();
+    let first = match mesh_chars.next() { Some(c) => c, None => return false };
+    if !is_mesh_first(first) { return false; }
+    if !mesh_chars.all(is_mesh_char) { return false; }
+    // type segment: must be a known node type.
+    if !KNOWN_NODE_TYPES.contains(&type_seg) {
+        return false;
+    }
+    // hex segment: exactly NODE_NAME_HEX_LEN (6) lowercase hex chars.
+    if hex_seg.len() != rafka_node_base::NODE_NAME_HEX_LEN {
+        return false;
+    }
+    hex_seg.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 /// Allow-list of `extra_env` keys an operator may inject into spawned children.
@@ -2166,6 +2184,18 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
     }
 
     let meta = state.spawned_meta.remove(node_name).map(|(_, m)| m);
+
+    // Sprint-15 tombstone: TerminateProcess is ungraceful, so the dead node
+    // cannot announce itself. We broadcast the tombstone on its behalf via
+    // the gossip topic — every subscriber's receive path calls apply_tombstone
+    // and immediately evicts the node_id from the three process-global maps.
+    // This is NOT a hand-edit: the same apply_tombstone runs uniformly on all
+    // observers (home-mesh + backbone-fed remote-mesh) via the gossip receive path.
+    if let Some(ref m) = meta {
+        if !m.node_id_hex.is_empty() {
+            rafka_node_base::broadcast_tombstone(&m.node_id_hex);
+        }
+    }
 
     state.events.push(LocalEvent {
         ts_us: now_us(),
@@ -2596,7 +2626,7 @@ async fn handle_kill(
     if !is_valid_node_name(&node_name) {
         return (
             StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": format!("invalid node_name '{node_name}' — must match ^(gateway|broker|compute|registry)-[0-9a-f]{{8}}$")})),
+            axum::Json(json!({"error": format!("invalid node_name '{node_name}' — must match ^<mesh>.<type>.<6hex>$ e.g. mesh1.broker.ccff65")})),
         )
             .into_response();
     }

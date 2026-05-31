@@ -1,0 +1,43 @@
+{
+  "sprint": 15,
+  "slug": "tombstone-fast-eviction",
+  "status": "open",
+  "opens": "2026-05-31",
+  "closes": null,
+  "in_scope": [
+    "gossip tombstone: leaving=true flavor of GossipDigest for fast eviction",
+    "apply_tombstone() shared function: evicts from live_digests, topic_membership, last_seen_ms",
+    "broadcast_tombstone() in node-base: enqueues to tombstone outbox + self-applies",
+    "run_gossip: tombstone outbox drain + leaving-digest receive handling",
+    "resurrection guard: recently_tombstoned set prevents in-flight digest re-insertion",
+    "kill_one (admin-ui): broadcast tombstone after TerminateProcess",
+    "is_valid_node_name: accept sprint-13 <mesh>.<type>.<6hex> format"
+  ],
+  "out_of_scope": [
+    "dedicated tombstone message type (leaving flag on GossipDigest is sufficient)",
+    "cross-mesh tombstone relay (backbone naturally propagates via MeshSummary refresh)",
+    "graceful self-broadcast on SIGTERM (local node.stopping path; not needed for the proof)"
+  ],
+  "design_constraints": [
+    "tombstone MUST use the existing gossip subscribe/broadcast — no new transport",
+    "eviction MUST happen in run_gossip receive path so all observers evict uniformly",
+    "kill path MUST NOT hand-edit remote process maps (rejected design)",
+    "cross-mesh eviction routes via backbone: killer evicts locally, gateway drops X from next MeshSummary"
+  ],
+  "supersedes": "the rejected sprint-15 attempt that hand-edited live_digests() in kill_one as the delete mechanism",
+  "spans_to_emit": [
+    {
+      "name": "rafka.mesh.tombstone.applied",
+      "attributes": ["node_id", "source"],
+      "description": "Emitted by apply_tombstone() on every observer that processes a tombstone — proves eviction went through the gossip receive path. source=local on the killer console (self-injection), source=gossip_receive on all other observers."
+    }
+  ],
+  "ports": {
+    "admin_ui_mesh1": 19096,
+    "admin_ui_mesh2": 19097,
+    "node_bind_mesh1": 14925,
+    "node_bind_mesh2": 14926,
+    "spawn_port_base": 16220
+  },
+  "proof_artifacts": "docs/plans/mesh-v2/verify/screenshots/sprint15-tombstone/"
+}

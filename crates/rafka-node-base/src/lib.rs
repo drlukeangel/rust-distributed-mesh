@@ -330,6 +330,15 @@ async fn run_node(
     // layers of accept loops. run_gossip reads it when assembling each digest.
     let _ = mesh_counters();
 
+    // Sprint-15: tombstone outbox. run_gossip's primary-topic task owns the
+    // receiver. broadcast_tombstone() pushes node_ids here; run_gossip drains
+    // them and broadcasts leaving-digests on the mesh topic. Unbounded so a
+    // burst of kills before run_gossip starts doesn't block the caller.
+    let (tombstone_tx, tombstone_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Install the sender into the process-global slot so broadcast_tombstone()
+    // (called from admin-ui's kill_one) can reach it.
+    let _ = TOMBSTONE_TX.set(tombstone_tx);
+
     // Background pruner: drops stale entries from the process-global
     // `live_digests` and `topic_membership` maps. Without it both grow
     // monotonically with the count of unique node_ids ever observed. See
@@ -384,6 +393,7 @@ async fn run_node(
             cpu_budget,
             ram_budget,
             location_str.clone(),
+            Some(tombstone_rx), // only the primary-topic task drains the outbox
         ))
     };
 
@@ -442,6 +452,7 @@ async fn run_node(
                 cpu_budget,
                 ram_budget,
                 location_str.clone(),
+                None, // extra-topic tasks don't drain the tombstone outbox
             ));
         }
     }
@@ -1190,6 +1201,16 @@ pub struct GossipDigest {
     /// only nodes on the same gossip topic = same build = same struct layout).
     #[serde(default)]
     pub location: String,
+    /// Sprint-15 tombstone flag. When `true`, this is a LEAVING marker:
+    /// receivers IMMEDIATELY evict this node_id from live_digests /
+    /// topic_membership / last_seen_ms rather than waiting 30s for the
+    /// staleness pruner. Emitted by `broadcast_tombstone` (called by the
+    /// admin-ui's `kill_one` path after TerminateProcess). The flag is at
+    /// the END of the struct so postcard-encoding is back-compatible: old
+    /// peers that don't decode this field treat it as missing (default=false)
+    /// and simply file the nearly-empty digest normally (no harm).
+    #[serde(default)]
+    pub leaving: bool,
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -1252,6 +1273,97 @@ static TOPIC_MEMBERSHIP: std::sync::OnceLock<
 pub fn topic_membership(
 ) -> &'static Arc<DashMap<String, std::collections::HashSet<String>>> {
     TOPIC_MEMBERSHIP.get_or_init(|| Arc::new(DashMap::new()))
+}
+
+// ===========================================================================
+// Sprint-15: Tombstone — fast eviction via gossip (NOT a local hand-edit)
+// ===========================================================================
+
+/// Process-global tombstone outbox. `kill_one` (admin-ui) pushes a `node_id`
+/// here; `run_gossip`'s select! loop drains it and broadcasts a `GossipDigest
+/// { leaving: true, node_id: X, … }` on the mesh topic. iroh-gossip
+/// distributes it to every subscriber. The receive path calls `apply_tombstone`
+/// which immediately evicts X from the three process-global maps.
+///
+/// One channel per process. `run_gossip` holds the `Receiver`; everyone else
+/// calls `broadcast_tombstone()` to push.
+static TOMBSTONE_TX: std::sync::OnceLock<
+    tokio::sync::mpsc::UnboundedSender<String>,
+> = std::sync::OnceLock::new();
+
+/// Set of recently tombstoned node_ids: `node_id → unix_ms when tombstone was applied`.
+/// Guards against resurrection: a live digest that was in-flight when the node was
+/// killed can arrive AFTER the tombstone and re-insert the dead node → 30s zombie.
+/// Any live-digest insert checks this set; if the node_id is in it within
+/// TOMBSTONE_GUARD_MS, the digest is dropped silently.
+static RECENTLY_TOMBSTONED: std::sync::OnceLock<
+    Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>,
+> = std::sync::OnceLock::new();
+
+/// A tombstone guard is honoured for this many milliseconds after eviction.
+/// Long enough to outlast in-flight Plumtree relays (typically < 2 s on a
+/// loopback cluster), short enough not to block a legitimate respawn that
+/// re-mints a new identity (different node_id anyway).
+const TOMBSTONE_GUARD_MS: u64 = 10_000;
+
+fn recently_tombstoned(
+) -> &'static Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> {
+    RECENTLY_TOMBSTONED.get_or_init(|| Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())))
+}
+
+/// Immediately remove `node_id` from all three process-global mesh-state maps
+/// (`live_digests`, `topic_membership`, `last_seen_ms`) and record it in the
+/// recently-tombstoned guard set. Emits a `rafka.mesh.tombstone.applied` span
+/// so the proof screenshot can show eviction went through the gossip receive
+/// path (the same function is called from both the receive path AND the local
+/// self-apply in `broadcast_tombstone`; the `source` attribute distinguishes
+/// them).
+pub fn apply_tombstone(node_id: &str, source: &str) {
+    live_digests().remove(node_id);
+    last_seen_ms().lock().unwrap().remove(node_id);
+    for mut entry in topic_membership().iter_mut() {
+        entry.value_mut().remove(node_id);
+    }
+    // Record in the guard set with the current time so resurrection is blocked.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    recently_tombstoned().lock().unwrap().insert(node_id.to_string(), now_ms);
+
+    tracing::info_span!(
+        "rafka.mesh.tombstone.applied",
+        node_id = node_id,
+        source = source,
+        "otel.kind" = "internal",
+    )
+    .in_scope(|| info!(node_id, source, "tombstone applied — node evicted from all gossip maps"));
+}
+
+/// Enqueue a tombstone broadcast for `node_id` on the process's primary mesh
+/// gossip topic. `run_gossip` drains this outbox and calls `sender.broadcast`
+/// so we reuse the existing gossip subscription — NO new transport.
+///
+/// Also applies the tombstone locally (self-injection equivalent: iroh-gossip
+/// does not echo the sender's own broadcast, so without a local apply the
+/// issuing admin-ui console would keep showing the dead node for 30s).
+///
+/// # Routing note (cross-mesh)
+/// Each admin-ui broadcasts the tombstone only on its OWN mesh topic — covering
+/// its own children. Remote-mesh consumers see the eviction via the backbone:
+/// after eviction the publishing gateway drops X from its next `MeshSummary`
+/// (≤ backbone interval, 2s), so the remote admin-ui's topology-cache entry
+/// for X disappears without this process touching the remote process's maps.
+pub fn broadcast_tombstone(node_id: &str) {
+    // Apply locally first (self-injection) so the killer console evicts immediately.
+    apply_tombstone(node_id, "local");
+    // Enqueue for gossip broadcast by run_gossip.
+    if let Some(tx) = TOMBSTONE_TX.get() {
+        let _ = tx.send(node_id.to_string());
+    }
+    // If the channel isn't up yet (node booted but NodeRuntime not started)
+    // the tombstone is still applied locally; the fallback is the 30s staleness
+    // pruner for any remote observers (acceptable: kill-before-boot is rare).
 }
 
 // ===========================================================================
@@ -1476,6 +1588,10 @@ async fn run_gossip(
     // Reachable bind address string broadcast in GossipDigest.location
     // so peers can look up this node's address from the topology cache.
     location: String,
+    // Sprint-15: tombstone outbox. Only the PRIMARY-topic task holds
+    // a receiver (extra-topic tasks pass None). When a node_id arrives
+    // here, run_gossip broadcasts a leaving=true digest on this topic.
+    mut tombstone_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) {
     let counters = mesh_counters();
     let load_sampler = LoadSampler::new(cpu_budget, ram_budget, None, None);
@@ -1549,6 +1665,7 @@ async fn run_gossip(
                     ram_used: load.ram_used,
                     ram_budget: load.ram_budget,
                     location: location.clone(),
+                    leaving: false, // normal live digest
                 };
                 
                 let mut should_broadcast = false;
@@ -1622,6 +1739,66 @@ async fn run_gossip(
                     .in_scope(|| info!(size_bytes = size, "gossip digest broadcast"));
                 }
             }
+            // Sprint-15: tombstone outbox drain. Kills land here via
+            // broadcast_tombstone() → TOMBSTONE_TX → this receiver.
+            // We broadcast a leaving=true digest so every subscriber's
+            // receive path calls apply_tombstone and evicts the dead node.
+            // Only the primary-topic task has a receiver (extra-topic
+            // tasks pass None); the Option<Receiver> is polled with a
+            // future that never resolves when None.
+            Some(dead_node_id) = async {
+                match tombstone_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let tombstone_digest = GossipDigest {
+                    node_id: dead_node_id.clone(),
+                    node_name: String::new(),
+                    mesh_id: mesh_id.to_string(),
+                    node_type: String::new(),
+                    peer_count: 0,
+                    peer_ids: Vec::new(),
+                    frames_sent_total: 0,
+                    frames_recv_total: 0,
+                    wall_time_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0),
+                    cpu_used: 0.0,
+                    cpu_budget: 0.0,
+                    ram_used: 0.0,
+                    ram_budget: 0.0,
+                    location: String::new(),
+                    leaving: true,
+                };
+                match postcard::to_allocvec(&tombstone_digest) {
+                    Ok(payload) => {
+                        let size = payload.len();
+                        if let Err(e) = sender.broadcast(payload.into()).await {
+                            tracing::info_span!(
+                                "rafka.mesh.tombstone.broadcast_failed",
+                                node_id = %node_id,
+                                dead_node_id = %dead_node_id,
+                                error = %e,
+                            )
+                            .in_scope(|| info!(dead_node_id = %dead_node_id, error = %e, "tombstone broadcast failed"));
+                        } else {
+                            tracing::info_span!(
+                                "rafka.mesh.tombstone.broadcast",
+                                node_id = %node_id,
+                                dead_node_id = %dead_node_id,
+                                mesh_id = mesh_id,
+                                size_bytes = size as i64,
+                            )
+                            .in_scope(|| info!(dead_node_id = %dead_node_id, "tombstone digest broadcast"));
+                        }
+                    }
+                    Err(e) => {
+                        info!(dead_node_id = %dead_node_id, error = %e, "tombstone digest encode failed");
+                    }
+                }
+            }
             event = receiver.next() => {
                 let Some(event) = event else { break };
                 let event = match event {
@@ -1640,10 +1817,41 @@ async fn run_gossip(
                     let size = msg.content.len();
                     let from = msg.delivered_from.to_string();
                     let digest: Option<GossipDigest> = postcard::from_bytes(&msg.content).ok();
-                    // Insert into the process-global digest map so the operator
-                    // UI (or anyone in-process) can read live mesh state with
-                    // zero Jaeger dependency. The mesh IS the topology.
                     if let Some(d) = &digest {
+                        // Sprint-15: tombstone path — FAST eviction.
+                        // A digest with leaving=true means the node is dead.
+                        // Immediately evict from all three process-global maps.
+                        // This is the gossip-native, uniform mechanism: every
+                        // subscriber's receive path runs this code, so all
+                        // observers (home-mesh admin-ui, gateways, backbone
+                        // publisher) evict simultaneously — NOT via a local
+                        // hand-edit.
+                        if d.leaving {
+                            apply_tombstone(&d.node_id, "gossip_receive");
+                            // No further processing for a leaving digest.
+                            continue;
+                        }
+
+                        // Resurrection guard: if a live digest arrives for a
+                        // recently-tombstoned node_id, drop it silently.
+                        // In-flight Plumtree relay hops can deliver a normal
+                        // digest that was in transit just before the kill — we
+                        // must not let it re-insert the dead node.
+                        {
+                            let guard = recently_tombstoned().lock().unwrap();
+                            if let Some(&ts_ms) = guard.get(&d.node_id) {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                if now_ms.saturating_sub(ts_ms) < TOMBSTONE_GUARD_MS {
+                                    // Still within the guard window — drop silently.
+                                    continue;
+                                }
+                            }
+                        }
+
+                        // Normal live digest — insert into the process-global maps.
                         live_digests().insert(d.node_id.clone(), d.clone());
                         // Record local receive-time for clock-skew-safe staleness pruning.
                         {
@@ -1665,7 +1873,13 @@ async fn run_gossip(
                     }
                     let summary = digest
                         .as_ref()
-                        .map(|d| format!("node={}/peers={}", d.node_name, d.peer_count))
+                        .map(|d| {
+                            if d.leaving {
+                                format!("TOMBSTONE node={}", d.node_id)
+                            } else {
+                                format!("node={}/peers={}", d.node_name, d.peer_count)
+                            }
+                        })
                         .unwrap_or_else(|| "<decode_failed>".to_string());
                     // TRACE not INFO: this span fires per-frame. At 18 nodes
                     // with Plumtree eager-push, each digest arrives ~17 times
@@ -2516,6 +2730,7 @@ mod gossip_digest_schema_tests {
             ram_used: 0.31,
             ram_budget: 2.0,
             location: "127.0.0.1:14820".into(),
+            leaving: false,
         };
         let bytes = postcard::to_allocvec(&original).expect("encode");
         let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
@@ -2556,6 +2771,7 @@ mod staleness_pruner_tests {
             ram_used: 0.0,
             ram_budget: 0.0,
             location: String::new(),
+            leaving: false,
         }
     }
 
