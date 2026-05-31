@@ -3396,16 +3396,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-bridge"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dhat",
- "rafka-node-base",
- "tokio",
-]
-
-[[package]]
 name = "rafka-broker"
 version = "0.1.0"
 dependencies = [

@@ -1,4 +1,4 @@
-export type NodeType = "gateway" | "broker" | "compute" | "registry" | "bridge";
+export type NodeType = "gateway" | "broker" | "compute" | "registry";
 
 export interface TopologyNode {
   id: string;

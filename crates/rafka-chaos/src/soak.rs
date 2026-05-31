@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 #[derive(Serialize)]
 pub struct SoakEvent {
@@ -184,7 +184,7 @@ pub async fn run_soak(
 /// This is the only invariant the soak enforces — user-spawned extras are left
 /// alone. Previous round-robin refill was buggy: when chaos killed one node,
 /// refill always picked NODE_TYPES[0] (gateway), so over a 4-hour soak the pool
-/// became gateway-heavy with compute/registry/bridge missing entirely. Fix:
+/// became gateway-heavy with compute/registry missing entirely. Fix:
 /// look at WHICH types are currently absent, spawn exactly those.
 async fn maintain_pool(ctx: &ChaosContext) {
     let url = format!("{}/api/nodes/spawned", ctx.topology_ui_url);

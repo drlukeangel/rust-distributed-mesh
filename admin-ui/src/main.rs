@@ -31,7 +31,7 @@ use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
-const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 // dhat heap profiling — OFF by default, only built with --features dhat-heap.
 // The profiler is held in a static so a timer can drop it (which writes
@@ -1666,14 +1666,14 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // every 3s; the Jaeger-backed version was 5+ serial queries adding 10s of
     // latency on every poll and starving the rest of the UI.
     let spawned_count = state.processes.iter().count() as i64;
-    // EXCLUDE the "bridge" + "default" sentinels — those aren't real meshes,
-    // they're "bridge has no mesh" / "node spawned without RAFKA_MESH_ID".
+    // EXCLUDE the "default" sentinel — not a real mesh, it's
+    // "node spawned without RAFKA_MESH_ID".
     let meshes: std::collections::HashSet<String> = state
         .spawned_meta
         .iter()
         .filter(|e| {
             let m = &e.value().mesh_id;
-            m != "bridge" && m != "default"
+            m != "default"
         })
         .map(|e| e.value().mesh_id.clone())
         .collect();
@@ -1681,16 +1681,14 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     meshes_vec.sort();
 
     // Mean peer count: pull from spawned_meta if heartbeats are slow.
-    // Counts non-bridge nodes' actual peer counts.
     let mean_peers = {
         let snap: Vec<i64> = state
             .spawned_meta
             .iter()
-            .filter(|e| e.value().node_type != "bridge")
             .map(|_| 0i64) // placeholder; real values come from heartbeat enrichment
             .collect();
-        // Approximate: peer_count for each non-bridge node is roughly
-        // (total non-bridge nodes - 1) since iroh+mdns auto-discovers
+        // Approximate: peer_count for each node is roughly
+        // (total nodes - 1) since iroh+mdns auto-discovers
         // within mesh. Honest if not measured.
         let n = snap.len() as f64;
         if n > 1.0 { n - 1.0 } else { 0.0 }
@@ -2021,27 +2019,22 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         for i in 0..members.len() {
             for j in (i + 1)..members.len() {
                 let (a, b) = canon(&members[i], &members[j]);
-                // QA postfix R2 fix: enforce bridge-architecture invariant in
-                // the edge generator itself. Possible classifications:
-                //   1. Either endpoint is a bridge → "cross" (legitimate
-                //      cross-mesh through bridge)
-                //   2. Both share primary mesh_id → "within"
-                //   3. Both non-bridge, DIFFERENT mesh_id → SUPPRESS
-                //      (non-bridge cross-mesh peers cannot directly
-                //      connect in the bridge architecture; if both appear
-                //      in the same topic_membership entry, one of them is
-                //      almost certainly an observer (admin-ui) whose
-                //      primary mesh_id differs from real mesh peers)
-                //   4. Meta missing for either side → SUPPRESS (don't
-                //      classify with incomplete info; was producing
-                //      spurious "cross" via the old catch-all)
+                // Edge classification (R2 guard — do NOT regress to a
+                // catch-all "cross"):
+                //   1. Both share primary mesh_id → "within"
+                //   2. DIFFERENT mesh_id → SUPPRESS. Without bridge nodes
+                //      there is no direct cross-mesh path to draw; a
+                //      different-mesh pair sharing a topic_membership entry
+                //      is almost always the observer (admin-ui) whose
+                //      primary mesh_id differs from real mesh peers.
+                //      Drawing it produces O(n²) spurious cross-mesh edges.
+                //      Real cross-mesh edges return in a later phase via the
+                //      gateway's multi-mesh observe.
+                //   3. Meta missing for either side → SUPPRESS.
                 let kind: Option<&'static str> = match (
                     name_to_meta.get(&a),
                     name_to_meta.get(&b),
                 ) {
-                    (Some((_, at)), Some((_, bt))) if at == "bridge" || bt == "bridge" => {
-                        Some("cross")
-                    }
                     (Some((am, _)), Some((bm, _))) if am == bm => Some("within"),
                     _ => None,
                 };
@@ -2651,7 +2644,6 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_LINK_LOSS_PCT",
     "RAFKA_CLOCK_SKEW_MS",
     "RAFKA_NODE_BIND_ADDR",
-    "RAFKA_BRIDGE_TARGET_MESHES",
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
 ];
@@ -2779,8 +2771,8 @@ async fn spawn_one(
     // Admin-ui is ALWAYS prepended as the first seed so every child can
     // dial back to admin-ui at boot. Admin-ui's NodeRuntime accept loop
     // receives the connection; iroh-gossip HyParView then propagates peer
-    // info on every topic admin-ui is subscribed to (mesh-a, mesh-b, bridge),
-    // giving admin-ui visibility into every child's gossip digests.
+    // info on every topic admin-ui is subscribed to, giving admin-ui
+    // visibility into every child's gossip digests.
     // Additional same-mesh seeds follow so peers can also reach each other.
     let admin_seed = format!(
         "{}@127.0.0.1:{}",
@@ -2788,33 +2780,14 @@ async fn spawn_one(
     );
     let seeds_csv = {
         let mut all_seeds = vec![admin_seed];
-        if node_type == "bridge" {
-            for target_mesh in ["mesh-a", "mesh-b"] {
-                if let Some(seed) = state
-                    .spawned_meta
-                    .iter()
-                    .find(|e| e.value().mesh_id == target_mesh)
-                    .map(|e| {
-                        format!(
-                            "{}@127.0.0.1:{}",
-                            e.value().node_id_hex,
-                            e.value().bind_port
-                        )
-                    })
-                {
-                    all_seeds.push(seed);
-                }
-            }
-        } else {
-            let same_mesh: Vec<String> = state
-                .spawned_meta
-                .iter()
-                .filter(|e| e.value().mesh_id == mesh_id)
-                .take(2)
-                .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
-                .collect();
-            all_seeds.extend(same_mesh);
-        }
+        let same_mesh: Vec<String> = state
+            .spawned_meta
+            .iter()
+            .filter(|e| e.value().mesh_id == mesh_id)
+            .take(2)
+            .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+            .collect();
+        all_seeds.extend(same_mesh);
         all_seeds.join(",")
     };
 
@@ -2962,24 +2935,23 @@ async fn handle_spawn(
     }
 }
 
-/// POST /api/bootstrap — spawn the full two-mesh demo topology: 2 of each node
-/// type into mesh-a, the same into mesh-b, plus 2 bridges that don't carry a
-/// specific mesh tag (they bridge ALL meshes). Idempotent in spirit but each
+/// POST /api/bootstrap — spawn the two-mesh demo topology: 2 of each node
+/// type into mesh-a, the same into mesh-b. Idempotent in spirit but each
 /// call adds another full set — the chaos loop / kill buttons remove drift.
 async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     // Red-team A#3: take the bootstrap mutex FIRST so concurrent callers
     // queue. Then check the pool cap — second caller will see the actual
     // post-first-bootstrap count. Without the mutex, 5 parallel callers all
-    // saw current=0, passed the check, and all spawned 18 → 90 total → tokio
+    // saw current=0, passed the check, and all spawned 16 → 80 total → tokio
     // deadlock.
     let _guard = state.bootstrap_mutex.lock().await;
     let current = state.spawned_meta.iter().count();
     const POOL_CAP: usize = 50;
-    if current + 18 > POOL_CAP {
+    if current + 16 > POOL_CAP {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({
-                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=18"),
+                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=16"),
                 "current": current,
                 "cap": POOL_CAP,
             })),
@@ -3007,24 +2979,6 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
             // Tiny stagger so PIDs don't collide on Windows FS namespace lookups.
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }
-
-    // 2 bridges — bridges live on the "bridge" mesh (their primary topic)
-    // AND subscribe to mesh-a + mesh-b via RAFKA_BRIDGE_TARGET_MESHES so
-    // they actually receive cross-mesh gossip. Without that env they're
-    // just orphan nodes on the bridge topic that no one watches.
-    for _ in 0..2 {
-        let mut env = HashMap::new();
-        env.insert("RAFKA_MESH_ID".to_string(), "bridge".to_string());
-        env.insert(
-            "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
-            "mesh-a,mesh-b".to_string(),
-        );
-        match spawn_one(&state, "bridge", env, None, None).await {
-            Ok((name, _)) => spawned.push(name),
-            Err(e) => errors.push(e),
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     info_span!(
@@ -3129,7 +3083,7 @@ const CHAOS_CADENCE_FLOOR_MS: u64 = 30_000;
 const CHAOS_CADENCE_CEILING_MS: u64 = 600_000;
 
 /// POST /api/chaos/start — kick off the continuous chaos loop. Idempotent: a
-/// second call while running is a no-op. The loop picks a random non-bridge
+/// second call while running is a no-op. The loop picks a random spawned
 /// node every cadence_ms milliseconds, kills it, then respawns a same-type
 /// replacement in the same mesh.
 ///
@@ -3374,9 +3328,8 @@ fn chaos_state_json(state: &AppState) -> axum::Json<Value> {
     }))
 }
 
-/// Continuous chaos: every cadence_ms, pick a random non-bridge spawned node,
+/// Continuous chaos: every cadence_ms, pick a random spawned node,
 /// kill it, then immediately respawn a same-type replacement in the same mesh.
-/// Bridges are protected so the network always has cross-mesh connectivity.
 async fn chaos_loop(state: AppState) {
     loop {
         let cadence = state.chaos.cadence_ms.load(Ordering::SeqCst).max(1000);
@@ -3385,11 +3338,10 @@ async fn chaos_loop(state: AppState) {
             break;
         }
 
-        // Pick a random non-bridge from spawned_meta.
+        // Pick a random node from spawned_meta.
         let candidates: Vec<(String, SpawnedMeta)> = state
             .spawned_meta
             .iter()
-            .filter(|e| e.value().node_type != "bridge")
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
         if candidates.is_empty() {
@@ -3472,7 +3424,7 @@ async fn handle_kill(
     if !is_valid_node_name(&node_name) {
         return (
             StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": format!("invalid node_name '{node_name}' — must match ^(gateway|broker|compute|registry|bridge)-[0-9a-f]{{8}}$")})),
+            axum::Json(json!({"error": format!("invalid node_name '{node_name}' — must match ^(gateway|broker|compute|registry)-[0-9a-f]{{8}}$")})),
         )
             .into_response();
     }
@@ -3853,13 +3805,12 @@ async fn observer_task(state: AppState) {
     let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     loop {
-        // Discover meshes via spawned_meta. Skip the "bridge" sentinel and
-        // empty values — those aren't real meshes.
+        // Discover meshes via spawned_meta. Skip empty values — those aren't real meshes.
         let current: std::collections::HashSet<String> = state
             .spawned_meta
             .iter()
             .map(|e| e.value().mesh_id.clone())
-            .filter(|m| !m.is_empty() && m != "bridge")
+            .filter(|m| !m.is_empty())
             .collect();
 
         for mesh in current.difference(&subscribed).cloned().collect::<Vec<_>>() {
@@ -4121,8 +4072,8 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     }
     // admin-ui IS a node. The NodeRuntime call below owns telemetry
     // initialization + iroh endpoint + gossip subscription + heartbeat
-    // broadcast — same path the broker / gateway / compute / registry /
-    // bridge binaries take. We DO NOT init telemetry separately here;
+    // broadcast — same path the broker / gateway / compute / registry
+    // binaries take. We DO NOT init telemetry separately here;
     // tracing_subscriber's global init would panic on the second call.
     //
     // RAFKA_OBSERVER_MESHES: admin-ui subscribes to every mesh's gossip
@@ -4130,12 +4081,11 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // means admin-ui only sees one mesh's digests at a time. We default to
     // mesh-a + mesh-b (bootstrap composition); operator can override.
     if std::env::var("RAFKA_OBSERVER_MESHES").is_err() {
-        // Watch every legit mesh: the two bootstrap meshes plus the bridge
-        // mesh (bridges live there). No "default" anymore — spawn_one now
+        // Watch the two bootstrap meshes. No "default" anymore — spawn_one now
         // rejects nodes without an explicit RAFKA_MESH_ID.
         // Override via RAFKA_OBSERVER_MESHES before launch for other mesh sets
         // (e.g. RAFKA_OBSERVER_MESHES=mesh1,mesh2 for mesh-v2 Phase 1 testing).
-        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b,bridge");
+        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b");
     }
     // QA postfix NF-4 fix: admin-ui was appearing in topology/heartbeats with
     // id=`<unspawned>` and mesh_id=`default` because NodeRuntime falls back to
@@ -4260,10 +4210,9 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // {cargo_target_dir}/{profile}/, or spawn_one will silently return os
     // error 2 from cmd.spawn() and bootstrap will report bogus errors.
     // Two specific failure modes this catches:
-    //   - rafka-bridge was missing after `cargo build` ran without -p
-    //     rafka-bridge → bootstrap looked like "16 spawned, 2 errors"
-    //     and bridges never appeared in topology (caused
-    //     mesh-five-types-present + gossip-mesh-to-mesh to fail).
+    //   - a peer binary was missing after `cargo build` ran without its -p
+    //     → bootstrap looked like "N spawned, M errors" and those nodes
+    //     never appeared in topology.
     //   - CARGO_TARGET_DIR redirected to a stale build dir.
     // Loud at startup beats silent at bootstrap. Honors
     // RAFKA_CHILD_BUILD_PROFILE so release-built deployments preflight against
@@ -4283,7 +4232,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
             for p in &missing {
                 eprintln!("  - {p}");
             }
-            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry -p rafka-bridge");
+            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry");
             anyhow::bail!(
                 "preflight failed: {} peer binary/binaries missing under {}",
                 missing.len(),

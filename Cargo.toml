@@ -9,7 +9,6 @@ members = [
     "broker",
     "compute",
     "registry",
-    "bridge",
     "admin-ui",
     "cli/rfa",
 ]

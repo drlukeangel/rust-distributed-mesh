@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type NodeType } from "./api";
 
-const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry", "bridge"];
+const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry"];
 
 export function SpawnBar() {
   const [mesh, setMesh] = useState("mesh1");

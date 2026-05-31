@@ -6,7 +6,6 @@ const TYPE_COLOR: Record<string, string> = {
   broker: "#f0883e",
   compute: "#3fb950",
   registry: "#bc8cff",
-  bridge: "#e3b341",
 };
 
 function utilColor(used: number | undefined, budget: number | undefined): string {

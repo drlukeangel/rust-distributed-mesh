@@ -42,11 +42,6 @@ pub enum Role {
     Broker,
     Compute,
     Registry,
-    /// Bridges multiple mesh_ids. Reads `RAFKA_BRIDGE_TARGET_MESHES` (comma-separated)
-    /// to know which meshes it's expected to peer into. Emits per-mesh aggregate
-    /// heartbeats (one `rafka.mesh.heartbeat` span per observed peer mesh_id) and
-    /// boot-time `rafka.mesh.bridge.boot_announced` listing target meshes.
-    Bridge,
     /// Operator console node. Joins the mesh just like any other node —
     /// subscribes to gossip, emits its own digest + heartbeat, accepts
     /// peer.connected from siblings. Does NOT run `run_ping_sender` because
@@ -109,21 +104,24 @@ struct NodeIdentity {
 }
 
 type PeerRegistry = Arc<DashMap<String, Connection>>;
-/// Parallel registry: peer_id → peer_mesh_id, populated from Hello frames. Used by
-/// Role::Bridge to emit per-mesh aggregate heartbeats; used by all roles to make
+/// Parallel registry: peer_id → peer_mesh_id, populated from Hello frames. Makes
 /// peer→mesh associations observable from any code path that has the peer_id.
 type MeshIdRegistry = Arc<DashMap<String, String>>;
 
 async fn run_node(
     node_type: String,
-    role: Role,
+    // role currently has no behavioral branch inside run_node (the only consumer
+    // was the removed Role::Bridge path; run_ping_sender was already removed).
+    // Kept in the signature + NodeRuntime API for observability/future use.
+    _role: Role,
     cpu_budget: Option<f32>,
     ram_budget: Option<f32>,
 ) -> Result<()> {
     // mesh_id is a logical cluster identifier. Multiple physical nodes with the
-    // same mesh_id form one mesh; cross-mesh peering (see feature mesh-to-mesh)
-    // requires a Role::Bridge node that joins multiple mesh_ids. Defaults to
-    // "default" so single-mesh dev/test work uninstrumented.
+    // same mesh_id form one mesh; cross-mesh awareness comes from a node
+    // observing additional meshes via RAFKA_OBSERVER_MESHES (e.g. a gateway
+    // watching both meshes' gossip). Defaults to "default" so single-mesh
+    // dev/test work uninstrumented.
     let mesh_id = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "default".to_string());
     let mesh_id: &'static str = Box::leak(mesh_id.into_boxed_str());
 
@@ -325,24 +323,17 @@ async fn run_node(
         ))
     };
 
-    // RAFKA_OBSERVER_MESHES (admin-ui) AND RAFKA_BRIDGE_TARGET_MESHES (bridges):
-    // comma-separated list of ADDITIONAL meshes to subscribe to (beyond our
-    // primary RAFKA_MESH_ID). Both env vars feed the same multi-topic-join
-    // path — observer/bridge is just a labeling distinction. Each extra
-    // topic gets its own run_gossip task that writes into the process-wide
-    // live_digests() map and broadcasts our own digest on that topic too,
-    // so bridges genuinely appear as members of every mesh they bridge.
+    // RAFKA_OBSERVER_MESHES: comma-separated list of ADDITIONAL meshes to
+    // subscribe to (beyond our primary RAFKA_MESH_ID). Feeds the multi-topic-join
+    // path. Each extra topic gets its own run_gossip task that writes into the
+    // process-wide live_digests() map and broadcasts our own digest on that
+    // topic too — so an observing node (e.g. a gateway watching both meshes)
+    // genuinely appears as a member of every mesh it observes. This is how
+    // cross-mesh awareness works post-bridge (PRD §2): the gateway observes the
+    // other mesh's gossip, so its live_digests() spans both meshes.
     let extra_meshes_combined = {
         let observer = std::env::var("RAFKA_OBSERVER_MESHES").unwrap_or_default();
-        let bridge_targets = std::env::var("RAFKA_BRIDGE_TARGET_MESHES").unwrap_or_default();
-        let combined = if observer.is_empty() {
-            bridge_targets
-        } else if bridge_targets.is_empty() {
-            observer
-        } else {
-            format!("{observer},{bridge_targets}")
-        };
-        if combined.is_empty() { None } else { Some(combined) }
+        if observer.is_empty() { None } else { Some(observer) }
     };
     if let Some(extra) = extra_meshes_combined {
         for extra_mesh in extra.split(',') {
@@ -396,23 +387,6 @@ async fn run_node(
         tokio::sync::mpsc::channel(1).1,
     );
 
-    // Role::Bridge: emit boot-announced span listing target meshes so operators see
-    // immediately which meshes this bridge is supposed to span.
-    let is_bridge = matches!(role, Role::Bridge);
-    if is_bridge {
-        let target_meshes = std::env::var("RAFKA_BRIDGE_TARGET_MESHES")
-            .unwrap_or_else(|_| "".to_string());
-        tracing::info_span!(
-            "rafka.mesh.bridge.boot_announced",
-            node_id = %node_id,
-            mesh_id = mesh_id,
-            target_meshes = %target_meshes,
-        )
-        .in_scope(|| {
-            info!(target_meshes = %target_meshes, "bridge boot announced");
-        });
-    }
-
     let accept_handle =
         start_accept_loop(&transport, node_id.clone(), mesh_id, node_type_str, Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone()).await;
 
@@ -446,8 +420,7 @@ async fn run_node(
 
     let heartbeat_handle = {
         let registry = Arc::clone(&peer_registry);
-        let mesh_reg = Arc::clone(&mesh_id_registry);
-        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, node_name, is_bridge, registry, mesh_reg))
+        tokio::spawn(run_heartbeat(node_id.clone(), mesh_id, node_name, registry))
     };
 
     // No application-level ping/pong: iroh-quinn owns connection liveness
@@ -1428,8 +1401,8 @@ async fn run_frame_reader(
 
                 match InternalMeshFrame::decode_with_context(&bytes) {
                     Ok((parent_ctx, InternalMeshFrame::Hello { mesh_id: peer_mesh_id, node_type: peer_node_type })) => {
-                        // Record peer's mesh_id so heartbeat (Role::Bridge especially)
-                        // can aggregate per-mesh peer counts.
+                        // Record peer's mesh_id so any code path with the peer_id
+                        // can resolve its mesh association.
                         mesh_id_registry.insert(peer_id_str.clone(), peer_mesh_id.clone());
                         let recv_span = tracing::trace_span!(
                             "rafka.mesh.peer.hello_received",
@@ -1445,7 +1418,7 @@ async fn run_frame_reader(
                         });
                         // Cross-mesh: peer is in a different mesh_id than ours. Emit
                         // dedicated span so operators can filter Jaeger for cross-mesh
-                        // links and Role::Bridge gateway flows.
+                        // links (e.g. a gateway observing both meshes).
                         if peer_mesh_id != own_mesh_id {
                             tracing::info_span!(
                                 "rafka.mesh.cross.peer_connected",
@@ -1624,9 +1597,7 @@ async fn run_heartbeat(
     node_id: String,
     mesh_id: &'static str,
     node_name: &'static str,
-    is_bridge: bool,
     registry: PeerRegistry,
-    mesh_id_registry: MeshIdRegistry,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     // Read clock skew once at boot. Chaos `clock_skew` primitive restarts the
@@ -1658,30 +1629,6 @@ async fn run_heartbeat(
         .in_scope(|| {
             info!("heartbeat");
         });
-
-        // Role::Bridge: also emit per-target-mesh aggregate spans grouped by the
-        // peer_mesh_id observed in each peer's Hello frame. Operators get a
-        // per-mesh peer count for the bridge in a single Jaeger filter.
-        if is_bridge {
-            let mut by_mesh: std::collections::HashMap<String, i64> =
-                std::collections::HashMap::new();
-            for entry in mesh_id_registry.iter() {
-                *by_mesh.entry(entry.value().clone()).or_insert(0) += 1;
-            }
-            for (target_mesh, count) in by_mesh {
-                tracing::info_span!(
-                    "rafka.mesh.bridge.per_mesh_heartbeat",
-                    node_id = %node_id,
-                    mesh_id = mesh_id,
-                    target_mesh_id = %target_mesh,
-                    peer_count = count,
-                    wall_time_ms = wall_time_ms,
-                )
-                .in_scope(|| {
-                    info!(target_mesh_id = %target_mesh, peer_count = count, "bridge per-mesh heartbeat");
-                });
-            }
-        }
     }
 }
 
@@ -2058,12 +2005,12 @@ mod node_runtime_builder_tests {
 
     #[test]
     fn with_role_preserves_budgets() {
-        let rt = NodeRuntime::new("bridge")
+        let rt = NodeRuntime::new("gateway")
             .with_cpu_budget(1.0)
             .with_ram_budget(0.5)
-            .with_role(Role::Bridge);
+            .with_role(Role::Gateway);
         assert_eq!(rt.cpu_budget, Some(1.0));
         assert_eq!(rt.ram_budget, Some(0.5));
-        assert!(matches!(rt.role, Role::Bridge));
+        assert!(matches!(rt.role, Role::Gateway));
     }
 }

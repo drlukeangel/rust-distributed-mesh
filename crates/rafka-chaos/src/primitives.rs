@@ -19,7 +19,7 @@ use serde_json::json;
 use std::time::Instant;
 use tracing::info_span;
 
-const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 /// Resolve a wedge_node's requested node_type to one with a live OS process. If the
 /// requested type has at least one matching subprocess in /api/spawned, use it as-is.
