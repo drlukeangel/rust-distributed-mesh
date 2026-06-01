@@ -1,0 +1,30 @@
+{
+  "sprint": 20,
+  "slug": "node-state-propagation",
+  "status": "open",
+  "opens": "2026-06-01",
+  "initiative": "mesh-v2",
+  "origin": "User direction after sprint-19: generalize the fast-delete tombstone into a node-STATE propagation. 'add node state as a publish event... essentially extend fast delete' + 'make the node state a configurable enum not join/delete'. Pairs with fixing the ~40s gossip-convergence latency (77 Address Lookup failed) found during sprint-19 verification.",
+  "objective": "A node has a STATE (extensible enum) published as an EVENT on every transition — generalizing the sprint-15 fast-delete tombstone. AND fix convergence: register peer addresses from the gossiped `location` so the swarm forms without failed discovery lookups. Result: additions/health-changes propagate as fast as deletions, cross-mesh and same-mesh, with no 40s lag.",
+  "design": {
+    "NodeState_enum": "LOCKED, append-only (like op_kind/node_type): Joining, Alive, Degraded, Updating, Draining, Leaving, Dead. Self-published: Joining/Alive/Degraded/Updating/Draining/Leaving. Observer-inferred: Dead (staleness/conn-loss marks a node that vanished without Leaving). Evict-from-directory: Leaving (self, immediate) + Dead (detected). Degraded/Updating/Draining stay, flagged + rendered.",
+    "wire_change": "GossipDigest.leaving:bool -> state:NodeState (false->Alive, true->Leaving). Backbone MeshDirectoryEntry carries state too. WIRE-FORMAT change: every node must be the same fresh build (greenfield, no compat needed; rebuild ALL target/debug AND target/release binaries — admin-ui spawns from target/debug).",
+    "broadcast_state": "Replaces broadcast_tombstone: broadcast_state(node_id, state). Receive dispatches on state. Event-driven publish on EVERY transition (boot->Joining->Alive, ->Degraded, ->Draining->Leaving) + immediate backbone re-publish, mirroring broadcast_backbone_tombstone.",
+    "location_registration": "On receiving a peer's GossipDigest/backbone directory entry, register its `location` address with the iroh endpoint so join_peers resolves directly — eliminates the Address Lookup failed retries + the ~40s join latency. Keeps mDNS OFF (avoids localhost cross-run/cross-mesh contamination); a single-subnet prod deployment may also enable mDNS as a bonus, but location-registration is topology-independent (works across the relay too)."
+  },
+  "acceptance_tests": [
+    "T1 BUILD: cargo check --workspace --tests --no-default-features = 0/0. FRESHNESS GATE: rebuild + gate ALL target/debug binaries (admin-ui spawns from target/debug) — kill all rafka first (running exes lock the binaries).",
+    "T2 FAST-ADD (measured): spawn a node -> it appears on the OTHER mesh's console within ~2s (event-driven), NOT the ~40s gossip-convergence lag. Measure before (current) vs after.",
+    "T3 LOCATION REGISTRATION (measured): with mDNS off, 'Address Lookup failed' count for in-mesh peers drops to ~0; a fresh node joins the swarm + becomes visible cross-mesh in <5s, measured.",
+    "T4 LEAVING (graceful, the old fast-delete via the enum): control-op kill -> broadcast_state(Leaving) -> evicted from both consoles <2s, real tombstone span.",
+    "T5 DEAD (crash, observer-inferred): OS-kill a node (no Leaving) -> observers mark it Dead and evict via the staleness path; the UI shows Dead DISTINCT from Leaving.",
+    "T6 DEGRADED (not evicted): a node over CPU/RAM budget broadcasts Degraded -> UI renders it amber, it is NOT evicted, returns to Alive when healthy.",
+    "T7 WIRE ROUNDTRIP (code/test): GossipDigest with state:NodeState + BackboneMessage round-trip via postcard (unit test); no bare/legacy decode failures on a clean all-fresh build.",
+    "T8 UI STATES (admin-ui IS the proof): both consoles render node state (Joining/Alive/Degraded/Updating/Draining=visible+colored; Leaving/Dead=removed). Screenshots."
+  ],
+  "spans_vocab": "Lock NodeState enum in CLAUDE.md §10 (append-only). broadcast_state emits rafka.mesh.node.state_changed {node_id, state, source(self|observer)}; generalizes rafka.mesh.tombstone.applied (Leaving/Dead remain the eviction events).",
+  "out_of_scope": ["re-enabling mDNS by default (location-registration is the fix; mDNS stays off)", "consensus on state", "app-layer health policy (what MAKES a node Degraded beyond budget — keep the existing budget check for now)"],
+  "depends_on": "sprint-19 (control-op kill + cross-mesh backbone) merged. Builds on broadcast_tombstone (becomes broadcast_state) + the backbone bootstrap fix.",
+  "proof_artifacts": "docs/plans/mesh-v2/verify/screenshots/sprint20-node-state/",
+  "ports": { "admin_ui_mesh1": 19100, "admin_ui_mesh2": 19101, "node_bind_mesh1": 14819, "node_bind_mesh2": 14829, "note": "two cross-seeded consoles; NON-balanced fleet for an accurate test; RAFKA_STALENESS_MS tuned per test" }
+}
