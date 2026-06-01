@@ -81,6 +81,19 @@ pub fn read_dev_ram_budget() -> Option<f32> {
     read_dev_env_f32("RAFKA_DEV_RAM_BUDGET")
 }
 
+/// Same shape as `read_dev_cpu_budget`, for `RAFKA_DEV_CPU_USED` — overrides the
+/// reported (not actual) `cpu_used`. CLAUDE.md documents this override; it lets a
+/// test put a node deterministically over budget (→ NodeState::Degraded) without
+/// actually loading a core. Honored only when deployment allows dev overrides.
+pub fn read_dev_cpu_used() -> Option<f32> {
+    read_dev_env_f32("RAFKA_DEV_CPU_USED")
+}
+
+/// Same shape as `read_dev_cpu_used`, for `RAFKA_DEV_RAM_USED`.
+pub fn read_dev_ram_used() -> Option<f32> {
+    read_dev_env_f32("RAFKA_DEV_RAM_USED")
+}
+
 fn read_dev_env_f32(var: &str) -> Option<f32> {
     if !Deployment::from_env().allows_dev_overrides() {
         return None;

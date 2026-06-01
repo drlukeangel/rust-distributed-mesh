@@ -31,6 +31,8 @@ pub use load::{
     parse_budget_cli_args,
     read_dev_cpu_budget,
     read_dev_ram_budget,
+    read_dev_cpu_used,
+    read_dev_ram_used,
     BudgetCliArgs,
     LoadSampler,
     NodeLoad,
@@ -1888,7 +1890,15 @@ async fn run_gossip(
     mut tombstone_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) {
     let counters = mesh_counters();
-    let load_sampler = LoadSampler::new(cpu_budget, ram_budget, None, None);
+    // cpu_used/ram_used overrides come from RAFKA_DEV_CPU_USED / RAFKA_DEV_RAM_USED
+    // (dev-gated). These let a test put a node deterministically over budget so it
+    // self-reports NodeState::Degraded — the documented override, now wired.
+    let load_sampler = LoadSampler::new(
+        cpu_budget,
+        ram_budget,
+        read_dev_cpu_used(),
+        read_dev_ram_used(),
+    );
     use futures_lite::StreamExt;
     use iroh_gossip::api::Event;
     // Subscribe with no bootstrap peers — peers self-discover via the iroh
