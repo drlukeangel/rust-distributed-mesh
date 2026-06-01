@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type TopologyNode, type NodeType } from "../api";
+import { api, type TopologyNode, type NodeType, type NodeState } from "../api";
 
 const TYPE_COLOR: Record<string, string> = {
   gateway: "#58a6ff",
@@ -113,6 +113,17 @@ export function Nodes() {
     }
   };
 
+  // sprint-21: send a lifecycle SetState control op (Updating/Draining/Alive-resume).
+  const doSetState = async (name: string, state: NodeState) => {
+    setBusy(name);
+    try {
+      await api.setState(name, state);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
   if (nodes.length === 0) {
     return <div className="card muted">no nodes — spawn or bootstrap first</div>;
   }
@@ -143,23 +154,35 @@ export function Nodes() {
             }}
             onClick={() => setExpanded(isOpen ? null : n.id)}
           >
-            <button
-              className="danger"
-              disabled={busy === n.id}
-              onClick={(e) => {
-                e.stopPropagation();
-                doKill(n.id);
-              }}
-              style={{
-                position: "absolute",
-                top: 8,
-                right: 8,
-                fontSize: 10,
-                padding: "2px 8px",
-              }}
+            <div
+              style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4 }}
+              onClick={(e) => e.stopPropagation()}
             >
-              kill
-            </button>
+              {/* sprint-21 lifecycle ops: mark Draining / Updating, or resume to Alive */}
+              <button disabled={busy === n.id} title="mark Draining"
+                onClick={() => doSetState(n.id, "Draining")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#db6d28", borderColor: "#db6d28" }}>
+                drain
+              </button>
+              <button disabled={busy === n.id} title="mark Updating"
+                onClick={() => doSetState(n.id, "Updating")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#a371f7", borderColor: "#a371f7" }}>
+                upd
+              </button>
+              <button disabled={busy === n.id} title="resume to Alive"
+                onClick={() => doSetState(n.id, "Alive")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#3fb950", borderColor: "#3fb950" }}>
+                resume
+              </button>
+              <button
+                className="danger"
+                disabled={busy === n.id}
+                onClick={() => doKill(n.id)}
+                style={{ fontSize: 10, padding: "2px 8px" }}
+              >
+                kill
+              </button>
+            </div>
 
             <div
               className="mono"

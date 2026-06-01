@@ -2703,6 +2703,65 @@ async fn handle_kill(
     }
 }
 
+/// Resolve a target node (like kill_one) and send a SetState lifecycle control op
+/// (sprint-21). `desired` is a NodeState variant name: "Updating"/"Draining" to mark
+/// the node, "Alive" to resume. Works for ANY visible node, any mesh — no OS ownership.
+async fn set_state_one(state: &AppState, node_name: &str, desired: &str) -> Result<String, String> {
+    let resolved: Option<(String, String)> = (|| {
+        for d in rafka_node_base::live_digests().iter() {
+            let v = d.value();
+            if v.node_name == node_name {
+                return Some((v.node_id.clone(), v.location.clone()));
+            }
+        }
+        for s in rafka_node_base::backbone_summaries().iter() {
+            let summary = s.value();
+            if let Some(e) = summary.directory.iter().find(|e| e.node_name == node_name) {
+                return Some((e.node_id.clone(), e.location.clone()));
+            }
+        }
+        if let Some(m) = state.spawned_meta.get(node_name) {
+            let m = m.value();
+            return Some((m.node_id_hex.clone(), format!("127.0.0.1:{}", m.bind_port)));
+        }
+        None
+    })();
+    let (node_id, location) = resolved.ok_or_else(|| {
+        format!("node {node_name} not visible in gossip, backbone, or spawn registry")
+    })?;
+    rafka_node_base::send_set_state(&node_id, &location, desired)
+        .await
+        .map_err(|e| format!("set_state send failed: {e}"))?;
+    Ok(format!("state_change_sent:{desired}"))
+}
+
+#[derive(serde::Deserialize)]
+struct SetStateBody {
+    state: String,
+}
+
+/// POST /api/nodes/{node_name}/state {"state":"Draining"} — send a lifecycle SetState
+/// control op to the target. Accepts Updating / Draining / Alive (resume); rejects
+/// terminal Leaving/Dead (Leaving is the kill path via DELETE, Dead is observer-inferred).
+async fn handle_set_state(
+    State(state): State<AppState>,
+    Path(node_name): Path<String>,
+    Json(body): Json<SetStateBody>,
+) -> impl IntoResponse {
+    if !is_valid_node_name(&node_name) {
+        return (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": format!("invalid node_name '{node_name}'")}))).into_response();
+    }
+    if !matches!(body.state.as_str(), "Updating" | "Draining" | "Alive") {
+        return (StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": format!("state '{}' not settable — use Updating, Draining, or Alive (resume); kill via DELETE for Leaving", body.state)}))).into_response();
+    }
+    match set_state_one(&state, &node_name, &body.state).await {
+        Ok(reason) => (StatusCode::OK, axum::Json(json!({"node_name": node_name, "reason": reason}))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, axum::Json(json!({"error": e}))).into_response(),
+    }
+}
+
 async fn trace_middleware(req: Request, next: Next) -> Response {
     use opentelemetry::global;
     use opentelemetry_http::HeaderExtractor;
@@ -3608,6 +3667,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/tests/run", post(handle_test_run))
         .route("/api/messages", get(handle_messages))
         .route("/api/nodes/{node_name}", delete(handle_kill))
+        .route("/api/nodes/{node_name}/state", post(handle_set_state))
         // SPA fallback (PRD §6a): real files (/, /assets/*, /favicon.svg, …) are
         // served by ServeDir; any OTHER path (a client-router deep link like
         // /cache or /topology) falls through to index.html so the React app boots

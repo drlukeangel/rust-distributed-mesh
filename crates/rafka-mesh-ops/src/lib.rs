@@ -33,6 +33,16 @@ pub enum InternalMeshFrame {
     /// `reason` identifies the requester (e.g. "operator:mesh1.admin-ui.b0b781").
     /// Maps to op_kind="control".
     Shutdown { reason: String },
+    /// Control-plane lifecycle op (sprint-21). ANY console dials a target node and
+    /// sends a desired NON-terminal state to enter (`"Updating"`, `"Draining"`, or
+    /// `"Alive"` to resume). The target applies it as a self-state override that its
+    /// periodic gossip digest then publishes — so an operator can mark a node
+    /// rolling/updating or draining and have it propagate + render mesh-wide, the
+    /// same way Leaving (kill) does. `state` is the NodeState variant name (String,
+    /// to avoid a node-base dep here; node-base parses it). Terminal states
+    /// (Leaving/Dead) are NOT settable this way — Leaving is the kill path, Dead is
+    /// observer-inferred. Maps to op_kind="control". Appended LAST (postcard wire compat).
+    SetState { state: String },
 }
 
 /// W3C trace-context carrier embedded with every traced frame (sprint-13 B3).

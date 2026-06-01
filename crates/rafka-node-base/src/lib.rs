@@ -1215,14 +1215,21 @@ async fn run_bi_reader(
             // A Shutdown control op self-terminates this node; anything else
             // (a Write produce) goes to the produce handler. (The Shutdown branch
             // only matches that variant; a Write falls through to handle_produce_bi.)
-            if let Ok((_ctx, InternalMeshFrame::Shutdown { reason })) =
-                InternalMeshFrame::decode_with_context(&bytes)
-            {
-                handle_shutdown_op(&own_node_id, &peer_id_str, &reason).await;
-                break;
+            match InternalMeshFrame::decode_with_context(&bytes) {
+                Ok((_ctx, InternalMeshFrame::Shutdown { reason })) => {
+                    handle_shutdown_op(&own_node_id, &peer_id_str, &reason).await;
+                    break;
+                }
+                // Sprint-21 lifecycle op — NON-terminal: apply the self-state
+                // override and keep serving (the node lives on, unlike Shutdown).
+                Ok((_ctx, InternalMeshFrame::SetState { state })) => {
+                    handle_set_state_op(&own_node_id, &peer_id_str, &state);
+                }
+                // B5: a produce arriving on a bi-stream. Decode + handle + ACK.
+                _ => {
+                    handle_produce_bi(&own_node_id, own_node_name, &peer_id_str, &bytes, &mut send).await;
+                }
             }
-            // B5: a produce arriving on a bi-stream. Decode + handle + ACK.
-            handle_produce_bi(&own_node_id, own_node_name, &peer_id_str, &bytes, &mut send).await;
         } else {
             tracing::trace_span!(
                 "rafka.mesh.bi.unknown_tag",
@@ -1417,6 +1424,23 @@ pub enum NodeState {
     Draining,
     Leaving,
     Dead,
+}
+
+impl NodeState {
+    /// Parse a NodeState from its `{:?}` variant name (the form sent over the
+    /// SetState control op and rendered in the UI). Returns None on unknown.
+    pub fn from_name(s: &str) -> Option<NodeState> {
+        match s {
+            "Joining" => Some(NodeState::Joining),
+            "Alive" => Some(NodeState::Alive),
+            "Degraded" => Some(NodeState::Degraded),
+            "Updating" => Some(NodeState::Updating),
+            "Draining" => Some(NodeState::Draining),
+            "Leaving" => Some(NodeState::Leaving),
+            "Dead" => Some(NodeState::Dead),
+            _ => None,
+        }
+    }
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -1973,12 +1997,21 @@ async fn run_gossip(
                 // an operational trigger (out of scope here) but render if received.
                 let over_budget = (load.cpu_budget > 0.0 && load.cpu_used > load.cpu_budget)
                     || (load.ram_budget > 0.0 && load.ram_used > load.ram_budget);
-                let state = if !published_once {
+                // Auto health/lifecycle: Joining until first publish, Degraded over
+                // budget, else Alive.
+                let auto = if !published_once {
                     NodeState::Joining
                 } else if over_budget {
                     NodeState::Degraded
                 } else {
                     NodeState::Alive
+                };
+                // Sprint-21: an operator SetState override (Updating/Draining) wins
+                // over the auto state — the operator declared intent. A cleared
+                // override (None) or Alive falls through to auto health.
+                let state = match *requested_state().lock().unwrap() {
+                    Some(req @ (NodeState::Updating | NodeState::Draining)) => req,
+                    _ => auto,
                 };
                 let digest = GossipDigest {
                     node_id: node_id.clone(),
@@ -2632,6 +2665,10 @@ async fn run_frame_reader(
                         "control",
                         format!("[{peer_prefix}] shutdown reason={reason}"),
                     ),
+                    Ok((_, InternalMeshFrame::SetState { state })) => (
+                        "control",
+                        format!("[{peer_prefix}] set-state {state}"),
+                    ),
                     Err(e) => ("decode_failed", format!("[{peer_prefix}] <decode_failed: {e}>")),
                 };
                 push_message(&peer_id_str, kind_tag, frame_size, summary);
@@ -2773,6 +2810,11 @@ async fn run_frame_reader(
                         // (run_bi_reader); handle here too so the op works regardless
                         // of which stream the caller used.
                         handle_shutdown_op(&own_node_id, &peer_id_str, &reason).await;
+                    }
+                    Ok((_parent_ctx, InternalMeshFrame::SetState { state })) => {
+                        // Sprint-21 lifecycle op — also handled on uni for parity
+                        // with the bi-stream path (send_set_state uses bi).
+                        handle_set_state_op(&own_node_id, &peer_id_str, &state);
                     }
                     Err(e) => {
                         let byte_len = bytes.len();
@@ -3060,6 +3102,18 @@ mod tests {
 /// admin-ui HTTP layer can dial arbitrary nodes to send control ops.
 static MESH_ENDPOINT: std::sync::OnceLock<iroh::Endpoint> = std::sync::OnceLock::new();
 
+/// Operator-requested lifecycle override (sprint-21). Set by a SetState control op
+/// (Updating/Draining to mark the node; Alive to resume → cleared). The periodic
+/// digest-builder reads this: a Some(Updating|Draining) overrides the auto health
+/// state so the operator's intent propagates + renders mesh-wide. Alive/None means
+/// "no override — use the auto Joining/Degraded/Alive logic".
+static REQUESTED_STATE: std::sync::OnceLock<std::sync::Mutex<Option<NodeState>>> =
+    std::sync::OnceLock::new();
+
+fn requested_state() -> &'static std::sync::Mutex<Option<NodeState>> {
+    REQUESTED_STATE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
 /// iroh's BUILT-IN manual address book (`MemoryLookup`), registered on the
 /// endpoint at boot. We feed it every peer's `location` learned via gossip so
 /// `join_peers`/`connect` (which take only an `EndpointId`) can resolve the
@@ -3150,6 +3204,73 @@ async fn handle_shutdown_op(own_node_id: &str, peer_id_str: &str, reason: &str) 
     // Let the gossip tombstone reach the wire before we tear the endpoint down.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     trigger_self_shutdown();
+}
+
+/// Dial `target_node_id` at `location` and send a SetState lifecycle control op
+/// (sprint-21). The target applies `state` as a self-state override its next gossip
+/// digest publishes. Mirrors `send_shutdown` but is NON-terminal — the connection
+/// is not held open for a self-terminate; we just deliver and return.
+pub async fn send_set_state(target_node_id: &str, location: &str, state: &str) -> anyhow::Result<()> {
+    let endpoint = MESH_ENDPOINT
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("mesh endpoint not initialized"))?;
+    let pk = PublicKey::from_str(target_node_id)?;
+    let dest = if location.starts_with("http://") || location.starts_with("https://") {
+        EndpointAddr::new(pk).with_relay_url(iroh::RelayUrl::from_str(location)?)
+    } else {
+        EndpointAddr::new(pk).with_ip_addr(location.parse::<SocketAddr>()?)
+    };
+    let conn = endpoint.connect(dest, ALPN).await?;
+    let (mut send, _recv) = conn.open_bi().await?;
+    let span = tracing::info_span!(
+        "rafka.mesh.control.state_change_sent",
+        node_id = %endpoint.id(),
+        peer_id = %target_node_id,
+        op_kind = "control",
+        state = %state,
+        otel.kind = "producer",
+    );
+    let frame = InternalMeshFrame::SetState { state: state.to_string() };
+    let bytes = span.in_scope(|| frame.encode_with_context(&Span::current().context()));
+    send.write_all(&bytes).await?;
+    send.finish()?;
+    // Brief hold so the target's accept_bi reads the frame before we drop conn.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.closed()).await;
+    span.in_scope(|| info!(target = %target_node_id, state, "set-state control op sent"));
+    Ok(())
+}
+
+/// Handle an inbound SetState control op (from run_bi_reader). Parse the requested
+/// state and store it as this node's self-state override; the periodic digest
+/// builder picks it up on the next tick and a state CHANGE forces an immediate
+/// re-publish, so the new lifecycle state propagates mesh-wide in ≤1 interval.
+/// Terminal states (Leaving/Dead) are rejected — Leaving is the kill path, Dead is
+/// observer-inferred.
+fn handle_set_state_op(own_node_id: &str, peer_id_str: &str, state_str: &str) {
+    let parsed = NodeState::from_name(state_str);
+    let accepted = matches!(
+        parsed,
+        Some(NodeState::Updating | NodeState::Draining | NodeState::Alive)
+    );
+    tracing::info_span!(
+        "rafka.mesh.control.state_change_received",
+        node_id = %own_node_id,
+        peer_id = %peer_id_str,
+        op_kind = "control",
+        state = %state_str,
+        accepted = accepted,
+        otel.kind = "consumer",
+    )
+    .in_scope(|| info!(state = %state_str, accepted, "set-state control op received"));
+    if !accepted {
+        return;
+    }
+    // Alive resumes (clears the override → back to auto health); Updating/Draining set it.
+    let mut guard = requested_state().lock().unwrap();
+    *guard = match parsed {
+        Some(NodeState::Alive) => None,
+        other => other,
+    };
 }
 
 async fn wait_for_signal() -> &'static str {

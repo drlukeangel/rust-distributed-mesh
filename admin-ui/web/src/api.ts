@@ -216,4 +216,10 @@ export const api = {
       `/api/nodes/${encodeURIComponent(node_name)}`,
       { method: "DELETE" },
     ),
+  // sprint-21: send a lifecycle SetState control op. state ∈ Updating|Draining|Alive(resume).
+  setState: (node_name: string, state: NodeState) =>
+    j<{ node_name: string; reason: string }>(
+      `/api/nodes/${encodeURIComponent(node_name)}/state`,
+      { method: "POST", body: JSON.stringify({ state }) },
+    ),
 };
