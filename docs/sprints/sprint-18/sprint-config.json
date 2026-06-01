@@ -10,7 +10,7 @@
   "acceptance_tests": [
     "T1 BUILD: cargo check --workspace --tests --no-default-features = 0/0.",
     "T2 BUILD-FRESHNESS GATE (before judging the soak): every node binary mtime > patched-source mtime — recorded. A soak on a stale binary is rejected.",
-    "T3 SOAK (LEAD runs on merged 16+17+18 tree; logged, measured): /api/bootstrap then /api/chaos/start; sample ~30s for 10 min {elapsed,heartbeats,alerts,adminMB,fleetMB,chaos_events}. ASSERT RSS FLAT (final fleetMB within +-15% of 1-min steady, no monotonic climb); alerts bounded; ZERO panics. (Agent delivers chaos code + a ~2-3 min SMOKE soak only.)",
+    "T3 SOAK (LEAD runs on merged 16+17+18 tree; logged, measured): /api/bootstrap then /api/chaos/start; sample ~30-60s for 60 MINUTES (1 hour) {elapsed,heartbeats,alerts,adminMB,fleetMB,chaos_events}. ASSERT RSS FLAT over the full hour (final fleetMB within +-15% of the 5-min steady value, NO monotonic climb across the hour — a 1hr run catches slow leaks a 10-min run misses, per the prior memory-leak history); alerts bounded; ZERO panics. Run on an ISOLATED fleet (no sibling-agent contention skewing fleetMB). (Agent delivers chaos code + a ~2-3 min SMOKE soak only; this 1hr run is the authoritative soak.)",
     "T4 CACHE SELF-HEAL (curl, measured): kill_node X -> X absent from /api/topology-cache within (RAFKA_STALENESS_MS + one 5s sweep), measured; restart_node -> replacement appears.",
     "T5 NO GHOSTS: no <unspawned>, no duplicate node_ids after the run.",
     "T6 PRIMITIVES REUSED (code): only existing rafka-chaos primitives composed; no new primitive kinds."
