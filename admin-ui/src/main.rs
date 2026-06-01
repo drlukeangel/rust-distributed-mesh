@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{backbone_summaries, broadcast_backbone_tombstone, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -2194,6 +2194,18 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
     if let Some(ref m) = meta {
         if !m.node_id_hex.is_empty() {
             rafka_node_base::broadcast_tombstone(&m.node_id_hex);
+            // Sprint-18: backbone tombstone for cross-mesh fast eviction.
+            // The mesh-gossip tombstone above only reaches this console's own
+            // mesh topic. The backbone tombstone reaches EVERY backbone
+            // subscriber — including the dead node's home-mesh gateway, which
+            // drops X from live_digests so its next MeshSummary publish omits X.
+            // Remote admin-ui consoles then see X vanish from /api/topology-cache
+            // within one backbone interval (~2s) rather than 30s.
+            broadcast_backbone_tombstone(
+                &m.node_id_hex,
+                &m.mesh_id,
+                &state.admin_node_id_hex,
+            );
         }
     }
 
