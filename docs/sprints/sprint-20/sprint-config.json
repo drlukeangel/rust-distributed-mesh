@@ -1,8 +1,9 @@
 {
   "sprint": 20,
   "slug": "node-state-propagation",
-  "status": "open",
+  "status": "closed",
   "opens": "2026-06-01",
+  "closes": "2026-06-01",
   "initiative": "mesh-v2",
   "origin": "User direction after sprint-19: generalize the fast-delete tombstone into a node-STATE propagation. 'add node state as a publish event... essentially extend fast delete' + 'make the node state a configurable enum not join/delete'. Pairs with fixing the ~40s gossip-convergence latency (77 Address Lookup failed) found during sprint-19 verification.",
   "objective": "A node has a STATE (extensible enum) published as an EVENT on every transition — generalizing the sprint-15 fast-delete tombstone. AND fix convergence: register peer addresses from the gossiped `location` so the swarm forms without failed discovery lookups. Result: additions/health-changes propagate as fast as deletions, cross-mesh and same-mesh, with no 40s lag.",
