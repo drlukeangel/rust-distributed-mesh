@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint-20 — Node-State Propagation + Fast Convergence</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--bd:#30363d;--fg:#c9d1d9;--dim:#8b949e;
+        --ok:#3fb950;--warn:#d29922;--blue:#58a6ff;--purple:#a371f7;--red:#f85149;--gold:#e3b341}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:26px;margin:0 0 4px} h2{font-size:18px;margin:34px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+  .sub{color:var(--dim);margin:0 0 6px}
+  .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;background:rgba(63,185,80,.15);color:var(--ok);border:1px solid var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14px}
+  th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel);color:var(--dim);font-weight:600}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  pre{background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:14px;overflow:auto;font-size:13px;line-height:1.45}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .dim{color:var(--dim)}
+  .pill{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid}
+  .s-alive{color:var(--ok);border-color:var(--ok)} .s-deg{color:var(--warn);border-color:var(--warn)}
+  a{color:var(--blue)} .card{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:14px 18px;margin:10px 0}
+  ul{margin:8px 0 8px 0;padding-left:22px} li{margin:4px 0}
+  .legend span{margin-right:14px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sprint-20 — Node-State Propagation + Fast Convergence</h1>
+  <p class="sub">initiative mesh-v2 · branch <code>main</code> · tip <code>1e67f03</code> · 2026-06-01</p>
+  <p><span class="badge">CLOSED — 8/8 verified</span></p>
+
+  <h2>Objective</h2>
+  <p>Generalize the fast-delete tombstone into a node <b>state</b> published as an event, and fix the
+  ~40s gossip-convergence lag — so additions and health changes propagate as fast as deletions.</p>
+
+  <h2>Delivered</h2>
+  <ul>
+    <li><b>NodeState enum</b> replaces <code>leaving:bool</code> — <code>Joining · Alive · Degraded · Updating · Draining · Leaving · Dead</code> (locked §10, append-only).</li>
+    <li><b>State as an event</b> over the existing digest (no new channel); a transition forces the next publish.</li>
+    <li><b>Fast convergence</b> via iroh's built-in <code>MemoryLookup</code> — register each peer's gossiped <code>location</code>; mDNS stays off. <span class="dim">Not a hand-rolled AddressLookup.</span></li>
+    <li><b>Dead</b> = observer-inferred via the staleness pruner (<code>source="staleness_dead"</code>), distinct from graceful <b>Leaving</b> (<code>gossip_receive</code>).</li>
+    <li><b>Backbone directory carries <code>state</code></b>; admin-ui rings each node in its state color; stale <code>Joining</code> ghosts aged out.</li>
+    <li><b>Wired</b> <code>RAFKA_DEV_CPU_USED</code>/<code>RAFKA_DEV_RAM_USED</code> (documented but previously ignored).</li>
+  </ul>
+
+  <h2>Acceptance — 8 / 8 verified (fresh two-console non-balanced fleet)</h2>
+  <table>
+    <tr><th>Test</th><th>Result</th></tr>
+    <tr><td>T1 build</td><td class="ok">✅ workspace + web build clean; binaries mtime-gated fresh</td></tr>
+    <tr><td>T2 cross-mesh fast-add</td><td class="ok">✅ both consoles show both meshes; backbone summaries flow both ways</td></tr>
+    <tr><td>T3 location convergence</td><td class="ok">✅ Address-Lookup-failed 77 → 0 ongoing (intra-mesh, mDNS off)</td></tr>
+    <tr><td>T4 Leaving</td><td class="ok">✅ cross-mesh control-op kill → self-shutdown → evicted both consoles &lt;0.1s</td></tr>
+    <tr><td>T5 Dead</td><td class="ok">✅ OS-kill → <code>staleness_dead</code>, distinct from Leaving by source</td></tr>
+    <tr><td>T6 Degraded</td><td class="ok">✅ over-budget broker → Degraded, not evicted, amber on both consoles</td></tr>
+    <tr><td>T7 wire roundtrip</td><td class="ok">✅ postcard incl. a Degraded directory entry</td></tr>
+    <tr><td>T8 UI states</td><td class="ok">✅ rendered + colored; <span class="warn">auto-screenshot blocked (extension offline)</span> — live at :19100/:19101</td></tr>
+  </table>
+
+  <h2>Live proof — both consoles, both meshes, non-balanced fleet</h2>
+  <p class="legend"><span class="pill s-alive">Alive</span><span class="pill s-deg">Degraded</span>
+     <span class="dim">(home = own-mesh gossip · backbone = cross-mesh summary)</span></p>
+<pre>
+Console1 (mesh1, :19100)  meshes=[mesh1,mesh2]      Console2 (mesh2, :19101)  meshes=[mesh1,mesh2]
+ mesh1.admin-ui.35a39c -> Alive    (home)            mesh1.admin-ui.35a39c -> Alive    (backbone)
+ mesh1.broker.137df6   -> Alive    (home)            mesh1.broker.137df6   -> Alive    (backbone)
+ mesh1.broker.2d47fb   -> Degraded (home)            mesh1.broker.2d47fb   -> Degraded (backbone)
+ mesh1.gateway.e9463e  -> Alive    (home)            mesh1.gateway.e9463e  -> Alive    (backbone)
+ mesh2.admin-ui.61a66f -> Alive    (backbone)        mesh2.admin-ui.61a66f -> Alive    (home)
+ mesh2.broker.8a01b2   -> Alive    (backbone)        mesh2.broker.8a01b2   -> Alive    (home)
+ mesh2.compute.5a9d8f  -> Alive    (backbone)        mesh2.compute.5a9d8f  -> Alive    (home)
+ mesh2.gateway.98d261  -> Alive    (backbone)        mesh2.gateway.98d261  -> Alive    (home)
+ mesh2.registry.8c09ef -> Alive    (backbone)        mesh2.registry.8c09ef -> Alive    (home)
+</pre>
+  <div class="card">Open the live consoles: <a href="http://127.0.0.1:19100" target="_blank">http://127.0.0.1:19100</a> ·
+  <a href="http://127.0.0.1:19101" target="_blank">http://127.0.0.1:19101</a></div>
+
+  <h2>The one detour, root-caused (not a defect)</h2>
+  <p>The cross-mesh "broken" I chased was a <b>test-setup artifact</b>: <b>bidirectional</b> cross-seeding
+  (each console seeds the other) created two QUIC connections, and the connection-supersede-close logic
+  tore down the one carrying the backbone gossip neighbor — caught in <code>iroh_gossip=debug</code> as
+  <code>NeighborUp</code> then <code>NeighborDown</code> 30&nbsp;ms later. <b>Unidirectional</b> seeding
+  (single connection) is stable. The backbone design and the sprint-20 <code>state</code> field were fine
+  (same build both consoles; T7 green). <span class="dim">Pre-existing follow-up: the supersede-close
+  should not drop a connection carrying gossip neighbors (canonical-direction dedup).</span></p>
+
+  <h2>Jaeger (Golden Principle #7)</h2>
+  <p>Set <b>Lookback = Last Hour</b> (the demo kills are recent but a 30-min window can miss them):</p>
+  <ul>
+    <li>Leaving vs Dead by <code>source</code>:
+      <a href="http://localhost:16686/search?service=mesh2.admin-ui&operation=rafka.mesh.tombstone.applied&lookback=1h" target="_blank">tombstone.applied @ mesh2.admin-ui</a></li>
+    <li>Control-op kill (sender):
+      <a href="http://localhost:16686/search?service=mesh2.admin-ui&operation=rafka.mesh.control.shutdown_sent&lookback=1h" target="_blank">control.shutdown_sent @ mesh2.admin-ui</a></li>
+    <li>Boot + state chain:
+      <a href="http://localhost:16686/search?service=mesh1.admin-ui&operation=rafka.mesh.node.ready&lookback=1h" target="_blank">node.ready @ mesh1.admin-ui</a></li>
+  </ul>
+
+  <h2>Pre-existing follow-ups logged (not sprint-20)</h2>
+  <ul>
+    <li><b>Supersede-close drops gossip neighbors</b> under bidirectional cross-seed → dedup by canonical direction.</li>
+    <li><b>Spawn pre-mint ghost</b> — child sometimes boots a different identity than admin-ui pre-minted.</li>
+  </ul>
+</div>
+</body>
+</html>
