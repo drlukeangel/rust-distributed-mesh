@@ -541,10 +541,12 @@ async fn run_node(
         tokio::sync::mpsc::unbounded_channel::<BackboneTombstone>();
     let _ = BACKBONE_TOMBSTONE_TX.set(backbone_tombstone_tx);
 
-    // Cross-mesh backbone (sprint-14, PRD 03). Gateways + the admin-ui observer
-    // subscribe to the single backbone topic blake3("rafka.backbone"); ONLY
-    // gateways publish their mesh's MeshSummary (soft lease). Brokers/computes/
-    // registries stay pure intra-mesh participants — no backbone task.
+    // Cross-mesh backbone (sprint-14, PRD 03; sprint-19: admin-ui publishes too).
+    // Gateways + the admin-ui subscribe to the single backbone topic
+    // blake3("rafka.backbone") AND are publisher candidates (soft lease picks one
+    // per mesh) — so every mesh advertises itself cross-mesh, even one whose only
+    // node is its admin-ui console. Brokers/computes/registries stay pure
+    // intra-mesh participants — no backbone task.
     let backbone_interval_ms: u64 = std::env::var("RAFKA_BACKBONE_INTERVAL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -552,7 +554,13 @@ async fn run_node(
     let backbone_handle = if matches!(role, Role::Gateway | Role::Observer) {
         let backbone_bytes: [u8; 32] = *blake3::hash(BACKBONE_TOPIC_NAME.as_bytes()).as_bytes();
         let backbone_topic = iroh_gossip::proto::TopicId::from_bytes(backbone_bytes);
-        let is_publisher = matches!(role, Role::Gateway);
+        // The admin-ui is a NODE in its mesh — it must advertise its mesh on the
+        // backbone too, so a mesh is visible cross-mesh even with no gateway (a
+        // bare console must still appear to other consoles). Both gateways and the
+        // admin-ui are publisher CANDIDATES; the soft lease (min node_id, no
+        // preemption of a live holder) picks exactly one publisher per mesh, and
+        // all candidates aggregate the identical summary from live_digests().
+        let is_publisher = matches!(role, Role::Gateway | Role::Observer);
         let gossip_bb = gossip.clone();
         let node_id_bb = node_id.clone();
         let registry_bb = Arc::clone(&peer_registry);
