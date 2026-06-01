@@ -1,5 +1,16 @@
 export type NodeType = "gateway" | "broker" | "compute" | "registry" | "admin-ui";
 
+/// sprint-20 lifecycle/health state (mirrors rafka_node_base::NodeState, locked,
+/// append-only). Leaving/Dead evict before render; the rest are rendered + colored.
+export type NodeState =
+  | "Joining"
+  | "Alive"
+  | "Degraded"
+  | "Updating"
+  | "Draining"
+  | "Leaving"
+  | "Dead";
+
 export interface TopologyNode {
   id: string;
   type: NodeType;
@@ -24,6 +35,11 @@ export interface TopologyNode {
   ram_used?: number;
   ram_budget?: number;
   status?: "live" | "pending";
+  /// sprint-20: node lifecycle/health state from GossipDigest.state (or the
+  /// backbone directory entry's state for remote-mesh nodes). Drives the node
+  /// halo color. Terminal states (Leaving/Dead) are evicted before render, so
+  /// in practice this is one of Joining/Alive/Degraded/Updating/Draining.
+  state?: NodeState;
   /// sprint-14: "gossip" (home-mesh full detail) or "backbone" (remote-mesh
   /// summary directory entry — no per-node CPU/RAM).
   source?: "gossip" | "backbone";

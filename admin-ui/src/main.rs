@@ -1002,6 +1002,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             "cpu_budget": d.cpu_budget,
             "ram_used": d.ram_used,
             "ram_budget": d.ram_budget,
+            "state": format!("{:?}", d.state),
             "status": "live",
         }));
     }
@@ -1026,6 +1027,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "cpu_budget": 0.0,
                 "ram_used": 0.0,
                 "ram_budget": 0.0,
+                "state": "Joining",
                 "status": "pending",
             }));
         }
@@ -1059,6 +1061,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "cpu_budget": 0.0,
                 "ram_used": 0.0,
                 "ram_budget": 0.0,
+                "state": format!("{:?}", d.state),
                 "status": "live",
                 "source": "backbone",
             }));
@@ -1515,6 +1518,7 @@ async fn handle_topology_cache() -> impl IntoResponse {
             "type":     d.node_type,
             "location": d.location,
             "node_id":  d.node_id,
+            "state":    format!("{:?}", d.state),
             "source":   "gossip",
         }));
     }
@@ -1531,6 +1535,7 @@ async fn handle_topology_cache() -> impl IntoResponse {
                 "type":     d.node_type,
                 "location": d.location,
                 "node_id":  d.node_id,
+                "state":    format!("{:?}", d.state),
                 "source":   "backbone",
             }));
         }

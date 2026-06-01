@@ -961,6 +961,7 @@ async fn run_backbone(
                             node_type: d.node_type.clone(),
                             node_id: d.node_id.clone(),
                             location: d.location.clone(),
+                            state: d.state,
                         });
                     }
                 }
@@ -1590,6 +1591,12 @@ pub struct MeshDirectoryEntry {
     pub node_type: String,
     pub node_id: String,
     pub location: String,
+    /// Sprint-20: the node's lifecycle/health state so a cross-mesh console can
+    /// render it (green=Alive, amber=Degraded, …). Appended LAST — postcard
+    /// discriminant is positional; `#[serde(default)]` decodes pre-sprint-20
+    /// summaries (which lacked it) as the enum default (Alive).
+    #[serde(default)]
+    pub state: NodeState,
 }
 
 /// Mesh-level rollup carried on the backbone (PRD 03 §2). The heavy per-node
@@ -1778,17 +1785,15 @@ async fn run_staleness_pruner() {
             continue;
         }
 
+        // Sprint-20: a node that went stale WITHOUT announcing Leaving is
+        // observer-inferred DEAD (crash/vanish, no graceful departure). Route
+        // each eviction through apply_tombstone with source="staleness_dead" so
+        // it (a) clears all three maps + the resurrection guard uniformly and
+        // (b) emits a tombstone.applied span whose `source` DISTINGUISHES Dead
+        // (staleness) from Leaving (the graceful gossip tombstone). Both are
+        // removed from the directory; the eviction event is what tells them apart.
         for node_id in &stale {
-            live_digests().remove(node_id);
-            last_seen_ms().lock().unwrap().remove(node_id);
-        }
-
-        // Topic membership is the dependent view — same node_ids that
-        // disappeared from live_digests must also leave every topic.
-        for mut topic_entry in topic_membership().iter_mut() {
-            for node_id in &stale {
-                topic_entry.value_mut().remove(node_id);
-            }
+            apply_tombstone(node_id, "staleness_dead");
         }
 
         tracing::info_span!(
@@ -1908,6 +1913,12 @@ async fn run_gossip(
     let mut ticks_since_sample = 10;
     let mut current_load = load_sampler.sample();
     let mut joined_peers = std::collections::HashSet::new();
+    // Sprint-20 self-state: a node is Joining until it has published its first
+    // digest (booting/joining), then Alive — or Degraded while over its own
+    // CPU/RAM budget. Self-published states ride the normal periodic digest;
+    // a state CHANGE forces the next tick's broadcast (see should_broadcast),
+    // so transitions propagate in ≤1 gossip interval with NO new channel.
+    let mut published_once = false;
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -1936,6 +1947,19 @@ async fn run_gossip(
                     ticks_since_sample = 0;
                 }
                 let load = current_load;
+                // Self-assessed lifecycle/health state. Degraded = over our own
+                // measured budget (RAFKA_DEV_* overrides let a test force this
+                // deterministically). Updating/Draining are reachable only via
+                // an operational trigger (out of scope here) but render if received.
+                let over_budget = (load.cpu_budget > 0.0 && load.cpu_used > load.cpu_budget)
+                    || (load.ram_budget > 0.0 && load.ram_used > load.ram_budget);
+                let state = if !published_once {
+                    NodeState::Joining
+                } else if over_budget {
+                    NodeState::Degraded
+                } else {
+                    NodeState::Alive
+                };
                 let digest = GossipDigest {
                     node_id: node_id.clone(),
                     node_name: node_name.to_string(),
@@ -1954,12 +1978,19 @@ async fn run_gossip(
                     ram_used: load.ram_used,
                     ram_budget: load.ram_budget,
                     location: location.clone(),
-                    state: NodeState::Alive, // normal live digest
+                    state,
                 };
+                published_once = true;
                 
                 let mut should_broadcast = false;
                 if let Some(last) = &last_digest {
                     if last.peer_count != digest.peer_count || last.peer_ids != digest.peer_ids {
+                        should_broadcast = true;
+                    }
+                    // Sprint-20: a lifecycle/health transition (e.g. Joining→Alive,
+                    // Alive→Degraded) forces the next publish so state changes
+                    // propagate in ≤1 interval rather than waiting for the 30s floor.
+                    if last.state != digest.state {
                         should_broadcast = true;
                     }
                     if last.frames_sent_total != digest.frames_sent_total || last.frames_recv_total != digest.frames_recv_total {
@@ -3160,8 +3191,8 @@ mod gossip_digest_schema_tests {
         let summary = MeshSummary {
             mesh_id: "mesh2".into(),
             directory: vec![
-                MeshDirectoryEntry { node_name: "mesh2.gateway.aaaaaa".into(), node_type: "gateway".into(), node_id: "a".repeat(64), location: "127.0.0.1:15920".into() },
-                MeshDirectoryEntry { node_name: "mesh2.broker.bbbbbb".into(), node_type: "broker".into(), node_id: "b".repeat(64), location: "127.0.0.1:15921".into() },
+                MeshDirectoryEntry { node_name: "mesh2.gateway.aaaaaa".into(), node_type: "gateway".into(), node_id: "a".repeat(64), location: "127.0.0.1:15920".into(), state: NodeState::Alive },
+                MeshDirectoryEntry { node_name: "mesh2.broker.bbbbbb".into(), node_type: "broker".into(), node_id: "b".repeat(64), location: "127.0.0.1:15921".into(), state: NodeState::Degraded },
             ],
             aggregate: MeshAggregate { node_count: 2, cpu_used: 0.1, cpu_budget: 10.0, ram_used: 0.2, ram_budget: 5.0, frames_per_sec: 3.0 },
             published_by: "c".repeat(64),

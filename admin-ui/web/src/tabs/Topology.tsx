@@ -42,6 +42,24 @@ function nodeTypeColor(type: string): string {
   return TYPE_COLOR[type as NodeType] ?? "#8b949e";
 }
 
+/// sprint-20: node lifecycle/health → halo color. Alive is neutral (null = fall
+/// back to the type color); the rest get a distinct ring so an operator sees a
+/// node's state at a glance. Leaving/Dead never reach render (evicted), but are
+/// mapped for completeness.
+const STATE_COLOR: Record<string, string> = {
+  Joining: "#58a6ff", // blue — booting/joining
+  Alive: "", // neutral — use the node-type color
+  Degraded: "#d29922", // amber — over budget / unhealthy
+  Updating: "#a371f7", // purple — rolling/restarting
+  Draining: "#db6d28", // orange — winding down
+  Leaving: "#6e7681", // grey — graceful departure (evicted before render)
+  Dead: "#f85149", // red — crashed (evicted before render)
+};
+function stateColor(state: string | undefined): string {
+  if (!state) return "";
+  return STATE_COLOR[state] ?? "";
+}
+
 function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
   // Sprint-14 B6: the admin-ui is a NORMAL node now (mesh_id=mesh1, type=admin-ui)
   // and renders in its home mesh like everyone. The legacy mesh_id=="admin"
@@ -110,6 +128,12 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
     list.forEach((n, idx) => {
       const ang = (2 * Math.PI * idx) / Math.max(1, list.length) - Math.PI / 2;
       const color = nodeTypeColor(n.type);
+      // sprint-20: the halo/ring is the node's STATE; the fill stays the type
+      // color. Alive → neutral (ring = type color). A non-Alive state rings the
+      // node in its state color + adds a glow so it's unmistakable.
+      const sColor = stateColor(n.state);
+      const ringColor = sColor || color;
+      const stateLabel = n.state && n.state !== "Alive" ? n.state : "";
       nodes.push({
         id: n.id,
         parentNode: `group-${m}`,
@@ -133,6 +157,11 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
               <div style={{ fontSize: 9, color: "#8b949e", marginTop: 2 }}>
                 {n.type}
               </div>
+              {stateLabel && (
+                <div style={{ fontSize: 9, fontWeight: 700, color: ringColor }}>
+                  {stateLabel}
+                </div>
+              )}
               {(n.frames_sent_total ?? 0) > 0 && (
                 <div style={{ fontSize: 9, color: "#3fb950" }}>
                   TX:{n.frames_sent_total}
@@ -158,7 +187,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
         },
         style: {
           background: `${color}33`,
-          border: `2px solid ${color}`,
+          border: `2px solid ${ringColor}`,
+          boxShadow: stateLabel ? `0 0 8px 1px ${ringColor}` : "none",
           color: "#fff",
           width: NODE_W,
           height: NODE_H,
