@@ -272,6 +272,17 @@ async fn run_node(
     // dial ANY node by node_id and send it a Shutdown frame. See send_shutdown().
     let _ = MESH_ENDPOINT.set(transport.endpoint.clone());
 
+    // Register iroh's built-in manual address book on the endpoint. The gossip
+    // receive path feeds it each peer's `location`, so join_peers/connect resolve
+    // by node_id without a discovery lookup (mDNS stays off). See register_peer_location().
+    {
+        let book = iroh::address_lookup::memory::MemoryLookup::with_provenance("rafka-gossip-location");
+        if let Ok(services) = transport.endpoint.address_lookup() {
+            services.add(book.clone());
+        }
+        let _ = MESH_ADDR_BOOK.set(book);
+    }
+
     let sockets = transport.endpoint.bound_sockets();
     let actual_bind_addr = if sockets.is_empty() {
         bind_addr.to_string()
@@ -1068,6 +1079,13 @@ async fn run_backbone(
                                     Some(&ts_ms) => now_ms.saturating_sub(ts_ms) >= TOMBSTONE_GUARD_MS,
                                     None => true,
                                 });
+                            }
+                            // Teach iroh each cross-mesh peer's address so a
+                            // cross-mesh connect (write-sim / control op) can
+                            // resolve by node_id alone — same fix as the per-mesh
+                            // gossip receive, applied to the backbone directory.
+                            for e in &summary.directory {
+                                register_peer_location(&e.node_id, &e.location);
                             }
                             let node_count = summary.aggregate.node_count;
                             backbone_summaries().insert(summary_mesh.clone(), summary);
@@ -2124,6 +2142,9 @@ async fn run_gossip(
 
                         // Normal live digest — insert into the process-global maps.
                         live_digests().insert(d.node_id.clone(), d.clone());
+                        // Teach iroh this peer's address so a later join_peers/connect
+                        // resolves by node_id without a failed discovery lookup.
+                        register_peer_location(&d.node_id, &d.location);
                         // Record local receive-time for clock-skew-safe staleness pruning.
                         {
                             let now_recv = std::time::SystemTime::now()
@@ -2981,6 +3002,27 @@ mod tests {
 /// This process's iroh endpoint, published at boot (run_node) so the same-process
 /// admin-ui HTTP layer can dial arbitrary nodes to send control ops.
 static MESH_ENDPOINT: std::sync::OnceLock<iroh::Endpoint> = std::sync::OnceLock::new();
+
+/// iroh's BUILT-IN manual address book (`MemoryLookup`), registered on the
+/// endpoint at boot. We feed it every peer's `location` learned via gossip so
+/// `join_peers`/`connect` (which take only an `EndpointId`) can resolve the
+/// address WITHOUT a discovery lookup. mDNS stays off; this is the
+/// topology-independent fix for the ~40s "Address Lookup failed" join latency.
+/// NOT a custom AddressLookup — iroh ships this provider; we only populate it.
+static MESH_ADDR_BOOK: std::sync::OnceLock<iroh::address_lookup::memory::MemoryLookup> =
+    std::sync::OnceLock::new();
+
+/// Register a peer's gossiped `location` into the iroh address book so the
+/// endpoint can dial it by `node_id` alone. No-op on empty/self/unparseable.
+fn register_peer_location(node_id_hex: &str, location: &str) {
+    if location.is_empty() {
+        return;
+    }
+    let Some(book) = MESH_ADDR_BOOK.get() else { return };
+    let Ok(pk) = node_id_hex.parse::<PublicKey>() else { return };
+    let Ok(sock) = location.parse::<std::net::SocketAddr>() else { return };
+    book.add_endpoint_info(EndpointAddr::new(pk).with_ip_addr(sock));
+}
 
 /// Fired when a Shutdown control op is received. `wait_for_signal` selects on it,
 /// so the kill reuses the EXISTING graceful-shutdown path (node.stopping + task
