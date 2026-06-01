@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint-21 — Node Lifecycle Control (SetState)</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--bd:#30363d;--fg:#c9d1d9;--dim:#8b949e;--ok:#3fb950;--blue:#58a6ff;--orange:#db6d28;--purple:#a371f7}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,Segoe UI,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:26px;margin:0 0 4px} h2{font-size:18px;margin:30px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+  .sub{color:var(--dim);margin:0 0 8px} .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;background:rgba(63,185,80,.15);color:var(--ok);border:1px solid var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14px} th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top} th{background:var(--panel);color:var(--dim)}
+  code{font-family:ui-monospace,monospace} a{color:var(--blue)} ul{padding-left:22px} li{margin:4px 0}
+  .pill{display:inline-block;padding:1px 8px;border-radius:6px;font-size:12px;font-weight:700;border:1px solid}
+</style></head>
+<body><div class="wrap">
+  <h1>Sprint-21 — Node Lifecycle Control (SetState)</h1>
+  <p class="sub">initiative mesh-v2 · branch <code>mesh-v2</code> → <code>public/mesh-v2</code> · completes PRD-04 §3 · 2026-06-01</p>
+  <p><span class="badge">CLOSED — 7/7 verified</span></p>
+
+  <h2>What shipped</h2>
+  <p>The <code>NodeState</code> enum had <span class="pill" style="color:var(--purple);border-color:var(--purple)">Updating</span>
+  and <span class="pill" style="color:var(--orange);border-color:var(--orange)">Draining</span> but nothing triggered them.
+  Added a <b>non-terminal <code>SetState</code> control op</b> — the sibling of the kill:</p>
+  <ul>
+    <li><b>mesh-ops</b>: <code>InternalMeshFrame::SetState { state }</code> (appended, wire-compat).</li>
+    <li><b>node-base</b>: a <code>REQUESTED_STATE</code> override the digest-builder applies (operator Updating/Draining overrides auto health; Alive resumes/clears). <code>send_set_state</code> / <code>handle_set_state_op</code> mirror the Shutdown op; dispatched on both bi + uni reader paths.</li>
+    <li><b>admin-ui</b>: <code>POST /api/nodes/{name}/state</code> + Nodes-tab <b>drain / upd / resume</b> buttons.</li>
+    <li><b>§10</b>: <code>rafka.mesh.control.state_change_sent</code> / <code>state_change_received</code> locked.</li>
+  </ul>
+  <p>Any console marks any visible node Updating/Draining (or resumes to Alive); the node's next gossip digest
+  publishes it and a state change forces immediate re-publish, so it propagates + renders mesh-wide. Terminal
+  Leaving/Dead are rejected (Leaving = kill via DELETE, Dead = observer-inferred).</p>
+
+  <h2>Acceptance — 7/7 verified live (bidirectional two-console fleet)</h2>
+  <table>
+    <tr><th>Test</th><th>Result</th></tr>
+    <tr><td>T1 build</td><td class="ok">✅ workspace + web build clean; fresh debug binaries gated</td></tr>
+    <tr><td>T2 Draining</td><td class="ok">✅ marked a broker Draining → renders orange on BOTH consoles (home + cross-mesh), not evicted</td></tr>
+    <tr><td>T3 Updating</td><td class="ok">✅ → renders purple on both, not evicted</td></tr>
+    <tr><td>T4 Resume</td><td class="ok">✅ Alive clears the override → back to Alive on both</td></tr>
+    <tr><td>T5 Reject</td><td class="ok">✅ SetState Leaving → 400 (kill stays the DELETE path)</td></tr>
+    <tr><td>T6 Cross-mesh</td><td class="ok">✅ mesh1 Draining/Updating renders on the mesh2 console via the backbone state field</td></tr>
+    <tr><td>T7 UI</td><td class="ok">✅ Playwright topology shot below — broker in the orange Draining ring</td></tr>
+  </table>
+
+  <h2>Proof — Draining rendered (Playwright)</h2>
+  <p><code>mesh1.broker</code> marked Draining via the control op, captured by the verify harness:</p>
+  <a href="../../plans/mesh-v2/verify/screenshots/sprint21-lifecycle/mesh1-console/1-topology.png" target="_blank">
+    <img src="../../plans/mesh-v2/verify/screenshots/sprint21-lifecycle/mesh1-console/1-topology.png"
+         style="width:100%;border:1px solid var(--bd);border-radius:8px" alt="Draining topology"></a>
+
+  <h2>Jaeger</h2>
+  <ul>
+    <li><a href="http://localhost:16686/search?service=mesh1.admin-ui&operation=rafka.mesh.control.state_change_sent&lookback=1h" target="_blank">state_change_sent @ mesh1.admin-ui</a> (the operator command)</li>
+  </ul>
+  <p class="sub">Live consoles: <a href="http://127.0.0.1:19100" target="_blank">:19100</a> · <a href="http://127.0.0.1:19101" target="_blank">:19101</a> — drain/upd/resume on the Nodes tab.</p>
+</div></body></html>
