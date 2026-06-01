@@ -3,27 +3,28 @@
   "slug": "node-lifecycle-control",
   "status": "closed",
   "opens": "2026-06-01",
+  "closes": "2026-06-01",
   "initiative": "mesh-v2",
-  "origin": "User direction after sprint-20: 'finish the NodeState lifecycle' \u00e2\u20ac\u201d the enum has Updating/Draining but nothing triggers them. Wire a drain/rolling-update control op so those states are actually emitted + rendered (extends the control-plane kill).",
-  "objective": "Make the non-terminal NodeState variants (Updating/Draining) reachable + operable: any console sends a SetState control op to any visible node; the node applies it as a self-state override its gossip digest publishes; it propagates + renders mesh-wide. Alive resumes (clears the override). Completes PRD-04 \u00c2\u00a73.",
+  "origin": "User direction after sprint-20: 'finish the NodeState lifecycle' -- the enum has Updating/Draining but nothing triggers them. Wire a drain/rolling-update control op so those states are actually emitted + rendered (extends the control-plane kill).",
+  "objective": "Make the non-terminal NodeState variants (Updating/Draining) reachable + operable: any console sends a SetState control op to any visible node; the node applies it as a self-state override its gossip digest publishes; it propagates + renders mesh-wide. Alive resumes (clears the override). Completes PRD-04 section 3.",
   "design": {
-    "frame": "InternalMeshFrame::SetState { state: String } (mesh-ops, appended LAST for postcard wire-compat; String to avoid a node-base dep \u00e2\u20ac\u201d node-base parses via NodeState::from_name).",
+    "frame": "InternalMeshFrame::SetState { state: String } (mesh-ops, appended LAST for postcard wire-compat; String to avoid a node-base dep -- node-base parses via NodeState::from_name).",
     "override": "node-base REQUESTED_STATE: Mutex<Option<NodeState>>. The digest-builder applies it with precedence: operator Updating/Draining overrides the auto health state (Joining/Degraded/Alive); Alive resume clears it (None -> back to auto). A state CHANGE forces the next publish (<=1 interval).",
     "control_op": "send_set_state mirrors send_shutdown (dial target by node_id+location, write the frame on a bi-stream). handle_set_state_op stores the override. Handled on BOTH bi + uni reader paths for parity. NON-terminal (node lives on, unlike Shutdown).",
     "guard": "Only Updating/Draining/Alive are settable. Leaving/Dead rejected (accepted=false in the received span): Leaving is the kill path (DELETE), Dead is observer-inferred.",
     "ui": "admin-ui POST /api/nodes/{name}/state {state}; Nodes-tab drain/upd/resume buttons. Topology ring already colors all 7 states (Draining orange, Updating purple).",
-    "spans": "rafka.mesh.control.state_change_sent {node_id, peer_id, op_kind=control, state} + state_change_received {..., state, accepted}. Locked in CLAUDE.md \u00c2\u00a710."
+    "spans": "rafka.mesh.control.state_change_sent {node_id, peer_id, op_kind=control, state} + state_change_received {..., state, accepted}. Locked in CLAUDE.md section 10."
   },
   "acceptance_tests": [
     "T1 BUILD: cargo check --workspace --tests --no-default-features = 0/0; web build clean; fresh debug binaries (kill all rafka first, mtime-gate).",
     "T2 DRAINING: console marks a visible node Draining -> the node's digest publishes state=Draining -> renders orange on BOTH consoles (home + cross-mesh backbone), NOT evicted. state_change_sent + state_change_received(accepted=true) spans.",
     "T3 UPDATING: same for Updating -> renders purple, not evicted.",
     "T4 RESUME: Alive resume clears the override -> node returns to Alive (or Degraded if over budget). Override does not stick after resume.",
-    "T5 REJECT: SetState Leaving/Dead -> rejected (accepted=false span), node unchanged (kill stays the DELETE path).",
+    "T5 REJECT: SetState Leaving/Dead -> rejected (400), node unchanged (kill stays the DELETE path).",
     "T6 CROSS-MESH: a Draining/Updating state set on a node in mesh1 renders on the mesh2 console via the backbone directory's state field.",
     "T7 UI: Nodes-tab drain/upd/resume buttons issue the op; Playwright screenshot shows a node in Draining/Updating color."
   ],
-  "spans_vocab": "rafka.mesh.control.state_change_sent / state_change_received (sprint-21, op_kind=control). Locked in CLAUDE.md \u00c2\u00a710.",
+  "spans_vocab": "rafka.mesh.control.state_change_sent / state_change_received (sprint-21, op_kind=control). Locked in CLAUDE.md section 10.",
   "out_of_scope": [
     "app-layer policy for WHAT makes a node Updating/Draining beyond an operator command (keep it operator-triggered)",
     "auto-drain-on-shutdown orchestration",
@@ -35,6 +36,5 @@
     "admin_ui_mesh2": 19101,
     "note": "two cross-seeded consoles (bidirectional now stable after 52e196f); set state via the Nodes tab or POST /api/nodes/{name}/state."
   },
-  "closes": "2026-06-01",
   "status_note": "All 7 verified live on the bidirectional two-console fleet. T2 Draining + T3 Updating render on BOTH consoles (home + cross-mesh backbone), not evicted; T4 Alive resume clears the override; T5 Leaving/Dead rejected (400); T7 Playwright screenshot shows the orange Draining ring. 3 state_change_sent spans fired."
 }
