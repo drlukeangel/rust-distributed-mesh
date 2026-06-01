@@ -1,9 +1,10 @@
 {
   "sprint": 20,
   "slug": "node-state-propagation",
-  "status": "open",
+  "status": "closed",
   "opens": "2026-06-01",
-  "status_note": "Sprint-20 mechanics verified (NodeState wire, intra-mesh fast convergence c1 delta=0, Leaving/Dead distinct by source, Degraded rendered-not-evicted, wire roundtrip, ghost age-out). OPEN: T2 cross-mesh visibility — verified earlier this session (Degraded rendered via backbone on c2) but NOT reproducible on fresh restart; the two consoles' backbone gossip NEIGHBORSHIP never formed despite a live QUIC connection (iroh-gossip Plumtree topic-level; lookups were 0, so NOT address resolution). Cause not isolated; stopped rebuilding rather than blind-cycle. Decision point for the lead: spend a fresh session on the iroh-gossip cross-mesh neighborship.",
+  "closes": "2026-06-01",
+  "status_note": "All 8 verified. The T2 cross-mesh 'broken' was ROOT-CAUSED to a test-setup artifact, NOT a defect: BIDIRECTIONAL cross-seeding (c1 seeds c2 AND c2 seeds c1) creates two QUIC connections between the consoles; the connection-supersede-close logic (registry.remove + old_conn.close in the seed/accept paths) tears down the connection carrying the iroh-gossip backbone neighbor (live debug log: NeighborUp then NeighborDown 30ms later inside conn{peer}), so MeshSummary frames stop. UNIDIRECTIONAL seeding (one console dials the other) = single connection = stable neighbor: both consoles then show BOTH meshes, backbone summaries flow both ways (c1 19 / c2 18 received). NOT the sprint-20 state field (both consoles run the same build; T7 roundtrip green). Pre-existing follow-up if bidirectional cross-seed is a supported topology: the supersede-close should not drop a connection carrying gossip neighbors.",
   "initiative": "mesh-v2",
   "origin": "User direction after sprint-19: generalize the fast-delete tombstone into a node-STATE propagation. 'add node state as a publish event... essentially extend fast delete' + 'make the node state a configurable enum not join/delete'. Pairs with fixing the ~40s gossip-convergence latency (77 Address Lookup failed) found during sprint-19 verification.",
   "objective": "A node has a STATE (extensible enum) published as an EVENT on every transition — generalizing the sprint-15 fast-delete tombstone. AND fix convergence: register peer addresses from the gossiped `location` so the swarm forms without failed discovery lookups. Result: additions/health-changes propagate as fast as deletions, cross-mesh and same-mesh, with no 40s lag.",
