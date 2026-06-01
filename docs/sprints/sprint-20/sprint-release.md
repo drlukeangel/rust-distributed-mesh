@@ -101,12 +101,20 @@ Console1 (mesh1)                          Console2 (mesh2)
   supported topology): the supersede-close should skip a connection that's carrying gossip neighbors, or
   dedup connections by canonical direction (lower node_id dials).
 
-Both consoles showing both meshes (unidirectional seed, two bare consoles):
+Both consoles showing both meshes — full NON-balanced fleet (unidirectional seed),
+`broker.2d47fb` Degraded cross-mesh on both:
 
 ```
-Console1 (mesh1, :19100)                  Console2 (mesh2, :19101)
- mesh1.admin-ui.35a39c -> Alive (home)      mesh1.admin-ui.35a39c -> Alive (backbone)
- mesh2.admin-ui.61a66f -> Alive (backbone)  mesh2.admin-ui.61a66f -> Alive (home)
+Console1 (mesh1, :19100)  meshes=[mesh1,mesh2]   Console2 (mesh2, :19101)  meshes=[mesh1,mesh2]
+ mesh1.admin-ui.35a39c -> Alive   (home)           mesh1.admin-ui.35a39c -> Alive    (backbone)
+ mesh1.broker.137df6   -> Alive   (home)           mesh1.broker.137df6   -> Alive    (backbone)
+ mesh1.broker.2d47fb   -> Degraded(home)           mesh1.broker.2d47fb   -> Degraded (backbone)
+ mesh1.gateway.e9463e  -> Alive   (home)           mesh1.gateway.e9463e  -> Alive    (backbone)
+ mesh2.admin-ui.61a66f -> Alive   (backbone)       mesh2.admin-ui.61a66f -> Alive    (home)
+ mesh2.broker.8a01b2   -> Alive   (backbone)       mesh2.broker.8a01b2   -> Alive    (home)
+ mesh2.compute.5a9d8f  -> Alive   (backbone)       mesh2.compute.5a9d8f  -> Alive    (home)
+ mesh2.gateway.98d261  -> Alive   (backbone)       mesh2.gateway.98d261  -> Alive    (home)
+ mesh2.registry.8c09ef -> Alive   (backbone)       mesh2.registry.8c09ef -> Alive    (home)
 ```
 - **T3 residual on Console2 (~3 lookup-failures / 25s, ongoing):** NOT a flaw in the `MemoryLookup` fix.
   These are phantom lookups for **ghost pre-mint identities** (see below) — node_ids no real node owns, so
