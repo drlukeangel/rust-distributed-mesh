@@ -2310,9 +2310,13 @@ async fn dial_seeds(
                             info!(peer_id = %peer_id_str, "peer connected (outbound)");
                         });
 
-                        if let Some((_, old_conn)) = registry.remove(&peer_id_str) {
-                            old_conn.close(0u32.into(), b"superseded by new connection");
-                        }
+                        // Adopt the newest connection for the data plane WITHOUT
+                        // force-closing the prior one: two mutually-seeded nodes
+                        // dialing each other produce duplicate connections, and a
+                        // CONNECTION_CLOSE here tears down a connection iroh-gossip
+                        // is using as a backbone neighbor (observed: NeighborUp then
+                        // NeighborDown 30ms later). The stale connection idle-times-out
+                        // on its own (max_idle_timeout). See sprint-20 release notes.
                         registry.insert(peer_id_str.clone(), conn.clone());
 
                         send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
@@ -2398,9 +2402,9 @@ async fn watch_mdns(
                         info!(peer_id = %peer_id_str, "peer connected via mdns (outbound)")
                     });
 
-                    if let Some((_, old_conn)) = reg.remove(&peer_id_str) {
-                        old_conn.close(0u32.into(), b"superseded by new connection");
-                    }
+                    // Adopt newest without force-closing the prior (see the dial-path
+                    // note above): a CONNECTION_CLOSE would drop an iroh-gossip neighbor
+                    // riding a duplicate connection. Stale conn idle-times-out.
                     reg.insert(peer_id_str.clone(), conn.clone());
 
                     send_hello(&conn, &own, own_mesh_id, own_node_type, &peer_id_str).await;
@@ -2478,9 +2482,11 @@ async fn start_accept_loop(
                                 info!(peer_id = %peer_id, "peer connected (inbound)");
                             });
 
-                            if let Some((_, old_conn)) = reg.remove(&peer_id) {
-                                old_conn.close(0u32.into(), b"superseded by new connection");
-                            }
+                            // Adopt newest without force-closing the prior (see the
+                            // dial-path note): the accept side is where a mutually-seeded
+                            // peer's inbound would otherwise supersede+close our live
+                            // outbound and drop the backbone gossip neighbor. Stale conn
+                            // idle-times-out.
                             reg.insert(peer_id.clone(), conn.clone());
 
                             send_hello(&conn, &own_id, own_mesh_id, own_node_type, &peer_id).await;
