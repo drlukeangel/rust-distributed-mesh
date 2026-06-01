@@ -1450,15 +1450,22 @@ fn recently_evicted(
 pub fn evict_node(node_id: &str, source: &str) {
     // Gate the span on whether the node was actually present: Plumtree fanout
     // delivers the same state ~17× per observer; the FIRST removal returns Some,
-    // the rest are no-ops. The guard is updated unconditionally so an in-flight
-    // live digest can't resurrect the node even if it wasn't present here yet.
+    // the rest are no-ops.
     let was_present = live_digests().remove(node_id).is_some();
     last_seen_ms().lock().unwrap().remove(node_id);
     for mut entry in topic_membership().iter_mut() {
         entry.value_mut().remove(node_id);
     }
-    let now_ms = now_unix_ms();
-    recently_evicted().lock().unwrap().insert(node_id.to_string(), now_ms);
+    // The resurrection guard applies ONLY to a DEFINITIVE departure (a received
+    // `Leaving` — source "gossip_receive"): there, a stale in-flight digest must
+    // not re-add the node. A `staleness_dead` eviction is an INFERENCE — the node
+    // went quiet but may be alive-but-slow. Guarding it would block its own
+    // re-published digests and trap a live node permanently evicted. So do NOT
+    // guard staleness: a still-alive node recovers on its next digest; a truly
+    // dead one is simply re-evicted on the next sweep.
+    if source != "staleness_dead" {
+        recently_evicted().lock().unwrap().insert(node_id.to_string(), now_unix_ms());
+    }
 
     if was_present {
         tracing::info_span!(
