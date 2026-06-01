@@ -480,6 +480,14 @@ async fn run_node(
         tokio::spawn(run_bi_echo_acceptor(endpoint, node_id_be))
     };
 
+    // Seed ids captured BEFORE dial_seeds consumes seed_nodes. Used to bootstrap
+    // the backbone gossip swarm: a remote console's backbone subscription must JOIN
+    // the existing swarm across the cross-seed bridge. Subscribing with an empty
+    // bootstrap + relying on later join_peers did NOT reliably bridge two fleets'
+    // backbone swarms (a mesh1 console never received mesh2's MeshSummary even
+    // though hop-1 gateway->same-mesh-console worked).
+    let backbone_seed_ids: Vec<PublicKey> = seed_nodes.iter().map(|s| s.id).collect();
+
     let dial_handle = if !seed_nodes.is_empty() {
         let node_id_dial = node_id.clone();
         let endpoint = transport.endpoint.clone();
@@ -556,6 +564,7 @@ async fn run_node(
             is_publisher,
             backbone_interval_ms,
             registry_bb,
+            backbone_seed_ids,
             backbone_tombstone_rx,
         )))
     } else {
@@ -823,6 +832,7 @@ async fn run_backbone(
     is_publisher: bool,
     interval_ms: u64,
     registry: PeerRegistry,
+    bootstrap_peers: Vec<PublicKey>,
     mut backbone_tombstone_rx: tokio::sync::mpsc::UnboundedReceiver<BackboneTombstone>,
 ) {
     use futures_lite::StreamExt;
@@ -833,7 +843,7 @@ async fn run_backbone(
     const LEASE_MULTIPLIER: u64 = 3;
     let ttl_ms = interval_ms.saturating_mul(LEASE_MULTIPLIER).max(3_000);
 
-    let topic = match gossip.subscribe(backbone_topic, Vec::new()).await {
+    let topic = match gossip.subscribe(backbone_topic, bootstrap_peers).await {
         Ok(t) => t,
         Err(e) => {
             tracing::info_span!("rafka.mesh.backbone.subscribe_failed", node_id = %node_id, error = %e)
@@ -1092,11 +1102,13 @@ async fn run_backbone(
                             )
                             .in_scope(|| info!(dead_node_id = %t.node_id, dead_mesh_id = %t.mesh_id, "backbone tombstone applied — cross-mesh fast eviction"));
                         }
-                        Err(_) => {
-                            // Silently ignore decode failures (e.g. old build
-                            // that still sends bare MeshSummary). They won't
-                            // appear after the first full rebuild but are
-                            // harmless — the fallback is the staleness pruner.
+                        Err(e) => {
+                            // A decode failure here means a peer on an OLDER build is
+                            // broadcasting a pre-BackboneMessage format (bare MeshSummary).
+                            // Surfaced at debug to flag version skew without spamming;
+                            // the staleness pruner is the fallback. (Caught a stale
+                            // target/debug node binary during sprint-19 verification.)
+                            tracing::debug!(size = msg.content.len(), error = %e, "backbone message decode failed (build/version skew?)");
                         }
                     }
                 }
@@ -3075,6 +3087,33 @@ mod gossip_digest_schema_tests {
         // Wire-size budget: digest must remain under 200 bytes for typical
         // small-mesh values to fit inside QUIC datagram MTU comfortably.
         assert!(bytes.len() < 200, "digest is {} bytes, must stay under 200", bytes.len());
+    }
+
+    #[test]
+    fn backbone_message_summary_postcard_roundtrip() {
+        let summary = MeshSummary {
+            mesh_id: "mesh2".into(),
+            directory: vec![
+                MeshDirectoryEntry { node_name: "mesh2.gateway.aaaaaa".into(), node_type: "gateway".into(), node_id: "a".repeat(64), location: "127.0.0.1:15920".into() },
+                MeshDirectoryEntry { node_name: "mesh2.broker.bbbbbb".into(), node_type: "broker".into(), node_id: "b".repeat(64), location: "127.0.0.1:15921".into() },
+            ],
+            aggregate: MeshAggregate { node_count: 2, cpu_used: 0.1, cpu_budget: 10.0, ram_used: 0.2, ram_budget: 5.0, frames_per_sec: 3.0 },
+            published_by: "c".repeat(64),
+            wall_time_ms: 1_780_000_000_000,
+            expires_at_ms: 1_780_000_006_000,
+        };
+        let msg = BackboneMessage::Summary(summary);
+        let bytes = postcard::to_allocvec(&msg).expect("encode BackboneMessage");
+        let decoded: BackboneMessage = postcard::from_bytes(&bytes)
+            .unwrap_or_else(|e| panic!("DECODE FAILED ({} bytes): {e}", bytes.len()));
+        match decoded {
+            BackboneMessage::Summary(s) => {
+                assert_eq!(s.mesh_id, "mesh2");
+                assert_eq!(s.directory.len(), 2);
+                assert_eq!(s.aggregate.node_count, 2);
+            }
+            other => panic!("expected Summary, got {other:?}"),
+        }
     }
 }
 
