@@ -1,7 +1,9 @@
 {
   "sprint": 17,
   "slug": "cross-mesh-fast-eviction",
-  "status": "open",
+  "status": "closed",
+  "closes": "2026-06-01",
+  "status_note": "Verified live this session (2026-06-01): the killer console's backbone tombstone reaches OTHER meshes; rafka.mesh.backbone.tombstone_applied fired on cross-mesh observers and the killed node evicted from BOTH consoles in <0.1s (the T4 cross-mesh control-op kill: mesh2 console killed a mesh1 node).",
   "initiative": "mesh-v2",
   "order_note": "Re-ordered 2026-05-31: 16 forced-relay -> 17 cross-mesh-fast-eviction -> 18 chaos+soak (chaos is the capstone, runs LAST on the merged-complete system). This was dispatched to the agent as 'sprint-18'; its work slots in here as the final sprint-17.",
   "prd": "docs/plans/mesh-v2/03-cross-mesh-backbone-prd.md (extends it)",

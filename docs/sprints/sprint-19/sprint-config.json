@@ -1,0 +1,28 @@
+{
+  "sprint": 19,
+  "slug": "control-plane-kill",
+  "status": "closed",
+  "opens": "2026-05-31",
+  "closes": "2026-06-01",
+  "status_note": "Verified live this session (2026-06-01): a mesh1 console killed a mesh2 node it does NOT own (no OS-process ownership) via InternalMeshFrame::Shutdown; target emitted node.stopping reason=control_op + self-tombstoned, evicted from BOTH consoles in <0.1s. The full control-op kill path. Extended into the SetState lifecycle op in sprint-21.",
+  "initiative": "mesh-v2",
+  "origin": "Emerged from a user correction during sprint-17/18 work: killing a node must be a MESH CONTROL OP any console can issue to any visible node — NOT the central-orchestrator hack where admin-ui owns the OS child and TerminateProcess-es it (so it could only kill its own spawns). See memory feedback_kill_is_mesh_control_op.",
+  "objective": "A console kills ANY node it can see, in ANY mesh, with NO OS-process ownership. The kill is a control op (InternalMeshFrame::Shutdown) sent to the target; the target self-terminates (node.stopping + broadcasts its own gossip tombstone + graceful exit). Supersedes the OS-ownership kill path from sprint-15.",
+  "mechanism": "InternalMeshFrame::Shutdown { reason } (op_kind=control). admin-ui kill_one resolves the target's node_id+location from live_digests (own mesh) OR the backbone directory (other meshes) OR its spawn registry, then node_base::send_shutdown dials the node (direct or relay) and writes the Shutdown frame. run_bi_reader dispatches it to handle_shutdown_op → broadcast_tombstone(self) + trigger_self_shutdown → wait_for_signal returns 'control_op' → standard graceful shutdown. The killing console also broadcasts the backbone tombstone for cross-mesh eviction. No state.processes membership required.",
+  "acceptance_tests": [
+    "T1 BUILD: cargo check --workspace --tests --no-default-features = 0/0.",
+    "T2 CROSS-CONSOLE / CROSS-MESH KILL (the user's scenario, MEASURED): two cross-seeded consoles — Console1 mesh1 :19100, Console2 mesh2 :19101. Console2 spawns mesh2 nodes incl a 2nd mesh2 gateway. From CONSOLE1 (mesh1, which did NOT spawn it), DELETE that mesh2 gateway. ASSERT: (a) the target OS process actually exits (pid gone); (b) it disappears from BOTH consoles' /api/topology-cache within <5s, MEASURED, with RAFKA_STALENESS_MS=120000 so the pruner cannot be the cause.",
+    "T3 CONTROL-OP SPANS (Jaeger): rafka.mesh.control.shutdown_sent on mesh1.admin-ui (op_kind=control, peer_id=target); rafka.mesh.control.shutdown_received on the target node; rafka.mesh.node.stopping (reason=control_op) on the target. Link a trace.",
+    "T4 NO OWNERSHIP REQUIRED (code): kill_one resolves the target from gossip/backbone/spawn-registry and sends a control op; grep proves it does NOT require state.processes membership and does NOT TerminateProcess-on-own-child as the kill mechanism (the only TerminateProcess is an OPTIONAL reap when the console happens to own the child).",
+    "T5 SELF-TOMBSTONE: the killed node broadcasts its OWN gossip tombstone before exit — rafka.mesh.tombstone.applied fires on its same-mesh peers (Console2) via the gossip receive path, independent of the cross-mesh backbone tombstone.",
+    "T6 UI PROOF (admin-ui IS the proof): before/after screenshots on BOTH consoles (Topology + Cache tabs) showing the mesh2 gateway present, then gone after the Console1 kill. Lead personally verifies."
+  ],
+  "supersedes": "sprint-15/17 kill TRIGGER (admin-ui TerminateProcess on own Child). The tombstone EVICTION propagation (sprint-15 gossip + sprint-17 backbone) is unchanged and still used.",
+  "spans_to_emit": [
+    { "name": "rafka.mesh.control.shutdown_sent", "attributes": ["node_id", "peer_id", "op_kind", "reason"], "description": "Console dialed target + wrote Shutdown frame." },
+    { "name": "rafka.mesh.control.shutdown_received", "attributes": ["node_id", "peer_id", "op_kind", "reason"], "description": "Target received Shutdown; self-tombstones + graceful exit." }
+  ],
+  "out_of_scope": ["authz on who may issue a kill (future)", "drain/migrate ops (only shutdown for now)", "changing the tombstone eviction propagation"],
+  "proof_artifacts": "docs/plans/mesh-v2/verify/screenshots/sprint19-control-kill/",
+  "ports": { "admin_ui_mesh1": 19100, "admin_ui_mesh2": 19101, "node_bind_mesh1": 14819, "node_bind_mesh2": 14829, "spawn_port_base": 15820, "note": "cross-seed Console2 to Console1; RAFKA_STALENESS_MS=120000" }
+}

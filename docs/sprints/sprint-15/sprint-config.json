@@ -1,9 +1,10 @@
 {
   "sprint": 15,
   "slug": "tombstone-fast-eviction",
-  "status": "open",
+  "status": "closed",
   "opens": "2026-05-31",
-  "closes": null,
+  "closes": "2026-06-01",
+  "status_note": "Verified live this session (2026-06-01): a control-op kill broadcasts the gossip tombstone (GossipDigest state=Leaving), evicting the node from its own mesh in <0.1s; apply_tombstone source=gossip_receive on observers (the T4 Leaving path). Generalized into NodeState in sprint-20.",
   "in_scope": [
     "gossip tombstone: leaving=true flavor of GossipDigest for fast eviction",
     "apply_tombstone() shared function: evicts from live_digests, topic_membership, last_seen_ms",
