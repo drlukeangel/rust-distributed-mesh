@@ -1886,13 +1886,13 @@ async fn spawn_one(
     if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
         return Err(format!("failed to create spawn dir: {e}"));
     }
-    let identity_json = serde_json::json!({
-        "secret_key_hex": hex::encode(secret_key.to_bytes())
-    });
-    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
-    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
-        return Err(format!("failed to write child identity: {e}"));
-    }
+    // 2026-06-01 fix: the child receives its pre-minted key via RAFKA_NODE_SECRET_KEY
+    // (set on cmd below), NOT via a written file. The prior file-write was the source
+    // of a concurrent-spawn race: under a parallel bootstrap, a child could load a
+    // DIFFERENT identity than admin-ui recorded -> duplicate node_id -> seed dial TLS
+    // "UnknownIssuer" -> ghost. Passing the key directly makes booted-identity ==
+    // recorded-identity by construction. The child persists it to spawn_dir itself.
+    let secret_key_hex = hex::encode(secret_key.to_bytes());
 
     // Default to debug builds (fast iteration). Set RAFKA_CHILD_BUILD_PROFILE=release
     // to spawn release-optimized children — required for realistic per-node CPU
@@ -1966,6 +1966,10 @@ async fn spawn_one(
     // OTEL_RESOURCE_ATTRIBUTES / RAFKA_NODE_NAME here.
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
         .env("RAFKA_DATA_DIR", &spawn_dir)
+        // Race-free spawn identity (2026-06-01 fix): the child boots THIS exact key,
+        // so its node_id matches the name + seed entry admin-ui recorded. Set before
+        // extra_env so it can't be shadowed.
+        .env("RAFKA_NODE_SECRET_KEY", &secret_key_hex)
         .env("RUST_LOG", &rust_log);
 
     for (k, v) in &extra_env {

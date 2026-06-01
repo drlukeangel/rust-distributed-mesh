@@ -2851,6 +2851,35 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
     tokio::fs::create_dir_all(data_dir).await?;
     let identity_path = data_dir.join("node-identity.json");
 
+    // 2026-06-01 fix: a pre-minted key passed via RAFKA_NODE_SECRET_KEY is the SOURCE
+    // OF TRUTH and wins over any file. admin-ui spawns children with the EXACT key it
+    // used to derive the node_name + seed entry, so the booted identity can never
+    // diverge from the recorded one. This eliminates the concurrent-spawn file
+    // round-trip race where a child loaded a DIFFERENT identity than admin-ui recorded
+    // -> duplicate node_id -> seed dial TLS "invalid peer certificate: UnknownIssuer"
+    // -> ghost. Both this early load AND run_node's later load read the same env key,
+    // so the dual-load stays consistent. DEV-SPAWN ONLY: the key rides the child env
+    // block; NOT a production identity-provisioning pattern.
+    if let Ok(hex_key) = std::env::var("RAFKA_NODE_SECRET_KEY") {
+        let hex_key = hex_key.trim();
+        if !hex_key.is_empty() {
+            let bytes = hex::decode(hex_key)
+                .map_err(|e| anyhow::anyhow!("RAFKA_NODE_SECRET_KEY not valid hex: {e}"))?;
+            let key_bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("RAFKA_NODE_SECRET_KEY must be 32 bytes"))?;
+            let secret_key = SecretKey::from_bytes(&key_bytes);
+            // Persist for restart stability if nothing is on disk yet (don't clobber).
+            if !identity_path.exists() {
+                let identity = NodeIdentity { secret_key_hex: hex::encode(secret_key.to_bytes()) };
+                let _ = tokio::fs::write(&identity_path, serde_json::to_string_pretty(&identity)?).await;
+            }
+            info!(path = ?identity_path, node_id = %secret_key.public(), source = "env",
+                  "loaded identity from RAFKA_NODE_SECRET_KEY (race-free spawn identity)");
+            return Ok(secret_key);
+        }
+    }
+
     if identity_path.exists() {
         let raw = tokio::fs::read_to_string(&identity_path).await?;
         let stored: NodeIdentity = serde_json::from_str(&raw)?;
