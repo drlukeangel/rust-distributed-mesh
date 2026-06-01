@@ -74,9 +74,11 @@ churn) and resolved with unidirectional seeding — NOT the backbone design or t
   **Unidirectional seeding** (one console dials the other → single connection → no supersede) is stable:
   both consoles then show **both meshes** and summaries flow both ways (c1 19 / c2 18 received). This is
   NOT the backbone design and NOT the sprint-20 `state` field (both consoles run the same build; the T7
-  postcard roundtrip is green). **Pre-existing follow-up** (only if bidirectional cross-seed is a
-  supported topology): the supersede-close should skip a connection that's carrying gossip neighbors, or
-  dedup connections by canonical direction (lower node_id dials).
+  postcard roundtrip is green). **FIXED** (commit `52e196f`): the supersede path no longer force-closes a
+  superseded-but-live connection (all three registry-insert sites) — it adopts the newest for the data
+  plane and lets the stale one idle-time-out, so a duplicate connection from bidirectional cross-seeding
+  no longer drops the gossip neighbor. Verified: bidirectional cross-seed now shows BOTH meshes on both
+  consoles (backbone.received c1 87 / c2 36, was 0); one-directional child->console dials are unaffected.
 
 Both consoles showing both meshes — full NON-balanced fleet (unidirectional seed),
 `broker.2d47fb` Degraded cross-mesh on both:
