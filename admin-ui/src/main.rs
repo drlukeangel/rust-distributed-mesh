@@ -2212,9 +2212,15 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
             "shutdown control op send failed — broadcasting tombstone anyway to evict from views");
     }
 
-    // Cross-mesh eviction: the target's self-tombstone covers ITS mesh gossip; the
-    // backbone tombstone covers every OTHER mesh (gateways + consoles) and is the
-    // fallback if the op send failed because the node was already gone.
+    // Eviction is broadcast by THIS (alive) console, not left to the dying node —
+    // the target exits before its own gossip flushes, so relying on its self-
+    // tombstone leaves it lingering until the 120s staleness sweep. The admin-ui is
+    // alive and in its mesh's gossip, so its same-mesh tombstone evicts the node
+    // immediately for same-mesh targets; the backbone tombstone covers every OTHER
+    // mesh. (The target's own self-tombstone in handle_shutdown_op still helps its
+    // mesh when the killer is foreign to it.) broadcast_tombstone on a foreign-mesh
+    // target is a harmless no-op on our own topic.
+    rafka_node_base::broadcast_tombstone(&node_id);
     broadcast_backbone_tombstone(&node_id, &mesh_id, &state.admin_node_id_hex);
 
     // If we happen to own this node's OS process (we spawned it), reap it — it's

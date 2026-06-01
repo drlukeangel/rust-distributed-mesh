@@ -2990,6 +2990,10 @@ pub async fn send_shutdown(target_node_id: &str, location: &str, reason: &str) -
     let bytes = span.in_scope(|| frame.encode_with_context(&Span::current().context()));
     send.write_all(&bytes).await?;
     send.finish()?;
+    // Hold the connection open until the target reads the frame and acts on it —
+    // it closes the connection when it self-terminates. Returning here immediately
+    // would drop `conn`, resetting the stream before the target's accept_bi reads it.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), conn.closed()).await;
     span.in_scope(|| info!(target = %target_node_id, "shutdown control op sent"));
     Ok(())
 }
