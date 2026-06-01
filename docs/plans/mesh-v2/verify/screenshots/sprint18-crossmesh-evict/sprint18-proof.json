@@ -1,35 +1,83 @@
 {
-  "staleness_ms": 120000,
-  "console2_mesh": "mesh2",
-  "before_kill": "mesh1.broker.23b45d present in console2 topology-cache via source=backbone",
-  "kill_command": "DELETE http://127.0.0.1:19100/api/nodes/mesh1.broker.23b45d",
-  "kill_console": "console1 (mesh1, port 19100)",
-  "spans": {
-    "published": {
-      "node_id": "7a595e5fb3836eee5fe4bd9e74afbae4ba92389558486757a0565ce7c8273ff2",
-      "service": "mesh1.admin-ui",
-      "dead_node_id": "23b45d08c0239424b12603c6792f1b9abfe9303e27748fcf5e99ee2ea0fd1263",
-      "operation": "rafka.mesh.backbone.tombstone_published"
+  "setup": {
+    "console1_node_id": "7a595e5fb3836eee5fe4bd9e74afbae4ba92389558486757a0565ce7c8273ff2",
+    "staleness_ms": 120000,
+    "cross_seeded_via_launch_env": true,
+    "console2_node_id": "ea544387e9ac9eb5465c258c84eca4eedeb258c34ee0f1c08c9aaad23c7f89c9",
+    "console1_port": 19100,
+    "console2_mesh": "mesh2",
+    "console2_port": 19101,
+    "backbone_interval_ms": 2000,
+    "console1_mesh": "mesh1"
+  },
+  "T4_test": {
+    "target": "mesh2.broker.b86df6",
+    "eviction_time_ms": 10,
+    "result": "PASS — same-mesh sprint-15 gossip tombstone unaffected",
+    "killer": "Console2 (mesh2)"
+  },
+  "test_run": "2026-05-31T20:08:17Z",
+  "T5_test": {
+    "result": "PASS — crash fallback intact; tombstone code only on kill_one path (graceful shutdown)",
+    "scenario": "OS-killed broker (no kill_one, no tombstone)",
+    "staleness_pruner_spans": "rafka.mesh.staleness.pruned fires on mesh1.admin-ui and mesh1.gateway in Jaeger",
+    "no_tombstone_spans_for_crash": "Verified: no backbone tombstone published for crash-killed node",
+    "staleness_ms_for_test": 15000
+  },
+  "jaeger_urls": {
+    "tombstone_applied_gateway": "http://localhost:16686/search?service=mesh1.gateway&operation=rafka.mesh.backbone.tombstone_applied&lookback=1h",
+    "tombstone_applied_mesh2": "http://localhost:16686/search?service=mesh2.admin-ui&operation=rafka.mesh.backbone.tombstone_applied&lookback=1h",
+    "tombstone_published": "http://localhost:16686/search?service=mesh1.admin-ui&operation=rafka.mesh.backbone.tombstone_published&lookback=1h"
+  },
+  "T6_code_review": {
+    "no_direct_map_writes": "apply_tombstone uniformly removes from live_digests + topic_membership + last_seen_ms",
+    "result": "PASS — no hand-editing another process's maps",
+    "eviction_path": "run_backbone receive path: BackboneMessage::Tombstone → apply_tombstone(source='backbone_receive')"
+  },
+  "test_results_summary": {
+    "T1": "PASS — cargo check --workspace --tests --no-default-features = 0/0",
+    "T5": "PASS — crash fallback intact (staleness pruner active, tombstone only on kill_one path)",
+    "T4": "PASS — same-mesh tombstone unaffected, 10ms",
+    "T6": "PASS — eviction via uniform backbone gossip receive path, no hand-editing",
+    "T2": "PASS — 11ms eviction (<<5s), STALENESS_MS=120000",
+    "T3": "PASS — backbone tombstone spans in Jaeger (published on mesh1.admin-ui, applied on mesh2.admin-ui + mesh1.gateway), all same dead_node_id"
+  },
+  "T2_T3_test": {
+    "spans_in_jaeger": {
+      "tombstone_applied_mesh1_gateway": {
+        "trace_id": "9d6a57a71012ba5152e330ede03b960e",
+        "operation": "rafka.mesh.backbone.tombstone_applied",
+        "note": "Gateway evicted from live_digests; next MeshSummary publish omits dead node",
+        "service": "mesh1.gateway"
+      },
+      "tombstone_applied_mesh2_admin_ui": {
+        "trace_id": "4c0bd9e0979e8d00c7e200eb2112d2bd",
+        "operation": "rafka.mesh.backbone.tombstone_applied",
+        "note": "This is what cleared console2 backbone_summaries immediately",
+        "service": "mesh2.admin-ui"
+      },
+      "tombstone_published": {
+        "published_by": "7a595e5fb3836eee5fe4bd9e74afbae4ba92389558486757a0565ce7c8273ff2",
+        "service": "mesh1.admin-ui",
+        "operation": "rafka.mesh.backbone.tombstone_published",
+        "trace_id": "248cb8e7209277a55c026d1bc1b45398",
+        "dead_node_id": "b90285cb9b4d234d6ba8af1f762105637ab89b93fe6fc7e6046bc1dd6fddd53f",
+        "dead_mesh_id": "mesh1"
+      }
     },
-    "applied_gateway": {
-      "node_id": "5e49d62262f5d43d8ac6ac09605146bb622598c40b0d8acc52dbeed759a46e60",
-      "service": "mesh1.gateway",
-      "dead_node_id": "6506c6a77beb937edf341b044be53df9e6079551d4227962e761a1f54a3bf53a",
-      "operation": "rafka.mesh.backbone.tombstone_applied"
-    }
-  },
-  "test": "T2/T3 cross-mesh fast eviction",
-  "console2_port": 19101,
-  "staleness_note": "STALENESS_MS=120000 means pruner cannot evict in 9ms — backbone tombstone did it",
-  "eviction_time_note": "measured: 9ms after kill API returned, well under 5s",
-  "test_results": {
-    "T1": "PASS - cargo check --workspace --tests --no-default-features = 0/0",
-    "T3": "PASS - backbone tombstone spans in Jaeger prove eviction via backbone, not pruner (STALENESS_MS=120s)",
-    "T4": "PASS - same-mesh broker evicted in 10ms (sprint-15 gossip tombstone unaffected)",
-    "T2": "PASS - mesh1.broker.23b45d evicted from console2 topology-cache in 9ms (well under 5s)",
-    "T5": "PASS - crash fallback intact: staleness pruner runs every 5s, evicts after 120s",
-    "T6": "PASS - eviction via backbone gossip receive path (apply_tombstone called uniformly)"
-  },
-  "timestamp": "2026-05-31T19:57:36Z",
-  "eviction_time_ms": 9
+    "after_kill": {
+      "in_console1": "GONE (immediate, same-mesh gossip tombstone)",
+      "eviction_time_ms": 11,
+      "in_console2": "GONE",
+      "eviction_time_note": "11ms after kill API returned (STALENESS_MS=120s — pruner cannot evict in 11ms)"
+    },
+    "target_node": "mesh1.broker.b90285",
+    "killer": "Console1 (mesh1 admin-ui)",
+    "observer": "Console2 (mesh2 admin-ui)",
+    "before_kill": {
+      "in_console1": "PRESENT (source=gossip)",
+      "in_console2": "PRESENT (source=backbone)"
+    },
+    "target_node_id": "b90285cb9b4d234d6ba8af1f762105637ab89b93fe6fc7e6046bc1dd6fddd53f"
+  }
 }
