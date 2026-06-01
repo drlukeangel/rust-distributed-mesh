@@ -1360,16 +1360,32 @@ pub struct GossipDigest {
     /// only nodes on the same gossip topic = same build = same struct layout).
     #[serde(default)]
     pub location: String,
-    /// Sprint-15 tombstone flag. When `true`, this is a LEAVING marker:
-    /// receivers IMMEDIATELY evict this node_id from live_digests /
-    /// topic_membership / last_seen_ms rather than waiting 30s for the
-    /// staleness pruner. Emitted by `broadcast_tombstone` (called by the
-    /// admin-ui's `kill_one` path after TerminateProcess). The flag is at
-    /// the END of the struct so postcard-encoding is back-compatible: old
-    /// peers that don't decode this field treat it as missing (default=false)
-    /// and simply file the nearly-empty digest normally (no harm).
+    /// Node lifecycle/health state (sprint-20) — published as an EVENT on every
+    /// transition; generalizes the sprint-15 `leaving` tombstone flag. Self-
+    /// published for Joining/Alive/Degraded/Updating/Draining/Leaving; `Dead` is
+    /// observer-assigned (a node that vanished without `Leaving`). Receivers evict
+    /// on `Leaving`/`Dead` (the old fast-delete); other states upsert + render.
+    /// Last field so the postcard layout stays append-only on the same-build topic.
     #[serde(default)]
-    pub leaving: bool,
+    pub state: NodeState,
+}
+
+/// Node lifecycle/health, published as an event on every transition (sprint-20;
+/// generalizes the sprint-15 tombstone). LOCKED, append-only enum (CLAUDE.md §10):
+/// never remove or repurpose a variant; new variants append at the END (the
+/// postcard discriminant is positional). Self-published: Joining/Alive/Degraded/
+/// Updating/Draining/Leaving. Observer-inferred: Dead (a node that vanished with
+/// no Leaving — the staleness/crash fallback, now a visible state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum NodeState {
+    Joining,
+    #[default]
+    Alive,
+    Degraded,
+    Updating,
+    Draining,
+    Leaving,
+    Dead,
 }
 
 /// Process-wide monotonic counters. Incremented at every uni-stream / bi-stream
@@ -1920,7 +1936,7 @@ async fn run_gossip(
                     ram_used: load.ram_used,
                     ram_budget: load.ram_budget,
                     location: location.clone(),
-                    leaving: false, // normal live digest
+                    state: NodeState::Alive, // normal live digest
                 };
                 
                 let mut should_broadcast = false;
@@ -2025,7 +2041,7 @@ async fn run_gossip(
                     ram_used: 0.0,
                     ram_budget: 0.0,
                     location: String::new(),
-                    leaving: true,
+                    state: NodeState::Leaving,
                 };
                 match postcard::to_allocvec(&tombstone_digest) {
                     Ok(payload) => {
@@ -2073,17 +2089,17 @@ async fn run_gossip(
                     let from = msg.delivered_from.to_string();
                     let digest: Option<GossipDigest> = postcard::from_bytes(&msg.content).ok();
                     if let Some(d) = &digest {
-                        // Sprint-15: tombstone path — FAST eviction.
-                        // A digest with leaving=true means the node is dead.
-                        // Immediately evict from all three process-global maps.
-                        // This is the gossip-native, uniform mechanism: every
-                        // subscriber's receive path runs this code, so all
-                        // observers (home-mesh admin-ui, gateways, backbone
-                        // publisher) evict simultaneously — NOT via a local
-                        // hand-edit.
-                        if d.leaving {
+                        // Sprint-15/20: terminal-state path — FAST eviction.
+                        // A digest in a terminal state (Leaving = graceful departure,
+                        // Dead = observer-inferred crash) means the node is gone.
+                        // Immediately evict from all three process-global maps. This
+                        // is the gossip-native, uniform mechanism: every subscriber's
+                        // receive path runs this code, so all observers (home-mesh
+                        // admin-ui, gateways, backbone publisher) evict simultaneously
+                        // — NOT via a local hand-edit. Non-terminal states (Joining/
+                        // Alive/Degraded/Updating/Draining) fall through and upsert.
+                        if matches!(d.state, NodeState::Leaving | NodeState::Dead) {
                             apply_tombstone(&d.node_id, "gossip_receive");
-                            // No further processing for a leaving digest.
                             continue;
                         }
 
@@ -2129,10 +2145,10 @@ async fn run_gossip(
                     let summary = digest
                         .as_ref()
                         .map(|d| {
-                            if d.leaving {
-                                format!("TOMBSTONE node={}", d.node_id)
+                            if matches!(d.state, NodeState::Leaving | NodeState::Dead) {
+                                format!("{:?} node={}", d.state, d.node_id)
                             } else {
-                                format!("node={}/peers={}", d.node_name, d.peer_count)
+                                format!("node={}/peers={}/state={:?}", d.node_name, d.peer_count, d.state)
                             }
                         })
                         .unwrap_or_else(|| "<decode_failed>".to_string());
@@ -3084,7 +3100,7 @@ mod gossip_digest_schema_tests {
             ram_used: 0.31,
             ram_budget: 2.0,
             location: "127.0.0.1:14820".into(),
-            leaving: false,
+            state: NodeState::Alive,
         };
         let bytes = postcard::to_allocvec(&original).expect("encode");
         let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
@@ -3152,7 +3168,7 @@ mod staleness_pruner_tests {
             ram_used: 0.0,
             ram_budget: 0.0,
             location: String::new(),
-            leaving: false,
+            state: NodeState::Alive,
         }
     }
 

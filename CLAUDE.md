@@ -119,6 +119,8 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 
 **`node_type` enum (locked):** `"gateway"`, `"broker"`, `"compute"`, `"registry"`, `"admin-ui"` (sprint-14 B6 — the operator console is now a normal mesh node: `RAFKA_MESH_ID=<real mesh>`, self-names `<mesh>.admin-ui.<6hex>`, joins its home mesh's gossip + consumes the backbone; NO flat/`"admin"` special case). Future node types append.
 
+**`NodeState` enum (locked, sprint-20):** `Joining`, `Alive`, `Degraded`, `Updating`, `Draining`, `Leaving`, `Dead` — the `state` field on `GossipDigest` (replaces the sprint-15 `leaving: bool`), published as an event on every transition (generalizes the fast-delete tombstone). Self-published: `Joining/Alive/Degraded/Updating/Draining/Leaving`. Observer-inferred: `Dead` (a node that vanished with no `Leaving` — the staleness/crash fallback). Receivers evict on `Leaving`/`Dead`; other states upsert + render. APPEND-ONLY and ORDER IS LOCKED (postcard discriminant is positional — new variants go at the END, never reorder/remove/repurpose).
+
 **Service-name contract (locked, sprint-13 B1).** Each node SELF-NAMES from its own `node_id` (the iroh public key, known after identity load at boot). `node_name = <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>` (full type word, NO ordinal/abbrev/symbol; `NODE_NAME_HEX_LEN=6`). `service.name` is mesh-qualified so Jaeger's System Architecture graph renders one node per mesh+type (NOT a single collapsed `broker`):
 
 | node_type | node_name (self-derived) | `service.name` (`OTEL_SERVICE_NAME`) | `service.namespace` | `service.instance.id` |
