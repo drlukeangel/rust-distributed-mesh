@@ -13,3 +13,10 @@ iroh-mdns-address-lookup = "0.3.0"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# sprint-16/PRD-01 relay-carries proof: iroh's built-in test_utils gives a local
+# relay server + insecure_skip_verify (self-signed test cert), cross-platform, no
+# Docker/WSL. Enables run_relay_server() in the relay_carries integration test.
+iroh = { workspace = true, features = ["test-utils"] }
+tokio = { workspace = true }
