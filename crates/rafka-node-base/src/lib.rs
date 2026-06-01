@@ -2045,6 +2045,23 @@ async fn run_gossip(
                     // propagate in ≤1 interval rather than waiting for the 30s floor.
                     if last.state != digest.state {
                         should_broadcast = true;
+                        // Durable per-transition lifecycle trace (the §10
+                        // node.state_changed span the sprint-20 config promised).
+                        // One span per self-state transition for this node_id, so
+                        // Jaeger holds the FULL lifecycle (Joining→Alive→Degraded→
+                        // Updating→Draining→…) even for states too fleeting to catch
+                        // in the UI. source="self" (observer-inferred Dead + the
+                        // Leaving evict are recorded by tombstone.applied instead).
+                        tracing::info_span!(
+                            "rafka.mesh.node.state_changed",
+                            node_id = %node_id,
+                            node_name = %node_name,
+                            from = ?last.state,
+                            to = ?digest.state,
+                            source = "self",
+                            "otel.kind" = "internal",
+                        )
+                        .in_scope(|| info!(node = %node_name, from = ?last.state, to = ?digest.state, "node state changed"));
                     }
                     if last.frames_sent_total != digest.frames_sent_total || last.frames_recv_total != digest.frames_recv_total {
                         should_broadcast = true;

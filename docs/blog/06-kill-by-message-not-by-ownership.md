@@ -42,10 +42,21 @@ event. Not a binary join/leave, but a state:
 Joining · Alive · Degraded · Updating · Draining · Leaving · Dead
 ```
 
-A node publishes its own lifecycle on every transition; `Leaving` is the old fast-delete. The one it
-*can't* publish is `Dead` — a crashed node announces nothing — so `Dead` is what observers assign when a
-node vanishes without a `Leaving`. The operator gets the difference for free: "left cleanly" vs "crashed"
-vs "just rolling an update" are now visibly distinct, not all collapsed into "gone."
+The idea: a node publishes its own lifecycle on every transition; `Leaving` is the old fast-delete. The one
+it *can't* publish is `Dead` — a crashed node announces nothing — so `Dead` is what observers assign when a
+node vanishes without a `Leaving`. The operator should get the difference for free: "left cleanly" vs
+"crashed" vs "just rolling an update" instead of everything collapsed into "gone."
+
+> **Correction (honesty note added later).** When this post first went up, the paragraph above was written
+> in the present tense as if shipped — it wasn't. At that point only the `Leaving`/`Dead` evictions were
+> real (the tombstone). `Updating`/`Draining` had **no trigger** (you couldn't reach them), and there was
+> **no per-transition event** — nothing fired when a node changed state. That was the *design*, not the
+> system. It became real afterward: the enum wire change and observer-inferred `Dead` shipped in sprint-20;
+> a `SetState` control op to actually drive `Updating`/`Draining` shipped in sprint-21; and the durable
+> per-transition event — a `rafka.mesh.node.state_changed` span on *every* self-state change — was added
+> last, and is what finally makes "publishes its lifecycle on every transition" a true sentence rather than
+> an aspiration. Proven end-to-end: one node walking `Joining→Alive→Updating→Draining` as a clean span
+> trail, plus `Leaving` (kill) and `Dead` (crash) as distinct tombstone sources.
 
 ## The catch (and the most expensive lesson)
 

@@ -16,7 +16,7 @@ no DHT; just the smallest thing that works, proven live.
 | 3 | [Make the trace tell the truth](03-make-the-trace-tell-the-truth.md) | Per-mesh service names, W3C context over QUIC, and killing an observability hack |
 | 4 | [A gossip backbone](04-a-gossip-backbone.md) | Cross-mesh topology + aggregate metrics without a firehose |
 | 5 | [The relay is a postbox, not a peer](05-the-relay-is-a-postbox.md) | The cross-mesh relay fallback, where it lives, and why it can't read your traffic |
-| 6 | [Kill by message, not by ownership](06-kill-by-message-not-by-ownership.md) | Control-plane kill, every mesh advertising itself, node lifecycle as events — and a stale-binary lesson |
+| 6 | [Kill by message, not by ownership](06-kill-by-message-not-by-ownership.md) | Control-plane kill, every mesh advertising itself, the node-lifecycle *design* (the working per-transition events shipped later — see the in-post correction), and a stale-binary lesson |
 | 7 | [Prove the relay carries: make direct impossible](07-prove-the-relay-make-direct-impossible.md) | Why the obvious relay proof is a lie; `clear_ip_transports` so direct can't win; a deterministic relay-carriage test |
 | 8 | [The bug that wasn't in the mesh](08-the-bug-that-wasnt-in-the-mesh.md) | Two cross-mesh scares — the 40s join (use iroh's `MemoryLookup`) and a `NeighborUp→NeighborDown` connection-churn — and trusting the live signal over a tidy theory |
 
