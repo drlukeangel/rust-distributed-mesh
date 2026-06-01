@@ -2161,73 +2161,95 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
         .into_response()
 }
 
+/// Kill a node by CONTROL OP, not by owning its OS process. Resolves the target's
+/// node_id + location from what THIS console can SEE — its own mesh gossip
+/// (`live_digests`), the cross-mesh backbone directory, or its own spawn registry —
+/// then sends an `InternalMeshFrame::Shutdown` to it. The node self-terminates
+/// (self-tombstones on its own mesh gossip + graceful exit). This console ALSO
+/// broadcasts the backbone tombstone so every OTHER mesh evicts it fast. Works for
+/// ANY visible node, in any mesh, with no OS-process ownership — the self-aware
+/// fleet replacement for the old TerminateProcess-on-own-child kill.
 async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
-    let entry = state.processes.remove(node_name);
-    let (_, mutex_child) = entry.ok_or_else(|| format!("no subprocess named {node_name}"))?;
-
-    let mut child = mutex_child.into_inner();
-    let pid = child.id().unwrap_or(0);
-    let _ = child.start_kill();
-
-    let reason = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(_) => "graceful",
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            "forced"
+    // Resolve (node_id, location, mesh_id) for the target from any source we can see.
+    let resolved: Option<(String, String, String)> = (|| {
+        for d in rafka_node_base::live_digests().iter() {
+            let v = d.value();
+            if v.node_name == node_name {
+                return Some((v.node_id.clone(), v.location.clone(), v.mesh_id.clone()));
+            }
         }
+        for s in rafka_node_base::backbone_summaries().iter() {
+            let summary = s.value();
+            if let Some(e) = summary.directory.iter().find(|e| e.node_name == node_name) {
+                return Some((e.node_id.clone(), e.location.clone(), summary.mesh_id.clone()));
+            }
+        }
+        if let Some(m) = state.spawned_meta.get(node_name) {
+            let m = m.value();
+            return Some((
+                m.node_id_hex.clone(),
+                format!("127.0.0.1:{}", m.bind_port),
+                m.mesh_id.clone(),
+            ));
+        }
+        None
+    })();
+
+    let (node_id, location, mesh_id) = resolved.ok_or_else(|| {
+        format!("node {node_name} not visible in gossip, backbone, or spawn registry")
+    })?;
+
+    // Send the control-plane Shutdown op to the target (direct or via relay). The
+    // node self-tombstones on its own mesh gossip + exits gracefully.
+    let reason = format!("operator:{}", state.admin_node_id_hex);
+    let send_result = rafka_node_base::send_shutdown(&node_id, &location, &reason).await;
+    let detail = match &send_result {
+        Ok(()) => "control_op_sent".to_string(),
+        Err(e) => format!("control_op_send_failed:{e}"),
     };
-
-    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
-    if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
-        tracing::warn!(dir = %spawn_dir, error = %e, "failed to remove subprocess data dir");
+    if let Err(e) = &send_result {
+        tracing::warn!(node_name, node_id = %node_id, location = %location, error = %e,
+            "shutdown control op send failed — broadcasting tombstone anyway to evict from views");
     }
 
-    let meta = state.spawned_meta.remove(node_name).map(|(_, m)| m);
+    // Cross-mesh eviction: the target's self-tombstone covers ITS mesh gossip; the
+    // backbone tombstone covers every OTHER mesh (gateways + consoles) and is the
+    // fallback if the op send failed because the node was already gone.
+    broadcast_backbone_tombstone(&node_id, &mesh_id, &state.admin_node_id_hex);
 
-    // Sprint-15 tombstone: TerminateProcess is ungraceful, so the dead node
-    // cannot announce itself. We broadcast the tombstone on its behalf via
-    // the gossip topic — every subscriber's receive path calls apply_tombstone
-    // and immediately evicts the node_id from the three process-global maps.
-    // This is NOT a hand-edit: the same apply_tombstone runs uniformly on all
-    // observers (home-mesh + backbone-fed remote-mesh) via the gossip receive path.
-    if let Some(ref m) = meta {
-        if !m.node_id_hex.is_empty() {
-            rafka_node_base::broadcast_tombstone(&m.node_id_hex);
-            // Sprint-18: backbone tombstone for cross-mesh fast eviction.
-            // The mesh-gossip tombstone above only reaches this console's own
-            // mesh topic. The backbone tombstone reaches EVERY backbone
-            // subscriber — including the dead node's home-mesh gateway, which
-            // drops X from live_digests so its next MeshSummary publish omits X.
-            // Remote admin-ui consoles then see X vanish from /api/topology-cache
-            // within one backbone interval (~2s) rather than 30s.
-            broadcast_backbone_tombstone(
-                &m.node_id_hex,
-                &m.mesh_id,
-                &state.admin_node_id_hex,
-            );
+    // If we happen to own this node's OS process (we spawned it), reap it — it's
+    // exiting on its own now. NOT required: cross-console kills have no Child handle.
+    if let Some((_, mutex_child)) = state.processes.remove(node_name) {
+        let mut child = mutex_child.into_inner();
+        if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
         }
+        let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+        let _ = tokio::fs::remove_dir_all(&spawn_dir).await;
     }
+    let meta = state.spawned_meta.remove(node_name).map(|(_, m)| m);
 
     state.events.push(LocalEvent {
         ts_us: now_us(),
         kind: "node.killed".to_string(),
         node_name: Some(node_name.to_string()),
         node_type: meta.as_ref().map(|m| m.node_type.clone()),
-        mesh_id: meta.as_ref().map(|m| m.mesh_id.clone()),
-        detail: Some(format!("{reason} pid={pid}")),
+        mesh_id: Some(mesh_id.clone()),
+        detail: Some(detail.clone()),
     });
 
     info_span!(
         "rafka.ui.subprocess.killed",
         node_name = %node_name,
-        pid = pid,
-        reason = reason,
+        node_id = %node_id,
+        reason = %reason,
+        detail = %detail,
         "otel.kind" = "internal",
     )
-    .in_scope(|| info!(node_name = %node_name, pid, reason, "subprocess killed"));
+    .in_scope(|| info!(node_name = %node_name, node_id = %node_id, detail = %detail, "kill: control op issued"));
 
-    Ok(reason.to_string())
+    Ok(detail)
 }
 
 fn now_us() -> i64 {

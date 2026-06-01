@@ -267,6 +267,11 @@ async fn run_node(
     // are NOT attached to node.ready.
     let mut transport = create_endpoint(secret_key, bind_addr, mdns_enable).await?;
 
+    // Publish this process's iroh endpoint to a process global so the (same-process)
+    // control plane — admin-ui's kill is a CONTROL OP, not OS TerminateProcess — can
+    // dial ANY node by node_id and send it a Shutdown frame. See send_shutdown().
+    let _ = MESH_ENDPOINT.set(transport.endpoint.clone());
+
     let sockets = transport.endpoint.bound_sockets();
     let actual_bind_addr = if sockets.is_empty() {
         bind_addr.to_string()
@@ -1156,6 +1161,15 @@ async fn run_bi_reader(
                 continue;
             }
         } else if tag == framer::TAG_LEGACY_FRAME {
+            // A Shutdown control op self-terminates this node; anything else
+            // (a Write produce) goes to the produce handler. (The Shutdown branch
+            // only matches that variant; a Write falls through to handle_produce_bi.)
+            if let Ok((_ctx, InternalMeshFrame::Shutdown { reason })) =
+                InternalMeshFrame::decode_with_context(&bytes)
+            {
+                handle_shutdown_op(&own_node_id, &peer_id_str, &reason).await;
+                break;
+            }
             // B5: a produce arriving on a bi-stream. Decode + handle + ACK.
             handle_produce_bi(&own_node_id, own_node_name, &peer_id_str, &bytes, &mut send).await;
         } else {
@@ -2500,6 +2514,10 @@ async fn run_frame_reader(
                         "ack",
                         format!("[{peer_prefix}] ack {from} #{seq}"),
                     ),
+                    Ok((_, InternalMeshFrame::Shutdown { reason })) => (
+                        "control",
+                        format!("[{peer_prefix}] shutdown reason={reason}"),
+                    ),
                     Err(e) => ("decode_failed", format!("[{peer_prefix}] <decode_failed: {e}>")),
                 };
                 push_message(&peer_id_str, kind_tag, frame_size, summary);
@@ -2635,6 +2653,12 @@ async fn run_frame_reader(
                     Ok((_parent_ctx, InternalMeshFrame::Ack { from, seq })) => {
                         // Acks travel on the produce bi-stream response half, not uni.
                         tracing::trace!(peer_id = %peer_id_str, %from, seq, "unexpected Ack on uni stream");
+                    }
+                    Ok((_parent_ctx, InternalMeshFrame::Shutdown { reason })) => {
+                        // Control-plane kill. Normally arrives on a bi-stream
+                        // (run_bi_reader); handle here too so the op works regardless
+                        // of which stream the caller used.
+                        handle_shutdown_op(&own_node_id, &peer_id_str, &reason).await;
                     }
                     Err(e) => {
                         let byte_len = bytes.len();
@@ -2908,6 +2932,87 @@ mod tests {
     }
 }
 
+// ===========================================================================
+// Control-plane shutdown (self-aware-fleet kill). A node is killed by SENDING it
+// a Shutdown control op over the mesh — NOT by owning + TerminateProcess-ing its
+// OS handle. Any mesh participant (an admin-ui console, even one in another mesh)
+// dials the target by node_id and sends InternalMeshFrame::Shutdown; the target
+// self-tombstones on its own mesh gossip and runs the standard graceful shutdown.
+// The caller (admin-ui) separately broadcasts the BACKBONE tombstone for the
+// cross-mesh eviction. No OS-process ownership anywhere.
+// ===========================================================================
+
+/// This process's iroh endpoint, published at boot (run_node) so the same-process
+/// admin-ui HTTP layer can dial arbitrary nodes to send control ops.
+static MESH_ENDPOINT: std::sync::OnceLock<iroh::Endpoint> = std::sync::OnceLock::new();
+
+/// Fired when a Shutdown control op is received. `wait_for_signal` selects on it,
+/// so the kill reuses the EXISTING graceful-shutdown path (node.stopping + task
+/// aborts + telemetry flush) — no hard process::exit, no duplicate teardown.
+static SHUTDOWN_NOTIFY: std::sync::OnceLock<std::sync::Arc<tokio::sync::Notify>> =
+    std::sync::OnceLock::new();
+
+fn shutdown_notify() -> &'static std::sync::Arc<tokio::sync::Notify> {
+    SHUTDOWN_NOTIFY.get_or_init(|| std::sync::Arc::new(tokio::sync::Notify::new()))
+}
+
+/// Trigger this node's graceful shutdown (called by the Shutdown control-op
+/// handler). `wait_for_signal` then returns "control_op".
+pub fn trigger_self_shutdown() {
+    shutdown_notify().notify_waiters();
+}
+
+/// Dial `target_node_id` at `location` and send a Shutdown control op. The target
+/// self-terminates. Works for ANY node the caller can address (same mesh via its
+/// gossiped location, other mesh via the backbone directory) — no OS-process
+/// ownership. The caller handles the cross-mesh backbone tombstone separately.
+pub async fn send_shutdown(target_node_id: &str, location: &str, reason: &str) -> anyhow::Result<()> {
+    let endpoint = MESH_ENDPOINT
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("mesh endpoint not initialized"))?;
+    let pk = PublicKey::from_str(target_node_id)?;
+    let dest = if location.starts_with("http://") || location.starts_with("https://") {
+        EndpointAddr::new(pk).with_relay_url(iroh::RelayUrl::from_str(location)?)
+    } else {
+        EndpointAddr::new(pk).with_ip_addr(location.parse::<SocketAddr>()?)
+    };
+    let conn = endpoint.connect(dest, ALPN).await?;
+    let (mut send, _recv) = conn.open_bi().await?;
+    let span = tracing::info_span!(
+        "rafka.mesh.control.shutdown_sent",
+        node_id = %endpoint.id(),
+        peer_id = %target_node_id,
+        op_kind = "control",
+        reason = %reason,
+        otel.kind = "producer",
+    );
+    let frame = InternalMeshFrame::Shutdown { reason: reason.to_string() };
+    let bytes = span.in_scope(|| frame.encode_with_context(&Span::current().context()));
+    send.write_all(&bytes).await?;
+    send.finish()?;
+    span.in_scope(|| info!(target = %target_node_id, "shutdown control op sent"));
+    Ok(())
+}
+
+/// Handle an inbound Shutdown control op (from run_bi_reader). Announce our own
+/// departure on our mesh gossip (so same-mesh peers evict us even though the
+/// killer may be in another mesh), let it flush, then trigger graceful shutdown.
+async fn handle_shutdown_op(own_node_id: &str, peer_id_str: &str, reason: &str) {
+    tracing::info_span!(
+        "rafka.mesh.control.shutdown_received",
+        node_id = %own_node_id,
+        peer_id = %peer_id_str,
+        op_kind = "control",
+        reason = %reason,
+        otel.kind = "consumer",
+    )
+    .in_scope(|| info!(reason = %reason, "shutdown control op received — self-terminating"));
+    broadcast_tombstone(own_node_id);
+    // Let the gossip tombstone reach the wire before we tear the endpoint down.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    trigger_self_shutdown();
+}
+
 async fn wait_for_signal() -> &'static str {
     let timer = std::env::var("RAFKA_AUTO_SHUTDOWN_SECS")
         .ok()
@@ -2917,6 +3022,10 @@ async fn wait_for_signal() -> &'static str {
         _ = async { while !std::path::Path::new("E:\\evidence-soak\\STOP").exists() { tokio::time::sleep(std::time::Duration::from_secs(2)).await; } } => {
             info!("ctrl_c received, shutting down");
             "signal"
+        }
+        _ = shutdown_notify().notified() => {
+            info!("control-op shutdown received");
+            "control_op"
         }
         _ = async {
             match timer {

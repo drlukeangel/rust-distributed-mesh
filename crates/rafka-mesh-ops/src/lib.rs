@@ -25,6 +25,14 @@ pub enum InternalMeshFrame {
     /// The frame's W3C carrier holds the BROKER's produce.ack span context, so the
     /// gateway's ack-receive span becomes a child of it → broker→gateway edge.
     Ack { from: String, seq: u64 },
+    /// Control-plane shutdown op. ANY mesh participant (e.g. an admin-ui console)
+    /// dials a target node by node_id and sends this; the target shuts ITSELF down
+    /// gracefully (emits node.stopping, broadcasts its own tombstone, exits). This
+    /// is how a node is killed across meshes WITHOUT the caller owning the OS
+    /// process — the self-aware-fleet replacement for TerminateProcess-on-own-child.
+    /// `reason` identifies the requester (e.g. "operator:mesh1.admin-ui.b0b781").
+    /// Maps to op_kind="control".
+    Shutdown { reason: String },
 }
 
 /// W3C trace-context carrier embedded with every traced frame (sprint-13 B3).
