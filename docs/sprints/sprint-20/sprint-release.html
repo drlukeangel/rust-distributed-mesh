@@ -56,7 +56,7 @@
     <tr><td>T5 Dead</td><td class="ok">✅ OS-kill → <code>staleness_dead</code>, distinct from Leaving by source</td></tr>
     <tr><td>T6 Degraded</td><td class="ok">✅ over-budget broker → Degraded, not evicted, amber on both consoles</td></tr>
     <tr><td>T7 wire roundtrip</td><td class="ok">✅ postcard incl. a Degraded directory entry</td></tr>
-    <tr><td>T8 UI states</td><td class="ok">✅ rendered + colored; <span class="warn">auto-screenshot blocked (extension offline)</span> — live at :19100/:19101</td></tr>
+    <tr><td>T8 UI states</td><td class="ok">✅ Playwright-captured (9 tabs × 2 consoles) — both consoles render both meshes; Degraded amber ring on home + cross-mesh. See below.</td></tr>
   </table>
 
   <h2>Live proof — both consoles, both meshes, non-balanced fleet</h2>
@@ -76,6 +76,26 @@ Console1 (mesh1, :19100)  meshes=[mesh1,mesh2]      Console2 (mesh2, :19101)  me
 </pre>
   <div class="card">Open the live consoles: <a href="http://127.0.0.1:19100" target="_blank">http://127.0.0.1:19100</a> ·
   <a href="http://127.0.0.1:19101" target="_blank">http://127.0.0.1:19101</a></div>
+
+  <h2>T8 — Playwright-captured topology (the proof)</h2>
+  <p>Captured by the verify harness (<code>docs/plans/mesh-v2/verify/screenshot.js</code>) against both live
+  consoles. Both render <b>both meshes</b>; <code>mesh1.broker</code> shows the amber <b>Degraded</b> ring on
+  Console1 (home) <b>and</b> Console2 (cross-mesh via backbone). Full set: 9 tabs × 2 consoles under
+  <code>verify/screenshots/sprint20-node-state/</code>.</p>
+  <div style="display:flex;gap:14px;flex-wrap:wrap">
+    <figure style="flex:1;min-width:380px;margin:0">
+      <figcaption class="dim" style="margin-bottom:6px">Console1 (mesh1) — Topology</figcaption>
+      <a href="../../plans/mesh-v2/verify/screenshots/sprint20-node-state/mesh1-console/1-topology.png" target="_blank">
+        <img src="../../plans/mesh-v2/verify/screenshots/sprint20-node-state/mesh1-console/1-topology.png"
+             style="width:100%;border:1px solid var(--bd);border-radius:8px" alt="Console1 topology"></a>
+    </figure>
+    <figure style="flex:1;min-width:380px;margin:0">
+      <figcaption class="dim" style="margin-bottom:6px">Console2 (mesh2) — Topology</figcaption>
+      <a href="../../plans/mesh-v2/verify/screenshots/sprint20-node-state/mesh2-console/1-topology.png" target="_blank">
+        <img src="../../plans/mesh-v2/verify/screenshots/sprint20-node-state/mesh2-console/1-topology.png"
+             style="width:100%;border:1px solid var(--bd);border-radius:8px" alt="Console2 topology"></a>
+    </figure>
+  </div>
 
   <h2>The one detour, root-caused (not a defect)</h2>
   <p>The cross-mesh "broken" I chased was a <b>test-setup artifact</b>: <b>bidirectional</b> cross-seeding

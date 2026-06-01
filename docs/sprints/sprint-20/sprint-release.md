@@ -53,7 +53,7 @@ mDNS-off consoles: Console1 mesh1 `:19100`, Console2 mesh2 `:19101`. Non-balance
 | **T5 Dead** | ✅ OS-killed the compute (no Leaving) → evicted via `tombstone.applied source="staleness_dead"` — **distinct** from Leaving's `gossip_receive`; gone from topology after the staleness window. |
 | **T6 Degraded** | ✅ a broker forced over budget (`cpu 5.00/1.00`) self-reports **Degraded**, is **NOT** evicted, renders amber. |
 | **T7 wire roundtrip** | ✅ `GossipDigest{state}` + `BackboneMessage` (incl. a `Degraded` directory entry) round-trip via postcard — unit test green. |
-| **T8 UI states** | ✅ (render path) `/api/topology` emits `state`; `Topology.tsx` colors the node ring per state; the stale-`Joining` ghost is aged out so the surface is clean. ⚠️ live visual capture blocked (browser extension not connected) — **consoles left running** at `:19100`/`:19101` for direct inspection. |
+| **T8 UI states** | ✅ Playwright-captured (verify harness, 9 tabs × 2 consoles): both consoles render BOTH meshes; `mesh1.broker` shows the amber Degraded ring on c1 (home) AND c2 (cross-mesh via backbone). Artifacts: `docs/plans/mesh-v2/verify/screenshots/sprint20-node-state/`. |
 
 **Bottom line:** sprint-20's own mechanics (NodeState wire, intra-mesh fast convergence, Leaving/Dead/Degraded
 semantics, wire roundtrip, render) are verified. The **cross-mesh backbone visibility (T2)** is the open item —
