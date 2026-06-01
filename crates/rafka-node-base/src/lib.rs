@@ -1510,8 +1510,9 @@ pub fn topic_membership(
 // ===========================================================================
 
 /// Process-global tombstone outbox. `kill_one` (admin-ui) pushes a `node_id`
-/// here; `run_gossip`'s select! loop drains it and broadcasts a `GossipDigest
-/// { leaving: true, node_id: X, … }` on the mesh topic. iroh-gossip
+/// here; `run_gossip`'s select! loop drains it and broadcasts a one-shot
+/// `GossipDigest { state: NodeState::Leaving, node_id: X, … }` on the mesh topic
+/// (the FAST-eviction path: immediate, not the ≤2s periodic digest). iroh-gossip
 /// distributes it to every subscriber. The receive path calls `apply_tombstone`
 /// which immediately evicts X from the three process-global maps.
 ///
