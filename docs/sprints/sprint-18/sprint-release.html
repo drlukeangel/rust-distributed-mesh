@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprint-18 — Chaos + 10-min Soak (capstone)</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--bd:#30363d;--fg:#c9d1d9;--dim:#8b949e;--ok:#3fb950;--blue:#58a6ff;--amber:#d29922}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 ui-sans-serif,system-ui,Segoe UI,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 24px 80px}
+  h1{font-size:25px;margin:0 0 4px} h2{font-size:18px;margin:30px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+  .sub{color:var(--dim);margin:0 0 8px} .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;background:rgba(63,185,80,.15);color:var(--ok);border:1px solid var(--ok)}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0} th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left} th{background:var(--panel);color:var(--dim)}
+  code{font-family:ui-monospace,monospace} a{color:var(--blue)} ul{padding-left:22px} li{margin:5px 0}
+  .ok{color:var(--ok)} .amber{color:var(--amber)} .card{background:var(--panel);border:1px solid var(--bd);border-radius:10px;padding:14px 18px;margin:12px 0}
+</style></head>
+<body><div class="wrap">
+  <h1>Sprint-18 — Chaos + 10-minute soak (capstone)</h1>
+  <p class="sub">initiative mesh-v2 · branch <code>mesh-v2</code> → origin + public · 2026-06-01</p>
+  <p><span class="badge">CLOSED — PASS (no leak, no panics) + 1 documented finding</span></p>
+
+  <h2>What ran</h2>
+  <p>The authoritative UI-path soak (Golden Principle #5) on the <b>complete merged tree</b> — including
+  sprint-16 relay proof, sprint-17 cross-mesh eviction, sprint-19 control-kill, sprint-20 NodeState,
+  sprint-21 lifecycle, plus this session's <code>MemoryLookup</code> convergence + supersede-close fixes.
+  Fresh debug binaries (rebuilt, mtime-gated). One admin-ui: <code>/api/bootstrap</code> (2-mesh fleet) +
+  <code>/api/chaos/start</code> (kills a random node every 30s), ~10 minutes, actively monitored.</p>
+
+  <h2>Result — RSS flat under churn, no crashes</h2>
+  <table>
+    <tr><th>Time</th><th>procs</th><th>total RSS</th><th>per-proc RSS</th></tr>
+    <tr><td>baseline (bootstrap)</td><td>17</td><td>748 MB</td><td>44.0 MB</td></tr>
+    <tr><td>+4 min</td><td>33</td><td>1,477 MB</td><td>44.8 MB</td></tr>
+    <tr><td>+7 min</td><td>32</td><td>1,443 MB</td><td>45.1 MB</td></tr>
+    <tr><td>+10 min (final)</td><td>33</td><td>1,495 MB</td><td>45.3 MB</td></tr>
+  </table>
+  <ul>
+    <li><b class="ok">No leak:</b> per-proc RSS held <b>44.0 → 45.3 MB</b> (+3%, within noise) across 18 chaos kills, 2 bootstraps, and continuous gateway write-sim. Total RSS tracks proc count, not time.</li>
+    <li><b class="ok">No crashes:</b> 0 panics / 0 FATAL over the run.</li>
+    <li><b class="ok">Survives chaos:</b> 18 random kills executed; both meshes + the cross-mesh backbone held throughout (the supersede fix keeps bidirectional cross-seed stable under churn).</li>
+  </ul>
+
+  <h2>Finding (degradation, not failure)</h2>
+  <div class="card">
+    <p><b>Concurrent <code>/api/bootstrap</code> triggers the spawn pre-mint ghost bug at scale.</b> Bootstrap
+    spawns ~16 nodes at once; that concurrency races the per-spawn identity write/read, so some children
+    boot a <b>duplicate node_id</b> and then fail their seed dial with
+    <code>invalid peer certificate: UnknownIssuer</code> (106+ in the log) — they never join gossip and
+    linger as ghost processes (≈6 extra procs vs visible nodes, inflating the count).</p>
+    <p>This was <b>reproduced + root-caused this session</b> (parallel burst of 8 → ~1 ghost) and documented.
+    It degrades bootstrap but does not crash or leak — the soak's core criteria still pass. The
+    bootstrap-concurrency identity race is the open follow-up; the UI-side stuck-<code>Joining</code> symptom
+    is already mitigated by the placeholder age-out.</p>
+  </div>
+
+  <h2>Verdict</h2>
+  <p>The mesh-v2 substrate <b>survives the chaos battery and a 10-minute soak with flat memory and no
+  crashes</b> — Golden Principle #5 satisfied on the complete system. One real bootstrap-concurrency bug
+  surfaced and is logged for a focused fix.</p>
+</div></body></html>

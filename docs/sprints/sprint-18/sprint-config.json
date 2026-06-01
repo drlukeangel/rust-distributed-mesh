@@ -1,7 +1,9 @@
 {
   "sprint": 18,
   "slug": "chaos-and-soak",
-  "status": "open",
+  "status": "closed",
+  "closes": "2026-06-01",
+  "status_note": "Authoritative 10-min UI-path soak run 2026-06-01 on the COMPLETE merged tree (incl. sprint-16/17/19/20/21 + the MemoryLookup convergence + supersede-close fix). Fresh debug binaries (rebuilt, mtime-gated). /api/bootstrap (2-mesh) + /api/chaos/start (30s cadence). RESULT: PASS on the core criteria — per-proc RSS FLAT at 44.0->45.3 MB across 10 min (+3%, within noise) under 18 chaos kills + 2 bootstraps + continuous write-sim (NO runaway leak), 0 panics, both meshes + cross-mesh held throughout. FINDING (degradation, not failure): concurrent /api/bootstrap triggers the spawn pre-mint ghost bug hard (106+ 'invalid peer certificate: UnknownIssuer' from duplicate-identity children that can't join) -> ~6 ghost/duplicate procs + inflated node count. Documented in memory project_spawn_premint_ghost (reproduced + root-caused this session); the bootstrap concurrency race is the open follow-up. Report: docs/sprints/sprint-18/sprint-release.html.",
   "initiative": "mesh-v2",
   "order_note": "Re-ordered 2026-05-31: this is the CAPSTONE — runs LAST, and its authoritative 10-min soak must execute on the COMPLETE system (after sprint-16 forced-relay AND sprint-17 cross-mesh-eviction are merged). Dispatched to the agent as 'sprint-17'; its work slots in here as the final sprint-18. The agent was told to build the chaos code + a SHORT smoke soak only; the team lead runs the authoritative 10-min soak on the merged tree.",
   "prd": "docs/plans/mesh-v2/02-chaos-and-resilience-round-prd.md",
