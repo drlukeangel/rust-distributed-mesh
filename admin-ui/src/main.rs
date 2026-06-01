@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{backbone_summaries, broadcast_backbone_tombstone, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -2230,19 +2230,15 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
     };
     if let Err(e) = &send_result {
         tracing::warn!(node_name, node_id = %node_id, location = %location, error = %e,
-            "shutdown control op send failed — broadcasting tombstone anyway to evict from views");
+            "shutdown control op send failed — target keeps running, NOT evicting (it isn't leaving)");
     }
 
-    // Eviction is broadcast by THIS (alive) console, not left to the dying node —
-    // the target exits before its own gossip flushes, so relying on its self-
-    // tombstone leaves it lingering until the 120s staleness sweep. The admin-ui is
-    // alive and in its mesh's gossip, so its same-mesh tombstone evicts the node
-    // immediately for same-mesh targets; the backbone tombstone covers every OTHER
-    // mesh. (The target's own self-tombstone in handle_shutdown_op still helps its
-    // mesh when the killer is foreign to it.) broadcast_tombstone on a foreign-mesh
-    // target is a harmless no-op on our own topic.
-    rafka_node_base::broadcast_tombstone(&node_id);
-    broadcast_backbone_tombstone(&node_id, &mesh_id, &state.admin_node_id_hex);
+    // No third-party eviction here. The target sets its own state=Leaving and
+    // publishes it; observers act on the received state: same-mesh peers (incl.
+    // this console) evict on the Leaving digest, and other meshes see it drop out
+    // of this mesh's next backbone Summary. One state, one path — the console does
+    // not hand-edit another node's presence.
+    let _ = &mesh_id;
 
     // If we happen to own this node's OS process (we spawned it), reap it — it's
     // exiting on its own now. NOT required: cross-console kills have no Child handle.
