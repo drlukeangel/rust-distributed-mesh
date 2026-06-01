@@ -1,7 +1,7 @@
 # Sprint-20 release — node-state propagation + fast convergence
 
-**Status:** closed 2026-06-01 — all 8 verified; the T2 cross-mesh "broken" was root-caused to a
-test-setup artifact (bidirectional cross-seed connection churn), resolved with unidirectional seeding.
+**Status:** closed 2026-06-01 — all 8 verified; the T2 cross-mesh "broken" was root-caused to bidirectional
+cross-seed connection churn and FIXED (commit `52e196f`): bidirectional cross-seed now shows both meshes.
 · initiative mesh-v2 · branch `main`
 **Objective:** generalize the fast-delete tombstone into a node **state** published as an event, and fix
 the ~40s gossip-convergence lag — so additions/health changes propagate as fast as deletions, cross-mesh
@@ -47,7 +47,7 @@ mDNS-off consoles: Console1 mesh1 `:19100`, Console2 mesh2 `:19101`. Non-balance
 | Test | Result |
 |---|---|
 | **T1 build** | ✅ `cargo check --workspace --tests --no-default-features` clean; web build clean; all 5 node binaries mtime-gated fresh. |
-| **T2 fast-add (cross-mesh)** | ✅ both consoles show both meshes; backbone summaries flow both ways (c1 19 / c2 18 received). The transient "broken" was root-caused to **bidirectional cross-seed connection churn** (test setup), resolved with unidirectional seeding — see below. |
+| **T2 fast-add (cross-mesh)** | ✅ both consoles show both meshes; backbone summaries flow both ways (c1 19 / c2 18 received). The transient "broken" was root-caused to **bidirectional cross-seed connection churn** and FIXED (commit `52e196f`, see below) — bidirectional cross-seed now works. |
 | **T3 location-registration (intra-mesh)** | ✅ `Address Lookup failed` for real peers dropped 77 → **0 ongoing** (Console1 delta over 25s = 0; converged). Intra-mesh swarm forms fast with mDNS off. |
 | **T4 Leaving** | ✅ Console2 (mesh2) killed `mesh1.broker.763a96` it does NOT own → `node.stopping reason="control_op"` → `tombstone.applied source="gossip_receive"` → `backbone.tombstone_applied`; evicted from **both** consoles in <0.1s; target process self-terminated. |
 | **T5 Dead** | ✅ OS-killed the compute (no Leaving) → evicted via `tombstone.applied source="staleness_dead"` — **distinct** from Leaving's `gossip_receive`; gone from topology after the staleness window. |
@@ -58,7 +58,7 @@ mDNS-off consoles: Console1 mesh1 `:19100`, Console2 mesh2 `:19101`. Non-balance
 **Bottom line:** all 8 verified. sprint-20's own mechanics (NodeState wire, intra-mesh fast convergence,
 Leaving/Dead/Degraded semantics, wire roundtrip, render) plus cross-mesh visibility on both consoles. The
 cross-mesh "broken" detour was root-caused to a **test-setup artifact** (bidirectional cross-seed connection
-churn) and resolved with unidirectional seeding — NOT the backbone design or the sprint-20 `state` field.
+churn), FIXED in commit `52e196f` (bidirectional now works) — NOT the backbone design or the sprint-20 `state` field.
 
 ---
 
