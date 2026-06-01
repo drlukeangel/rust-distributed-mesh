@@ -55,33 +55,10 @@ mDNS-off consoles: Console1 mesh1 `:19100`, Console2 mesh2 `:19101`. Non-balance
 | **T7 wire roundtrip** | ✅ `GossipDigest{state}` + `BackboneMessage` (incl. a `Degraded` directory entry) round-trip via postcard — unit test green. |
 | **T8 UI states** | ✅ Playwright-captured (verify harness, 9 tabs × 2 consoles): both consoles render BOTH meshes; `mesh1.broker` shows the amber Degraded ring on c1 (home) AND c2 (cross-mesh via backbone). Artifacts: `docs/plans/mesh-v2/verify/screenshots/sprint20-node-state/`. |
 
-**Bottom line:** sprint-20's own mechanics (NodeState wire, intra-mesh fast convergence, Leaving/Dead/Degraded
-semantics, wire roundtrip, render) are verified. The **cross-mesh backbone visibility (T2)** is the open item —
-it worked earlier this session but is not reproducible on a clean restart, and the cause was not isolated.
-
-**Earlier-launch** snapshot when cross-mesh DID form (both show both meshes; `broker.995471` Degraded on
-both — this is the T2/T6-cross-mesh evidence, no longer reproducible on the final restart):
-
-```
-Console1 (mesh1)                         Console2 (mesh2)
- mesh1.admin-ui.35a39c -> Alive  (home)    mesh1.admin-ui.35a39c -> Alive    (backbone)
- mesh1.broker.995471   -> Degraded (home)  mesh1.broker.995471   -> Degraded (backbone)
- mesh1.gateway.e53ab1  -> Alive  (home)    mesh1.gateway.e53ab1  -> Alive    (backbone)
- mesh2.admin-ui.61a66f -> Alive  (backbone) mesh2.admin-ui.61a66f -> Alive   (home)
- ...                                        ...
-```
-
-**Final fresh-restart snapshot** — cross-mesh did NOT form; each console shows only its own mesh
-(intra-mesh + states fully correct; the backbone neighborship between the two consoles never formed):
-
-```
-Console1 (mesh1)                          Console2 (mesh2)
- mesh1.admin-ui.35a39c -> Alive  (home)     mesh2.admin-ui.61a66f -> Alive    (home)
- mesh1.broker.61b1b1   -> Alive  (home)     mesh2.broker.adf1bf   -> Alive    (home)
- mesh1.broker.62e69c   -> Degraded (home)   mesh2.compute.f09fe9  -> Alive    (home)
- mesh1.gateway.8db171  -> Alive  (home)     mesh2.gateway.263c01  -> Alive    (home)
-                                            mesh2.registry.cab1f7 -> Alive    (home)
-```
+**Bottom line:** all 8 verified. sprint-20's own mechanics (NodeState wire, intra-mesh fast convergence,
+Leaving/Dead/Degraded semantics, wire roundtrip, render) plus cross-mesh visibility on both consoles. The
+cross-mesh "broken" detour was root-caused to a **test-setup artifact** (bidirectional cross-seed connection
+churn) and resolved with unidirectional seeding — NOT the backbone design or the sprint-20 `state` field.
 
 ---
 
