@@ -282,6 +282,16 @@ async fn run_node(
         if let Ok(services) = transport.endpoint.address_lookup() {
             services.add(book.clone());
         }
+        // Seed addresses are explicit + known at boot. Register them NOW so any
+        // join_peers/connect for a seed resolves immediately — critical for the
+        // BACKBONE: a cross-mesh seed peer is in a different mesh, so its
+        // GossipDigest never arrives on our per-mesh gossip and register_peer_location
+        // (the digest path) never sees it. Without this, the backbone topic's
+        // join_peers(seed_id) has no address for the cross-mesh console and the
+        // two meshes' backbone swarms never link (each shows only its own mesh).
+        for seed in &seed_nodes {
+            book.add_endpoint_info(EndpointAddr::new(seed.id).with_ip_addr(seed.addr));
+        }
         let _ = MESH_ADDR_BOOK.set(book);
     }
 

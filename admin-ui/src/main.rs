@@ -1007,11 +1007,23 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         }));
     }
     // Also include spawned_meta entries we haven't seen via gossip yet
-    // (they just spawned and their first digest hasn't arrived).
+    // (they just spawned and their first digest hasn't arrived) — rendered as
+    // a transient `Joining` placeholder. AGE-OUT (sprint-20): with the
+    // location-registration convergence fix a real node's first digest arrives
+    // in a few seconds, so a pending entry that has gone > PENDING_GRACE_MS with
+    // NO reconciling digest is not a slow-joiner — it's a stale placeholder
+    // (e.g. the pre-mint ghost when a child booted a different minted identity).
+    // Suppress it so the topology doesn't show a node stuck in `Joining` forever.
+    const PENDING_GRACE_MS: u64 = 15_000;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
     let known_names: std::collections::HashSet<String> =
         digests.iter().map(|e| e.value().node_name.clone()).collect();
     for entry in state.spawned_meta.iter() {
-        if !known_names.contains(entry.key()) {
+        let aged_out = now_ms.saturating_sub(entry.value().spawned_at_ms) > PENDING_GRACE_MS;
+        if !known_names.contains(entry.key()) && !aged_out {
             nodes.push(json!({
                 "id": entry.key(),
                 "node_id": "",
