@@ -47,10 +47,11 @@
     boot a <b>duplicate node_id</b> and then fail their seed dial with
     <code>invalid peer certificate: UnknownIssuer</code> (106+ in the log) — they never join gossip and
     linger as ghost processes (≈6 extra procs vs visible nodes, inflating the count).</p>
-    <p>This was <b>reproduced + root-caused this session</b> (parallel burst of 8 → ~1 ghost) and documented.
-    It degrades bootstrap but does not crash or leak — the soak's core criteria still pass. The
-    bootstrap-concurrency identity race is the open follow-up; the UI-side stuck-<code>Joining</code> symptom
-    is already mitigated by the placeholder age-out.</p>
+    <p>This was <b>reproduced + root-caused this session</b> (parallel burst of 8 → ~1 ghost), and then
+    <b class="ok">FIXED (commit <code>7aab9a2</code>)</b>: admin-ui now passes the child's pre-minted key via
+    <code>RAFKA_NODE_SECRET_KEY</code> instead of a written file, so the booted identity can't diverge from
+    what admin-ui recorded — no file round-trip, no race. Verified: <b>24 concurrent spawns → 0 ghosts, 0
+    UnknownIssuer</b> (was ~1/8). The soak's core criteria passed regardless; this closes the one finding.</p>
   </div>
 
   <h2>Verdict</h2>
