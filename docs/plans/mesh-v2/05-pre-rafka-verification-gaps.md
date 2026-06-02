@@ -26,7 +26,7 @@ real work.**
 |---|---|---|---|
 | 1 | **Network-fault resilience** — PRD 02 §2.2/§2.3 claim the cross-mesh write recovers across `partition_pair`/`flap_link` and the relay tolerates `slow_link`/`lossy_link`. | **Unverified.** Confirmed: the authoritative sprint-18 UI-path soak (`/api/chaos/start` → `chaos_loop`) only kill+respawns processes. The network primitives exist in `crates/rafka-chaos` but were never fired in the closed proof. They also require Windows-firewall rules (admin rights) and target **binary names** (coarse on loopback where all brokers share `rafka-broker.exe`). | Run a soak that drives the network primitives (elevated, via `rfa`/`ChaosContext`); confirm the cross-mesh write degrades + recovers + RSS stays flat. |
 | 2 | **Relay carries real frames end-to-end** | Proven only in an isolated `test_utils` test (sprint-16). On loopback it's correctly idle (direct wins). | **Conditional:** fine for a single-host first build. **Mandatory before any cross-host/NAT deploy** — prove a real `Write`/`Ack` traverses the relay live. |
-| 3 | **Produce/ack under concurrency + load** | **VERIFIED** (run 2026-06-01, see below). | Done for the empty-broker floor. Re-run once the broker does real work. Note the **2s chaos-cadence floor**: sub-2s concurrent kill+respawn panics on an upstream `iroh-quinn-proto-0.13.0` assertion — a churn ceiling to clear on the next iroh bump. |
+| 3 | **Produce/ack under *concurrency*** | **Concurrency VERIFIED** (run 2026-06-01, see below). **Throughput/backpressure load NOT yet tested** — the measured rate was ~4/s, trivial. | Concurrency (10 simultaneous producers, full RPC) is proven. A real load test (high rate, queue depth, backpressure) is still pending and only meaningful once brokers do real work. Note the **2s chaos-cadence floor**: sub-2s concurrent kill+respawn panics on an upstream `iroh-quinn-proto-0.13.0` assertion — a churn ceiling to clear on the next iroh bump. |
 | 4 | **Scale ceiling** | ~40 empty nodes, flat. | Measure gossip fanout cost, backbone summary size, and directory growth at 100s of nodes. |
 | 5 | **Backbone soft-lease failover** (publisher death) | **VERIFIED** (run 2026-06-01, see below). A live mesh-to-mesh *network split* (firewall) is still gated on elevation. | Done for publisher death/expiry. Inject a real cross-mesh partition (elevated) for the split case. |
 
@@ -83,10 +83,11 @@ Screenshots: `docs/plans/mesh-v2/verify/screenshots/netfault-{0-before,1-killed,
 partition/flap/slow/lossy) — needs an **elevated** run. Process-fault recovery (target dies and returns)
 is now proven; packet-level fault tolerance is not.
 
-### Gap #3 — produce/ack under concurrency + load — VERIFIED (run 2026-06-01)
+### Gap #3 — produce/ack under *concurrency* — VERIFIED (run 2026-06-01)
 
 Scaled to **10 gateways (5/mesh)** producing concurrently (intra + cross-mesh) against 5 brokers/mesh,
-20 procs total. Sustained for 150 s.
+20 procs total. Sustained for 150 s. **This proves concurrency, not load** — the rate (~4/s) is trivial
+and nothing queued or back-pressured; a real throughput/backpressure load test is still pending.
 
 | Metric | Result |
 |---|---|
