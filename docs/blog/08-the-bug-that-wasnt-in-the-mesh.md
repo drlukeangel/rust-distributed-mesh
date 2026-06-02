@@ -45,6 +45,17 @@ the stale one idle-time-out. Critically, this can't hurt the common case — a c
 console (one direction, one connection, nothing to supersede). With it, bidirectional cross-seed shows
 both meshes again, summaries flowing both ways.
 
+Here is both directions live. Console 1 is `mesh1`'s home; it renders `mesh2` from the backbone. Console 2
+is `mesh2`'s home; it renders `mesh1` from the backbone. The remote mesh's group header is tagged
+`· backbone` (gold) versus the home mesh's local rollup, and — once the directory started carrying
+per-node load — every cross-mesh node shows its own `CPU` and `MEM`, not a blank box. The per-mesh
+aggregate (`Σ CPU … · RAM …`) is the rollup that actually crosses the wire; the per-node detail is
+reconstructed from the same summary.
+
+![Console 1 (mesh1 home) — mesh2 arrives over the backbone with per-node CPU/RAM + aggregate](../plans/mesh-v2/verify/screenshots/xmesh-cpu-fixed/1-topology.png)
+
+![Console 2 (mesh2 home) — mesh1 arrives over the backbone, the mirror image](../plans/mesh-v2/verify/screenshots/xmesh-cpu-fixed-c2/1-topology.png)
+
 ## The actual lesson
 
 Both scares were the same mistake waiting to happen: **trusting a plausible story over the live signal.**
