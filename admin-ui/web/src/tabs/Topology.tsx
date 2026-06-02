@@ -195,7 +195,7 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
               )}
               {(n.cpu_budget ?? 0) > 0 && (
                 <div style={{ fontSize: 9, color: utilColor(n.cpu_used, n.cpu_budget) }}>
-                  CPU:{(n.cpu_used ?? 0).toFixed(1)}/{(n.cpu_budget ?? 0).toFixed(1)}
+                  CPU:{(n.cpu_used ?? 0).toFixed(2)}/{(n.cpu_budget ?? 0).toFixed(1)}
                 </div>
               )}
               {(n.ram_budget ?? 0) > 0 && (
