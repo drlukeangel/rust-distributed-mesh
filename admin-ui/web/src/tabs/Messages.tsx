@@ -35,7 +35,15 @@ export function Messages() {
   const now = Date.now();
 
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      style={{
+        height: "calc(100vh - 200px)",
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}
+    >
       <div className="flex items-center justify-between">
         <div className="text-sm text-gray-400">
           per-node traffic (TX/RX) from gossip · {msgs.length} nodes ·
@@ -51,15 +59,19 @@ export function Messages() {
       {err && (
         <div className="text-red-400 text-xs">{err}</div>
       )}
-      <div className="border border-gray-800 rounded overflow-hidden">
-        <table className="w-full text-xs font-mono">
-          <thead className="bg-gray-900 text-gray-400">
+      <div
+        className="border border-gray-800 rounded"
+        style={{ flex: 1, minHeight: 0, width: "100%", overflow: "auto" }}
+      >
+        <table className="text-xs font-mono" style={{ width: "100%", tableLayout: "fixed" }}>
+          <thead className="bg-gray-900 text-gray-400" style={{ position: "sticky", top: 0 }}>
             <tr>
-              <th className="text-left p-2 w-20">age</th>
-              <th className="text-left p-2 w-20">kind</th>
-              <th className="text-left p-2 w-44">from peer</th>
-              <th className="text-left p-2">payload (decoded)</th>
-              <th className="text-right p-2 w-20">bytes</th>
+              <th className="text-left p-2" style={{ width: 80 }}>age</th>
+              <th className="text-left p-2" style={{ width: 90 }}>kind</th>
+              <th className="text-left p-2" style={{ width: 200 }}>from peer</th>
+              {/* payload is the major column — it eats all remaining width */}
+              <th className="text-left p-2" style={{ width: "auto" }}>payload (decoded)</th>
+              <th className="text-right p-2" style={{ width: 90 }}>bytes</th>
             </tr>
           </thead>
           <tbody>
@@ -90,10 +102,12 @@ export function Messages() {
                 >
                   <td className="p-2 text-gray-500">{ageStr}</td>
                   <td className={`p-2 ${kindColor}`}>{m.frame_kind}</td>
-                  <td className="p-2 text-gray-400">
+                  <td className="p-2 text-gray-400" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {m.from_peer_id.slice(0, 16)}…
                   </td>
-                  <td className="p-2 text-gray-200">{m.summary}</td>
+                  <td className="p-2 text-gray-200" style={{ fontSize: 13, wordBreak: "break-word", whiteSpace: "pre-wrap" }}>
+                    {m.summary}
+                  </td>
                   <td className="p-2 text-right text-gray-500">{m.bytes}</td>
                 </tr>
               );

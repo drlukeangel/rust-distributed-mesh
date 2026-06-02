@@ -8,6 +8,19 @@ const TYPE_COLOR: Record<string, string> = {
   registry: "#bc8cff",
 };
 
+/// NodeState → color (mirrors Topology.tsx). Alive is neutral green; the
+/// operator-set / health states get their own color so a SetState op is
+/// visible on the card.
+const STATE_COLOR: Record<string, string> = {
+  Joining: "#58a6ff",
+  Alive: "#3fb950",
+  Degraded: "#d29922",
+  Updating: "#a371f7",
+  Draining: "#db6d28",
+  Leaving: "#6e7681",
+  Dead: "#f85149",
+};
+
 function utilColor(used: number | undefined, budget: number | undefined): string {
   if (used === undefined || budget === undefined || budget <= 0) return "#8b949e";
   const ratio = used / budget;
@@ -172,6 +185,11 @@ export function Nodes() {
               <br />
               id: {n.id}
               <br />
+              state:{" "}
+              <span style={{ color: STATE_COLOR[n.state ?? "Alive"] ?? "#c9d1d9", fontWeight: 700 }}>
+                {n.state ?? "?"}
+              </span>
+              <br />
               peers: {n.peer_count ?? 0}
               <br />
               age: {ageSeconds(n.spawn_time_ms, n.wall_time_ms)}
@@ -211,7 +229,7 @@ export function Nodes() {
               <button disabled={busy === n.id} title="mark Updating"
                 onClick={() => doSetState(n.id, "Updating")}
                 style={{ fontSize: 10, padding: "2px 6px", color: "#a371f7", borderColor: "#a371f7" }}>
-                upd
+                updating
               </button>
               <button disabled={busy === n.id} title="resume to Alive"
                 onClick={() => doSetState(n.id, "Alive")}
