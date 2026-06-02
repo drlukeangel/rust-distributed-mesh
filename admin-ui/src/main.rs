@@ -1047,9 +1047,10 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     // Sprint-14 B6: REMOTE meshes (not our home mesh) come from the BACKBONE
     // directory, NOT from all-mesh gossip. For each backbone summary whose mesh
     // we don't already have locally, add its directory entries as nodes tagged
-    // `source:"backbone"` (summary detail: name/type/mesh/location, no per-node
-    // CPU/RAM — that never leaves the remote mesh). This is the cross-mesh global
-    // view without subscribing to the remote mesh's firehose.
+    // `source:"backbone"`. The directory now carries PER-NODE cpu/ram (cores/GB)
+    // for every remote node, so a cross-mesh console renders each node's real
+    // metrics — not blank boxes. The per-mesh rollup also rides the summary
+    // (`aggregate`) and is surfaced as `mesh_aggregates` below.
     let local_meshes: std::collections::HashSet<String> =
         digests.iter().map(|e| e.value().mesh_id.clone()).collect();
     for summary_entry in backbone_summaries().iter() {
@@ -1069,10 +1070,10 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "frames_recv_total": 0,
                 "wall_time_ms": summary.wall_time_ms,
                 "spawn_time_ms": Value::Null,
-                "cpu_used": 0.0,
-                "cpu_budget": 0.0,
-                "ram_used": 0.0,
-                "ram_budget": 0.0,
+                "cpu_used": d.cpu_used,
+                "cpu_budget": d.cpu_budget,
+                "ram_used": d.ram_used,
+                "ram_budget": d.ram_budget,
                 "state": format!("{:?}", d.state),
                 "status": "live",
                 "source": "backbone",
@@ -1155,11 +1156,58 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         .into_iter()
         .map(|(a, b, kind)| json!({"from": a, "to": b, "kind": kind}))
         .collect();
+
+    // ---- PER-MESH AGGREGATE (the rollup that rides the backbone) ----
+    // Surfaced so the UI shows each mesh's totals in its group header — the whole
+    // point of shipping `MeshAggregate` cross-mesh. Local meshes are summed live
+    // from gossip digests; remote meshes come straight off the backbone summary's
+    // `aggregate`. node_count/cpu/ram are instantaneous totals; frames_per_sec is
+    // the rate over the interval since the last sample.
+    let mut mesh_aggregates: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    {
+        // local meshes: sum from our own gossip digests
+        let mut local: std::collections::HashMap<String, (u64, f32, f32, f32, f32)> =
+            std::collections::HashMap::new();
+        for entry in digests.iter() {
+            let d = entry.value();
+            let e = local.entry(d.mesh_id.clone()).or_insert((0, 0.0, 0.0, 0.0, 0.0));
+            e.0 += 1;
+            e.1 += d.cpu_used;
+            e.2 += d.cpu_budget;
+            e.3 += d.ram_used;
+            e.4 += d.ram_budget;
+        }
+        for (mesh, (n, cu, cb, ru, rb)) in local {
+            mesh_aggregates.insert(mesh, json!({
+                "node_count": n,
+                "cpu_used": cu, "cpu_budget": cb,
+                "ram_used": ru, "ram_budget": rb,
+                "frames_per_sec": 0.0,
+                "source": "local",
+            }));
+        }
+        // remote meshes: straight off the backbone summary aggregate
+        for summary_entry in backbone_summaries().iter() {
+            let s = summary_entry.value();
+            if mesh_aggregates.contains_key(&s.mesh_id) { continue; }
+            let a = &s.aggregate;
+            mesh_aggregates.insert(s.mesh_id.clone(), json!({
+                "node_count": a.node_count,
+                "cpu_used": a.cpu_used, "cpu_budget": a.cpu_budget,
+                "ram_used": a.ram_used, "ram_budget": a.ram_budget,
+                "frames_per_sec": a.frames_per_sec,
+                "source": "backbone",
+            }));
+        }
+    }
+
     return (
         StatusCode::OK,
         axum::Json(json!({
             "nodes": nodes,
             "edges": edges,
+            "mesh_aggregates": mesh_aggregates,
             "source": "gossip",
         })),
     )

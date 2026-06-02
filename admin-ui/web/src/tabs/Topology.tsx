@@ -64,7 +64,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
   // Sprint-14 B6: the admin-ui is a NORMAL node now (mesh_id=mesh1, type=admin-ui)
   // and renders in its home mesh like everyone. The legacy mesh_id=="admin"
   // observer is gone, so no special filter. Remote-mesh nodes carry
-  // source:"backbone" (summary detail from the backbone, no per-node CPU/RAM).
+  // source:"backbone"; the backbone directory now ships per-node CPU/RAM too, so
+  // they render full metrics, plus the per-mesh aggregate in the group header.
   const observable = t.nodes;
 
   const byMesh = new Map<string, typeof observable>();
@@ -99,20 +100,40 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
       selectable: false,
     });
 
-    // Mesh label
+    // Mesh label + the per-mesh AGGREGATE rollup (the thing the backbone ships).
+    // For our own mesh the aggregate is summed locally; for a remote mesh it
+    // arrives over the backbone. Show mesh totals: CPU (cores) and RAM (GB), plus
+    // frames/sec when present (the rate over the interval since the last sample).
+    const agg = t.mesh_aggregates?.[m];
     nodes.push({
       id: `label-${m}`,
       type: "default",
-      position: { x: 80 + i * meshGap + meshWidth / 2 - 60, y: meshTop - 30 },
-      data: { label: `${m} · ${byMesh.get(m)!.length} nodes` },
+      position: { x: 80 + i * meshGap + meshWidth / 2 - 90, y: meshTop - 48 },
+      data: {
+        label: (
+          <div style={{ textAlign: "center", lineHeight: 1.25 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>
+              {m} · {byMesh.get(m)!.length} nodes
+            </div>
+            {agg && (
+              <div style={{ fontSize: 10, color: "#8b949e", fontWeight: 500 }}>
+                Σ CPU {agg.cpu_used.toFixed(2)}/{agg.cpu_budget.toFixed(1)}c ·{" "}
+                RAM {agg.ram_used.toFixed(2)}/{agg.ram_budget.toFixed(1)}gb
+                {agg.frames_per_sec > 0 && <> · {agg.frames_per_sec.toFixed(1)} fr/s</>}
+                {agg.source === "backbone" && (
+                  <span style={{ color: "#e3b341" }}> · backbone</span>
+                )}
+              </div>
+            )}
+          </div>
+        ),
+      },
       style: {
         background: "transparent",
         border: "none",
         color: meshColor(m),
         fontFamily: "ui-monospace, monospace",
-        fontWeight: 600,
-        fontSize: 13,
-        width: 120,
+        width: 180,
       },
       draggable: false,
       selectable: false,

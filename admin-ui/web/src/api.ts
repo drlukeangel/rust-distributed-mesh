@@ -41,7 +41,8 @@ export interface TopologyNode {
   /// in practice this is one of Joining/Alive/Degraded/Updating/Draining.
   state?: NodeState;
   /// sprint-14: "gossip" (home-mesh full detail) or "backbone" (remote-mesh
-  /// summary directory entry — no per-node CPU/RAM).
+  /// summary directory entry). The backbone directory now carries per-node
+  /// CPU/RAM, so cross-mesh nodes render their real metrics too.
   source?: "gossip" | "backbone";
   /// legacy — Jaeger-era, kept for back-compat
   frames_per_min?: number;
@@ -52,9 +53,24 @@ export interface TopologyEdge {
   kind: "within" | "cross";
   frame_count?: number;
 }
+/// The per-mesh rollup that rides the backbone (`MeshAggregate`). node_count /
+/// cpu / ram are instantaneous totals for the whole mesh; frames_per_sec is a
+/// rate over the interval since the last sample. `source` says whether this
+/// console summed it locally (own mesh) or received it off the backbone (remote).
+export interface MeshAggregate {
+  node_count: number;
+  cpu_used: number;
+  cpu_budget: number;
+  ram_used: number;
+  ram_budget: number;
+  frames_per_sec: number;
+  source: "local" | "backbone";
+}
 export interface TopologyResponse {
   nodes: TopologyNode[];
   edges: TopologyEdge[];
+  /// keyed by mesh_id
+  mesh_aggregates?: Record<string, MeshAggregate>;
 }
 
 export interface Heartbeat {

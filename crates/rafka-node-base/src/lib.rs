@@ -943,6 +943,10 @@ async fn run_backbone(
                             node_id: d.node_id.clone(),
                             location: d.location.clone(),
                             state: d.state,
+                            cpu_used: d.cpu_used,
+                            cpu_budget: d.cpu_budget,
+                            ram_used: d.ram_used,
+                            ram_budget: d.ram_budget,
                         });
                     }
                 }
@@ -1501,6 +1505,14 @@ pub struct MeshDirectoryEntry {
     /// summaries (which lacked it) as the enum default (Alive).
     #[serde(default)]
     pub state: NodeState,
+    /// PER-NODE CPU/RAM carried over the backbone so a cross-mesh console renders
+    /// each remote node's real metrics (cores / GB), not blank boxes. (Appended,
+    /// serde(default)=0.) The mesh-level rollup still rides `MeshAggregate`; this
+    /// is the per-node detail.
+    #[serde(default)] pub cpu_used: f32,
+    #[serde(default)] pub cpu_budget: f32,
+    #[serde(default)] pub ram_used: f32,
+    #[serde(default)] pub ram_budget: f32,
 }
 
 /// Mesh-level rollup carried on the backbone (PRD 03 §2). The heavy per-node
@@ -3186,8 +3198,8 @@ mod gossip_digest_schema_tests {
         let summary = MeshSummary {
             mesh_id: "mesh2".into(),
             directory: vec![
-                MeshDirectoryEntry { node_name: "mesh2.gateway.aaaaaa".into(), node_type: "gateway".into(), node_id: "a".repeat(64), location: "127.0.0.1:15920".into(), state: NodeState::Alive },
-                MeshDirectoryEntry { node_name: "mesh2.broker.bbbbbb".into(), node_type: "broker".into(), node_id: "b".repeat(64), location: "127.0.0.1:15921".into(), state: NodeState::Degraded },
+                MeshDirectoryEntry { node_name: "mesh2.gateway.aaaaaa".into(), node_type: "gateway".into(), node_id: "a".repeat(64), location: "127.0.0.1:15920".into(), state: NodeState::Alive, cpu_used: 0.05, cpu_budget: 5.0, ram_used: 0.1, ram_budget: 2.5 },
+                MeshDirectoryEntry { node_name: "mesh2.broker.bbbbbb".into(), node_type: "broker".into(), node_id: "b".repeat(64), location: "127.0.0.1:15921".into(), state: NodeState::Degraded, cpu_used: 0.05, cpu_budget: 5.0, ram_used: 0.1, ram_budget: 2.5 },
             ],
             aggregate: MeshAggregate { node_count: 2, cpu_used: 0.1, cpu_budget: 10.0, ram_used: 0.2, ram_budget: 5.0, frames_per_sec: 3.0 },
             published_by: "c".repeat(64),
