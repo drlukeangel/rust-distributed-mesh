@@ -155,36 +155,6 @@ export function Nodes() {
             onClick={() => setExpanded(isOpen ? null : n.id)}
           >
             <div
-              style={{ position: "absolute", top: 8, right: 8, display: "flex", gap: 4 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* sprint-21 lifecycle ops: mark Draining / Updating, or resume to Alive */}
-              <button disabled={busy === n.id} title="mark Draining"
-                onClick={() => doSetState(n.id, "Draining")}
-                style={{ fontSize: 10, padding: "2px 6px", color: "#db6d28", borderColor: "#db6d28" }}>
-                drain
-              </button>
-              <button disabled={busy === n.id} title="mark Updating"
-                onClick={() => doSetState(n.id, "Updating")}
-                style={{ fontSize: 10, padding: "2px 6px", color: "#a371f7", borderColor: "#a371f7" }}>
-                upd
-              </button>
-              <button disabled={busy === n.id} title="resume to Alive"
-                onClick={() => doSetState(n.id, "Alive")}
-                style={{ fontSize: 10, padding: "2px 6px", color: "#3fb950", borderColor: "#3fb950" }}>
-                resume
-              </button>
-              <button
-                className="danger"
-                disabled={busy === n.id}
-                onClick={() => doKill(n.id)}
-                style={{ fontSize: 10, padding: "2px 8px" }}
-              >
-                kill
-              </button>
-            </div>
-
-            <div
               className="mono"
               style={{
                 color: typeColor,
@@ -199,6 +169,8 @@ export function Nodes() {
               type: {n.type}
               <br />
               mesh: {n.mesh_id || "?"}
+              <br />
+              id: {n.id}
               <br />
               peers: {n.peer_count ?? 0}
               <br />
@@ -223,6 +195,38 @@ export function Nodes() {
                 unit="gb"
               />
             )}
+
+            {/* lifecycle + kill controls, at the bottom of the card so they
+                never overlap the node name */}
+            <div
+              style={{ display: "flex", gap: 4, marginTop: 10, flexWrap: "wrap" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* sprint-21 lifecycle ops: mark Draining / Updating, or resume to Alive */}
+              <button disabled={busy === n.id} title="mark Draining"
+                onClick={() => doSetState(n.id, "Draining")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#db6d28", borderColor: "#db6d28" }}>
+                drain
+              </button>
+              <button disabled={busy === n.id} title="mark Updating"
+                onClick={() => doSetState(n.id, "Updating")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#a371f7", borderColor: "#a371f7" }}>
+                upd
+              </button>
+              <button disabled={busy === n.id} title="resume to Alive"
+                onClick={() => doSetState(n.id, "Alive")}
+                style={{ fontSize: 10, padding: "2px 6px", color: "#3fb950", borderColor: "#3fb950" }}>
+                resume
+              </button>
+              <button
+                className="danger"
+                disabled={busy === n.id}
+                onClick={() => doKill(n.id)}
+                style={{ fontSize: 10, padding: "2px 8px", marginLeft: "auto" }}
+              >
+                kill
+              </button>
+            </div>
 
             {isOpen && (
               <div
