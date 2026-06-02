@@ -1,6 +1,6 @@
 # Building a multi-mesh substrate — a build log
 
-An eight-part series on building a small, observable, multi-mesh networking substrate on top of
+A nine-part series on building a small, observable, multi-mesh networking substrate on top of
 [iroh](https://github.com/n0-computer/iroh) — gossip for membership, a relay for cross-network
 transport, and OpenTelemetry traces as the source of truth. Every claim in these posts is backed by a
 screenshot of the live system (the admin console and Jaeger), captured during the sprint that shipped it.
@@ -19,5 +19,7 @@ no DHT; just the smallest thing that works, proven live.
 | 6 | [Kill by message, not by ownership](06-kill-by-message-not-by-ownership.md) | Control-plane kill, every mesh advertising itself, the node-lifecycle *design* (the working per-transition events shipped later — see the in-post correction), and a stale-binary lesson |
 | 7 | [Prove the relay carries: make direct impossible](07-prove-the-relay-make-direct-impossible.md) | Why the obvious relay proof is a lie; `clear_ip_transports` so direct can't win; a deterministic relay-carriage test |
 | 8 | [The bug that wasn't in the mesh](08-the-bug-that-wasnt-in-the-mesh.md) | Two cross-mesh scares — the 40s join (use iroh's `MemoryLookup`) and a `NeighborUp→NeighborDown` connection-churn — and trusting the live signal over a tidy theory |
+| 9 | [Is it ready? (and a thank-you to n0)](09-is-it-ready-and-a-thank-you-to-n0.md) | The pre-rafka verification sweep — produce/ack under load, cross-mesh fault→recovery, soft-lease failover — what's a floor not a ceiling, what's deferred, and gratitude to the iroh team |
 
-Images live alongside each post under `../sprints/sprint-NN/screenshots/`.
+Images live alongside each post under `../sprints/sprint-NN/screenshots/`, or for the later posts under
+`../plans/mesh-v2/verify/screenshots/`.

@@ -26,9 +26,9 @@ real work.**
 |---|---|---|---|
 | 1 | **Network-fault resilience** — PRD 02 §2.2/§2.3 claim the cross-mesh write recovers across `partition_pair`/`flap_link` and the relay tolerates `slow_link`/`lossy_link`. | **Unverified.** Confirmed: the authoritative sprint-18 UI-path soak (`/api/chaos/start` → `chaos_loop`) only kill+respawns processes. The network primitives exist in `crates/rafka-chaos` but were never fired in the closed proof. They also require Windows-firewall rules (admin rights) and target **binary names** (coarse on loopback where all brokers share `rafka-broker.exe`). | Run a soak that drives the network primitives (elevated, via `rfa`/`ChaosContext`); confirm the cross-mesh write degrades + recovers + RSS stays flat. |
 | 2 | **Relay carries real frames end-to-end** | Proven only in an isolated `test_utils` test (sprint-16). On loopback it's correctly idle (direct wins). | **Conditional:** fine for a single-host first build. **Mandatory before any cross-host/NAT deploy** — prove a real `Write`/`Ack` traverses the relay live. |
-| 3 | **Produce/ack under concurrency + load** | Single-shot `Write→Ack` only; never load-tested. | Load-test many concurrent producers. Note the **2s chaos-cadence floor**: sub-2s concurrent kill+respawn panics on an upstream `iroh-quinn-proto-0.13.0` assertion — a real churn ceiling to clear on the next iroh bump. |
+| 3 | **Produce/ack under concurrency + load** | **VERIFIED** (run 2026-06-01, see below). | Done for the empty-broker floor. Re-run once the broker does real work. Note the **2s chaos-cadence floor**: sub-2s concurrent kill+respawn panics on an upstream `iroh-quinn-proto-0.13.0` assertion — a churn ceiling to clear on the next iroh bump. |
 | 4 | **Scale ceiling** | ~40 empty nodes, flat. | Measure gossip fanout cost, backbone summary size, and directory growth at 100s of nodes. |
-| 5 | **Backbone partition / soft-lease failover** under a real cross-mesh network split | Only publisher death/expiry was reasoned through; a live split was never injected. | Inject a mesh-to-mesh partition; confirm lease failover + directory staleness behave. |
+| 5 | **Backbone soft-lease failover** (publisher death) | **VERIFIED** (run 2026-06-01, see below). A live mesh-to-mesh *network split* (firewall) is still gated on elevation. | Done for publisher death/expiry. Inject a real cross-mesh partition (elevated) for the split case. |
 
 ---
 
@@ -82,3 +82,53 @@ Screenshots: `docs/plans/mesh-v2/verify/screenshots/netfault-{0-before,1-killed,
 **Still open under #1:** the firewall-level *link cut while the process stays alive* (true
 partition/flap/slow/lossy) — needs an **elevated** run. Process-fault recovery (target dies and returns)
 is now proven; packet-level fault tolerance is not.
+
+### Gap #3 — produce/ack under concurrency + load — VERIFIED (run 2026-06-01)
+
+Scaled to **10 gateways (5/mesh)** producing concurrently (intra + cross-mesh) against 5 brokers/mesh,
+20 procs total. Sustained for 150 s.
+
+| Metric | Result |
+|---|---|
+| Produce throughput | **600 `produce.handle` / 150 s** (~4/s fleet-wide, steady 2/s per mesh) |
+| Ack RPC | **640 `produce.ack`** (320/broker) — the full produce→handle→ack loop completes under concurrency |
+| Frame integrity | **0 `frame.decode_failed`** |
+| Stability | **0 panics, 0 quinn-proto assertions**; 20 procs throughout (no crashes); RSS 903→914 MB (+1.2%, noise) |
+
+Screenshot: `screenshots/load-concurrency/`. **Caveat:** brokers are no-op — this is the empty-substrate
+floor; re-run on release builds once the broker writes a log.
+
+### Gap #5 — backbone soft-lease failover — VERIFIED (run 2026-06-01)
+
+Identified the live mesh1 lease holder via `rafka.mesh.backbone.published` (`publisher` attr), killed it,
+watched the dead-man's-switch hand off.
+
+| Phase | Result |
+|---|---|
+| Before | publisher = `mesh1.gateway.18b5f2` |
+| Kill the lease holder | within the TTL (3× `RAFKA_BACKBONE_INTERVAL_MS` = 6 s) a different candidate **`mesh1.gateway.24aa9e` took over** publishing (5 `backbone.published` in the next 11 s) |
+| Cross-mesh continuity | the other console (mesh2's home) **still saw mesh1** (9–10 nodes), dead publisher evicted — no cross-mesh blackout |
+
+Screenshot: `screenshots/lease-failover-c2/`. The *network-split* flavor (mesh-to-mesh firewall partition)
+remains gated on elevation.
+
+---
+
+## Readiness verdict (2026-06-01)
+
+**Ready to start building rafka on a single host**, with eyes open:
+
+- ✅ Solid & proven: membership/discovery, self-naming, cross-mesh visibility + per-node/aggregate
+  metrics, control-plane kill/set-state, `NodeState` lifecycle, telemetry, **cross-mesh write
+  fault→recovery (process)**, **produce/ack under concurrency**, **soft-lease failover**, RSS-flat under
+  churn.
+- ⏸ Deferred with clear conditions (not blockers for a single-host build):
+  - **Packet-level network faults** (#1 firewall half, #5 split) — need an **elevated** run.
+  - **Live relay carriage** (#2) — only required **before cross-host/NAT**; isolated `test_utils` proof
+    exists.
+  - **Scale ceiling** (#4) — measure before going past ~dozens of nodes.
+- 🔵 Not substrate gaps — they are rafka itself: durability/the log, delivery semantics, backpressure
+  policy, tenancy/authz.
+
+The load-bearing numbers (produce/ack, RSS, scale) are **floors for empty no-op brokers** and must be
+re-measured on release builds once the broker does real work.
