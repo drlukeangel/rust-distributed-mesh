@@ -119,6 +119,32 @@ impl EventRing {
     }
 }
 
+/// Running activity feed for the Messages tab. The admin-ui can't see data-plane
+/// frames directly (sprint-13 removed the copy; they're broker↔broker), so the
+/// only INSTANT source is what it observes via gossip: per-node traffic deltas +
+/// NodeState transitions + evictions. `messages_feed` appends those here as a
+/// rolling log; capped at 1000 (pop oldest). This is a deliberate gossip-derived
+/// feed for the Messages view ONLY — it does NOT feed the Timeline (state events
+/// reach the Timeline via the action-point event in handle_set_state).
+#[derive(Default)]
+struct MsgRing {
+    items: StdMutex<std::collections::VecDeque<MeshMessage>>,
+}
+
+impl MsgRing {
+    fn push(&self, m: MeshMessage) {
+        let mut g = self.items.lock().unwrap();
+        if g.len() >= 1000 {
+            g.pop_front();
+        }
+        g.push_back(m);
+    }
+    /// Newest-first snapshot for the API.
+    fn snapshot(&self) -> Vec<MeshMessage> {
+        self.items.lock().unwrap().iter().rev().cloned().collect()
+    }
+}
+
 /// Live observer state — one entry per node seen via gossip in the last 30 s.
 /// Populated by `observer_task` (the Phase-C iroh observer). Throughput rates
 /// are computed as delta between two consecutive digests divided by the wall
@@ -154,6 +180,9 @@ struct AppState {
     spawned_meta: Arc<DashMap<String, SpawnedMeta>>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
+    /// Messages activity feed (gossip-derived: traffic deltas + state changes +
+    /// evictions), cap 1000. Fed by `messages_feed`; read by /api/messages.
+    msgs: Arc<MsgRing>,
     /// Phase C: live state from gossip digests, keyed by node_id (hex).
     live: Arc<DashMap<String, LiveNodeState>>,
     /// Phase A: background Jaeger-fed cache. Refreshed every 3 s.
@@ -2450,38 +2479,11 @@ struct RunTestRequest {
 /// GET /api/messages — live data-plane traffic flowing through admin-ui.
 /// Returns the last 500 frames received via run_frame_reader. Newest first.
 /// Source: rafka_node_base::message_ring() (process-global VecDeque).
-async fn handle_messages() -> impl IntoResponse {
-    // Sprint-13 B4: the gateway→admin-ui write CC is GONE, so admin-ui's
-    // process-local message_ring no longer captures data-plane produces (those
-    // land on the broker that receives them, in the broker's own process). Derive
-    // the Messages view from the LEGITIMATE gossiped per-node frame counters
-    // (`frames_sent_total` / `frames_recv_total` in each GossipDigest) instead —
-    // one row per live node summarizing its real traffic. No node special-cases
-    // copies to the observer; this is pure observation of gossiped state.
-    let digests = live_digests();
-    let mut items: Vec<MeshMessage> = digests
-        .iter()
-        .filter(|e| {
-            let d = e.value();
-            !d.node_name.is_empty() && d.node_name != "<unspawned>" && d.node_name != "admin-ui"
-        })
-        .map(|e| {
-            let d = e.value();
-            MeshMessage {
-                ts_ms: d.wall_time_ms,
-                from_peer_id: d.node_id.clone(),
-                frame_kind: "traffic".to_string(),
-                bytes: 0,
-                summary: format!(
-                    "{} [{}] TX={} RX={}",
-                    d.node_name, d.node_type, d.frames_sent_total, d.frames_recv_total
-                ),
-            }
-        })
-        .collect();
-    // Newest digest first.
-    items.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
-    items.truncate(500);
+async fn handle_messages(State(state): State<AppState>) -> impl IntoResponse {
+    // A RUNNING activity feed (option B), not a per-node snapshot. `messages_feed`
+    // observes gossip and appends traffic deltas, NodeState transitions, and
+    // evictions; the ring keeps the last 1000 (pops oldest). Returned newest-first.
+    let items = state.msgs.snapshot();
     (StatusCode::OK, axum::Json(json!({"messages": items}))).into_response()
 }
 
@@ -2637,6 +2639,105 @@ fn chaos_state_json(state: &AppState) -> axum::Json<Value> {
 
 /// Continuous chaos: every cadence_ms, pick a random spawned node,
 /// kill it, then immediately respawn a same-type replacement in the same mesh.
+/// Messages activity feed (option B). The admin-ui observes every node's
+/// GossipDigest in `live_digests()`; each tick we diff vs the last sample and
+/// append a rolling log of mesh activity to the Messages ring (cap 1000):
+///   - per-node TRAFFIC delta (frame counters moved) → `traffic` row
+///   - NodeState transition → `state` row (so the feed shows drain/updating/
+///     degraded/etc as the node announces them — the user's "show me state on
+///     the wire")
+///   - a node that left gossip (terminal Leaving/Dead) → `evicted` row
+/// Feeds the Messages ring ONLY (the Timeline gets state via the action-point
+/// event). Gossip is the sole instant source here — admin-ui never sees the
+/// data-plane frames themselves.
+async fn messages_feed(state: AppState) {
+    use std::collections::{HashMap, HashSet};
+    let mut last_state: HashMap<String, rafka_node_base::NodeState> = HashMap::new();
+    let mut last_frames: HashMap<String, (u64, u64)> = HashMap::new();
+    // Consecutive ticks a known node has been absent from live_digests. We only
+    // declare it evicted after EVICT_MISSES in a row, so a transient one-tick
+    // gossip gap doesn't emit a phantom eviction (a real departure stays gone).
+    let mut misses: HashMap<String, u8> = HashMap::new();
+    const EVICT_MISSES: u8 = 4;
+    loop {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let now_ms = (now_us() / 1000).max(0) as u64;
+        let digests = live_digests();
+        let mut seen: HashSet<String> = HashSet::new();
+        for e in digests.iter() {
+            let d = e.value();
+            let name = d.node_name.clone();
+            if name.is_empty() || name == "<unspawned>" {
+                continue;
+            }
+            seen.insert(name.clone());
+
+            // NodeState transition → state row
+            match last_state.get(&name) {
+                Some(&prev) if prev != d.state => {
+                    state.msgs.push(MeshMessage {
+                        ts_ms: now_ms,
+                        from_peer_id: d.node_id.clone(),
+                        frame_kind: "state".to_string(),
+                        bytes: 0,
+                        summary: format!("{} [{}] state {:?} → {:?}", name, d.node_type, prev, d.state),
+                    });
+                    last_state.insert(name.clone(), d.state);
+                }
+                None => {
+                    last_state.insert(name.clone(), d.state);
+                }
+                _ => {}
+            }
+
+            // traffic delta → traffic row
+            let cur = (d.frames_sent_total, d.frames_recv_total);
+            if let Some(&(ps, pr)) = last_frames.get(&name) {
+                let dtx = cur.0.saturating_sub(ps);
+                let drx = cur.1.saturating_sub(pr);
+                if dtx > 0 || drx > 0 {
+                    state.msgs.push(MeshMessage {
+                        ts_ms: now_ms,
+                        from_peer_id: d.node_id.clone(),
+                        frame_kind: "traffic".to_string(),
+                        bytes: 0,
+                        summary: format!(
+                            "{} [{}] +TX{} +RX{}  (Σ TX={} RX={})",
+                            name, d.node_type, dtx, drx, cur.0, cur.1
+                        ),
+                    });
+                }
+            }
+            last_frames.insert(name.clone(), cur);
+            misses.remove(&name); // present this tick → reset absence counter
+        }
+
+        // evictions (debounced): a known node absent from gossip for
+        // EVICT_MISSES consecutive ticks is a real departure, not a gossip blip.
+        let absent: Vec<String> = last_state
+            .keys()
+            .filter(|k| !seen.contains(*k))
+            .cloned()
+            .collect();
+        for name in absent {
+            let n = misses.entry(name.clone()).or_insert(0);
+            *n += 1;
+            if *n >= EVICT_MISSES {
+                state.msgs.push(MeshMessage {
+                    ts_ms: now_ms,
+                    from_peer_id: String::new(),
+                    frame_kind: "evicted".to_string(),
+                    bytes: 0,
+                    summary: format!("{} evicted — left the mesh (Leaving/Dead)", name),
+                });
+                last_state.remove(&name);
+                last_frames.remove(&name);
+                misses.remove(&name);
+            }
+        }
+    }
+}
+
 async fn chaos_loop(state: AppState) {
     loop {
         let cadence = state.chaos.cadence_ms.load(Ordering::SeqCst).max(1000);
@@ -3638,6 +3739,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         spawned_meta: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
+        msgs: Arc::new(MsgRing::default()),
         live: Arc::new(DashMap::new()),
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
@@ -3689,6 +3791,14 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // process-wide mesh_counters() + the peer registry inside node-base
     // (TODO next: expose those for HTTP read).
     let _live_observer_via_noderuntime = &node_handle;
+
+    // Messages activity feed: gossip-derived traffic/state/eviction rows into
+    // the rolling Messages ring (cap 1000). See messages_feed() for rationale.
+    let state_for_feed = state.clone();
+    supervise("messages_feed", move || {
+        let s = state_for_feed.clone();
+        async move { messages_feed(s).await }
+    });
 
     let procs_for_reaper = Arc::clone(&state.processes);
     let meta_for_reaper = Arc::clone(&state.spawned_meta);

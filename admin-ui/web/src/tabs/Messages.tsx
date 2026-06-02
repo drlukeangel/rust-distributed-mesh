@@ -46,8 +46,8 @@ export function Messages() {
     >
       <div className="flex items-center justify-between">
         <div className="text-sm text-gray-400">
-          per-node traffic (TX/RX) from gossip · {msgs.length} nodes ·
-          updates every 1s
+          live mesh activity — traffic · state changes · evictions ·{" "}
+          {msgs.length} of last 1000 · updates every 1s
         </div>
         <button
           onClick={() => setPaused((p) => !p)}
@@ -94,7 +94,11 @@ export function Messages() {
                         ? "text-amber-400"
                         : m.frame_kind === "traffic"
                           ? "text-cyan-400"
-                          : "text-red-400";
+                          : m.frame_kind === "state"
+                            ? "text-purple-400"
+                            : m.frame_kind === "evicted"
+                              ? "text-red-400"
+                              : "text-red-400";
               return (
                 <tr
                   key={`${m.ts_ms}-${i}`}
