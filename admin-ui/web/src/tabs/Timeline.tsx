@@ -5,6 +5,7 @@ const KIND_COLOR: Record<string, string> = {
   "node.ready": "var(--ok)",
   "node.spawn": "var(--accent)",
   "node.killed": "var(--err)",
+  "node.state": "#a371f7",
   "peer.connected": "var(--ok)",
   "peer.disconnected": "var(--warn)",
   "chaos.kill": "var(--err)",

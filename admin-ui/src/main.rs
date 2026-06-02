@@ -2805,7 +2805,22 @@ async fn handle_set_state(
             axum::Json(json!({"error": format!("state '{}' not settable — use Updating, Draining, or Alive (resume); kill via DELETE for Leaving", body.state)}))).into_response();
     }
     match set_state_one(&state, &node_name, &body.state).await {
-        Ok(reason) => (StatusCode::OK, axum::Json(json!({"node_name": node_name, "reason": reason}))).into_response(),
+        Ok(reason) => {
+            // Record the operator-initiated lifecycle change in the Timeline at
+            // the action point — the same instant-event pattern kill_one uses for
+            // node.killed. (The node also publishes the new state in its gossip
+            // digest, which is what the Nodes/Topology tabs render live.)
+            let meta = state.spawned_meta.get(&node_name);
+            state.events.push(LocalEvent {
+                ts_us: now_us(),
+                kind: "node.state".to_string(),
+                node_name: Some(node_name.clone()),
+                node_type: meta.as_ref().map(|m| m.node_type.clone()),
+                mesh_id: meta.as_ref().map(|m| m.mesh_id.clone()),
+                detail: Some(format!("→ {}", body.state)),
+            });
+            (StatusCode::OK, axum::Json(json!({"node_name": node_name, "reason": reason}))).into_response()
+        }
         Err(e) => (StatusCode::BAD_GATEWAY, axum::Json(json!({"error": e}))).into_response(),
     }
 }
