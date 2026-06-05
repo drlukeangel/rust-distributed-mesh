@@ -1,0 +1,80 @@
+{
+  "sprint": "sprint-stateful-node-restart",
+  "commit": "7a1132d1a4a009becc1e132a1e577410bc54003f",
+  "validated_at": "2026-06-05T13:25:00-04:00",
+  "binary_built": "2026-06-05T13:21:52-04:00",
+  "otlp_stack": {
+    "jaeger_ui": "http://localhost:16686",
+    "otlp_grpc": "http://localhost:4316",
+    "service_name": "mesh1.admin-ui"
+  },
+  "assertions": [
+    {
+      "name": "stateful flag in topology",
+      "result": "PASS",
+      "detail": "POST /api/nodes/spawn with stateful:true → topology shows stateful:true for mesh1.broker.7f0e1b"
+    },
+    {
+      "name": "NodeId preserved across restart",
+      "result": "PASS",
+      "detail": "before restart node_id=7f0e1b02648447b9d900c6e1e245b2e333e0ad23a37000b82633fc5fcfb3f41d, after restart same node_id in topology response"
+    },
+    {
+      "name": "pid changed after restart",
+      "result": "PASS",
+      "detail": "old_pid=3336, new_pid=56448 (confirmed in restart response and Jaeger span)"
+    },
+    {
+      "name": "data dir intact after restart",
+      "result": "PASS",
+      "detail": "marker.txt and node-identity.json both present in E:/tmp/rafka-ui-nodes/mesh1.broker.7f0e1b/ after restart"
+    },
+    {
+      "name": "rafka.ui.node.restart span in Jaeger",
+      "result": "PASS",
+      "trace_id": "0e6d2c95a5ca35fcc740a127200ed967",
+      "jaeger_url": "http://localhost:16686/trace/0e6d2c95a5ca35fcc740a127200ed967",
+      "span_attrs": {
+        "node_name": "mesh1.broker.7f0e1b",
+        "node_id": "7f0e1b02648447b9d900c6e1e245b2e333e0ad23a37000b82633fc5fcfb3f41d",
+        "old_pid": "3336",
+        "new_pid": "56448",
+        "mesh_id": "mesh1",
+        "span.kind": "internal",
+        "otel.scope.name": "mesh1.admin-ui"
+      },
+      "span_log_event": "stateful node restarted with same identity"
+    },
+    {
+      "name": "no-wipe invariant after kill-without-restart",
+      "result": "PASS",
+      "detail": "DELETE node → waited 15s (3 reaper cycles at 5s each) → dir still present with marker.txt and node-identity.json intact"
+    },
+    {
+      "name": "non-stateful node restart returns 422",
+      "result": "PASS",
+      "detail": "POST /api/nodes/mesh1.broker.2cf840/restart on stateful:false node → 422 with message 'node mesh1.broker.2cf840 is not stateful'"
+    }
+  ],
+  "topology_before_restart": {
+    "node": "mesh1.broker.7f0e1b",
+    "node_id": "7f0e1b02648447b9d900c6e1e245b2e333e0ad23a37000b82633fc5fcfb3f41d",
+    "stateful": true,
+    "status": "live",
+    "state": "Alive",
+    "pid": 3336
+  },
+  "restart_response": {
+    "node_name": "mesh1.broker.7f0e1b",
+    "node_id": "7f0e1b02648447b9d900c6e1e245b2e333e0ad23a37000b82633fc5fcfb3f41d",
+    "old_pid": 3336,
+    "new_pid": 56448,
+    "mesh_id": "mesh1"
+  },
+  "topology_after_restart": {
+    "node": "mesh1.broker.7f0e1b",
+    "node_id": "7f0e1b02648447b9d900c6e1e245b2e333e0ad23a37000b82633fc5fcfb3f41d",
+    "stateful": true,
+    "status": "live"
+  }
+}
