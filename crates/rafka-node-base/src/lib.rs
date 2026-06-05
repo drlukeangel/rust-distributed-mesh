@@ -1305,9 +1305,14 @@ pub struct GossipDigest {
     /// published for Joining/Alive/Degraded/Updating/Draining/Leaving; `Dead` is
     /// observer-assigned (a node that vanished without `Leaving`). Receivers evict
     /// on `Leaving`/`Dead` (the old fast-delete); other states upsert + render.
-    /// Last field so the postcard layout stays append-only on the same-build topic.
     #[serde(default)]
     pub state: NodeState,
+    /// True if this node was spawned with `RAFKA_STATEFUL=true`, meaning its data
+    /// dir is NOT auto-wiped on kill/crash — it will carry the same node identity
+    /// (node-identity.json) across restarts. Appended last so the postcard layout
+    /// stays append-only; `#[serde(default)]` = false for old digests.
+    #[serde(default)]
+    pub stateful: bool,
 }
 
 /// Node lifecycle/health, published as an event on every transition (sprint-20;
@@ -1814,6 +1819,7 @@ async fn run_gossip(
             _ => auto,
         };
         let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
+        let stateful = std::env::var("RAFKA_STATEFUL").as_deref() == Ok("true");
         GossipDigest {
             node_id: node_id.clone(),
             node_name: node_name.to_string(),
@@ -1830,6 +1836,7 @@ async fn run_gossip(
             ram_budget: load.ram_budget,
             location: location.clone(),
             state,
+            stateful,
         }
     };
     loop {
@@ -3181,6 +3188,7 @@ mod gossip_digest_schema_tests {
             ram_budget: 2.0,
             location: "127.0.0.1:14820".into(),
             state: NodeState::Alive,
+            stateful: false,
         };
         let bytes = postcard::to_allocvec(&original).expect("encode");
         let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
@@ -3245,6 +3253,7 @@ mod staleness_pruner_tests {
             ram_budget: 0.0,
             location: String::new(),
             state: NodeState::Alive,
+            stateful: false,
         }
     }
 

@@ -31,6 +31,8 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 | `OTEL_SERVICE_NAME` | (set per binary) | Jaeger service tag |
 | `RUST_LOG` | `info` | tracing filter (e.g. `rafka_node_base=debug,info`) |
 
+| `RAFKA_STATEFUL` | `false` | When `true`, the node broadcasts `stateful:true` in every `GossipDigest` so the topology and heartbeats UI renders a stateful badge. Also read by admin-ui's spawn logic: set automatically when a node is spawned with `"stateful":true` in the spawn request. Controls whether admin-ui's kill/reaper paths preserve the node's data dir. |
+
 ### Bridge (`rafka-bridge`) additionally reads:
 
 | Env var | Default | Effect |
@@ -126,6 +128,41 @@ for n in $(curl -s http://localhost:19090/api/nodes/spawned | jq -r '.spawned[]'
   curl -s -X DELETE "http://localhost:19090/api/nodes/$n" > /dev/null
 done
 ```
+
+### Spawn a stateful node and restart it with identity preserved
+
+A **stateful node** keeps its data dir (including `node-identity.json`) across kills and crashes. The `POST /api/nodes/{name}/restart` route kills the OS process and immediately respawns it with the **same NodeId, same data dir, same bind port**.
+
+```bash
+# 1. Spawn a stateful broker
+curl -X POST http://localhost:19090/api/nodes/spawn \
+  -H 'Content-Type: application/json' \
+  -d '{"node_type":"broker","mesh_id":"mesh1","stateful":true}'
+# → {"node_name":"mesh1.broker.a1b2c3","pid":12345}
+
+# 2. Capture NodeId from topology (to verify preservation after restart)
+NODE_ID=$(curl -s http://localhost:19090/api/topology | \
+  jq -r '.nodes[] | select(.id=="mesh1.broker.a1b2c3") | .node_id')
+
+# 3. Restart preserving identity
+curl -X POST http://localhost:19090/api/nodes/mesh1.broker.a1b2c3/restart
+# → {"node_name":"mesh1.broker.a1b2c3","node_id":"<same as NODE_ID>","old_pid":12345,"new_pid":12367,"mesh_id":"mesh1"}
+
+# 4. NodeId is unchanged
+curl -s http://localhost:19090/api/topology | \
+  jq '.nodes[] | select(.id=="mesh1.broker.a1b2c3") | {node_id, stateful}'
+# → {"node_id":"<same as NODE_ID>","stateful":true}
+```
+
+**Behaviour differences between `DELETE` and `POST /restart` for stateful nodes:**
+
+| Action | Data dir | NodeId | spawned_meta | Chaos restart |
+|---|---|---|---|---|
+| `DELETE /api/nodes/{name}` (non-stateful) | wiped | new on next spawn | removed | new NodeId |
+| `DELETE /api/nodes/{name}` (stateful) | KEPT | — | KEPT | N/A |
+| `POST /api/nodes/{name}/restart` (stateful only) | KEPT | same | updated (new pid) | N/A |
+
+**Chaos loop is unaffected:** the chaos `restart_node` primitive always spawns a fresh identity (new NodeId). `POST /api/nodes/{name}/restart` is the operator-controlled stateful restart and is completely separate.
 
 ### Verify a chaos primitive ran end-to-end via Jaeger
 

@@ -196,6 +196,21 @@ export function Nodes() {
               <br />
               status: {n.status ?? "?"}
             </div>
+            {n.stateful && (
+              <div style={{
+                display: "inline-block",
+                fontSize: 10,
+                fontWeight: 700,
+                color: "#f0a000",
+                background: "#2d2000",
+                border: "1px solid #f0a000",
+                borderRadius: 4,
+                padding: "1px 6px",
+                marginTop: 4,
+              }}>
+                Stateful
+              </div>
+            )}
 
             {(n.cpu_budget ?? 0) > 0 && (
               <UtilBar

@@ -183,6 +183,11 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
                   {stateLabel}
                 </div>
               )}
+              {n.stateful && (
+                <div style={{ fontSize: 8, fontWeight: 700, color: "#f0a000", background: "#2d2000", borderRadius: 3, padding: "0 3px", display: "inline-block", marginTop: 1 }}>
+                  Stateful
+                </div>
+              )}
               {(n.frames_sent_total ?? 0) > 0 && (
                 <div style={{ fontSize: 9, color: "#3fb950" }}>
                   TX:{n.frames_sent_total}

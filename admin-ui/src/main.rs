@@ -62,6 +62,15 @@ struct SpawnedMeta {
     /// `wall_time_ms` on GossipDigest which is the per-digest emit time
     /// (staleness, bounces with gossip cadence).
     spawned_at_ms: u64,
+    /// If true: this node's data dir is NEVER auto-wiped on kill or reaper.
+    /// `restart_one` re-passes `secret_key_hex` as `RAFKA_NODE_SECRET_KEY` to
+    /// guarantee the same NodeId after restart.
+    stateful: bool,
+    /// Hex-encoded 32-byte iroh secret key that was passed to this child at
+    /// spawn time as `RAFKA_NODE_SECRET_KEY`. Stored here so `restart_one` can
+    /// re-pass the same key, ensuring identical NodeId and node_name across a
+    /// stateful restart. Empty string for nodes spawned before this field existed.
+    secret_key_hex: String,
 }
 
 struct ChaosController {
@@ -208,6 +217,11 @@ struct AppState {
     /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
     /// before NodeRuntime starts.
     admin_bind_port: u16,
+    /// Set of node_names currently in the kill→respawn window of a stateful
+    /// restart. While a name is in this set the reaper MUST NOT wipe its dir
+    /// or remove its spawned_meta entry. Cleared by `restart_one` after the
+    /// new process is inserted.
+    restarting: Arc<dashmap::DashSet<String>>,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +251,11 @@ struct SpawnRequest {
     /// Same pattern for RAM budget in GB.
     #[serde(default)]
     ram_budget: Option<f32>,
+    /// When true: this node's data dir is never auto-wiped on kill or crash.
+    /// `POST /api/nodes/{name}/restart` will restart it with the same NodeId
+    /// by re-passing the stored secret key as `RAFKA_NODE_SECRET_KEY`.
+    #[serde(default)]
+    stateful: bool,
 }
 
 async fn handle_health() -> impl IntoResponse {
@@ -306,6 +325,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
             "frames_sent_total": d.frames_sent_total,
             "frames_recv_total": d.frames_recv_total,
             "age_ms": age_ms,
+            "stateful": d.stateful,
         }));
     }
     // Pending entries (spawned, first digest not seen yet)
@@ -320,6 +340,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
                 "frames_sent_total": 0,
                 "frames_recv_total": 0,
                 "age_ms": -1,
+                "stateful": entry.value().stateful,
             }));
         }
     }
@@ -1032,6 +1053,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
             "ram_used": d.ram_used,
             "ram_budget": d.ram_budget,
             "state": format!("{:?}", d.state),
+            "stateful": d.stateful,
             "status": "live",
         }));
     }
@@ -1069,6 +1091,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "ram_used": 0.0,
                 "ram_budget": 0.0,
                 "state": "Joining",
+                "stateful": entry.value().stateful,
                 "status": "pending",
             }));
         }
@@ -1878,6 +1901,7 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_NODE_BIND_ADDR",
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
+    "RAFKA_STATEFUL",
 ];
 
 fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
@@ -1917,6 +1941,7 @@ async fn spawn_one(
     extra_env: HashMap<String, String>,
     cpu_budget: Option<f32>,
     ram_budget: Option<f32>,
+    stateful: bool,
 ) -> Result<(String, u32), String> {
     if !KNOWN_NODE_TYPES.contains(&node_type) {
         return Err(format!("unknown node_type: {node_type}"));
@@ -2048,6 +2073,11 @@ async fn spawn_one(
         // extra_env so it can't be shadowed.
         .env("RAFKA_NODE_SECRET_KEY", &secret_key_hex)
         .env("RUST_LOG", &rust_log);
+    // Stateful nodes read RAFKA_STATEFUL=true so they broadcast stateful:true in
+    // every GossipDigest, enabling the topology/heartbeats UI to render the badge.
+    if stateful {
+        cmd.env("RAFKA_STATEFUL", "true");
+    }
 
     for (k, v) in &extra_env {
         cmd.env(k, v);
@@ -2093,6 +2123,8 @@ async fn spawn_one(
                     node_id_hex: node_id_hex.clone(),
                     bind_port,
                     spawned_at_ms,
+                    stateful,
+                    secret_key_hex: secret_key_hex.clone(),
                 },
             );
             state.events.push(LocalEvent {
@@ -2157,7 +2189,7 @@ async fn handle_spawn(
         }
         extras.insert("RAFKA_MESH_ID".to_string(), m);
     }
-    match spawn_one(&state, &body.node_type, extras, body.cpu_budget, body.ram_budget).await {
+    match spawn_one(&state, &body.node_type, extras, body.cpu_budget, body.ram_budget, body.stateful).await {
         Ok((node_name, pid)) => (
             StatusCode::CREATED,
             axum::Json(json!({"node_name": node_name, "pid": pid})),
@@ -2221,7 +2253,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
             for _ in 0..2 {
                 let mut env = HashMap::new();
                 env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-                match spawn_one(&state, t, env, None, None).await {
+                match spawn_one(&state, t, env, None, None, false).await {
                     Ok((name, _)) => spawned.push(name),
                     Err(e) => errors.push(e),
                 }
@@ -2236,7 +2268,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
         for _ in 0..2 {
             let mut env = HashMap::new();
             env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, "gateway", env, None, None).await {
+            match spawn_one(&state, "gateway", env, None, None, false).await {
                 Ok((name, _)) => spawned.push(name),
                 Err(e) => errors.push(e),
             }
@@ -2319,16 +2351,32 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
 
     // If we happen to own this node's OS process (we spawned it), reap it — it's
     // exiting on its own now. NOT required: cross-console kills have no Child handle.
+    let is_stateful = state
+        .spawned_meta
+        .get(node_name)
+        .map(|m| m.value().stateful)
+        .unwrap_or(false);
+    let is_restarting = state.restarting.contains(node_name);
     if let Some((_, mutex_child)) = state.processes.remove(node_name) {
         let mut child = mutex_child.into_inner();
         if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
             let _ = child.start_kill();
             let _ = child.wait().await;
         }
-        let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
-        let _ = tokio::fs::remove_dir_all(&spawn_dir).await;
+        // Stateful nodes and nodes in the restart window keep their data dir so the
+        // node can restart with the same identity (node-identity.json).
+        if !is_stateful && !is_restarting {
+            let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+            let _ = tokio::fs::remove_dir_all(&spawn_dir).await;
+        }
     }
-    let meta = state.spawned_meta.remove(node_name).map(|(_, m)| m);
+    // Keep spawned_meta for stateful/restarting nodes so orphan-sweep (reaper pass 2)
+    // doesn't wipe the data dir in the ~5s window before the reaper next ticks.
+    let meta = if !is_stateful && !is_restarting {
+        state.spawned_meta.remove(node_name).map(|(_, m)| m)
+    } else {
+        state.spawned_meta.get(node_name).map(|e| e.value().clone())
+    };
 
     state.events.push(LocalEvent {
         ts_us: now_us(),
@@ -2350,6 +2398,191 @@ async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
     .in_scope(|| info!(node_name = %node_name, node_id = %node_id, detail = %detail, "kill: control op issued"));
 
     Ok(detail)
+}
+
+/// Perform a stateful restart: kill the OS process WITHOUT wiping the data dir,
+/// then respawn the SAME binary in the SAME dir with the SAME identity key and
+/// port. The restarted node boots with the same NodeId as before.
+///
+/// Only valid for nodes whose `SpawnedMeta.stateful == true`.
+/// Race-protected: the node name is added to `state.restarting` before the kill
+/// and cleared after the new process is in `state.processes`, so the reaper
+/// cannot wipe the dir or meta in the window between.
+async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String> {
+    // 1. Look up SpawnedMeta — 404 if not found or not stateful.
+    let meta = state
+        .spawned_meta
+        .get(node_name)
+        .map(|e| e.value().clone())
+        .ok_or_else(|| format!("node {node_name} not found in spawn registry"))?;
+
+    if !meta.stateful {
+        return Err(format!(
+            "node {node_name} is not stateful; use DELETE to kill it and POST /api/nodes/spawn to create a fresh one"
+        ));
+    }
+
+    let old_pid = meta.pid;
+    let node_id_hex = meta.node_id_hex.clone();
+    let mesh_id = meta.mesh_id.clone();
+    let node_type = meta.node_type.clone();
+    let bind_port = meta.bind_port;
+    let secret_key_hex = meta.secret_key_hex.clone();
+    let spawned_at_ms = meta.spawned_at_ms; // keep original spawn time
+    drop(meta); // release the DashMap read lock
+
+    // 2. Mark as restarting — prevents reaper from wiping dir/meta during window.
+    state.restarting.insert(node_name.to_string());
+
+    // 3. Kill the OS process directly (bypass kill_one which does mesh Shutdown op).
+    //    We own the child handle; just kill it and wait for genuine exit.
+    if let Some((_, mutex_child)) = state.processes.remove(node_name) {
+        let mut child = mutex_child.into_inner();
+        let _ = child.start_kill();
+        // Wait for genuine OS process exit before rebinding the port.
+        if tokio::time::timeout(Duration::from_secs(10), child.wait()).await.is_err() {
+            tracing::warn!(node_name = %node_name, "restart: timed out waiting for old process to exit — proceeding anyway");
+        }
+    }
+
+    // 4. Respawn with SAME identity, dir, port.
+    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+    let bind_addr_str = format!("127.0.0.1:{}", bind_port);
+
+    let profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
+        .unwrap_or_else(|_| "debug".to_string());
+    let binary = format!(
+        "{}/{}/rafka-{}{}",
+        state.cargo_target_dir, profile, node_type, std::env::consts::EXE_SUFFIX
+    );
+    let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4316".to_string());
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+
+    // Same seed strategy as spawn_one: admin-ui is always first seed.
+    let admin_seed = format!(
+        "{}@127.0.0.1:{}",
+        state.admin_node_id_hex, state.admin_bind_port
+    );
+    let seeds_csv = {
+        let same_mesh: Vec<String> = state
+            .spawned_meta
+            .iter()
+            .filter(|e| &e.value().mesh_id == &mesh_id && e.key().as_str() != node_name)
+            .take(2)
+            .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
+            .collect();
+        let mut all_seeds = vec![admin_seed];
+        all_seeds.extend(same_mesh);
+        all_seeds.join(",")
+    };
+
+    let mut cmd = tokio::process::Command::new(&binary);
+    cmd.env_remove("RAFKA_DEV_CPU_BUDGET")
+        .env_remove("RAFKA_DEV_RAM_BUDGET")
+        .env_remove("RAFKA_DEV_CPU_USED")
+        .env_remove("RAFKA_DEV_RAM_USED");
+    cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
+        .env("RAFKA_DATA_DIR", &spawn_dir)
+        // Re-pass the SAME pre-minted key so the node boots with the same NodeId.
+        // The data dir already has node-identity.json from the original spawn, so
+        // the env key wins (RAFKA_NODE_SECRET_KEY takes precedence over file) and
+        // the file is unchanged — belt-and-suspenders for the identity guarantee.
+        .env("RAFKA_NODE_SECRET_KEY", &secret_key_hex)
+        .env("RAFKA_MESH_ID", &mesh_id)
+        .env("RAFKA_STATEFUL", "true")
+        .env("RUST_LOG", &rust_log)
+        .env("RAFKA_MDNS_ENABLE", "false")
+        .env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
+    if !seeds_csv.is_empty() {
+        cmd.env("RAFKA_SEED_NODES", &seeds_csv);
+    }
+
+    let new_pid = match cmd.spawn() {
+        Ok(child) => {
+            let pid = child.id().unwrap_or(0);
+            state.processes.insert(node_name.to_string(), Mutex::new(child));
+            // Update meta with new pid; everything else stays the same.
+            state.spawned_meta.insert(
+                node_name.to_string(),
+                SpawnedMeta {
+                    node_type: node_type.clone(),
+                    mesh_id: mesh_id.clone(),
+                    pid,
+                    node_id_hex: node_id_hex.clone(),
+                    bind_port,
+                    spawned_at_ms,
+                    stateful: true,
+                    secret_key_hex: secret_key_hex.clone(),
+                },
+            );
+            pid
+        }
+        Err(e) => {
+            // Clear restarting even on failure so the reaper doesn't get stuck.
+            state.restarting.remove(node_name);
+            return Err(format!("restart spawn failed: {e}"));
+        }
+    };
+
+    // 5. Clear restarting mark — new process is live.
+    state.restarting.remove(node_name);
+
+    state.events.push(LocalEvent {
+        ts_us: now_us(),
+        kind: "node.restarted".to_string(),
+        node_name: Some(node_name.to_string()),
+        node_type: Some(node_type.clone()),
+        mesh_id: Some(mesh_id.clone()),
+        detail: Some(format!("old_pid={old_pid} new_pid={new_pid}")),
+    });
+
+    // 6. Emit the locked restart span (CLAUDE.md §10).
+    info_span!(
+        "rafka.ui.node.restart",
+        node_name = %node_name,
+        node_id = %node_id_hex,
+        old_pid = old_pid,
+        new_pid = new_pid,
+        mesh_id = %mesh_id,
+        "otel.kind" = "internal",
+    )
+    .in_scope(|| info!(node_name = %node_name, old_pid, new_pid, "stateful node restarted with same identity"));
+
+    Ok(json!({
+        "node_name": node_name,
+        "node_id": node_id_hex,
+        "old_pid": old_pid,
+        "new_pid": new_pid,
+        "mesh_id": mesh_id,
+    }))
+}
+
+/// `POST /api/nodes/{node_name}/restart` — stateful restart preserving NodeId and data dir.
+async fn handle_restart(
+    State(state): State<AppState>,
+    Path(node_name): Path<String>,
+) -> impl IntoResponse {
+    if !is_valid_node_name(&node_name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": format!("invalid node_name: {node_name}")})),
+        )
+            .into_response();
+    }
+    match restart_one(&state, &node_name).await {
+        Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Err(e) => {
+            let code = if e.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else if e.contains("not stateful") {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (code, axum::Json(json!({"error": e}))).into_response()
+        }
+    }
 }
 
 fn now_us() -> i64 {
@@ -2791,7 +3024,7 @@ async fn chaos_loop(state: AppState) {
         // Respawn replacement
         let mut env = HashMap::new();
         env.insert("RAFKA_MESH_ID".to_string(), meta_c.mesh_id.clone());
-        match spawn_one(&state, &meta_c.node_type, env, None, None).await {
+        match spawn_one(&state, &meta_c.node_type, env, None, None, false).await {
             Ok((new_name, _)) => {
                 state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
                 state.events.push(LocalEvent {
@@ -3401,6 +3634,7 @@ async fn observer_task(state: AppState) {
 async fn reaper_loop(
     processes: Arc<DashMap<String, Mutex<tokio::process::Child>>>,
     spawned_meta: Arc<DashMap<String, SpawnedMeta>>,
+    restarting: Arc<dashmap::DashSet<String>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
@@ -3417,26 +3651,40 @@ async fn reaper_loop(
                 None
             };
             if let Some(status) = exited_status {
+                // Check stateful + restarting BEFORE removing meta — the meta
+                // is the anchor that tells us not to wipe.
+                let is_stateful = spawned_meta.get(&name).map(|m| m.value().stateful).unwrap_or(false);
+                let is_restarting = restarting.contains(&name);
                 processes.remove(&name);
-                spawned_meta.remove(&name); // Red-team A#6: also clear meta so topology drops the ghost
-                // Red-team A#6 + A#5: delete data dir on reap. Contains node-identity.json
-                // (secret key) which must not persist after the node dies.
-                let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", name);
-                if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
-                    tracing::warn!(dir = %spawn_dir, error = %e, "reaper: data dir cleanup failed");
+                if !is_stateful && !is_restarting {
+                    // Red-team A#6: also clear meta so topology drops the ghost.
+                    spawned_meta.remove(&name);
+                    // Red-team A#6 + A#5: delete data dir on reap. Contains
+                    // node-identity.json (secret key) which must not persist after
+                    // the node dies — for non-stateful nodes.
+                    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", name);
+                    if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
+                        tracing::warn!(dir = %spawn_dir, error = %e, "reaper: data dir cleanup failed");
+                    }
                 }
                 tracing::info_span!(
                     "rafka.ui.subprocess.reaped",
                     node_name = %name,
                     exit_code = status.code().unwrap_or(-1) as i64,
+                    stateful = is_stateful,
+                    restarting = is_restarting,
                     "otel.kind" = "internal",
                 )
-                .in_scope(|| info!(node_name = %name, exit_code = status.code().unwrap_or(-1), "subprocess reaped — exited without DELETE"));
+                .in_scope(|| info!(node_name = %name, exit_code = status.code().unwrap_or(-1),
+                    stateful = is_stateful, restarting = is_restarting,
+                    "subprocess reaped — exited without DELETE"));
             }
         }
 
         // Red-team A#6 second pass: orphan data dirs (no matching process or
         // meta) get swept. Catches dirs left over from crashes pre-reaper.
+        // EXCEPTION: dirs whose meta still exists (= stateful node) are kept
+        // even if the process has exited — they're waiting for restart.
         if let Ok(mut rd) = tokio::fs::read_dir("E:/tmp/rafka-ui-nodes/").await {
             while let Ok(Some(entry)) = rd.next_entry().await {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -3747,6 +3995,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(spawn_port_base)),
         admin_node_id_hex: admin_node_id_hex.clone(),
         admin_bind_port,
+        restarting: Arc::new(dashmap::DashSet::new()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -3802,10 +4051,12 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
 
     let procs_for_reaper = Arc::clone(&state.processes);
     let meta_for_reaper = Arc::clone(&state.spawned_meta);
+    let restarting_for_reaper = Arc::clone(&state.restarting);
     supervise("reaper_loop", move || {
         let p = Arc::clone(&procs_for_reaper);
         let m = Arc::clone(&meta_for_reaper);
-        async move { reaper_loop(p, m).await }
+        let r = Arc::clone(&restarting_for_reaper);
+        async move { reaper_loop(p, m, r).await }
     });
 
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
@@ -3840,6 +4091,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/tests/run", post(handle_test_run))
         .route("/api/messages", get(handle_messages))
         .route("/api/nodes/{node_name}", delete(handle_kill))
+        .route("/api/nodes/{node_name}/restart", post(handle_restart))
         .route("/api/nodes/{node_name}/state", post(handle_set_state))
         // SPA fallback (PRD §6a): real files (/, /assets/*, /favicon.svg, …) are
         // served by ServeDir; any OTHER path (a client-router deep link like

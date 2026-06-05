@@ -46,6 +46,11 @@ export interface TopologyNode {
   source?: "gossip" | "backbone";
   /// legacy — Jaeger-era, kept for back-compat
   frames_per_min?: number;
+  /// sprint-stateful-node-restart: true if this node was spawned with
+  /// `stateful:true` (GossipDigest.stateful or SpawnedMeta.stateful).
+  /// Admin-ui never auto-wipes a stateful node's data dir; the
+  /// `/api/nodes/{name}/restart` route restarts it with the same NodeId.
+  stateful?: boolean;
 }
 export interface TopologyEdge {
   from: string;
@@ -80,6 +85,7 @@ export interface Heartbeat {
   mesh_id: string;
   peer_count: number;
   age_ms: number;
+  stateful?: boolean;
 }
 export interface HeartbeatsResponse {
   heartbeats: Heartbeat[];
