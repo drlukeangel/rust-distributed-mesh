@@ -21,7 +21,7 @@ no DHT; just the smallest thing that works, proven live.
 | 8 | [The bug that wasn't in the mesh](08-the-bug-that-wasnt-in-the-mesh.md) | Two cross-mesh scares — the 40s join (use iroh's `MemoryLookup`) and a `NeighborUp→NeighborDown` connection-churn — and trusting the live signal over a tidy theory |
 | 9 | [Is it ready? (and a thank-you to n0)](09-is-it-ready-and-a-thank-you-to-n0.md) | The pre-rafka verification sweep — produce/ack under load, cross-mesh fault→recovery, soft-lease failover — what's a floor not a ceiling, what's deferred, and gratitude to the iroh team |
 | 10 | [Extending the mesh with node caches](10-extending-the-mesh-with-node-caches.md) | Giving each node a local view it can route from — and what happens when you realize one cache quietly becomes many |
-| 11 | [A certificate that rides the gossip](11-a-certificate-that-rides-the-gossip.md) | One signed cert, checked twice: at the connection a node opens and inside the membership gossip it broadcasts — and why it isn't HMAC, and isn't quite mTLS |
+| 11 | [A certificate that rides the gossip (and why it shouldn't)](11-a-certificate-that-rides-the-gossip.md) | Two places to verify a node's cert — riding the membership gossip (the experiment, the only thing that lets a cross-mesh relay carry trust) vs presented at the connection a node opens (the answer); the shared root; and why it isn't HMAC and isn't quite mTLS |
 
 Images live alongside each post under `../sprints/sprint-NN/screenshots/`, or for the later posts under
 `../plans/mesh-v2/verify/screenshots/`.
