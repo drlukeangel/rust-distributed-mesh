@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SpawnBar } from "./SpawnBar";
 import { Topology } from "./tabs/Topology";
+import { TopologyCache } from "./tabs/TopologyCache";
 import { BootWaterfall } from "./tabs/BootWaterfall";
 import { Nodes } from "./tabs/Nodes";
 import { Alerts } from "./tabs/Alerts";
@@ -9,10 +10,13 @@ import { Timeline } from "./tabs/Timeline";
 import { Tests } from "./tabs/Tests";
 import { Messages } from "./tabs/Messages";
 import { Cache } from "./tabs/Cache";
+import { Caches } from "./tabs/Caches";
+import { Channels } from "./tabs/Channels";
 import { api, type ClusterSummary } from "./api";
 
 const TABS = [
   "Topology",
+  "Topology (Cache)",
   "Nodes",
   "Messages",
   "Boot Waterfall",
@@ -21,6 +25,8 @@ const TABS = [
   "Alerts",
   "Tests",
   "Cache",
+  "Caches",
+  "Channels",
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -30,6 +36,7 @@ type Tab = (typeof TABS)[number];
 // index.html for any non-/api, non-asset GET so deep links boot the app.
 const TAB_TO_SLUG: Record<Tab, string> = {
   Topology: "topology",
+  "Topology (Cache)": "topology-cache",
   Nodes: "nodes",
   Messages: "messages",
   "Boot Waterfall": "boot-waterfall",
@@ -38,6 +45,8 @@ const TAB_TO_SLUG: Record<Tab, string> = {
   Alerts: "alerts",
   Tests: "tests",
   Cache: "cache",
+  Caches: "caches",
+  Channels: "channels",
 };
 const SLUG_TO_TAB: Record<string, Tab> = Object.fromEntries(
   (Object.entries(TAB_TO_SLUG) as [Tab, string][]).map(([t, s]) => [s, t]),
@@ -101,6 +110,7 @@ export function App() {
       </div>
       <main>
         {tab === "Topology" && <Topology />}
+        {tab === "Topology (Cache)" && <TopologyCache />}
         {tab === "Nodes" && <Nodes />}
         {tab === "Boot Waterfall" && <BootWaterfall />}
         {tab === "Chaos" && <Chaos />}
@@ -109,6 +119,8 @@ export function App() {
         {tab === "Tests" && <Tests />}
         {tab === "Messages" && <Messages />}
         {tab === "Cache" && <Cache />}
+        {tab === "Caches" && <Caches />}
+        {tab === "Channels" && <Channels />}
       </main>
     </div>
   );

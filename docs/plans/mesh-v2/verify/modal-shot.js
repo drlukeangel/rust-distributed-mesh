@@ -1,0 +1,25 @@
+const { chromium } = require('playwright');
+const path = require('path');
+const BASE = process.env.ADMIN_URL || 'http://127.0.0.1:19090';
+const OUT = path.join(__dirname, 'screenshots', 'caches');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  const browser = await chromium.launch();
+  const page = await (await browser.newContext({ viewport: { width: 1680, height: 1050 } })).newPage();
+  await page.goto(BASE, { waitUntil: 'networkidle', timeout: 60000 });
+  await sleep(2500);
+  await page.locator('div.tab', { hasText: 'Channels' }).first().click();
+  await sleep(3000);
+  const col = page.locator('[data-testid="channel-col-shared-1"]');
+  await col.locator('button[title*="Expand"]').click();
+  await sleep(1200);
+  const modal = page.locator('[data-testid="channel-modal-shared-1"]');
+  const present = await modal.count();
+  const text = (await modal.textContent()) || '';
+  const hasFullId = /[0-9a-f]{60,}/.test(text);
+  console.log('modal present:', present, '| full 64-hex node id visible:', hasFullId);
+  await page.screenshot({ path: path.join(OUT, 'channel-modal.png'), fullPage: false });
+  console.log('saved channel-modal.png');
+  await browser.close();
+  process.exit(present > 0 && hasFullId ? 0 : 1);
+})().catch(e => { console.error(e); process.exit(1); });

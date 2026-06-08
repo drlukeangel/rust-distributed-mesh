@@ -1,0 +1,14 @@
+[package]
+name = "rafka-repeater"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rafka-repeater"
+path = "src/main.rs"
+
+[dependencies]
+rafka-node-base = { path = "../crates/rafka-node-base" }
+rafka-telemetry = { path = "../crates/rafka-telemetry" }
+tokio = { workspace = true }
+anyhow = { workspace = true }

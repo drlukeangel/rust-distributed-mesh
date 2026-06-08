@@ -196,9 +196,134 @@ export interface TopologyCacheResponse {
   entries: TopologyCacheEntry[];
 }
 
+/// Entity-cache node entry from `GET /api/topology/node`. Each field maps
+/// directly to what the server emits from topology_cache::TopologyCache.
+export interface TopologyNodeEntry {
+  node_id: string;
+  node_name: string;
+  mesh_id: string;
+  node_type: string;
+  ip_port: string;
+  state: string;
+  stateful: boolean;
+  cpu_used: number;
+  cpu_budget: number;
+  ram_used: number;
+  ram_budget: number;
+}
+export interface TopologyNodeCacheResponse {
+  nodes: TopologyNodeEntry[];
+}
+
+// --- caches ---
+
+export interface CacheItem {
+  name: string;
+  type: "Shared" | "Leader" | "Key" | "KeyGossip";
+  channel: string;
+  entry_count: number;
+  distinct_publishers: string[];
+  rejected_count: number;
+  node_types: string[];
+}
+
+export interface CachesResponse {
+  caches: CacheItem[];
+}
+
+export interface CacheEntry {
+  key: string;
+  value: number | string | Record<string, unknown>;
+  epoch: number;
+  publisher: string;
+  updated_ms: number;
+}
+
+export interface CacheDetailResponse {
+  name: string;
+  type: string;
+  channel: string;
+  entry_count: number;
+  distinct_publishers: string[];
+  rejected_count: number;
+  entries: CacheEntry[];
+}
+
+// --- channels ---
+
+export interface ChannelListItem {
+  channel: string;
+  recent_event_count: number;
+}
+
+export interface ChannelsListResponse {
+  channels: ChannelListItem[];
+}
+
+export interface ChannelEvent {
+  ts_ms: number;
+  publisher: string;
+  op: string;
+  key: string;
+  epoch: number;
+  value: number | string | Record<string, unknown>;
+  cache_name?: string;
+}
+
+export interface ChannelDetailResponse {
+  channel: string;
+  events: ChannelEvent[];
+}
+
+// --- sim/caches ---
+
+export interface SimCacheColumn {
+  node_type: string;
+  holds: boolean;
+  entry_count: number;
+  sample_entries: Array<Record<string, string | number>>;
+  source: "real" | "sim";
+}
+
+export interface SimCacheRow {
+  entity_kind: string;
+  channel: string;
+  write_model: "LeaderOnly" | "SelfKey" | "SharedKey";
+  owners: string[];
+  columns: SimCacheColumn[];
+}
+
+export interface SimCachesResponse {
+  caches: SimCacheRow[];
+}
+
+// --- sim/channels ---
+
+export interface SimChannelEvent {
+  ts_ms: number;
+  publisher: string;
+  op: string;
+  key: string;
+  epoch: number;
+  value: number | string | Record<string, unknown>;
+  entity_kind?: string;
+  channel?: string;
+}
+
+export interface SimChannel {
+  channel: string;
+  event_count?: number;
+  events: SimChannelEvent[];
+}
+
+export interface SimChannelsResponse {
+  channels: SimChannel[];
+}
+
 export const api = {
   topology: () => j<TopologyResponse>("/api/topology"),
   topologyCache: () => j<TopologyCacheResponse>("/api/topology-cache"),
+  topologyNode: () => j<TopologyNodeCacheResponse>("/api/topology/node"),
   heartbeats: () => j<HeartbeatsResponse>("/api/heartbeats"),
   summary: () => j<ClusterSummary>("/api/cluster/summary"),
   messages: () => j<MessagesResponse>("/api/messages"),
@@ -212,8 +337,23 @@ export const api = {
   chaosState: () => j<ChaosState>("/api/chaos/state"),
   chaosStart: () => j<ChaosState>("/api/chaos/start", { method: "POST" }),
   chaosStop: () => j<ChaosState>("/api/chaos/stop", { method: "POST" }),
+  caches: () => j<CachesResponse>("/api/caches"),
+  cacheDetail: (name: string) => j<CacheDetailResponse>(`/api/caches/${encodeURIComponent(name)}`),
+  channels: () => j<ChannelsListResponse>("/api/channels"),
+  channelDetail: (name: string) => j<ChannelDetailResponse>(`/api/channels/${encodeURIComponent(name)}`),
+  simCaches: () => j<SimCachesResponse>("/api/sim/caches"),
+  simChannels: () => j<SimChannelsResponse>("/api/sim/channels"),
   bootstrap: () =>
-    j<{ spawned: string[] }>("/api/bootstrap", { method: "POST" }),
+    j<{ mesh: string; spawned: string[] }>("/api/bootstrap", { method: "POST" }),
+  bootstrap2mesh: () =>
+    j<{
+      peer_admin: string;
+      peer_http_port: number;
+      shared_root: boolean;
+      mesh1_spawned: string[];
+      mesh2_spawned: string[];
+      total_nodes: number;
+    }>("/api/bootstrap-2mesh", { method: "POST" }),
   runTest: (name: string, seed = 42) =>
     j<TestReport>("/api/tests/run", {
       method: "POST",

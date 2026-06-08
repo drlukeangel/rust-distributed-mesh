@@ -239,8 +239,8 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
         source: e.from,
         target: e.to,
         style: isCross
-          ? { stroke: "#e3b341", strokeWidth: 1.5, strokeDasharray: "5,4" }
-          : { stroke: "#30363d", strokeWidth: 1, opacity: 0.4 },
+          ? { stroke: "#e3b341", strokeWidth: 2.5, strokeDasharray: "6,4" }
+          : { stroke: "#8b949e", strokeWidth: 2.5, opacity: 0.75 },
         animated: isCross,
       };
     });

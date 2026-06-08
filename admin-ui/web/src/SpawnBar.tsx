@@ -62,11 +62,16 @@ export function SpawnBar() {
 
   const doBootstrap = async () => {
     setBusy("bootstrap");
+    note("bootstrapping 2-mesh — launching mesh2 admin + filling both meshes…");
     try {
-      const r = await api.bootstrap();
-      note(`bootstrapped ${r.spawned.length} nodes`);
+      const r = await api.bootstrap2mesh();
+      const root = r.shared_root ? "shared root ✓" : "ROOT MISMATCH ✗";
+      note(
+        `2-mesh up: mesh2 admin ${r.peer_admin} on :${r.peer_http_port} (${root}) · ` +
+          `mesh1 +${r.mesh1_spawned.length}, mesh2 +${r.mesh2_spawned.length} · ${r.total_nodes} total`
+      );
     } catch (e: any) {
-      note(`bootstrap failed: ${e.message}`);
+      note(`bootstrap 2-mesh failed: ${e.message}`);
     } finally {
       setBusy(null);
     }
@@ -139,7 +144,7 @@ export function SpawnBar() {
         className="primary"
         disabled={busy === "bootstrap"}
         onClick={doBootstrap}
-        title="Spawn full two-mesh topology (4×each type per mesh)"
+        title="Cold-start the full two-admin topology: launch a mesh2 admin (shared root CA) + fill each mesh with 2 of each type. 2 admins + 16 workers = 18. Idempotent."
       >
         bootstrap 2-mesh
       </button>

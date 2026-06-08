@@ -28,3 +28,13 @@ docs/superpowers/
 
 # node_modules (also under admin-ui/web)
 node_modules/
+
+# per-node runtime data directories (spike uses data-cust*, data-cv*, data-mm*)
+/data-*/
+
+# agent session state (not for version control)
+.claude/
+
+# spike scratch / sim directories
+poc-tmp/
+temp_sim/

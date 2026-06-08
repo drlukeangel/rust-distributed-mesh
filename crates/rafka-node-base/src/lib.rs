@@ -38,6 +38,19 @@ pub use load::{
     NodeLoad,
 };
 
+pub mod topology_cache;
+pub use topology_cache::{TopologyNode, topology_nodes};
+
+pub mod node_cache;
+pub mod cert;
+pub use node_cache::{
+    CacheType, Channel, CacheSpec, CacheEntry, NodeCache, ApplyResult,
+    CacheGossipMsg, ChannelEvent, ChannelEventRing,
+    node_caches, channel_events,
+    parse_cache_specs_from_env,
+    run_cache_task, run_keygossip_fill,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Gateway,
@@ -358,11 +371,26 @@ async fn run_node(
     // layers of accept loops. run_gossip reads it when assembling each digest.
     let _ = mesh_counters();
 
+    // Phase 2b: birth-injection — if node-admin handed this child a topology
+    // snapshot at spawn, hydrate live_digests() + the topology cache from it
+    // BEFORE gossip starts, so the node has the mesh view at t=0 ("born knowing").
+    topology_cache::inject_birth_topology(&node_id, node_name).await;
+
     // Background pruner: drops stale entries from the process-global
     // `live_digests` and `topic_membership` maps. Without it both grow
     // monotonically with the count of unique node_ids ever observed. See
     // `run_staleness_pruner` for the TTL semantics.
     tokio::spawn(run_staleness_pruner());
+
+    // Phase 2: fill the process-global topology-node entity-cache from gossip.
+    // Runs on EVERY node type (gateway / broker / compute / registry / observer /
+    // admin-ui) — each node gets its own topology view automatically.
+    // self_node_id + self_node_name are passed so the ~10s snapshot span can
+    // identify which node emitted it for soak observability.
+    let topo_fill_handle = tokio::spawn(topology_cache::run_topology_cache_fill(
+        node_id.clone(),
+        node_name.to_string(),
+    ));
 
     // Bootstrap iroh-gossip on the existing endpoint. Topic ID = blake3(mesh_id)
     // so every node in the same mesh joins the same gossip topic. Real gossip
@@ -546,26 +574,28 @@ async fn run_node(
         None
     };
 
-    // Cross-mesh backbone (sprint-14, PRD 03; sprint-19: admin-ui publishes too).
-    // Gateways + the admin-ui subscribe to the single backbone topic
-    // blake3("rafka.backbone") AND are publisher candidates (soft lease picks one
-    // per mesh) — so every mesh advertises itself cross-mesh, even one whose only
-    // node is its admin-ui console. Brokers/computes/registries stay pure
-    // intra-mesh participants — no backbone task.
+    // Cross-mesh backbone (sprint-14, PRD 03; multi-mesh: node-admin is the SOLE
+    // backbone listener). ONLY the admin-ui (Role::Observer) subscribes to the
+    // single backbone topic blake3("rafka.backbone") and publishes its mesh's
+    // summary. node-admin is the cross-mesh authority in the settled model:
+    // gateways/brokers/computes/registries are pure intra-mesh participants and
+    // never touch the backbone — cross-mesh traffic is the repeater's job, not the
+    // gateway's. (Dropping gateways here removes their cross-mesh write-sim target
+    // resolution via backbone_summaries(); that arrow is intentionally retired —
+    // the repeater phase reintroduces cross-mesh delivery on the shared-root trust.)
     let backbone_interval_ms: u64 = std::env::var("RAFKA_BACKBONE_INTERVAL_MS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2000);
-    let backbone_handle = if matches!(role, Role::Gateway | Role::Observer) {
+    let backbone_handle = if matches!(role, Role::Observer) {
         let backbone_bytes: [u8; 32] = *blake3::hash(BACKBONE_TOPIC_NAME.as_bytes()).as_bytes();
         let backbone_topic = iroh_gossip::proto::TopicId::from_bytes(backbone_bytes);
-        // The admin-ui is a NODE in its mesh — it must advertise its mesh on the
-        // backbone too, so a mesh is visible cross-mesh even with no gateway (a
-        // bare console must still appear to other consoles). Both gateways and the
-        // admin-ui are publisher CANDIDATES; the soft lease (min node_id, no
-        // preemption of a live holder) picks exactly one publisher per mesh, and
-        // all candidates aggregate the identical summary from live_digests().
-        let is_publisher = matches!(role, Role::Gateway | Role::Observer);
+        // The admin-ui is a NODE in its mesh and the sole backbone participant: it
+        // advertises its mesh's summary (aggregated from live_digests()) so the mesh
+        // is visible cross-mesh even with no gateway. One admin per mesh ⇒ it is
+        // unconditionally the publisher (the soft-lease machinery still applies but
+        // there is only ever one candidate now).
+        let is_publisher = true;
         let gossip_bb = gossip.clone();
         let node_id_bb = node_id.clone();
         let registry_bb = Arc::clone(&peer_registry);
@@ -583,6 +613,68 @@ async fn run_node(
         None
     };
 
+    // Per-node cache engine: parse RAFKA_NODE_CACHES and spawn one task per
+    // dedicated-channel cache. Admin assigns caches via this env var at spawn.
+    // KeyGossip caches ride `main` via a separate projection fill task.
+    let cache_specs = node_cache::parse_cache_specs_from_env();
+    // Register all caches in the process-global registry.
+    for spec in &cache_specs {
+        let caches = node_cache::node_caches();
+        if !caches.contains_key(&spec.name) {
+            caches.insert(spec.name.clone(), node_cache::NodeCache::new(spec.clone()));
+        }
+    }
+    // Determine leader for Leader-type caches.
+    // In this spike: the admin (Observer role) is the leader.
+    let is_leader = matches!(role, Role::Observer);
+    // publisher_id: use node_id for Key-type caches so entries are keyed uniquely.
+    let publisher_id = node_id.clone();
+    let mut cache_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    for spec in &cache_specs {
+        match &spec.channel {
+            node_cache::Channel::Dedicated(_) => {
+                let cache_name = spec.name.clone();
+                let _is_publisher_not_keygossip = !matches!(spec.cache_type, node_cache::CacheType::KeyGossip);
+                let leader: Option<String> = if matches!(spec.cache_type, node_cache::CacheType::Leader) {
+                    // In Leader caches: only the Observer/admin publishes.
+                    // Encode "admin is leader" as: leader = node_id if Observer, else no leader.
+                    if is_leader { Some(node_id.clone()) } else {
+                        // Non-leaders learn the leader (admin) node_id from the env
+                        // var the admin sets at spawn, so they ACCEPT the leader's
+                        // updates and reject anyone else.
+                        std::env::var("RAFKA_LEADER_NODE_ID").ok()
+                    }
+                } else {
+                    None
+                };
+                let publisher_flag = match spec.cache_type {
+                    node_cache::CacheType::Leader => is_leader,
+                    node_cache::CacheType::Shared => !matches!(role, Role::Observer),
+                    node_cache::CacheType::Key => !matches!(role, Role::Observer),
+                    node_cache::CacheType::KeyGossip => false, // KeyGossip never on dedicated channel
+                };
+                let gossip_task = gossip.clone();
+                let peer_reg = Arc::clone(&peer_registry);
+                let pub_id = publisher_id.clone();
+                let h = tokio::spawn(node_cache::run_cache_task(
+                    gossip_task,
+                    cache_name,
+                    publisher_flag,
+                    pub_id,
+                    peer_reg,
+                    leader,
+                ));
+                cache_handles.push(h);
+            }
+            node_cache::Channel::Main => {
+                // KeyGossip: project from live_digests() into the cache.
+                let cache_name = spec.name.clone();
+                let h = tokio::spawn(node_cache::run_keygossip_fill(cache_name));
+                cache_handles.push(h);
+            }
+        }
+    }
+
     let stopping_reason = wait_for_signal().await;
 
     tracing::info_span!(
@@ -599,6 +691,7 @@ async fn run_node(
     mdns_handle.abort();
     gossip_handle.abort();
     bi_echo_handle.abort();
+    topo_fill_handle.abort();
     if let Some(h) = dial_handle {
         h.abort();
     }
@@ -606,6 +699,9 @@ async fn run_node(
         h.abort();
     }
     if let Some(h) = backbone_handle {
+        h.abort();
+    }
+    for h in cache_handles {
         h.abort();
     }
 
@@ -905,19 +1001,25 @@ async fn run_backbone(
                     Some((holder, exp)) if now_ms < exp && holder != node_id => false,
                     // Live claim held by US → renew.
                     Some((holder, exp)) if now_ms < exp && holder == node_id => true,
-                    // Vacant/expired seat → contend: lowest live gateway id wins.
+                    // Vacant/expired seat → contend: lowest live ADMIN id wins.
+                    // Post sole-listener (multi-mesh): only the node-admin (Observer)
+                    // subscribes to + publishes on the backbone, so the publisher
+                    // candidate set is the mesh's admin(s), NOT its gateways. With one
+                    // admin per mesh this is always self → the admin always publishes
+                    // its own mesh aggregate. (Was filtered on "gateway", which left
+                    // an admin silent whenever a gateway's node_id sorted below it.)
                     _ => {
-                        let mut live_gw_ids: Vec<String> = live_digests()
+                        let mut live_admin_ids: Vec<String> = live_digests()
                             .iter()
                             .filter(|e| {
                                 let d = e.value();
-                                d.mesh_id == mesh_id && d.node_type == "gateway"
+                                d.mesh_id == mesh_id && d.node_type == "admin-ui"
                             })
                             .map(|e| e.value().node_id.clone())
                             .collect();
-                        live_gw_ids.push(node_id.clone()); // include self
-                        live_gw_ids.sort();
-                        live_gw_ids.first().map(|m| m == &node_id).unwrap_or(true)
+                        live_admin_ids.push(node_id.clone()); // include self
+                        live_admin_ids.sort();
+                        live_admin_ids.first().map(|m| m == &node_id).unwrap_or(true)
                     }
                 };
 
@@ -1313,6 +1415,11 @@ pub struct GossipDigest {
     /// stays append-only; `#[serde(default)]` = false for old digests.
     #[serde(default)]
     pub stateful: bool,
+    /// Hex-encoded node-admin-signed cert (cert::SignedCert). Empty if the node
+    /// was spawned without one. Receivers verify it (CA sig + node_id + expiry)
+    /// before admitting the node to live_digests — the trust boundary.
+    #[serde(default)]
+    pub cert: String,
 }
 
 /// Node lifecycle/health, published as an event on every transition (sprint-20;
@@ -1820,6 +1927,9 @@ async fn run_gossip(
         };
         let peer_ids: Vec<String> = registry.iter().map(|e| e.key().clone()).collect();
         let stateful = std::env::var("RAFKA_STATEFUL").as_deref() == Ok("true");
+        // This node's cert (node-admin-signed). Presented in every digest so
+        // peers can verify the node belongs on the mesh.
+        let cert = std::env::var("RAFKA_NODE_CERT").unwrap_or_default();
         GossipDigest {
             node_id: node_id.clone(),
             node_name: node_name.to_string(),
@@ -1837,8 +1947,15 @@ async fn run_gossip(
             location: location.clone(),
             state,
             stateful,
+            cert,
         }
     };
+    // CA pubkey for cert enforcement: every received digest's cert is verified
+    // against this before the node is admitted to live_digests. Unset (no CA)
+    // => enforcement OFF (open mesh, backward compatible).
+    let ca_pubkey: Option<iroh::PublicKey> = std::env::var("RAFKA_CA_PUBKEY")
+        .ok()
+        .and_then(|s| iroh::PublicKey::from_str(s.trim()).ok());
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -1958,6 +2075,20 @@ async fn run_gossip(
                         size_bytes = size as i64,
                     )
                     .in_scope(|| info!(size_bytes = size, "gossip digest broadcast"));
+                    // Feed the REAL membership gossip into the `main` channel so the
+                    // Channels view shows main chatting continuously (state/load digests).
+                    node_cache::channel_events()
+                        .entry("main".to_string())
+                        .or_insert_with(|| node_cache::ChannelEventRing::new("main"))
+                        .push(node_cache::ChannelEvent {
+                            ts_ms: now_unix_ms(),
+                            publisher: node_id.clone(),
+                            op: "publish".to_string(),
+                            key: format!("{} {:?}", node_name, digest.state),
+                            value: digest.peer_count,
+                            epoch: digest.wall_time_ms,
+                            cache_name: "main".to_string(),
+                        });
                 }
             }
             // Immediate self-publish: a node announcing a state change NOW instead of
@@ -2024,6 +2155,41 @@ async fn run_gossip(
                     let from = msg.delivered_from.to_string();
                     let digest: Option<GossipDigest> = postcard::from_bytes(&msg.content).ok();
                     if let Some(d) = &digest {
+                        // ── TRUST BOUNDARY: verify the node's cert before admitting it ──
+                        // If a CA is configured, the digest must carry a cert signed by
+                        // that CA, binding the sender's NodeId, not expired. No valid
+                        // cert → drop the digest entirely: the node never enters
+                        // live_digests, so it is invisible and cannot communicate.
+                        if let Some(ca_pub) = &ca_pubkey {
+                            let ok = crate::cert::decode_cert(&d.cert)
+                                .map(|signed| crate::cert::verify_cert(&signed, ca_pub, &d.node_id, now_unix_ms()))
+                                .unwrap_or(Err(crate::cert::CertError::BadSignature));
+                            if let Err(reason) = ok {
+                                tracing::info_span!(
+                                    "rafka.cert.reject",
+                                    rejected_node = %d.node_name,
+                                    rejected_node_id = %d.node_id,
+                                    reason = %reason.as_str(),
+                                    "otel.kind" = "internal",
+                                )
+                                .in_scope(|| tracing::warn!(node = %d.node_name, reason = %reason.as_str(), "digest REJECTED — invalid/missing cert; node not admitted to mesh"));
+                                continue;
+                            }
+                        }
+                        // Feed the received membership digest into the `main` channel
+                        // (the Channels view's real-gossip stream).
+                        node_cache::channel_events()
+                            .entry("main".to_string())
+                            .or_insert_with(|| node_cache::ChannelEventRing::new("main"))
+                            .push(node_cache::ChannelEvent {
+                                ts_ms: now_unix_ms(),
+                                publisher: d.node_id.clone(),
+                                op: "received".to_string(),
+                                key: format!("{} {:?}", d.node_name, d.state),
+                                value: d.peer_count,
+                                epoch: d.wall_time_ms,
+                                cache_name: "main".to_string(),
+                            });
                         // Sprint-15/20: terminal-state path — FAST eviction.
                         // A digest in a terminal state (Leaving = graceful departure,
                         // Dead = observer-inferred crash) means the node is gone.
@@ -2736,6 +2902,126 @@ async fn load_or_mint_identity(data_dir: &PathBuf) -> Result<SecretKey> {
 }
 
 #[instrument(skip_all)]
+/// The cross-mesh REPEATER: a dumb, trust-agnostic relay between two (or more) mesh
+/// gossip swarms. It subscribes to each mesh's topic and re-broadcasts every ORIGIN
+/// digest it hears onto the OTHER meshes' topics — VERBATIM. It reads only `mesh_id`
+/// (to route + prevent loops); it NEVER inspects or validates the cert. Trust lives
+/// entirely at the RECEIVER: a node on the far mesh runs its normal run_gossip cert
+/// check (shared-root CA) on the relayed digest and admits or rejects it. So a
+/// compromised repeater cannot inject foreign-cert nodes — it has no trust to grant.
+///
+/// Loop prevention: a digest is re-broadcast only if its `mesh_id` equals the mesh of
+/// the topic it arrived on (it ORIGINATED there). A relayed mesh1 digest arriving on
+/// mesh2's topic carries mesh_id=mesh1 != mesh2, so it is never relayed onward — the
+/// chain terminates in exactly one hop (and the repeater's own echo is dropped the
+/// same way).
+///
+/// Discovery is mDNS (localhost): like the admins, the repeater subscribes empty and
+/// join_peers from what mDNS surfaces. Cross-HOST would need explicit backbone seeds.
+/// Deliberately NO RAFKA_CA_PUBKEY here — the repeater is trust-agnostic by design.
+pub async fn run_repeater(meshes: Vec<String>, bind_addr: SocketAddrV4) -> Result<()> {
+    use futures_lite::StreamExt;
+    use iroh_gossip::api::{Event, GossipSender};
+    if meshes.len() < 2 {
+        anyhow::bail!("repeater needs >=2 meshes to bridge, got {meshes:?}");
+    }
+    let secret_key = SecretKey::generate();
+    let repeater_id = secret_key.public().to_string();
+    info!(repeater_id = %repeater_id, ?meshes, "repeater starting (trust-agnostic cross-mesh relay)");
+
+    let mut transport = create_endpoint(secret_key, bind_addr, true).await?;
+    let endpoint = transport.endpoint.clone();
+    let peer_registry: PeerRegistry = Arc::new(DashMap::new());
+    let mesh_id_registry: MeshIdRegistry = Arc::new(DashMap::new());
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+
+    // Reuse node machinery: inbound conns -> gossip; mDNS dials -> peer_registry.
+    let _accept = start_accept_loop(
+        &transport, repeater_id.clone(), "repeater", "repeater", "repeater",
+        Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry), gossip.clone(),
+    ).await;
+    let mdns_rx = std::mem::replace(
+        &mut transport.mdns_discovered,
+        tokio::sync::mpsc::channel(1).1,
+    );
+    tokio::spawn(watch_mdns(
+        mdns_rx, endpoint.clone(), repeater_id.clone(),
+        "repeater", "repeater", "repeater",
+        Arc::clone(&peer_registry), Arc::clone(&mesh_id_registry),
+    ));
+
+    // Subscribe every bridged mesh; collect all senders so each relay task can
+    // broadcast onto the OTHER meshes' topics.
+    let mut senders: std::collections::HashMap<String, Arc<GossipSender>> =
+        std::collections::HashMap::new();
+    let mut receivers = Vec::new();
+    for mesh in &meshes {
+        let topic_bytes: [u8; 32] = *blake3::hash(mesh.as_bytes()).as_bytes();
+        let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
+        let topic = gossip.subscribe(topic_id, Vec::new()).await?;
+        let (sender, receiver) = topic.split();
+        info!(mesh = %mesh, topic_id = %hex::encode(topic_bytes), "repeater subscribed to mesh topic");
+        senders.insert(mesh.clone(), Arc::new(sender));
+        receivers.push((mesh.clone(), receiver));
+    }
+
+    let mut handles = Vec::new();
+    for (mesh, mut receiver) in receivers {
+        let own_sender = Arc::clone(senders.get(&mesh).expect("own sender"));
+        let others: Vec<(String, Arc<GossipSender>)> = senders
+            .iter()
+            .filter(|(m, _)| *m != &mesh)
+            .map(|(m, s)| (m.clone(), Arc::clone(s)))
+            .collect();
+        let registry = Arc::clone(&peer_registry);
+        let rid = repeater_id.clone();
+        handles.push(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut joined: std::collections::HashSet<String> = std::collections::HashSet::new();
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        // Join whatever mDNS surfaced onto THIS topic so the swarm forms.
+                        let mut new_peers = Vec::new();
+                        for peer in registry.iter() {
+                            if joined.insert(peer.key().clone()) {
+                                if let Ok(id) = iroh::EndpointId::from_str(peer.key()) {
+                                    new_peers.push(id);
+                                }
+                            }
+                        }
+                        joined.retain(|p| registry.contains_key(p));
+                        if !new_peers.is_empty() {
+                            let _ = own_sender.join_peers(new_peers).await;
+                        }
+                    }
+                    ev = receiver.next() => {
+                        let Some(ev) = ev else { break };
+                        let Ok(Event::Received(msg)) = ev else { continue };
+                        // Read mesh_id ONLY — never the cert. Routing, not trust.
+                        let Ok(digest) = postcard::from_bytes::<GossipDigest>(&msg.content) else { continue };
+                        // Loop guard: relay only digests that ORIGINATED on this mesh.
+                        if digest.mesh_id != mesh { continue; }
+                        for (other_mesh, sender) in &others {
+                            tracing::info_span!(
+                                "rafka.repeater.relay",
+                                repeater_id = %rid,
+                                from_mesh = %mesh,
+                                to_mesh = %other_mesh,
+                                relayed_node = %digest.node_name,
+                                "otel.kind" = "internal",
+                            ).in_scope(|| info!(from = %mesh, to = %other_mesh, node = %digest.node_name, "relayed digest cross-mesh"));
+                            let _ = sender.broadcast(msg.content.clone()).await;
+                        }
+                    }
+                }
+            }
+        }));
+    }
+    for h in handles { let _ = h.await; }
+    Ok(())
+}
+
 async fn create_endpoint(
     secret_key: SecretKey,
     bind_addr: SocketAddrV4,
@@ -3189,6 +3475,7 @@ mod gossip_digest_schema_tests {
             location: "127.0.0.1:14820".into(),
             state: NodeState::Alive,
             stateful: false,
+            cert: String::new(),
         };
         let bytes = postcard::to_allocvec(&original).expect("encode");
         let decoded: GossipDigest = postcard::from_bytes(&bytes).expect("decode");
@@ -3254,6 +3541,7 @@ mod staleness_pruner_tests {
             location: String::new(),
             state: NodeState::Alive,
             stateful: false,
+            cert: String::new(),
         }
     }
 

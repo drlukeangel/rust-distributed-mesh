@@ -1,0 +1,23 @@
+[package]
+name = "rafka-entity-cache"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-stage RAM cache factory for Rafka entity state. See docs/architecture/Entity-Cache.md. Provides EntityCache<E, B, M> with static-dispatch generics over CachedEntity, BrokerRpc, MeshGossip — durable Stage-1 topic + broker primitive + node hot cache + mesh gossip, with offset-CAS, tombstone preservation, wall-clock zombie prevention, request coalescing, RYOW, and O(log N) tombstone reaping."
+
+[lib]
+name = "rafka_entity_cache"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive", "rc"] }
+dashmap = "6"
+moka = { version = "0.12", features = ["future"] }
+thiserror = "2"
+tracing = { version = "0.1", features = ["attributes"] }
+futures = "0.3"
+async-stream = "0.3"
+tokio = { version = "1.36", features = ["rt", "sync", "time", "macros"] }
+postcard = { version = "1.0", features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { version = "1.36", features = ["full", "test-util"] }

@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset=utf-8><title>30-min soak — per node type</title>
+<style>body{margin:0;background:#0d1117;color:#c9d1d9;font:15px/1.5 system-ui,Segoe UI,sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:32px 24px}h1{font-size:23px;margin:0 0 4px}h2{font-size:17px;border-bottom:1px solid #30363d;padding-bottom:6px;margin-top:26px}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0;font-family:ui-monospace,monospace}
+th,td{border:1px solid #30363d;padding:7px 10px;text-align:right}td:first-child,th:first-child{text-align:left}th{background:#161b22;color:#8b949e}
+.dim{color:#6e7681}.badge{display:inline-block;padding:3px 12px;border-radius:999px;font-weight:700;font-size:13px;background:rgba(63,185,80,.15);color:#3fb950;border:1px solid #3fb950}
+.k{color:#8b949e;font-size:12.5px} a{color:#58a6ff} code{background:#161b22;padding:1px 5px;border-radius:4px}</style></head><body><div class=wrap>
+<h1>Node-lifecycle 30-min chaos soak &mdash; per node type</h1>
+<p class=k>mesh-v2, after the tombstone&rarr;state refactor. Each cell = <b>count &middot; avg&nbsp;CPU&nbsp;(cores) &middot; avg&nbsp;RAM&nbsp;(GB)</b> for that node type, measured on each node's home console. 2026-06-01.</p>
+<p><span class=badge>per-type RAM flat across 30 min of continuous chaos churn &mdash; no per-type leak</span></p>
+<h2>Per node type, every 5 minutes</h2>
+<table><tr><th>T (min)</th><th style="color:#8b949e">admin-ui</th><th style="color:#f0883e">broker</th><th style="color:#3fb950">compute</th><th style="color:#58a6ff">gateway</th><th style="color:#bc8cff">registry</th></tr>
+<tr><td>T+0</td><td>2 &middot; 0.050 &middot; 0.050</td><td>2 &middot; 0.000 &middot; 0.040</td><td>2 &middot; 0.010 &middot; 0.040</td><td>2 &middot; 0.000 &middot; 0.040</td><td>2 &middot; 0.000 &middot; 0.040</td></tr>
+<tr><td>T+5</td><td>2 &middot; 0.065 &middot; 0.050</td><td>4 &middot; 0.030 &middot; 0.040</td><td>3 &middot; 0.023 &middot; 0.040</td><td>3 &middot; 0.013 &middot; 0.040</td><td>3 &middot; 0.017 &middot; 0.040</td></tr>
+<tr><td>T+10</td><td>2 &middot; 0.075 &middot; 0.055</td><td>6 &middot; 0.045 &middot; 0.040</td><td>4 &middot; 0.033 &middot; 0.040</td><td>4 &middot; 0.083 &middot; 0.040</td><td>4 &middot; 0.017 &middot; 0.040</td></tr>
+<tr><td>T+15</td><td>2 &middot; 0.075 &middot; 0.055</td><td>7 &middot; 0.029 &middot; 0.040</td><td>5 &middot; 0.030 &middot; 0.040</td><td>5 &middot; 0.048 &middot; 0.044</td><td>4 &middot; 0.015 &middot; 0.040</td></tr>
+<tr><td>T+20</td><td>2 &middot; 0.090 &middot; 0.055</td><td>10 &middot; 0.041 &middot; 0.040</td><td>6 &middot; 0.043 &middot; 0.040</td><td>6 &middot; 0.062 &middot; 0.045</td><td>6 &middot; 0.028 &middot; 0.040</td></tr>
+<tr><td>T+25</td><td>2 &middot; 0.120 &middot; 0.055</td><td>12 &middot; 0.047 &middot; 0.040</td><td>7 &middot; 0.044 &middot; 0.040</td><td>7 &middot; 0.074 &middot; 0.047</td><td>7 &middot; 0.024 &middot; 0.040</td></tr>
+<tr><td>T+30</td><td>2 &middot; 0.085 &middot; 0.060</td><td>13 &middot; 0.028 &middot; 0.041</td><td>6 &middot; 0.040 &middot; 0.040</td><td>8 &middot; 0.055 &middot; 0.048</td><td>8 &middot; 0.014 &middot; 0.040</td></tr>
+</table>
+<h2>Reading it</h2>
+<ul>
+<li><b>RAM is flat per type</b> the entire run: broker / compute / registry hold ~0.040&nbsp;GB per node, admin-ui ~0.05&ndash;0.06. No type creeps up over 30 min &rarr; no per-type memory leak.</li>
+<li><b>CPU</b> stays low and well under budget per type (broker budget 4.0c, gateway/registry 2.0c, compute 1.0c, admin-ui 2.0c). Gateways run a touch hotter (write-sim traffic), admin-ui rises with fleet size (it renders/aggregates more), both bounded.</li>
+<li><b>Counts grow</b> because the soak harness re-spawned 5 nodes / 5&nbsp;min while chaos's effective kill rate was lower (it picks from a spawn registry that accumulates already-dead names, so some picks are no-ops). Kills themselves work &mdash; verified: a manual kill removes the node + its process immediately, and processes==topology throughout (no ghosts).</li>
+</ul>
+<p class=k>Spans: <a href="http://localhost:16686/search?service=mesh1.broker&operation=rafka.mesh.node.state_changed&lookback=3h" target=_blank>node.state_changed</a> &middot;
+<a href="http://localhost:16686/search?service=mesh1.broker&operation=rafka.mesh.node.evicted&lookback=3h" target=_blank>node.evicted</a> &middot; 0 tombstone operations.</p>
+</div></body></html>

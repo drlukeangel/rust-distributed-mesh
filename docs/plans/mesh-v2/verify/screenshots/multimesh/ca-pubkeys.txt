@@ -1,0 +1,4 @@
+Multi-mesh shared-root proof (2026-06-08T18:41:53Z)
+admin-a (mesh1) CA: ee7dc198f36380fed18d3d8dc1224ee84c60a6d9d7cbbe1cc025e6a791da068d
+admin-b (mesh2) CA: ee7dc198f36380fed18d3d8dc1224ee84c60a6d9d7cbbe1cc025e6a791da068d
+(identical => same root authority issues certs in both meshes)

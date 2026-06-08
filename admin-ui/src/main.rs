@@ -4,6 +4,8 @@
 // See memory `project_rustc_195_ice.md`.
 #![allow(dead_code)]
 
+mod topology_cache;
+
 use anyhow::Result;
 use axum::{
     Router,
@@ -28,6 +30,7 @@ use std::{
 };
 use tower_http::services::{ServeDir, ServeFile};
 use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{node_caches, channel_events};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
 
@@ -222,6 +225,9 @@ struct AppState {
     /// or remove its spawned_meta entry. Cleared by `restart_one` after the
     /// new process is inserted.
     restarting: Arc<dashmap::DashSet<String>>,
+    /// CA signing key — node-admin issues each spawned node a cert with this.
+    /// The single ed25519 ROOT authority (shareable across admins for cross-mesh).
+    ca: Arc<iroh::SecretKey>,
 }
 
 #[derive(Deserialize)]
@@ -260,6 +266,14 @@ struct SpawnRequest {
 
 async fn handle_health() -> impl IntoResponse {
     axum::Json(json!({"status": "ok"}))
+}
+
+/// The node-admin's CA (root authority) public key. Multi-mesh proof surface:
+/// two admins sharing a copied ca-secret.json return BYTE-IDENTICAL pubkeys, so a
+/// node issued by either admin verifies against the same root — the cross-mesh
+/// trust premise the repeater phase relies on.
+async fn handle_ca(State(state): State<AppState>) -> impl IntoResponse {
+    axum::Json(json!({ "ca_pubkey": state.ca.public().to_string() }))
 }
 
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
@@ -772,7 +786,7 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     let spawned_count = state.processes.iter().count() as i64;
     // EXCLUDE the "default" sentinel — not a real mesh, it's
     // "node spawned without RAFKA_MESH_ID".
-    let meshes: std::collections::HashSet<String> = state
+    let mut meshes: std::collections::HashSet<String> = state
         .spawned_meta
         .iter()
         .filter(|e| {
@@ -781,6 +795,15 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
         })
         .map(|e| e.value().mesh_id.clone())
         .collect();
+    // Also include meshes this console SEES cross-mesh via the backbone directory
+    // (a peer admin's mesh) so the header reflects the full two-mesh view, not just
+    // the meshes this admin spawned into.
+    for entry in rafka_node_base::backbone_summaries().iter() {
+        let m = entry.key();
+        if m != "default" {
+            meshes.insert(m.clone());
+        }
+    }
     let mut meshes_vec: Vec<String> = meshes.into_iter().collect();
     meshes_vec.sort();
 
@@ -1610,6 +1633,20 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// `GET /api/topology/node` — return all topology nodes from the entity-cache.
+/// The cache is filled from gossip every ~1s by the fill loop spawned inside
+/// NodeRuntime::run() (rafka-node-base). Uses `snapshot_all_raw()` (bypasses
+/// the STATE_READY gate so the endpoint is safe even before gossip has populated
+/// it) and projects each `Arc<TopologyNode>` to an owned value for JSON serialization.
+async fn handle_topology_node(State(_state): State<AppState>) -> impl IntoResponse {
+    let raw = topology_cache::topology_nodes().snapshot_all_raw();
+    let nodes: Vec<topology_cache::TopologyNode> = raw
+        .into_iter()
+        .map(|(_, arc)| (*arc).clone())
+        .collect();
+    (StatusCode::OK, axum::Json(serde_json::json!({ "nodes": nodes }))).into_response()
+}
+
 /// `GET /api/topology-cache` — the directory `name → {mesh, type, location}`.
 /// HOME-mesh entries come from `live_digests()` (full local gossip detail);
 /// REMOTE-mesh entries come from the BACKBONE directory (sprint-14 B6 — no
@@ -1902,6 +1939,10 @@ const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
     "RAFKA_AUTO_SHUTDOWN_SECS",
     "RUST_LOG",
     "RAFKA_STATEFUL",
+    "RAFKA_NODE_CACHES",
+    // Proof toggle: spawn a node WITHOUT a CA-signed cert to demonstrate the
+    // trust boundary rejects it (it never enters peers' live_digests).
+    "RAFKA_NO_CERT",
 ];
 
 fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
@@ -2083,6 +2124,43 @@ async fn spawn_one(
         cmd.env(k, v);
     }
 
+    // ---- cache assignment: admin's policy, injected by node_type ----
+    // Observer (admin-ui) subscribes to ALL caches (set separately in async_main).
+    // Each child type gets its assigned caches via RAFKA_NODE_CACHES.
+    let node_caches_spec = caches_for_node_type(node_type);
+    if !node_caches_spec.is_empty() {
+        cmd.env("RAFKA_NODE_CACHES", node_caches_spec);
+    }
+    // Leader caches: tell workers who the leader (admin) is, so they ACCEPT the
+    // leader's updates and REJECT anyone else. The admin's node_id is known here.
+    cmd.env("RAFKA_LEADER_NODE_ID", &state.admin_node_id_hex);
+    // Issue this node's cert: node-admin (CA) signs {node_id, type, 24h expiry}.
+    // The node presents it in its gossip digest; peers verify against RAFKA_CA_PUBKEY.
+    // RAFKA_NO_CERT=true skips issuance: the node boots with NO cert, so every
+    // enforcing peer rejects its digest — the trust-boundary proof path.
+    let no_cert = extra_env.get("RAFKA_NO_CERT").map(|v| v == "true").unwrap_or(false);
+    if no_cert {
+        tracing::warn!(node_type, "RAFKA_NO_CERT=true — spawning UNCERTIFIED node (proof path); enforcing peers will reject its digest");
+        // Strip any inherited RAFKA_NODE_CERT. The child inherits the admin's
+        // process env by default, and the admin self-set its OWN cert — without
+        // this remove the child would present the admin's cert and be rejected
+        // for node-id-mismatch instead of for having no cert. env_remove makes
+        // it truly cert-less: empty cert → decode fails → bad-signature reject.
+        cmd.env_remove("RAFKA_NODE_CERT");
+        // We deliberately do NOT set RAFKA_CA_PUBKEY here: leaving it unset keeps
+        // the proof about ONE thing — the certified mesh cannot see an uncertified
+        // node — without entangling it with what the uncertified node can see.
+        cmd.env_remove("RAFKA_CA_PUBKEY");
+    } else {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let cert = rafka_node_base::cert::issue_cert(&state.ca, &node_id_hex, node_type, 86_400, now_ms);
+        cmd.env("RAFKA_NODE_CERT", rafka_node_base::cert::encode_cert(&cert));
+        cmd.env("RAFKA_CA_PUBKEY", state.ca.public().to_string());
+    }
+
     // ---- seed injection: set AFTER extra_env so admin-ui's values always win ----
     // Disable mDNS for the child — we're using explicit seeds instead.
     cmd.env("RAFKA_MDNS_ENABLE", "false");
@@ -2093,6 +2171,26 @@ async fn spawn_one(
     }
     // Sprint-14 B5: no RAFKA_OBSERVER_MESHES injection. Gateways learn other meshes
     // from the backbone, not by subscribing to their gossip.
+
+    // Phase 2b: birth-injection — snapshot the current mesh topology (admin's
+    // live_digests view) and hand it to the child so it boots already knowing
+    // the mesh ("born knowing") instead of filling from gossip over ~1s. The
+    // child seeds its own live_digests() + topology cache from this pre-gossip.
+    {
+        let snapshot: Vec<_> = rafka_node_base::live_digests()
+            .iter()
+            .map(|e| e.value().clone())
+            .collect();
+        if !snapshot.is_empty() {
+            if let Ok(bytes) = postcard::to_allocvec(&snapshot) {
+                let _ = std::fs::create_dir_all(&spawn_dir);
+                let birth_path = format!("{}/topology-birth.postcard", spawn_dir);
+                if std::fs::write(&birth_path, &bytes).is_ok() {
+                    cmd.env("RAFKA_TOPOLOGY_BIRTH_FILE", &birth_path);
+                }
+            }
+        }
+    }
 
     // Pass budgets as CLI flags (NOT env vars). The child binary parses
     // these via rafka_node_base::parse_budget_cli_args(). The child
@@ -2209,84 +2307,210 @@ async fn handle_spawn(
     }
 }
 
-/// POST /api/bootstrap — spawn the two-mesh demo topology: 2 of each node
-/// type into mesh1, the same into mesh2. Non-gateway nodes spawn FIRST in both
-/// meshes, then gateways last — so each gateway, at its spawn moment, can see a
-/// node in the other mesh and wire its cross-mesh observe/seed (PRD §2).
-/// Idempotent in spirit but each call adds another full set — the chaos loop /
-/// kill buttons remove drift.
-async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
-    // Red-team A#3: take the bootstrap mutex FIRST so concurrent callers
-    // queue. Then check the pool cap — second caller will see the actual
-    // post-first-bootstrap count. Without the mutex, 5 parallel callers all
-    // saw current=0, passed the check, and all spawned 16 → 80 total → tokio
-    // deadlock.
-    let _guard = state.bootstrap_mutex.lock().await;
-    let current = state.spawned_meta.iter().count();
-    const POOL_CAP: usize = 50;
-    if current + 16 > POOL_CAP {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(json!({
-                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=16"),
-                "current": current,
-                "cap": POOL_CAP,
-            })),
-        )
-            .into_response();
-    }
+/// ENSURE the standard fleet for ONE mesh: top up to exactly 2 of each of the 4
+/// node types (broker/compute/registry first so gateways see them for cross-mesh
+/// seeding, gateways last). Idempotent — counts what THIS admin already spawned
+/// into `mesh` and only spawns the shortfall, so a customer can click startup
+/// twice without piling up. Returns (newly_spawned_names, errors).
+async fn bootstrap_one_mesh(state: &AppState, mesh: &str) -> (Vec<String>, Vec<String>) {
+    const PER_TYPE: usize = 2;
+    let have = |t: &str| -> usize {
+        state.spawned_meta.iter()
+            .filter(|e| e.value().mesh_id == mesh && e.value().node_type == t)
+            .count()
+    };
     let mut spawned = Vec::new();
     let mut errors = Vec::new();
-
-    // Two passes so gateways spawn LAST: a gateway wires its cross-mesh observe
-    // from a snapshot of spawned_meta at its spawn moment, so the other mesh's
-    // nodes must already exist. Pass 1 = all non-gateway types in both meshes;
-    // pass 2 = 1 gateway per mesh. 2× of each non-gateway + 2 gateways = 10 each
-    // pass... total here: (2 meshes × 3 non-gw types × 2) + (2 meshes × 1 gw × 2)
-    // = 12 + 4 = 16 nodes.
-    let meshes = ["mesh1", "mesh2"];
-    let non_gateway = ["broker", "compute", "registry"];
-
-    // Pass 1: non-gateway nodes, 2 of each type per mesh.
-    for mesh in meshes {
-        for t in non_gateway {
-            for _ in 0..2 {
-                let mut env = HashMap::new();
-                env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-                match spawn_one(&state, t, env, None, None, false).await {
-                    Ok((name, _)) => spawned.push(name),
-                    Err(e) => errors.push(e),
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    }
-
-    // Pass 2: gateways last (2 per mesh), now that the other mesh has nodes
-    // they can observe + cross-seed to.
-    for mesh in meshes {
-        for _ in 0..2 {
+    // Non-gateways first, then gateways (cross-mesh seed ordering).
+    for t in ["broker", "compute", "registry", "gateway"] {
+        let need = PER_TYPE.saturating_sub(have(t));
+        for _ in 0..need {
             let mut env = HashMap::new();
             env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, "gateway", env, None, None, false).await {
+            match spawn_one(state, t, env, None, None, false).await {
                 Ok((name, _)) => spawned.push(name),
                 Err(e) => errors.push(e),
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+    (spawned, errors)
+}
 
+/// POST /api/bootstrap — fill THIS admin's OWN mesh with the standard demo set
+/// (2 of each of the 4 node types = 8 nodes). Each node-admin owns exactly one
+/// mesh, so an admin only ever spawns into its own mesh. For the full two-admin
+/// topology use /api/bootstrap-2mesh. (Pre-multi-mesh this spawned BOTH meshes
+/// from a single admin — wrong now that mesh2 has its own admin.)
+async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
+    // Red-team A#3: bootstrap mutex serializes concurrent callers so the pool-cap
+    // check below sees the real post-spawn count.
+    let _guard = state.bootstrap_mutex.lock().await;
+    let own_mesh = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "mesh1".to_string());
+    let current = state.spawned_meta.iter().count();
+    const POOL_CAP: usize = 50;
+    if current + 8 > POOL_CAP {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(json!({
+                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=8"),
+                "current": current, "cap": POOL_CAP,
+            })),
+        )
+            .into_response();
+    }
+    let (spawned, errors) = bootstrap_one_mesh(&state, &own_mesh).await;
+    // Full worker count for this mesh (newly-spawned + already-present), so callers
+    // get the true fleet size even on an idempotent re-run that spawned nothing.
+    let total = state.spawned_meta.iter().filter(|e| e.value().mesh_id == own_mesh).count();
     info_span!(
         "rafka.ui.bootstrap",
+        mesh = %own_mesh,
         spawned_count = spawned.len() as i64,
+        total_count = total as i64,
         error_count = errors.len() as i64,
         "otel.kind" = "internal",
     )
-    .in_scope(|| info!(spawned = ?spawned, errors = ?errors, "bootstrap complete"));
+    .in_scope(|| info!(mesh = %own_mesh, spawned = ?spawned, total, errors = ?errors, "bootstrap (own mesh) complete"));
+    (
+        StatusCode::CREATED,
+        axum::Json(json!({"mesh": own_mesh, "spawned": spawned, "total": total, "errors": errors})),
+    )
+        .into_response()
+}
+
+/// POST /api/bootstrap-2mesh — stand up the CORRECT two-admin topology from the
+/// primary (mesh1) admin. Ensures a mesh2 node-admin exists (auto-launches it as a
+/// second copy of THIS binary, sharing this admin's root CA so cross-mesh certs
+/// verify), then fills BOTH meshes with 2-of-each via their OWN admin. Result:
+/// 2 admins + 16 workers = 18 nodes (each mesh = 1 admin + 8 workers). The two
+/// admins find each other + exchange directory summaries over the mDNS backbone.
+async fn handle_bootstrap_2mesh(State(state): State<AppState>) -> impl IntoResponse {
+    let _guard = state.bootstrap_mutex.lock().await;
+    let own_mesh = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "mesh1".to_string());
+    if own_mesh != "mesh1" {
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({"error": format!("bootstrap-2mesh must run from the primary (mesh1) admin; this console is '{own_mesh}'")})),
+        )
+            .into_response();
+    }
+    // Resolve our own ports/data dir from the same env vars async_main read at boot,
+    // then derive disjoint values for the mesh2 admin.
+    let own_http = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
+        .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
+    let own_http_port: u16 = own_http.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(19090);
+    let own_iroh_port: u16 = std::env::var("RAFKA_NODE_BIND_ADDR")
+        .ok().and_then(|s| s.rsplit(':').next().and_then(|p| p.parse().ok())).unwrap_or(14819);
+    let own_base: u16 = std::env::var("RAFKA_SPAWN_PORT_BASE").ok().and_then(|s| s.parse().ok()).unwrap_or(15820);
+    let own_data = std::env::var("RAFKA_DATA_DIR").unwrap_or_else(|_| "./data/admin-ui".to_string());
+
+    let peer_http_port = own_http_port + 1;
+    let peer_iroh_port = own_iroh_port + 100;
+    let peer_base = own_base + 1000;
+    let peer_data = format!("{own_data}-mesh2");
+    let peer_url = format!("http://127.0.0.1:{peer_http_port}");
+
+    // Already a mesh2 admin up on the expected port? Reuse it.
+    let probe = |s: &AppState, url: String| {
+        let http = s.http.clone();
+        async move { http.get(url).timeout(Duration::from_secs(2)).send().await.map(|r| r.status().is_success()).unwrap_or(false) }
+    };
+    let mut peer_status = "reused";
+    if !probe(&state, format!("{peer_url}/api/ca")).await {
+        peer_status = "launched";
+        // SHARED ROOT: write THIS admin's CA secret into the mesh2 admin's data dir
+        // BEFORE it boots, so it loads the same root rather than minting its own.
+        if let Err(e) = std::fs::create_dir_all(&peer_data) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": format!("mkdir mesh2 data dir: {e}")}))).into_response();
+        }
+        let ca_json = json!({ "ca_secret_hex": hex::encode(state.ca.to_bytes()) });
+        if let Err(e) = std::fs::write(std::path::Path::new(&peer_data).join("ca-secret.json"), ca_json.to_string()) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": format!("write shared CA: {e}")}))).into_response();
+        }
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": format!("current_exe: {e}")}))).into_response(),
+        };
+        let mut cmd = tokio::process::Command::new(exe);
+        cmd.env("RAFKA_MESH_ID", "mesh2")
+            .env("RAFKA_DATA_DIR", &peer_data)
+            .env("RAFKA_ADMIN_UI_BIND_ADDR", format!("127.0.0.1:{peer_http_port}"))
+            .env("RAFKA_NODE_BIND_ADDR", format!("127.0.0.1:{peer_iroh_port}"))
+            .env("RAFKA_SPAWN_PORT_BASE", peer_base.to_string())
+            // Drop the inherited admin-1 cert so admin-2 self-issues its own from the
+            // shared CA (avoids presenting admin-1's cert before its own boots).
+            .env_remove("RAFKA_NODE_CERT");
+        if let Ok(f) = std::fs::File::create(std::path::Path::new(&peer_data).join("admin.log")) {
+            cmd.stdout(std::process::Stdio::from(f));
+        }
+        if let Ok(f) = std::fs::File::create(std::path::Path::new(&peer_data).join("admin.err.log")) {
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+        // Detach: drop the Child (kill_on_drop defaults false) so admin-2 keeps
+        // running independently of this request / of admin-1's lifetime.
+        if let Err(e) = cmd.spawn() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(json!({"error": format!("spawn mesh2 admin: {e}")}))).into_response();
+        }
+        // Wait for admin-2's HTTP to come up (up to ~25s).
+        let mut up = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if probe(&state, format!("{peer_url}/api/ca")).await { up = true; break; }
+        }
+        if !up {
+            return (StatusCode::GATEWAY_TIMEOUT, axum::Json(json!({"error": "mesh2 admin did not come up within 25s", "peer_http_port": peer_http_port}))).into_response();
+        }
+    }
+
+    // Sanity: confirm shared root (both admins' CA pubkeys identical).
+    let own_ca_pub = state.ca.public().to_string();
+    let peer_ca_pub: Option<String> = match state.http.get(format!("{peer_url}/api/ca")).timeout(Duration::from_secs(3)).send().await {
+        Ok(r) => r.json::<Value>().await.ok().and_then(|v| v["ca_pubkey"].as_str().map(|s| s.to_string())),
+        Err(_) => None,
+    };
+    let shared_root = peer_ca_pub.as_deref() == Some(own_ca_pub.as_str());
+
+    // Fill mesh1 (own) with 8, then trigger the mesh2 admin to fill its own with 8.
+    let (m1, m1_err) = bootstrap_one_mesh(&state, "mesh1").await;
+    let m1_total = state.spawned_meta.iter().filter(|e| e.value().mesh_id == "mesh1").count();
+    let (m2, m2_total): (Vec<String>, usize) = match state.http.post(format!("{peer_url}/api/bootstrap")).timeout(Duration::from_secs(40)).send().await {
+        Ok(r) => match r.json::<Value>().await {
+            Ok(v) => {
+                let sp = v["spawned"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+                let tot = v["total"].as_u64().unwrap_or(0) as usize;
+                (sp, tot)
+            }
+            Err(_) => (Vec::new(), 0),
+        },
+        Err(e) => return (StatusCode::BAD_GATEWAY, axum::Json(json!({"error": format!("trigger mesh2 bootstrap: {e}"), "mesh1_spawned": m1}))).into_response(),
+    };
+    // True fleet size: 2 admins + each mesh's full worker count.
+    let total_nodes = 2 + m1_total + m2_total;
+
+    info_span!(
+        "rafka.ui.bootstrap_2mesh",
+        peer_status = peer_status,
+        shared_root = shared_root,
+        mesh1_new = m1.len() as i64,
+        mesh2_new = m2.len() as i64,
+        total_nodes = total_nodes as i64,
+        "otel.kind" = "internal",
+    )
+    .in_scope(|| info!(peer_status, shared_root, mesh1 = ?m1, mesh2 = ?m2, total_nodes, "two-mesh bootstrap complete"));
 
     (
         StatusCode::CREATED,
-        axum::Json(json!({"spawned": spawned, "errors": errors})),
+        axum::Json(json!({
+            "peer_admin": peer_status,
+            "peer_http_port": peer_http_port,
+            "shared_root": shared_root,
+            "mesh1_spawned": m1,
+            "mesh1_errors": m1_err,
+            "mesh2_spawned": m2,
+            "total_nodes": total_nodes,
+        })),
     )
         .into_response()
 }
@@ -2496,6 +2720,23 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
         .env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
     if !seeds_csv.is_empty() {
         cmd.env("RAFKA_SEED_NODES", &seeds_csv);
+    }
+    // Cache assignment — same policy as spawn_one (the bug fix: a restarted node
+    // MUST get its caches, so the durable key-4 reloads from disk on restart).
+    let node_caches_spec = caches_for_node_type(&node_type);
+    if !node_caches_spec.is_empty() {
+        cmd.env("RAFKA_NODE_CACHES", node_caches_spec);
+    }
+    cmd.env("RAFKA_LEADER_NODE_ID", &state.admin_node_id_hex);
+    // Re-issue the cert for the restarted node (same node_id, fresh 24h expiry).
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let cert = rafka_node_base::cert::issue_cert(&state.ca, &node_id_hex, &node_type, 86_400, now_ms);
+        cmd.env("RAFKA_NODE_CERT", rafka_node_base::cert::encode_cert(&cert));
+        cmd.env("RAFKA_CA_PUBKEY", state.ca.public().to_string());
     }
 
     let new_pid = match cmd.spawn() {
@@ -3757,6 +3998,145 @@ fn install_panic_hook() -> std::path::PathBuf {
     panic_log_path
 }
 
+// ---------------------------------------------------------------------------
+// Real per-node cache: API handlers
+// ---------------------------------------------------------------------------
+
+/// Admin's cache-assignment policy: the RAFKA_NODE_CACHES string a node TYPE
+/// runs. Single source of truth for spawn_one AND restart_one (so a restarted
+/// node gets the same caches — incl. the durable key-4 it must reload from disk).
+fn caches_for_node_type(node_type: &str) -> &'static str {
+    match node_type {
+        "gateway" => "shared-1:shared:dedicated,leader-1:leader:dedicated,key-1:key:dedicated",
+        "compute" => "shared-1:shared:dedicated,shared-2:shared:dedicated,leader-2:leader:dedicated,key-2:key:dedicated",
+        "registry" => "key-3:key:dedicated",
+        // key-4 is DURABLE (disk): proves a node reloads its cache from disk on restart.
+        "broker" => "key-4:key:dedicated:disk",
+        _ => "",
+    }
+}
+
+/// Node types that HOLD a cache — the inverse of the admin's spawn assignment
+/// policy (admin-ui holds ALL; workers per their assigned set). This is the
+/// admin's deployment knowledge, NOT a property of the (consumer-blind) cache.
+fn cache_node_types(name: &str) -> Vec<&'static str> {
+    let workers: Vec<&'static str> = match name {
+        "shared-1" => vec!["gateway", "compute"],
+        "shared-2" => vec!["compute"],
+        "leader-1" => vec!["gateway"],
+        "leader-2" => vec!["compute"],
+        "key-1" => vec!["gateway"],
+        "key-2" => vec!["compute"],
+        "key-3" => vec!["registry"],
+        "key-4" => vec!["broker"],
+        "topology-key-gossip" => vec!["gateway", "broker", "compute", "registry"],
+        _ => vec![],
+    };
+    let mut all = vec!["admin-ui"];
+    all.extend(workers);
+    all
+}
+
+/// `GET /api/caches` — list every cache: name, type, channel, entry_count, distinct publishers.
+async fn handle_caches(_state: State<AppState>) -> impl IntoResponse {
+    let caches = node_caches();
+    let mut rows: Vec<Value> = caches.iter().map(|entry| {
+        let name = entry.key().clone();
+        let cache = entry.value();
+        json!({
+            "name": name,
+            "type": format!("{:?}", cache.spec.cache_type),
+            "channel": cache.spec.channel.name(),
+            "entry_count": cache.entry_count(),
+            "distinct_publishers": cache.distinct_publishers(),
+            "rejected_count": cache.rejected_count(),
+            "node_types": cache_node_types(&name),
+        })
+    }).collect();
+    rows.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+    (StatusCode::OK, axum::Json(json!({ "caches": rows }))).into_response()
+}
+
+/// `GET /api/caches/{name}` — that cache's entries (key, value, epoch, publisher, updated_ms).
+async fn handle_cache_detail(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let caches = node_caches();
+    match caches.get(&name) {
+        Some(cache) => {
+            let entries: Vec<Value> = cache.all_entries().into_iter().map(|(key, entry)| {
+                json!({
+                    "key": key,
+                    "value": entry.value,
+                    "epoch": entry.epoch,
+                    "publisher": entry.publisher,
+                    "updated_ms": entry.updated_ms,
+                })
+            }).collect();
+            (StatusCode::OK, axum::Json(json!({
+                "name": name,
+                "type": format!("{:?}", cache.spec.cache_type),
+                "channel": cache.spec.channel.name(),
+                "entry_count": entries.len(),
+                "distinct_publishers": cache.distinct_publishers(),
+                "rejected_count": cache.rejected_count(),
+                "entries": entries,
+            }))).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": format!("cache {} not found", name)})),
+        ).into_response()
+    }
+}
+
+/// `GET /api/channels` — list channels with recent-event counts.
+async fn handle_channels(_state: State<AppState>) -> impl IntoResponse {
+    let events = channel_events();
+    let mut channels: Vec<Value> = events.iter().map(|entry| {
+        let name = entry.key().clone();
+        let ring = entry.value();
+        json!({
+            "channel": name,
+            "recent_event_count": ring.snapshot().len(),
+        })
+    }).collect();
+    channels.sort_by(|a, b| a["channel"].as_str().unwrap_or("").cmp(b["channel"].as_str().unwrap_or("")));
+    (StatusCode::OK, axum::Json(json!({ "channels": channels }))).into_response()
+}
+
+/// `GET /api/channels/{name}` — that channel's recent events.
+async fn handle_channel_detail(
+    State(_state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let events = channel_events();
+    match events.get(&name) {
+        Some(ring) => {
+            let evts: Vec<Value> = ring.snapshot().into_iter().map(|e| {
+                json!({
+                    "ts_ms": e.ts_ms,
+                    "publisher": e.publisher,
+                    "op": e.op,
+                    "key": e.key,
+                    "value": e.value,
+                    "epoch": e.epoch,
+                    "cache_name": e.cache_name,
+                })
+            }).collect();
+            (StatusCode::OK, axum::Json(json!({
+                "channel": name,
+                "events": evts,
+            }))).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({"error": format!("channel {} not found", name)})),
+        ).into_response()
+    }
+}
+
 fn main() -> Result<()> {
     #[cfg(feature = "dhat-heap")]
     {
@@ -3865,6 +4245,41 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
             .expect("write admin-ui identity");
         pubkey
     };
+    // CA signing key — node-admin's root authority. Load-or-generate, persist to
+    // ca-secret.json. SHARED ROOT: in multi-mesh every admin loads the SAME key
+    // (copy this file) so a node in mesh-A verifies a node from mesh-B.
+    let ca_path = admin_data_path.join("ca-secret.json");
+    let ca_key: iroh::SecretKey = if ca_path.exists() {
+        let raw = std::fs::read_to_string(&ca_path).expect("read CA key");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("parse CA JSON");
+        let hex_str = parsed["ca_secret_hex"].as_str().expect("ca_secret_hex missing");
+        let bytes = hex::decode(hex_str).expect("hex decode CA");
+        let arr: [u8; 32] = bytes.try_into().expect("CA key must be 32 bytes");
+        iroh::SecretKey::from_bytes(&arr)
+    } else {
+        let sk = iroh::SecretKey::generate();
+        let json = serde_json::json!({ "ca_secret_hex": hex::encode(sk.to_bytes()) });
+        std::fs::write(&ca_path, json.to_string()).expect("write CA key");
+        sk
+    };
+    tracing::info!(ca_pubkey = %ca_key.public(), "node-admin CA ready (root authority)");
+    // node-admin is BOTH the CA and a gossiping node. Self-issue a cert for its
+    // own NodeId so peers admit its digests, and set RAFKA_CA_PUBKEY in its own
+    // process so its NodeRuntime ENFORCES certs on every digest it receives.
+    {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let admin_cert =
+            rafka_node_base::cert::issue_cert(&ca_key, &admin_node_id_hex, "admin-ui", 86_400, now_ms);
+        std::env::set_var(
+            "RAFKA_NODE_CERT",
+            rafka_node_base::cert::encode_cert(&admin_cert),
+        );
+        std::env::set_var("RAFKA_CA_PUBKEY", ca_key.public().to_string());
+        tracing::info!("node-admin self-issued cert + enforcing RAFKA_CA_PUBKEY on its own gossip");
+    }
     tracing::info!(
         admin_node_id = %admin_node_id_hex,
         admin_bind_port,
@@ -3979,6 +4394,20 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(15820);
 
+    // Admin (Observer) subscribes to ALL caches so it maintains a live copy of every cache.
+    // The caches env var for admin includes all caches from all node types.
+    // Admin is Observer: publisher_flag = false for Key/Shared; true only for Leader.
+    // But for the admin we set all caches with type + channel; the run_cache_task
+    // publisher_flag logic checks role=Observer → no publish for Key/Shared.
+    // We also set topology-key-gossip which rides main.
+    std::env::set_var(
+        "RAFKA_NODE_CACHES",
+        "shared-1:shared:dedicated,shared-2:shared:dedicated,\
+         leader-1:leader:dedicated,leader-2:leader:dedicated,\
+         key-1:key:dedicated,key-2:key:dedicated,key-3:key:dedicated,key-4:key:dedicated,\
+         topology-key-gossip:keygossip:main",
+    );
+
     let state = AppState {
         http,
         jaeger_url,
@@ -3996,6 +4425,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         admin_node_id_hex: admin_node_id_hex.clone(),
         admin_bind_port,
         restarting: Arc::new(dashmap::DashSet::new()),
+        ca: Arc::new(ca_key),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -4059,6 +4489,13 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         async move { reaper_loop(p, m, r).await }
     });
 
+    // Phase 2: topology-node cache fill is now spawned inside NodeRuntime::run()
+    // (rafka-node-base). The separate supervise("gossip_fill_loop") is removed;
+    // the fill runs for ALL node types including admin-ui (Role::Observer) via
+    // the tokio::spawn(run_topology_cache_fill(...)) in run_node.
+
+    // (sim_chatter removed — replaced by real per-node cache gossip tasks)
+
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
     // crate dir at compile time; at runtime we prefer an env override so the
     // packaged binary can sit anywhere.
@@ -4070,13 +4507,19 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
 
     let app = Router::new()
         .route("/api/health", get(handle_health))
+        .route("/api/ca", get(handle_ca))
         .route("/api/nodes", get(handle_nodes))
         .route("/api/boot-trace", get(handle_boot_trace))
         .route("/api/heartbeat", get(handle_heartbeat))
         .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
+        .route("/api/topology/node", get(handle_topology_node))
         .route("/api/topology-cache", get(handle_topology_cache))
+        .route("/api/caches", get(handle_caches))
+        .route("/api/caches/{name}", get(handle_cache_detail))
+        .route("/api/channels", get(handle_channels))
+        .route("/api/channels/{name}", get(handle_channel_detail))
         .route("/api/alerts", get(handle_alerts))
         .route("/api/chaos/recent", get(handle_chaos_recent))
         .route("/api/chaos/timeline", get(handle_chaos_timeline))
@@ -4085,6 +4528,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/tests", get(handle_tests))
         .route("/api/cluster/summary", get(handle_cluster_summary))
         .route("/api/bootstrap", post(handle_bootstrap))
+        .route("/api/bootstrap-2mesh", post(handle_bootstrap_2mesh))
         .route("/api/chaos/start", post(handle_chaos_start))
         .route("/api/chaos/stop", post(handle_chaos_stop))
         .route("/api/chaos/state", get(handle_chaos_state))

@@ -7,6 +7,7 @@ edition = "2021"
 rafka-telemetry = { path = "../rafka-telemetry" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-mesh-ops = { path = "../rafka-mesh-ops" }
+rafka-entity-cache = { path = "../rafka-entity-cache" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }

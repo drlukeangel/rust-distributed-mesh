@@ -40,6 +40,7 @@ iroh = { workspace = true }
 iroh-gossip = "0.100"
 rafka-node-base = { path = "../crates/rafka-node-base" }
 rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
+rafka-entity-cache = { path = "../crates/rafka-entity-cache" }
 blake3 = "1"
 postcard = { version = "1", features = ["alloc"] }
 futures-lite = "2"

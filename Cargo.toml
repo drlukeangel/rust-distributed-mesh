@@ -5,10 +5,12 @@ members = [
     "crates/rafka-mesh-ops",
     "crates/rafka-node-base",
     "crates/rafka-chaos",
+    "crates/rafka-entity-cache",
     "gateway",
     "broker",
     "compute",
     "registry",
+    "repeater",
     "admin-ui",
     "cli/rfa",
 ]
