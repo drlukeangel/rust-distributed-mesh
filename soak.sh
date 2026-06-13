@@ -7,8 +7,8 @@
 # + 7 monitoring cycles (every ~2 min).
 #
 # Directories:
-#   ADMIN1_DATA = E:/dev/rafka-topology-spike/data-soak1   (admin-1 = mesh1)
-#   ADMIN2_DATA = E:/dev/rafka-topology-spike/data-soak1-mesh2  (admin-2 = mesh2; auto-derived by bootstrap-2mesh)
+#   ADMIN1_DATA = ./data-soak1   (admin-1 = mesh1)
+#   ADMIN2_DATA = ./data-soak1-mesh2  (admin-2 = mesh2; auto-derived by bootstrap-2mesh)
 #   ADMIN1_LOG  = $ADMIN1_DATA/admin.log  (admin-1 stdout; worker-mesh1 output goes here too)
 #   ADMIN2_LOG  = $ADMIN2_DATA/admin.log  (admin-2 stdout; worker-mesh2 output goes here too — written by bootstrap-2mesh)
 #
@@ -18,9 +18,9 @@
 
 set -e
 
-SOAK_LOG=E:/dev/rafka-topology-spike/soak-new.log
-ADMIN1_DATA="E:/dev/rafka-topology-spike/data-soak1"
-ADMIN_EXE="R:/rafka-topology-spike-target/debug/rafka-admin-ui.exe"
+SOAK_LOG=./soak-new.log
+ADMIN1_DATA="./data-soak1"
+ADMIN_EXE="./target/debug/rafka-admin-ui.exe"
 
 : > "$SOAK_LOG"
 log() { echo "$*" | tee -a "$SOAK_LOG"; }
@@ -45,7 +45,7 @@ RAFKA_ADMIN_UI_BIND_ADDR=127.0.0.1:19090 \
 RAFKA_NODE_BIND_ADDR=127.0.0.1:14819 \
 RAFKA_SPAWN_PORT_BASE=15820 \
 RAFKA_CHILD_BUILD_PROFILE=debug \
-CARGO_TARGET_DIR=R:/rafka-topology-spike-target \
+CARGO_TARGET_DIR=./target \
 RUST_LOG=info \
   "$ADMIN_EXE" >> "$ADMIN1_DATA/admin.log" 2>&1 &
 ADMIN1_PID=$!
@@ -142,8 +142,8 @@ except:
 " 2>/dev/null || echo "  [$alabel] (no response)"
     done
 
-    # OS process count
-    powershell.exe -NoProfile -Command "\$p=Get-Process | Where-Object {\$_.ProcessName -like 'rafka*'}; '  OS: {0} rafka procs  total_RSS={1:N0}MB' -f \$p.Count, ((\$p | Measure-Object WorkingSet64 -Sum).Sum / 1MB)" 2>/dev/null
+    # OS process count, RAM, and CPU
+    powershell.exe -NoProfile -Command "\$p=Get-Process | Where-Object {\$_.ProcessName -like 'rafka*'}; \$p | Select-Object ProcessName, Id, @{Name='CPU_s';Expression={[math]::Round(\$_.CPU, 1)}}, @{Name='CPU_frac';Expression={[math]::Round(\$_.CPU / ((Get-Date) - \$_.StartTime).TotalSeconds, 2)}}, @{Name='RAM_MB';Expression={[math]::Round(\$_.WorkingSet64 / 1MB, 1)}} | Format-Table -AutoSize; '  OS: {0} rafka procs  total_RSS={1:N0}MB  total_CPU={2:N1}s' -f \$p.Count, ((\$p | Measure-Object WorkingSet64 -Sum).Sum / 1MB), ((\$p | Measure-Object CPU -Sum).Sum)" 2>/dev/null
 
     # Recent chaos events from admin-1 local timeline (instant, no Jaeger)
     curl -s "http://127.0.0.1:19090/api/timeline" 2>/dev/null | python -c "
@@ -189,10 +189,10 @@ refill() {
 # ---- 8. Monitoring loop: 7 cycles of 2 min each ----
 # T+0 snapshot first (after chaos arms)
 snap "0"
-# Then cycles every ~2 min for 14 min total
-for mark in 2 4 6 8 10 12 14; do
+# Then cycles every ~4 min
+for mark in 4 8 12 16 20 24 28 32; do
   refill
-  sleep 120
+  sleep 240
   snap "$mark"
 done
 

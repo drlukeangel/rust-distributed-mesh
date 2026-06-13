@@ -9,10 +9,23 @@ use iroh::{
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use std::net::SocketAddrV4;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use tokio::sync::mpsc;
 use tracing::instrument;
 
 pub const ALPN: &[u8] = b"rafka-mesh-v1";
+
+fn iroh_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("iroh-worker")
+            .enable_all()
+            .build()
+            .expect("failed to build iroh dedicated runtime")
+    })
+}
 
 pub struct IrohMeshTransport {
     pub endpoint: Endpoint,
@@ -59,14 +72,26 @@ impl IrohMeshTransport {
             _ => RelayMode::Disabled,
         };
 
-        let endpoint = Endpoint::builder(presets::N0DisableRelay)
-            .secret_key(secret_key)
-            .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
-            .relay_mode(relay_mode)
-            .transport_config(transport_config)
-            .bind_addr(std::net::SocketAddr::V4(bind_addr))?
-            .bind()
-            .await?;
+        let endpoint = iroh_runtime()
+            .spawn(async move {
+                Endpoint::builder(presets::N0DisableRelay)
+                    .secret_key(secret_key)
+                    .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+                    .relay_mode(relay_mode)
+                    // Match product iroh_transport.rs:82 exactly: clear the n0 pkarr/DNS
+                    // address-lookup that N0DisableRelay installs. Without this, connect()
+                    // runs a pkarr resolution before dialing — stalls ~10s on no-internet
+                    // boxes. Spike was missing this; now faithful to the product endpoint shape.
+                    .clear_address_lookup()
+                    .transport_config(transport_config)
+                    .bind_addr(std::net::SocketAddr::V4(bind_addr))
+                    .map_err(|e| anyhow::anyhow!("bind_addr error: {e}"))?
+                    .bind()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bind error: {e}"))
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("iroh runtime spawn failed: {}", e))??;
 
         let (tx, rx) = mpsc::channel::<String>(64);
 
