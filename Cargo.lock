@@ -2103,6 +2103,7 @@ dependencies = [
  "n0-error 1.0.0-rc.0",
  "n0-future",
  "ndk-context",
+ "portable-atomic",
  "rand 0.10.1",
  "reqwest",
  "rustls",

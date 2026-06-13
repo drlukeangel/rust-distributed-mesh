@@ -14,7 +14,7 @@
 //! upgraded to direct" (there is no direct to upgrade to).
 
 use iroh::endpoint::presets;
-use iroh::tls::CaRootsConfig;
+use iroh::tls::CaTlsConfig;
 use iroh::test_utils::run_relay_server;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey};
 
@@ -43,7 +43,7 @@ async fn relay_carries_cross_mesh_write_when_direct_is_impossible() {
     let server_ep = Endpoint::builder(presets::N0)
         .secret_key(server_secret)
         .relay_mode(RelayMode::Custom(relay_map.clone()))
-        .ca_roots_config(CaRootsConfig::insecure_skip_verify())
+        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
         .clear_ip_transports()
         .alpns(vec![TEST_ALPN.to_vec()])
         .bind()
@@ -70,7 +70,7 @@ async fn relay_carries_cross_mesh_write_when_direct_is_impossible() {
     // 3. Client endpoint — also relay-only (no IP transport).
     let client_ep = Endpoint::builder(presets::N0)
         .relay_mode(RelayMode::Custom(relay_map))
-        .ca_roots_config(CaRootsConfig::insecure_skip_verify())
+        .ca_tls_config(CaTlsConfig::insecure_skip_verify())
         .clear_ip_transports()
         .alpns(vec![TEST_ALPN.to_vec()])
         .bind()

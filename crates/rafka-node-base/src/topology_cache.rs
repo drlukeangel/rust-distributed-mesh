@@ -205,8 +205,23 @@ pub async fn inject_birth_topology(self_node_id: &str, self_node_name: &str) {
     let live = crate::live_digests();
     let cache = topology_nodes();
     let count = digests.len();
+    // Local receive-time stamped on EVERY injected node so the staleness pruner
+    // treats the born-knowing view as freshly-seen. The pruner compares
+    // `now - last_seen_ms` (NOT the digest's wall_time_ms); without an entry it
+    // reads `unwrap_or(0)`, so an un-stamped birth node looks infinitely stale and
+    // is evicted on the very first 5s sweep — collapsing the injected topology
+    // before gossip can confirm it and forcing a full re-discovery storm at boot.
+    // Stamping `now` gives each injected node the same keep-alive window a
+    // gossip-received digest gets: confirmed by gossip → refreshed and kept; never
+    // confirmed → aged out after RAFKA_STALENESS_MS, exactly as the doc-comment promises.
+    let now_recv = crate::now_unix_ms();
     for d in &digests {
         live.insert(d.node_id.clone(), d.clone());
+        // Temporary guard dropped at the `;` — never held across the await below.
+        crate::last_seen_ms()
+            .lock()
+            .unwrap()
+            .insert(d.node_id.clone(), now_recv);
         cache
             .apply_update(
                 d.node_id.clone(),

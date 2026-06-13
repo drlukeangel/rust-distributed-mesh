@@ -10,6 +10,17 @@ use rafka_mesh_transport::{IrohMeshTransport, ALPN};
 /// bi-stream substrate works end-to-end before any real compute lands.
 pub const TAG_BI_ECHO: u8 = 0x11;
 
+/// Tag for the cold-pull (warm re-hydration) request bi-stream. A node whose mesh
+/// view has collapsed (lost its peers, `live_digests` aged out) opens a bi-stream
+/// to the **node-admin** (the always-available hub — see `RAFKA_NODE_ADMIN_ADDR`),
+/// writes this single tag byte, and the donor replies with a postcard
+/// `Vec<GossipDigest>` snapshot of ITS `live_digests`. The requester hydrates
+/// immediately instead of waiting for gossip to re-flood. This is the §4 "warm
+/// pull" principle (Entity-Cache.md) realized over QUIC against the node-admin,
+/// NOT the chunked broker-log snapshot RPC (that tailer doesn't apply to a
+/// gossip-only mesh). Rides the dial_seeds connection, so it costs no extra dial.
+pub const TAG_SNAPSHOT_REQ: u8 = 0x12;
+
 use serde::{Deserialize, Serialize};
 use std::{
     net::{SocketAddr, SocketAddrV4},
@@ -223,7 +234,7 @@ async fn run_node(
         .and_then(|s| s.parse().ok())
         .unwrap_or(true);
 
-    let seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
+    let mut seed_nodes: Vec<SeedNode> = std::env::var("RAFKA_SEED_NODES")
         .unwrap_or_default()
         .split(',')
         .filter(|s| !s.trim().is_empty())
@@ -268,15 +279,44 @@ async fn run_node(
     let secret_key = load_or_mint_identity(&data_dir).await?;
     let node_id = secret_key.public().to_string();
 
-    // Sprint-13 B1 / sprint-14 B6: EVERY node SELF-NAMES from its own node_id.
-    // node_name = <mesh>.<type>.<first NODE_NAME_HEX_LEN hex of node_id>, e.g.
-    // "mesh2.broker.ccff65". Full type word, no ordinal, no symbol. Broadcast in
-    // the gossip digest. The admin-ui is normalized (B6): it self-names
-    // "mesh1.admin-ui.<6hex>" like everyone — NO flat Observer exception.
-    let node_name: &'static str = {
-        let hex_suffix: String = node_id.chars().take(NODE_NAME_HEX_LEN).collect();
-        Box::leak(format!("{mesh_id}.{node_type_str}.{hex_suffix}").into_boxed_str())
+    // node_name is the node's STABLE LOGICAL identity, IMMUTABLE across its lifecycle
+    // (restarts, identity/node_id rotations). When admin-ui spawns the node it assigns
+    // a 1-based per-(mesh,type) counter name `<mesh>.<type>.<N>` via RAFKA_NODE_NAME —
+    // the durable handle partition routing + lifecycle logic tie to, decoupled from
+    // the MUTABLE node_id. A node launched WITHOUT RAFKA_NODE_NAME (manual/dev) falls
+    // back to the self-derived `<mesh>.<type>.<first 6 hex of node_id>` form.
+    let node_name: &'static str = match std::env::var("RAFKA_NODE_NAME") {
+        Ok(n) if !n.trim().is_empty() => Box::leak(n.trim().to_string().into_boxed_str()),
+        _ => {
+            let hex_suffix: String = node_id.chars().take(NODE_NAME_HEX_LEN).collect();
+            Box::leak(format!("{mesh_id}.{node_type_str}.{hex_suffix}").into_boxed_str())
+        }
     };
+
+    // ── Node-admin anchor seed + self-seed guard ──
+    // RAFKA_NODE_ADMIN_ADDR carries the node-admin's `node_id@ip:port` — the bootstrap
+    // ANCHOR (a stable known-id seed every node can always dial; the admin's identity
+    // does NOT rotate). We ensure it is in the seed list so dial_seeds keeps a
+    // connection to it. The cold-pull itself is NOT admin-specific: a collapsed node
+    // re-hydrates from WHICHEVER seed it reaches (every node carries the topology).
+    // Guards:
+    //   * never self-dial: drop any seed whose id == our node_id.
+    //   * keep the admin dialable: prepend it to the seed list if missing (and not us).
+    let admin_seed: Option<SeedNode> = std::env::var("RAFKA_NODE_ADMIN_ADDR")
+        .ok()
+        .and_then(|s| {
+            let s = s.trim();
+            let (id_str, addr_str) = s.split_once('@')?;
+            let id = PublicKey::from_str(id_str).ok()?;
+            let addr = addr_str.parse::<SocketAddr>().ok()?;
+            Some(SeedNode { id, addr })
+        });
+    seed_nodes.retain(|s| s.id.to_string() != node_id);
+    if let Some(a) = admin_seed {
+        if a.id.to_string() != node_id && !seed_nodes.iter().any(|s| s.id == a.id) {
+            seed_nodes.insert(0, a);
+        }
+    }
 
     // Create iroh endpoint: no tracing span active here so iroh background tasks
     // are NOT attached to node.ready.
@@ -1013,7 +1053,7 @@ async fn run_backbone(
                             .iter()
                             .filter(|e| {
                                 let d = e.value();
-                                d.mesh_id == mesh_id && d.node_type == "admin-ui"
+                                d.mesh_id == mesh_id && d.node_type == "node-admin"
                             })
                             .map(|e| e.value().node_id.clone())
                             .collect();
@@ -1234,6 +1274,35 @@ async fn run_bi_reader(
                     handle_produce_bi(&own_node_id, own_node_name, &peer_id_str, &bytes, &mut send).await;
                 }
             }
+        } else if tag == TAG_SNAPSHOT_REQ {
+            // Cold-pull DONOR: a peer whose view collapsed wants our live mesh view.
+            // The request carries the requester's mesh_id after the tag byte; we
+            // serve ONLY that mesh's digests. Critical with MANY node-admins (one
+            // per mesh): a node must never hydrate another mesh's nodes into its
+            // live_digests, even if it somehow dialed the wrong admin. Empty mesh_id
+            // (legacy/unscoped request) → serve all. Non-terminal entries only —
+            // never ship a Leaving/Dead state as if it were live.
+            let req_mesh = String::from_utf8_lossy(&bytes[1..]).to_string();
+            let snapshot: Vec<GossipDigest> = live_digests()
+                .iter()
+                .map(|e| e.value().clone())
+                .filter(|d| !matches!(d.state, NodeState::Leaving | NodeState::Dead))
+                .filter(|d| req_mesh.is_empty() || d.mesh_id == req_mesh)
+                .collect();
+            let count = snapshot.len();
+            let payload = postcard::to_allocvec(&snapshot).unwrap_or_default();
+            if send.write_all(&payload).await.is_err() || send.finish().is_err() {
+                tracing::trace!(peer_id = %peer_id_str, "cold-pull donor write failed");
+                continue;
+            }
+            tracing::info_span!(
+                "rafka.mesh.coldpull.served",
+                node_id = %own_node_id,
+                peer_id = %peer_id_str,
+                count = count as i64,
+                "otel.kind" = "producer",
+            )
+            .in_scope(|| info!(peer_id = %peer_id_str, count, "cold-pull snapshot served to re-joining peer"));
         } else {
             tracing::trace_span!(
                 "rafka.mesh.bi.unknown_tag",
@@ -1697,6 +1766,13 @@ pub enum BackboneMessage {
 /// "the source node is gone" and removed from `live_digests` +
 /// `topic_membership`. At the default 2s gossip cadence this is 15 missed
 /// cycles — well past any reasonable flake. Override with `RAFKA_STALENESS_MS`.
+///
+/// NOTE (2026-06-13): this EQUALS the 30s gossip re-broadcast floor, which causes a
+/// cosmetic evict/re-add flicker of stable nodes in the topology view (a keepalive
+/// can land a beat after the prune deadline). Kept at 30s deliberately — crisp
+/// crash-detection is preferred over smoothing the harmless flicker; the mesh holds
+/// either way. If smoothing is ever wanted, raise THIS above the re-broadcast floor
+/// (never raise the floor above this, or live nodes get pruned before their keepalive).
 const DEFAULT_STALENESS_MS: u64 = 30_000;
 
 /// Background staleness pruner for the process-global `live_digests` +
@@ -2162,7 +2238,7 @@ async fn run_gossip(
                         // live_digests, so it is invisible and cannot communicate.
                         if let Some(ca_pub) = &ca_pubkey {
                             let ok = crate::cert::decode_cert(&d.cert)
-                                .map(|signed| crate::cert::verify_cert(&signed, ca_pub, &d.node_id, now_unix_ms()))
+                                .map(|signed| crate::cert::verify_cert(&signed, ca_pub, &d.node_name, now_unix_ms()))
                                 .unwrap_or(Err(crate::cert::CertError::BadSignature));
                             if let Err(reason) = ok {
                                 tracing::info_span!(
@@ -2223,6 +2299,39 @@ async fn run_gossip(
                             }
                         }
 
+                        // ── NAME-REBIND (identity rotation) ──
+                        // node_name is the STABLE logical identity; node_id is the
+                        // MUTABLE transport id. If this name already lives under a
+                        // DIFFERENT node_id, the node rotated its id (a worker restart),
+                        // so evict the stale old id(s) — the topology shows ONE entry per
+                        // name, bound to the CURRENT id. evict_node records the old id in
+                        // recently_evicted, so late Plumtree relays still carrying it are
+                        // dropped → freshest-wins, no X/Y flip-flop. (Names are unique
+                        // per (mesh,type), so a same-name/different-id collision can ONLY
+                        // be a rotation, never two distinct live nodes.) Skip when the
+                        // digest is our own self-injection.
+                        if d.node_id != node_id && !d.node_name.is_empty() {
+                            let stale_ids: Vec<String> = live_digests()
+                                .iter()
+                                .filter(|e| {
+                                    let o = e.value();
+                                    o.node_name == d.node_name && o.node_id != d.node_id
+                                })
+                                .map(|e| e.key().clone())
+                                .collect();
+                            for stale in stale_ids {
+                                tracing::info_span!(
+                                    "rafka.mesh.node.rebound",
+                                    node_name = %d.node_name,
+                                    old_node_id = %stale,
+                                    new_node_id = %d.node_id,
+                                    "otel.kind" = "internal",
+                                )
+                                .in_scope(|| info!(node_name = %d.node_name, old = %stale, new = %d.node_id, "name rebound to a new identity — evicting stale node_id"));
+                                evict_node(&stale, "name_rebind");
+                            }
+                        }
+
                         // Normal live digest — insert into the process-global maps.
                         live_digests().insert(d.node_id.clone(), d.clone());
                         // Teach iroh this peer's address so a later join_peers/connect
@@ -2277,6 +2386,111 @@ async fn run_gossip(
     }
 }
 
+/// Cold-pull REQUESTER (warm re-hydration). Given an already-established data-plane
+/// connection to the node-admin (the dial_seeds connection — so this costs NO extra
+/// dial and dodges iroh's ~60s stale-path reconnect delay), open a bi-stream, ask
+/// for a snapshot (`TAG_SNAPSHOT_REQ`), and hydrate our process-global maps from the
+/// donor's `live_digests`. Fires on every (re)connect to the node-admin: at boot it
+/// seeds the view immediately (like birth-injection, but live); after a view-collapse
+/// it re-acquires the mesh deterministically instead of waiting on gossip re-flood.
+async fn pull_topology_snapshot(conn: &Connection, own_node_id: &str, own_mesh: &str, donor_id: &str) {
+    let (mut send, mut recv) = match conn.open_bi().await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::trace!(donor = %donor_id, error = %e, "cold-pull open_bi failed");
+            return;
+        }
+    };
+    // Request = tag byte + our mesh_id, so the donor scopes the snapshot to OUR mesh
+    // (it may be one of several node-admins / host a different mesh's view).
+    let mut req = Vec::with_capacity(1 + own_mesh.len());
+    req.push(TAG_SNAPSHOT_REQ);
+    req.extend_from_slice(own_mesh.as_bytes());
+    if send.write_all(&req).await.is_err() || send.finish().is_err() {
+        tracing::trace!(donor = %donor_id, "cold-pull request write failed");
+        return;
+    }
+    // Bound the read so a silent donor can't wedge the dial task.
+    let bytes = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        recv.read_to_end(4 * 1024 * 1024),
+    )
+    .await
+    {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            tracing::trace!(donor = %donor_id, error = %e, "cold-pull response read failed");
+            return;
+        }
+        Err(_) => {
+            tracing::trace!(donor = %donor_id, "cold-pull response timed out");
+            return;
+        }
+    };
+    let digests: Vec<GossipDigest> = match postcard::from_bytes(&bytes) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::trace!(donor = %donor_id, error = %e, "cold-pull decode failed");
+            return;
+        }
+    };
+    let count = hydrate_from_snapshot(digests);
+    if count > 0 {
+        tracing::info_span!(
+            "rafka.mesh.coldpull.hydrated",
+            node_id = %own_node_id,
+            peer_id = %donor_id,
+            count = count as i64,
+            "otel.kind" = "consumer",
+        )
+        .in_scope(|| info!(donor = %donor_id, count, "cold-pull: hydrated live_digests from node-admin snapshot"));
+    }
+}
+
+/// Apply a cold-pull snapshot into the process-global maps, mirroring the gossip
+/// receive path's discipline: skip terminal states, honour the resurrection guard
+/// (don't re-add a just-evicted node), stamp local `last_seen` so the staleness
+/// pruner treats each entry as freshly-seen, and teach iroh each peer's address so
+/// the node can dial/join them. Returns the number of entries applied.
+fn hydrate_from_snapshot(digests: Vec<GossipDigest>) -> usize {
+    let now = now_unix_ms();
+    // Same trust boundary as the gossip receive path: if a CA is configured, every
+    // snapshot digest must carry a cert signed by it binding the sender's node_id —
+    // otherwise the cold-pull would be a hole AROUND cert enforcement. (Each node's
+    // cert binds its CURRENT node_id, so a rotated identity carries a fresh matching
+    // cert and verifies cleanly; a stale/forged one is dropped.)
+    let ca_pubkey: Option<iroh::PublicKey> = std::env::var("RAFKA_CA_PUBKEY")
+        .ok()
+        .and_then(|s| iroh::PublicKey::from_str(s.trim()).ok());
+    let mut applied = 0usize;
+    for d in digests {
+        if matches!(d.state, NodeState::Leaving | NodeState::Dead) {
+            continue;
+        }
+        if let Some(ca_pub) = &ca_pubkey {
+            let ok = crate::cert::decode_cert(&d.cert)
+                .map(|signed| crate::cert::verify_cert(&signed, ca_pub, &d.node_name, now))
+                .unwrap_or(Err(crate::cert::CertError::BadSignature));
+            if ok.is_err() {
+                continue; // reject an uncertified/invalid digest pulled in a snapshot
+            }
+        }
+        {
+            let guard = recently_evicted().lock().unwrap();
+            if let Some(&ts) = guard.get(&d.node_id) {
+                if now.saturating_sub(ts) < EVICTION_GUARD_MS {
+                    continue;
+                }
+            }
+        }
+        register_peer_location(&d.node_id, &d.location);
+        last_seen_ms().lock().unwrap().insert(d.node_id.clone(), now);
+        live_digests().insert(d.node_id.clone(), d);
+        applied += 1;
+    }
+    applied
+}
+
 #[instrument(skip_all)]
 async fn dial_seeds(
     endpoint: iroh::Endpoint,
@@ -2288,9 +2502,18 @@ async fn dial_seeds(
     registry: PeerRegistry,
     mesh_id_registry: MeshIdRegistry,
 ) {
-    const MAX_ATTEMPTS: u32 = 10;
     const BASE_DELAY_MS: u64 = 1_000;
-    const MAX_DELAY_MS: u64 = 30_000;
+    // Capped LOW (was 30_000): when re-acquiring a seed after a drop, the seed is
+    // usually back up and failures are transient iroh stale-path timeouts — keep
+    // retrying briskly rather than backing off into a 30s sleep.
+    const MAX_DELAY_MS: u64 = 5_000;
+    // Bound every connect attempt (proven pattern from the iroh-poc reference,
+    // which scales to 100 nodes). After a hard kill the peer's stale path state
+    // makes iroh's connect() hang ~30s before it errors — even though the peer is
+    // reachable (the connection actually establishes on the peer's accept side).
+    // Bounding at 10s turns each wasted attempt from 30s → 10s so the retry loop
+    // cycles ~3× faster and re-acquisition completes in tens of seconds, not minutes.
+    const CONNECT_TIMEOUT_MS: u64 = 10_000;
 
     for seed in seeds {
         let peer_id_str = seed.id.to_string();
@@ -2314,72 +2537,108 @@ async fn dial_seeds(
             });
 
             let endpoint_addr = EndpointAddr::new(seed.id).with_ip_addr(seed.addr);
-            let mut attempt = 0u32;
+            // Persistent seed maintenance (node-drop fix). A seed connection is the
+            // ONLY discovery path for a node spawned with mdns off (the soak default).
+            // The original dial was ONE-SHOT: it broke out of the loop after the first
+            // successful connect AND gave up permanently after MAX_ATTEMPTS failures.
+            // So when chaos suspended a node or a link blipped and the seed connection
+            // dropped, NOTHING re-dialed it — the node's registry stayed empty,
+            // run_gossip's join_peers had no peer to feed, peer_count stuck at 0, and
+            // peers evicted it after staleness → the mesh eroded to the never-displaced
+            // seed core (~3). This OUTER loop owns the connection lifecycle and NEVER
+            // gives up: (re)connect → run the frame reader to completion (returns when
+            // the connection drops) → re-dial. Re-establishing the seed connection
+            // repopulates the registry, which feeds the gossip swarm again (join_peers)
+            // → digests re-flood → the node rejoins instead of being evicted.
             loop {
-                if attempt >= MAX_ATTEMPTS {
+                // ── connect, retrying forever with capped exponential backoff ──
+                let mut attempt = 0u32;
+                let conn = loop {
+                    let dialed = tokio::time::timeout(
+                        std::time::Duration::from_millis(CONNECT_TIMEOUT_MS),
+                        endpoint.connect(endpoint_addr.clone(), ALPN),
+                    )
+                    .await;
+                    // Outer Err = our 10s bound elapsed (iroh stuck on a stale path);
+                    // inner Err = iroh returned a connect error. Both → retry.
+                    let err: String = match dialed {
+                        Ok(Ok(conn)) => break conn,
+                        Ok(Err(e)) => e.to_string(),
+                        Err(_) => "connect bound (10s) elapsed".to_string(),
+                    };
+                    attempt += 1;
+                    let delay_ms = (BASE_DELAY_MS * 2u64.pow(attempt.min(5))).min(MAX_DELAY_MS);
                     tracing::info_span!(
-                        "rafka.mesh.seed.giveup",
+                        "rafka.mesh.seed.retry",
                         node_id = %own_node_id,
                         peer_id = %peer_id_str,
-                        attempts = attempt as i64,
+                        attempt = attempt as i64,
+                        delay_ms = delay_ms as i64,
                     )
                     .in_scope(|| {
-                        info!(peer_id = %peer_id_str, attempts = attempt, "seed gave up after max attempts");
+                        info!(peer_id = %peer_id_str, attempt, delay_ms, error = %err, "seed dial failed, retrying");
                     });
-                    break;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                };
+
+                tracing::info_span!(
+                    "rafka.mesh.peer.connected",
+                    node_id = %own_node_id,
+                    peer_id = %peer_id_str,
+                    peer_node_type = "unknown",
+                    direction = "outbound",
+                )
+                .in_scope(|| {
+                    info!(peer_id = %peer_id_str, "peer connected (outbound)");
+                });
+
+                // Adopt the newest connection for the data plane WITHOUT force-closing
+                // the prior one (a CONNECTION_CLOSE here would tear down an iroh-gossip
+                // backbone neighbor riding a duplicate connection). The stale connection
+                // idle-times-out on its own (max_idle_timeout).
+                registry.insert(peer_id_str.clone(), conn.clone());
+
+                send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
+
+                let conn_bi = conn.clone();
+                let own_bi = own_node_id.clone();
+                let peer_bi = peer_id_str.clone();
+                tokio::spawn(run_bi_reader(conn_bi, own_bi, own_node_name, peer_bi));
+
+                // Cold-pull on VIEW-COLLAPSE, from ANY same-mesh node. Every node keeps
+                // the full topology, so whichever seed we just (re)connected to is a
+                // valid donor — we don't depend on the node-admin being reachable. Gate
+                // on "we currently know no peers" (live_digests holds only our own
+                // self-injection, or nothing) so a healthy mesh doesn't re-pull on
+                // routine reconnects; this fires at boot (cold) and after a collapse.
+                // The donor mesh-scopes the snapshot to OUR mesh, and self-pull is
+                // impossible (we never seed to ourselves). Rides this fresh connection,
+                // so it costs no extra dial.
+                let view_collapsed = live_digests().iter().all(|e| e.key() == &own_node_id);
+                if view_collapsed && peer_id_str != own_node_id {
+                    pull_topology_snapshot(&conn, &own_node_id, own_mesh_id, &peer_id_str).await;
                 }
 
-                match endpoint.connect(endpoint_addr.clone(), ALPN).await {
-                    Ok(conn) => {
-                        tracing::info_span!(
-                            "rafka.mesh.peer.connected",
-                            node_id = %own_node_id,
-                            peer_id = %peer_id_str,
-                            peer_node_type = "unknown",
-                            direction = "outbound",
-                        )
-                        .in_scope(|| {
-                            info!(peer_id = %peer_id_str, "peer connected (outbound)");
-                        });
-
-                        // Adopt the newest connection for the data plane WITHOUT
-                        // force-closing the prior one: two mutually-seeded nodes
-                        // dialing each other produce duplicate connections, and a
-                        // CONNECTION_CLOSE here tears down a connection iroh-gossip
-                        // is using as a backbone neighbor (observed: NeighborUp then
-                        // NeighborDown 30ms later). The stale connection idle-times-out
-                        // on its own (max_idle_timeout). See sprint-20 release notes.
-                        registry.insert(peer_id_str.clone(), conn.clone());
-
-                        send_hello(&conn, &own_node_id, own_mesh_id, own_node_type, &peer_id_str).await;
-
-                        let conn_bi = conn.clone();
-                        let own_bi = own_node_id.clone();
-                        let peer_bi = peer_id_str.clone();
-                        tokio::spawn(run_bi_reader(conn_bi, own_bi, own_node_name, peer_bi));
-
-                        let own = own_node_id.clone();
-                        let reg = Arc::clone(&registry);
-                        let mesh_reg = Arc::clone(&mesh_id_registry);
-                        tokio::spawn(run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg));
-                        break;
-                    }
-                    Err(e) => {
-                        attempt += 1;
-                        let delay_ms = (BASE_DELAY_MS * 2u64.pow(attempt.min(5))).min(MAX_DELAY_MS);
-                        tracing::info_span!(
-                            "rafka.mesh.seed.retry",
-                            node_id = %own_node_id,
-                            peer_id = %peer_id_str,
-                            attempt = attempt as i64,
-                            delay_ms = delay_ms as i64,
-                        )
-                        .in_scope(|| {
-                            info!(peer_id = %peer_id_str, attempt, delay_ms, error = %e, "seed dial failed, retrying");
-                        });
-                        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
-                    }
+                // Run the frame reader INLINE (await) — unlike the original detached
+                // spawn — so this task learns WHEN the connection drops. run_frame_reader
+                // returns on disconnect, having already removed the peer from the
+                // registry + emitted peer.disconnected. Same lifecycle discipline as
+                // watch_mdns. On return we loop and re-dial the seed.
+                {
+                    let own = own_node_id.clone();
+                    let reg = Arc::clone(&registry);
+                    let mesh_reg = Arc::clone(&mesh_id_registry);
+                    run_frame_reader(own, own_mesh_id, peer_id_str.clone(), conn, reg, mesh_reg).await;
                 }
+
+                // Connection dropped — run_frame_reader has ALREADY removed this peer
+                // from the registry + emitted peer.disconnected on the disconnect path.
+                // Do NOT remove it again here: in the mutually-seeded case (admin-ui ↔
+                // admin-ui) a fresh INBOUND connection from the same peer may have been
+                // re-inserted under the same key by the accept loop, and a second remove
+                // would drop that live entry. Just re-dial to re-acquire the seed.
+                info!(peer_id = %peer_id_str, "seed connection dropped — re-dialing to re-acquire mesh view");
+                tokio::time::sleep(tokio::time::Duration::from_millis(BASE_DELAY_MS)).await;
             }
         });
     }

@@ -20,7 +20,7 @@ set -e
 
 SOAK_LOG=./soak-new.log
 ADMIN1_DATA="./data-soak1"
-ADMIN_EXE="./target/debug/rafka-admin-ui.exe"
+ADMIN_EXE="./target/debug/rafka-node-admin.exe"
 
 : > "$SOAK_LOG"
 log() { echo "$*" | tee -a "$SOAK_LOG"; }

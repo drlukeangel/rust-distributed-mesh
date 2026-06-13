@@ -12,7 +12,7 @@ const TYPE_COLOR: Record<NodeType, string> = {
   broker: "#f0883e",
   compute: "#3fb950",
   registry: "#bc8cff",
-  "admin-ui": "#8b949e",
+  "node-admin": "#8b949e",
 };
 
 function meshColor(mesh: string): string {

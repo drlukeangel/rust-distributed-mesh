@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 
 // Fixed column order as specified in the task contract.
-const NODE_COLS = ["admin-ui", "gateway", "broker", "compute", "registry"] as const;
+const NODE_COLS = ["node-admin", "gateway", "broker", "compute", "registry"] as const;
 type NodeCol = (typeof NODE_COLS)[number];
 
 interface CacheItem {

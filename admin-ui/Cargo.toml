@@ -3,8 +3,11 @@ name = "rafka-admin-ui"
 version = "0.1.0"
 edition = "2021"
 
+# Binary renamed rafka-admin-ui → rafka-node-admin (2026-06-13): the artifact IS the
+# node-admin. Package name kept as rafka-admin-ui so `cargo build -p rafka-admin-ui`
+# and the crate dir (admin-ui/) are unchanged — only the output exe name changes.
 [[bin]]
-name = "rafka-admin-ui"
+name = "rafka-node-admin"
 path = "src/main.rs"
 
 [dependencies]

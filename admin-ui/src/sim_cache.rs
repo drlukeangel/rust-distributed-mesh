@@ -65,7 +65,7 @@ pub const CACHE_REGISTRY: &[CacheSpec] = &[
         entity_kind: "topology",
         channel: Channel::Main,
         write_model: WriteModel::SelfKey,
-        owners: &["admin-ui", "gateway", "broker", "compute", "registry"],
+        owners: &["node-admin", "gateway", "broker", "compute", "registry"],
     },
     CacheSpec {
         entity_kind: "vt",
@@ -434,7 +434,7 @@ mod tests {
                 write_model: WriteModel::SharedKey,
                 owners: &["compute"],
             },
-            "admin-ui",
+            "node-admin",
         )
     }
 
@@ -509,7 +509,7 @@ mod tests {
                 write_model: WriteModel::LeaderOnly,
                 owners: &["gateway"],
             },
-            "admin-ui",
+            "node-admin",
         );
         let result = cache.apply("gateway-abc123", "any-key", 1, 1);
         assert_eq!(
@@ -529,10 +529,10 @@ mod tests {
                 write_model: WriteModel::LeaderOnly,
                 owners: &["gateway"],
             },
-            "admin-ui",
+            "node-admin",
         );
         assert_eq!(
-            cache.apply("admin-ui", "any-key", 1, 1),
+            cache.apply("node-admin", "any-key", 1, 1),
             ApplyResult::Accepted
         );
     }
@@ -546,7 +546,7 @@ mod tests {
                 write_model: WriteModel::SelfKey,
                 owners: &["broker"],
             },
-            "admin-ui",
+            "node-admin",
         );
         // Key "some-other-key" is passed but must be stored as the publisher name
         cache.apply("broker-abc", "some-other-key", 77, 1);

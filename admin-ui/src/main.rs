@@ -29,7 +29,7 @@ use std::{
     time::Duration,
 };
 use tower_http::services::{ServeDir, ServeFile};
-use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership, NODE_NAME_HEX_LEN};
+use rafka_node_base::{backbone_summaries, GossipDigest, live_digests, MeshMessage, topic_membership};
 use rafka_node_base::{node_caches, channel_events};
 use tokio::{process::Child, sync::Mutex};
 use tracing::{info, info_span, Instrument};
@@ -190,6 +190,14 @@ struct AppState {
     cargo_target_dir: String,
     processes: Arc<DashMap<String, Mutex<Child>>>,
     spawned_meta: Arc<DashMap<String, SpawnedMeta>>,
+    /// Monotonic per-`(mesh,type)` name counter (`<mesh>.<type>` → next N). Seeded
+    /// ONCE from the topology cache + spawned_meta (so the count RESUMES after an
+    /// admin restart instead of resetting), then incremented ATOMICALLY per spawn and
+    /// NEVER reused — even after a node is killed. The old "max of currently-known"
+    /// computation reused numbers (a killed node leaves the cache) and raced under
+    /// concurrent spawns, handing two LIVE nodes the same name → the name-rebind then
+    /// flip-flopped between their ids and churned the topology (caught in the soak).
+    name_counters: Arc<DashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
     /// Messages activity feed (gossip-derived: traffic deltas + state changes +
@@ -1004,7 +1012,7 @@ async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
         // polls). Its baseline sits near 0.10 cores even at release-opt, so it
         // trips the threshold without representing a regression. Substrate-only
         // nodes are what the threshold is calibrated against.
-        if d.node_type == "admin-ui" {
+        if d.node_type == "node-admin" {
             continue;
         }
         if d.cpu_used > cpu_threshold {
@@ -1739,21 +1747,21 @@ async fn handle_boot_trace(
     // `<mesh>.<type>.<6hex>` (e.g. "mesh1.broker.bb8030"); the Jaeger service.name
     // is the FIRST TWO segments `<mesh>.<type>` (e.g. "mesh1.broker"). We query
     // that service and filter by the node_name tag so each instance returns its
-    // OWN boot trace. The "admin-ui" Observer is flat (service == node_name).
+    // OWN boot trace. The "node-admin" Observer is flat (service == node_name).
     //
     // Fallbacks tolerate older forms: 2-segment `mesh1.broker1` (Phase-1) and
     // flat `broker-abc123` (legacy) → bare node_type service.
     let jaeger_service: String = {
         let segs: Vec<&str> = svc.splitn(3, '.').collect();
         // Sprint-14 B6: the admin-ui is a normal node now — its node_name is
-        // "mesh1.admin-ui.<hex>", so accept "admin-ui" as a valid type segment in
+        // "mesh1.admin-ui.<hex>", so accept "node-admin" as a valid type segment in
         // addition to the spawnable KNOWN_NODE_TYPES.
-        if segs.len() >= 3 && (KNOWN_NODE_TYPES.contains(&segs[1]) || segs[1] == "admin-ui") {
+        if segs.len() >= 3 && (KNOWN_NODE_TYPES.contains(&segs[1]) || segs[1] == "node-admin") {
             // B1: <mesh>.<type>.<hex> → service.name = <mesh>.<type>
             format!("{}.{}", segs[0], segs[1])
-        } else if svc == "admin-ui" {
+        } else if svc == "node-admin" {
             // Legacy flat admin-ui (pre-B6 instances).
-            "admin-ui".to_string()
+            "node-admin".to_string()
         } else if let Some(dot_part) = svc.splitn(2, '.').nth(1) {
             // Phase-1 2-segment fallback: mesh1.broker1 → broker
             KNOWN_NODE_TYPES
@@ -1916,15 +1924,16 @@ fn is_valid_node_name(n: &str) -> bool {
     let first = match mesh_chars.next() { Some(c) => c, None => return false };
     if !is_mesh_first(first) { return false; }
     if !mesh_chars.all(is_mesh_char) { return false; }
-    // type segment: must be a known node type.
-    if !KNOWN_NODE_TYPES.contains(&type_seg) {
+    // type segment: a known spawnable node type, or the node-admin.
+    if !KNOWN_NODE_TYPES.contains(&type_seg) && type_seg != "node-admin" {
         return false;
     }
-    // hex segment: exactly NODE_NAME_HEX_LEN (6) lowercase hex chars.
-    if hex_seg.len() != rafka_node_base::NODE_NAME_HEX_LEN {
-        return false;
-    }
-    hex_seg.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    // suffix segment: EITHER the admin-assigned stable counter `<N>` (1+ ASCII digits)
+    // OR the self-derived fallback (exactly NODE_NAME_HEX_LEN lowercase hex chars).
+    let is_counter = !hex_seg.is_empty() && hex_seg.chars().all(|c| c.is_ascii_digit());
+    let is_hex = hex_seg.len() == rafka_node_base::NODE_NAME_HEX_LEN
+        && hex_seg.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+    is_counter || is_hex
 }
 
 /// Allow-list of `extra_env` keys an operator may inject into spawned children.
@@ -1976,6 +1985,49 @@ fn is_safe_mesh_id(m: &str) -> bool {
     chars.all(is_safe_char)
 }
 
+/// Next 1-based ordinal for a `(mesh, type)` — the `N` in the stable node name
+/// `<mesh>.<type>.<N>`. **Monotonic + atomic.** The per-`(mesh,type)` counter is
+/// seeded ONCE, the first time it's needed, from `max(N)` over the topology cache
+/// (observed gossip — re-hydrates from gossip/cold-pull after an admin restart, so the
+/// count resumes) UNION the in-flight `spawned_meta`. After that it is a pure atomic
+/// increment: every spawn gets a fresh number, NEVER reused — even after the node is
+/// killed, and even under concurrent spawns. This is the fix for the soak-caught bug
+/// where the old "recompute `max(currently-known)+1` each call" handed two LIVE nodes
+/// the same name (a killed node leaves the cache → its number got reused; two rapid
+/// spawns both read the same max → collide), which the gossip name-rebind then turned
+/// into an X/Y flip-flop. Old self-derived `<mesh>.<type>.<6hex>` names don't parse as
+/// a number and are ignored by the seed.
+fn next_node_ordinal(state: &AppState, mesh_id: &str, node_type: &str) -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let key = format!("{}.{}", mesh_id, node_type);
+    // entry().or_insert_with() is atomic per key (DashMap shard lock) — the seed is
+    // computed at most once, even if two spawns race to create the counter.
+    let counter = state
+        .name_counters
+        .entry(key)
+        .or_insert_with(|| {
+            let prefix = format!("{}.{}.", mesh_id, node_type);
+            let parse_n = |name: &str| -> Option<u64> {
+                name.strip_prefix(prefix.as_str()).and_then(|s| s.parse::<u64>().ok())
+            };
+            let mut max_n = 0u64;
+            for e in rafka_node_base::live_digests().iter() {
+                if let Some(n) = parse_n(&e.value().node_name) {
+                    max_n = max_n.max(n);
+                }
+            }
+            for e in state.spawned_meta.iter() {
+                if let Some(n) = parse_n(e.key()) {
+                    max_n = max_n.max(n);
+                }
+            }
+            Arc::new(AtomicU64::new(max_n))
+        })
+        .clone();
+    // fetch_add returns the PREVIOUS value; +1 is this spawn's unique N.
+    counter.fetch_add(1, Ordering::SeqCst) + 1
+}
+
 async fn spawn_one(
     state: &AppState,
     node_type: &str,
@@ -2013,17 +2065,24 @@ async fn spawn_one(
         return Err(format!("pool cap {POOL_CAP} reached — refusing spawn"));
     }
 
-    // ---- pre-mint identity FIRST (sprint-13 B1) ----
-    // The node SELF-NAMES from its node_id as <mesh>.<type>.<first 6 hex>. admin-ui
-    // pre-mints the child's identity for seeding, so it already knows node_id and
-    // derives the IDENTICAL name for its own bookkeeping (spawned_meta key, spawn
-    // dir, topology "pending" rows) — it does NOT pass the name to the child; the
-    // child computes the same value itself and broadcasts it via gossip. No ordinal
-    // counter, no abbreviation: full type word + node_id hex.
+    // ---- pre-mint identity FIRST ----
+    // The node_id is the node's MUTABLE transport identity (it may rotate across a
+    // restart — see restart_one — to dodge iroh's same-id reconnect wedge). admin-ui
+    // pre-mints it so it knows the id for seeding + bookkeeping. The child receives it
+    // via RAFKA_NODE_SECRET_KEY.
     let secret_key = iroh::SecretKey::generate();
     let node_id_hex = secret_key.public().to_string();
-    let hex_suffix: String = node_id_hex.chars().take(NODE_NAME_HEX_LEN).collect();
-    let node_name = format!("{}.{}.{}", mesh_id, node_type, hex_suffix); // mesh2.broker.ccff65
+    // ---- assign the STABLE logical name: <mesh>.<type>.<N> ----
+    // N is a 1-based per-(mesh,type) counter that is IMMUTABLE across the node's whole
+    // lifecycle (restarts, identity rotations). It is the durable handle partition
+    // routing + later lifecycle logic tie to — NOT derived from the (mutable) node_id.
+    // N is computed from the topology cache (observed gossip, which re-hydrates after
+    // an admin restart) UNION in-flight spawned_meta, so the count RESUMES from max+1
+    // instead of resetting to 1 when admin-ui restarts. (Supersedes the sprint-13 B1
+    // self-derived <mesh>.<type>.<6hex>, which is now only the fallback for a node
+    // launched WITHOUT RAFKA_NODE_NAME.)
+    let next_n = next_node_ordinal(state, mesh_id, node_type);
+    let node_name = format!("{}.{}.{}", mesh_id, node_type, next_n); // mesh2.broker.3
 
     let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
     if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
@@ -2077,7 +2136,7 @@ async fn spawn_one(
     // cross-seeding the admin-uis at launch (admin-ui↔admin-ui), so each fleet's
     // gateways reach the backbone transitively via their local admin-ui hub.
     let seeds_csv = {
-        let mut all_seeds = vec![admin_seed];
+        let mut all_seeds = vec![admin_seed.clone()];
         let same_mesh: Vec<String> = state
             .spawned_meta
             .iter()
@@ -2156,10 +2215,15 @@ async fn spawn_one(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let cert = rafka_node_base::cert::issue_cert(&state.ca, &node_id_hex, node_type, 86_400, now_ms);
+        let cert = rafka_node_base::cert::issue_cert(&state.ca, &node_name, node_type, 86_400, now_ms);
         cmd.env("RAFKA_NODE_CERT", rafka_node_base::cert::encode_cert(&cert));
         cmd.env("RAFKA_CA_PUBKEY", state.ca.public().to_string());
     }
+
+    // Stable logical name (admin-assigned, immutable across the node's lifecycle).
+    // The node uses this verbatim instead of self-deriving a name from its node_id,
+    // so the name survives an identity rotation on restart.
+    cmd.env("RAFKA_NODE_NAME", &node_name);
 
     // ---- seed injection: set AFTER extra_env so admin-ui's values always win ----
     // Disable mDNS for the child — we're using explicit seeds instead.
@@ -2169,6 +2233,12 @@ async fn spawn_one(
     if !seeds_csv.is_empty() {
         cmd.env("RAFKA_SEED_NODES", &seeds_csv);
     }
+    // Cold-pull donor: every child learns THIS node-admin's address (node_id@addr)
+    // so that after a view-collapse it pulls a live_digests snapshot from us over
+    // QUIC (warm re-hydration). Each mesh's admin injects its OWN address, so a child
+    // only ever pulls from its own mesh's node-admin. NOT set in the admin's own
+    // process → its admin_node_id stays None and it never pulls itself.
+    cmd.env("RAFKA_NODE_ADMIN_ADDR", &admin_seed);
     // Sprint-14 B5: no RAFKA_OBSERVER_MESHES injection. Gateways learn other meshes
     // from the backbone, not by subscribing to their gossip.
 
@@ -2399,8 +2469,8 @@ async fn handle_bootstrap_2mesh(State(state): State<AppState>) -> impl IntoRespo
     // then derive disjoint values for the mesh2 admin.
     let own_http = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
         .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
-    let own_http_port: u16 = own_http.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(19090);
+        .unwrap_or_else(|_| "127.0.0.1:6969".to_string());
+    let own_http_port: u16 = own_http.rsplit(':').next().and_then(|p| p.parse().ok()).unwrap_or(6969);
     let own_iroh_port: u16 = std::env::var("RAFKA_NODE_BIND_ADDR")
         .ok().and_then(|s| s.rsplit(':').next().and_then(|p| p.parse().ok())).unwrap_or(14819);
     let own_base: u16 = std::env::var("RAFKA_SPAWN_PORT_BASE").ok().and_then(|s| s.parse().ok()).unwrap_or(15820);
@@ -2440,8 +2510,11 @@ async fn handle_bootstrap_2mesh(State(state): State<AppState>) -> impl IntoRespo
             .env("RAFKA_NODE_BIND_ADDR", format!("127.0.0.1:{peer_iroh_port}"))
             .env("RAFKA_SPAWN_PORT_BASE", peer_base.to_string())
             // Drop the inherited admin-1 cert so admin-2 self-issues its own from the
-            // shared CA (avoids presenting admin-1's cert before its own boots).
-            .env_remove("RAFKA_NODE_CERT");
+            // shared CA (avoids presenting admin-1's cert before its own boots). Also
+            // drop the inherited RAFKA_NODE_NAME so admin-2 self-assigns
+            // `mesh2.node-admin.1` instead of inheriting admin-1's `mesh1.node-admin.1`.
+            .env_remove("RAFKA_NODE_CERT")
+            .env_remove("RAFKA_NODE_NAME");
         if let Ok(f) = std::fs::File::create(std::path::Path::new(&peer_data).join("admin.log")) {
             cmd.stdout(std::process::Stdio::from(f));
         }
@@ -2647,13 +2720,25 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
     }
 
     let old_pid = meta.pid;
-    let node_id_hex = meta.node_id_hex.clone();
+    let old_node_id_hex = meta.node_id_hex.clone();
     let mesh_id = meta.mesh_id.clone();
     let node_type = meta.node_type.clone();
     let bind_port = meta.bind_port;
-    let secret_key_hex = meta.secret_key_hex.clone();
     let spawned_at_ms = meta.spawned_at_ms; // keep original spawn time
     drop(meta); // release the DashMap read lock
+
+    // Identity ROTATION (worker restart): come back with a FRESH node_id so the node
+    // dials its peers as a brand-new endpoint, sidestepping iroh's same-id reconnect
+    // wedge (a returning *client* with the old id is dropped as `unknown
+    // NodeIdMappedAddr` while peers still hold stale path state for it — empirically
+    // permanent). The node keeps its STABLE name + data dir + port, so state/caches
+    // and logical identity survive; only the transport id changes. Gossip rebinds
+    // name → new id and evicts the old. (The node-admin never takes this path — it is
+    // the bootstrap anchor and keeps a stable id; its own restart self-heals because
+    // it is the server everyone dials, not the dialer, so the wedge doesn't bite it.)
+    let new_secret = iroh::SecretKey::generate();
+    let secret_key_hex = hex::encode(new_secret.to_bytes());
+    let node_id_hex = new_secret.public().to_string();
 
     // 2. Mark as restarting — prevents reaper from wiping dir/meta during window.
     state.restarting.insert(node_name.to_string());
@@ -2669,7 +2754,7 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
         }
     }
 
-    // 4. Respawn with SAME identity, dir, port.
+    // 4. Respawn with a ROTATED identity (new node_id), SAME name + dir + port.
     let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
     let bind_addr_str = format!("127.0.0.1:{}", bind_port);
 
@@ -2696,7 +2781,7 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
             .take(2)
             .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
             .collect();
-        let mut all_seeds = vec![admin_seed];
+        let mut all_seeds = vec![admin_seed.clone()];
         all_seeds.extend(same_mesh);
         all_seeds.join(",")
     };
@@ -2708,11 +2793,12 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
         .env_remove("RAFKA_DEV_RAM_USED");
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
         .env("RAFKA_DATA_DIR", &spawn_dir)
-        // Re-pass the SAME pre-minted key so the node boots with the same NodeId.
-        // The data dir already has node-identity.json from the original spawn, so
-        // the env key wins (RAFKA_NODE_SECRET_KEY takes precedence over file) and
-        // the file is unchanged — belt-and-suspenders for the identity guarantee.
+        // Boot with the FRESH rotated key — it overrides the data dir's old
+        // node-identity.json (RAFKA_NODE_SECRET_KEY wins over the file) and the node
+        // re-persists the new one. Data/caches in the dir are untouched.
         .env("RAFKA_NODE_SECRET_KEY", &secret_key_hex)
+        // Keep the STABLE logical name across the rotation (the durable handle).
+        .env("RAFKA_NODE_NAME", node_name)
         .env("RAFKA_MESH_ID", &mesh_id)
         .env("RAFKA_STATEFUL", "true")
         .env("RUST_LOG", &rust_log)
@@ -2721,6 +2807,9 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
     if !seeds_csv.is_empty() {
         cmd.env("RAFKA_SEED_NODES", &seeds_csv);
     }
+    // Cold-pull donor: a restarted node also learns this node-admin's address so it
+    // re-hydrates its view over QUIC after the restart (same as spawn_one).
+    cmd.env("RAFKA_NODE_ADMIN_ADDR", &admin_seed);
     // Cache assignment — same policy as spawn_one (the bug fix: a restarted node
     // MUST get its caches, so the durable key-4 reloads from disk on restart).
     let node_caches_spec = caches_for_node_type(&node_type);
@@ -2728,13 +2817,16 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
         cmd.env("RAFKA_NODE_CACHES", node_caches_spec);
     }
     cmd.env("RAFKA_LEADER_NODE_ID", &state.admin_node_id_hex);
-    // Re-issue the cert for the restarted node (same node_id, fresh 24h expiry).
+    // Re-issue the cert (same STABLE name, fresh 24h expiry). The cert binds the
+    // immutable node_name, so it survives the id rotation — re-issuing here only
+    // refreshes the expiry. The rotated node is still admitted because the trust
+    // boundary checks cert.node_name == digest.node_name (unchanged), not the id.
     {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let cert = rafka_node_base::cert::issue_cert(&state.ca, &node_id_hex, &node_type, 86_400, now_ms);
+        let cert = rafka_node_base::cert::issue_cert(&state.ca, node_name, &node_type, 86_400, now_ms);
         cmd.env("RAFKA_NODE_CERT", rafka_node_base::cert::encode_cert(&cert));
         cmd.env("RAFKA_CA_PUBKEY", state.ca.public().to_string());
     }
@@ -2783,16 +2875,18 @@ async fn restart_one(state: &AppState, node_name: &str) -> Result<Value, String>
         "rafka.ui.node.restart",
         node_name = %node_name,
         node_id = %node_id_hex,
+        old_node_id = %old_node_id_hex,
         old_pid = old_pid,
         new_pid = new_pid,
         mesh_id = %mesh_id,
         "otel.kind" = "internal",
     )
-    .in_scope(|| info!(node_name = %node_name, old_pid, new_pid, "stateful node restarted with same identity"));
+    .in_scope(|| info!(node_name = %node_name, old_node_id = %old_node_id_hex, new_node_id = %node_id_hex, old_pid, new_pid, "stateful node restarted — name + state preserved, identity rotated"));
 
     Ok(json!({
         "node_name": node_name,
-        "node_id": node_id_hex,
+        "node_id": node_id_hex,          // NEW (rotated) id
+        "old_node_id": old_node_id_hex,  // the pre-restart id
         "old_pid": old_pid,
         "new_pid": new_pid,
         "mesh_id": mesh_id,
@@ -3028,7 +3122,7 @@ async fn handle_test_run(
     // rfa hits THIS instance, not a stale port.
     let bind_addr = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
         .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
+        .unwrap_or_else(|_| "127.0.0.1:6969".to_string());
     let api_url = format!("http://{bind_addr}");
     let mut cmd = tokio::process::Command::new(&rfa_bin);
     cmd.args([
@@ -4032,7 +4126,7 @@ fn cache_node_types(name: &str) -> Vec<&'static str> {
         "topology-key-gossip" => vec!["gateway", "broker", "compute", "registry"],
         _ => vec![],
     };
-    let mut all = vec!["admin-ui"];
+    let mut all = vec!["node-admin"];
     all.extend(workers);
     all
 }
@@ -4263,22 +4357,34 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         sk
     };
     tracing::info!(ca_pubkey = %ca_key.public(), "node-admin CA ready (root authority)");
-    // node-admin is BOTH the CA and a gossiping node. Self-issue a cert for its
-    // own NodeId so peers admit its digests, and set RAFKA_CA_PUBKEY in its own
-    // process so its NodeRuntime ENFORCES certs on every digest it receives.
+    // node-admin is BOTH the CA and a gossiping node. Self-issue a cert bound to its
+    // own stable NAME so peers admit its digests, and set RAFKA_CA_PUBKEY in its own
+    // process so its NodeRuntime ENFORCES certs on every digest it receives. The admin
+    // does NOT take a RAFKA_NODE_NAME, so NodeRuntime self-derives `<mesh>.node-admin.
+    // <6hex>` — we compute that IDENTICAL value here so the name-bound cert matches the
+    // name the admin broadcasts. (The admin is the bootstrap anchor; its id never
+    // rotates, so its name is stable regardless.)
     {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
+        let admin_mesh = std::env::var("RAFKA_MESH_ID").unwrap_or_else(|_| "mesh1".to_string());
+        // The node-admin takes the stable counter name `<mesh>.node-admin.1` (one
+        // admin per mesh ⇒ always 1, like every other node's `<mesh>.<type>.<N>`). We
+        // set RAFKA_NODE_NAME so its NodeRuntime uses this exact name and bind the cert
+        // to it. (spawn_one/restart_one override RAFKA_NODE_NAME per child via cmd.env,
+        // so this does not leak to spawned children.)
+        let admin_node_name = format!("{}.node-admin.1", admin_mesh);
+        std::env::set_var("RAFKA_NODE_NAME", &admin_node_name);
         let admin_cert =
-            rafka_node_base::cert::issue_cert(&ca_key, &admin_node_id_hex, "admin-ui", 86_400, now_ms);
+            rafka_node_base::cert::issue_cert(&ca_key, &admin_node_name, "node-admin", 86_400, now_ms);
         std::env::set_var(
             "RAFKA_NODE_CERT",
             rafka_node_base::cert::encode_cert(&admin_cert),
         );
         std::env::set_var("RAFKA_CA_PUBKEY", ca_key.public().to_string());
-        tracing::info!("node-admin self-issued cert + enforcing RAFKA_CA_PUBKEY on its own gossip");
+        tracing::info!(admin_node_name = %admin_node_name, "node-admin self-issued name-bound cert + enforcing RAFKA_CA_PUBKEY on its own gossip");
     }
     tracing::info!(
         admin_node_id = %admin_node_id_hex,
@@ -4306,7 +4412,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // Spawned as a tokio task so axum can run in parallel in this same
     // process. Same tokio runtime, same lifecycle.
     let node_handle = tokio::spawn(async move {
-        let mut rt = rafka_node_base::NodeRuntime::new("admin-ui")
+        let mut rt = rafka_node_base::NodeRuntime::new("node-admin")
             .with_role(rafka_node_base::Role::Observer);
         if let Some(c) = cpu_budget {
             rt = rt.with_cpu_budget(c);
@@ -4322,7 +4428,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // Accept either env var name during the topology-ui → admin-ui rename.
     let bind_addr = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
         .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
+        .unwrap_or_else(|_| "127.0.0.1:6969".to_string());
 
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());
@@ -4414,6 +4520,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         cargo_target_dir,
         processes: Arc::new(DashMap::new()),
         spawned_meta: Arc::new(DashMap::new()),
+        name_counters: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
         msgs: Arc::new(MsgRing::default()),

@@ -1,4 +1,4 @@
-export type NodeType = "gateway" | "broker" | "compute" | "registry" | "admin-ui";
+export type NodeType = "gateway" | "broker" | "compute" | "registry" | "node-admin";
 
 /// sprint-20 lifecycle/health state (mirrors rafka_node_base::NodeState, locked,
 /// append-only). Leaving/Dead evict before render; the rest are rendered + colored.
