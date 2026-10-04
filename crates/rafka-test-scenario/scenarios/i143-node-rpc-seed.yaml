@@ -1,0 +1,25 @@
+version: 1
+product: mesh
+feature: node-rpc
+subfeature: rpc-certainty
+rung: multi-node
+provider: process
+shape: MN
+fabric: fabric1
+meshes:
+  - name: mesh1
+    node_admin: 2
+    rpc_node: 3
+operations:
+  - put: { target: mesh1.rpc.1, key: 100, value: "seed-000" }
+  - put: { target: mesh1.rpc.1, key: 101, value: "seed-001" }
+  - put: { target: mesh1.rpc.2, key: 102, value: "seed-002" }
+  - put: { target: mesh1.rpc.2, key: 103, value: "seed-003" }
+  - put: { target: mesh1.rpc.3, key: 104, value: "seed-004" }
+  - put: { target: mesh1.rpc.3, key: 105, value: "seed-005" }
+  - cas: { target: mesh1.rpc.1, key: 100, expected: "seed-000", value: "seed-000-cas" }
+  - delete: { target: mesh1.rpc.3, key: 105 }
+assert:
+  - get: { target: mesh1.rpc.1, key: 100, equals: "seed-000-cas" }
+  - get: { target: mesh1.rpc.2, key: 102, equals: "seed-002" }
+  - get: { target: mesh1.rpc.3, key: 105, absent: true }

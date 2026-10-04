@@ -4,22 +4,28 @@
 //! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 
-#![allow(dead_code)]
-
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Ownership metadata of one canary (mesh product taxonomy).
+/// Ownership metadata of one run (mesh product taxonomy, PRD §16).
+#[derive(Debug, Clone)]
 pub struct Owner {
-    pub product: &'static str,
-    pub feature: &'static str,
-    pub subfeature: &'static str,
-    pub rung: &'static str,
-    pub provider: &'static str,
-    pub test: &'static str,
+    pub product: String,
+    pub feature: String,
+    pub subfeature: String,
+    pub rung: String,
+    pub provider: String,
+    pub test: String,
+}
+
+/// `RAFKA_ARTIFACTS_DIR`, else this crate's `tests/artifacts`.
+pub fn artifacts_root() -> PathBuf {
+    std::env::var("RAFKA_ARTIFACTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"))
 }
 
 /// Directory holding the built binaries: `RAFKA_BIN_DIR`, else the cargo
@@ -28,9 +34,14 @@ pub fn bin_dir() -> PathBuf {
     if let Ok(d) = std::env::var("RAFKA_BIN_DIR") {
         return PathBuf::from(d);
     }
-    // target/<profile>/deps/<test-binary> -> target/<profile>
-    let exe = std::env::current_exe().expect("test binary path");
-    exe.parent().and_then(Path::parent).expect("target/<profile>").to_path_buf()
+    // A test binary lives in target/<profile>/deps; a bin in target/<profile>.
+    let exe = std::env::current_exe().expect("own executable path");
+    let dir = exe.parent().expect("exe dir").to_path_buf();
+    if dir.file_name().is_some_and(|n| n == "deps") {
+        dir.parent().expect("target/<profile>").to_path_buf()
+    } else {
+        dir
+    }
 }
 
 pub fn binary(name: &str) -> PathBuf {
@@ -75,10 +86,7 @@ impl Estate {
     /// Start the first node-admin of `fabric` (bootstrap selects the provider)
     /// and wait for its advertised control API base.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
-        let artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/artifacts")
-            .join(owner.feature)
-            .join(owner.test);
+        let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
         let evidence = artifacts.join("spans");
         std::fs::create_dir_all(&evidence).unwrap();
@@ -87,7 +95,7 @@ impl Estate {
         std::fs::create_dir_all(&root).unwrap();
 
         let mut child = Command::new(binary("rafka-node-admin"))
-            .env("MESH_SPAWN_TYPE", owner.provider)
+            .env("MESH_SPAWN_TYPE", &owner.provider)
             .env("RAFKA_FABRIC", fabric)
             .env("RAFKA_MESH", mesh)
             .env("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")))

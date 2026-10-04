@@ -10,12 +10,10 @@
 //! cargo build --bins && cargo test -p rafka-test-scenario --test node_lifecycle__node_restart -- --ignored
 //! ```
 
-mod support;
-
+use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
-use support::{descends_from, named, wait_for, Estate, Owner};
 
 const SETTLE: Duration = Duration::from_secs(120);
 const NODE: &str = "mesh1.rpc.2";
@@ -50,12 +48,12 @@ fn ready(node: &Value) -> bool {
 async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     let estate = Estate::bootstrap(
         Owner {
-            product: "mesh",
-            feature: "node-lifecycle",
-            subfeature: "node-restart",
-            rung: "multi-node",
-            provider: "process",
-            test: "rpc_node_restarts_same_identity_rebinds_and_recovers_state",
+            product: "mesh".into(),
+            feature: "node-lifecycle".into(),
+            subfeature: "node-restart".into(),
+            rung: "multi-node".into(),
+            provider: "process".into(),
+            test: "rpc_node_restarts_same_identity_rebinds_and_recovers_state".into(),
         },
         "fabric1",
         "mesh1",
