@@ -25,6 +25,7 @@ rafka-telemetry = { path = "../rafka-telemetry" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 
 [dev-dependencies]
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true }
 http-body-util = "0.1"

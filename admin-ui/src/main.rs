@@ -7,18 +7,17 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Json, Path, Query, Request, State},
+    extract::{Json, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use dashmap::DashMap;
 use rand::Rng;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
@@ -986,20 +985,26 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
 </body>
 </html>"##;
 
-// Node lifecycle ownership (process map, termination, reaping) lives in
-// rafka-node-admin-core; the Admin UI calls it (i143.e1.s1).
-use rafka_node_admin_core::process_table::{ProcessTable, SpawnedMeta};
+// The Admin UI is a client of node-admin core (i143.e1.s6): it reads
+// node-admin's views and submits Builds; it never starts or stops a runtime.
+use rafka_admin_ui::control::{self, BuildEvents};
+use rafka_mesh_entity::PathName;
+use rafka_node_admin_client::{BuildId, NodeAdminClient};
 
-/// Root of the per-child spawn data dirs: `RAFKA_UI_SPAWN_ROOT`, default
-/// `E:/tmp/rafka-ui-nodes` on Windows and `<temp>/rafka-ui-nodes` elsewhere.
-fn spawn_root() -> std::path::PathBuf {
-    std::env::var("RAFKA_UI_SPAWN_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|_| {
-        if cfg!(windows) {
-            std::path::PathBuf::from("E:/tmp/rafka-ui-nodes")
-        } else {
-            std::env::temp_dir().join("rafka-ui-nodes")
-        }
-    })
+/// The Build routes' events, on the UI's own event timeline.
+struct TimelineEvents(Arc<EventRing>);
+
+impl BuildEvents for TimelineEvents {
+    fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&str>, mesh: Option<&str>) {
+        self.0.push(LocalEvent {
+            ts_us: now_us(),
+            kind: "build.submitted".to_string(),
+            node_name: node.map(str::to_string),
+            node_type: None,
+            mesh_id: mesh.map(str::to_string),
+            detail: Some(format!("{what}: build {build_id}")),
+        });
+    }
 }
 
 struct ChaosController {
@@ -1088,7 +1093,10 @@ struct AppState {
     http: reqwest::Client,
     jaeger_url: String,
     cargo_target_dir: String,
-    lifecycle: Arc<ProcessTable>,
+    /// The node-admin this UI drives (`RAFKA_NODE_ADMIN_API_BASE`).
+    admin: Option<NodeAdminClient>,
+    /// Node-admin's nodes, by path.name (read-only projection of `GET /api/nodes`).
+    known: Arc<DashMap<String, KnownNode>>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
     /// Phase C: live state from gossip digests, keyed by node_id (hex).
@@ -1098,24 +1106,6 @@ struct AppState {
     /// Red-team A#8: serialize concurrent /api/tests/run calls for the same
     /// test name. Map entry exists while a test is running.
     running_tests: Arc<DashMap<String, ()>>,
-    /// Red-team A#3: serialize /api/bootstrap calls so parallel requests
-    /// queue instead of all passing the cap check before any spawn lands.
-    bootstrap_mutex: Arc<tokio::sync::Mutex<()>>,
-    /// Monotonic counter for assigning bind ports to spawned children.
-    /// Each spawn gets `next_bind_port.fetch_add(1, Relaxed)` + a base.
-    /// Used to form deterministic `<id>@127.0.0.1:<port>` seed entries
-    /// before children even start.
-    next_bind_port: Arc<std::sync::atomic::AtomicU16>,
-    /// Admin-ui's own iroh node_id (hex / PublicKey::to_string format),
-    /// pre-minted before NodeRuntime starts so spawn_one can include
-    /// admin-ui in every child's RAFKA_SEED_NODES. Children dial admin-ui
-    /// at boot; admin-ui's NodeRuntime accept loop receives them and
-    /// iroh-gossip HyParView propagates digests on every observed topic.
-    admin_node_id_hex: String,
-    /// Port admin-ui's iroh endpoint is pinned to (default 14819, one
-    /// below the spawn-pool base 14820). Written as RAFKA_NODE_BIND_ADDR
-    /// before NodeRuntime starts.
-    admin_bind_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -1123,28 +1113,13 @@ struct BootTraceQuery {
     service: String,
 }
 
-#[derive(Deserialize)]
-struct SpawnRequest {
+
+/// One node node-admin manages, as the views need it.
+#[derive(Debug, Clone)]
+struct KnownNode {
+    /// `rpc_node` or `node_admin`.
     node_type: String,
-    /// First-class mesh assignment. If set, becomes `RAFKA_MESH_ID` in the
-    /// child env. Either this OR `extra_env.RAFKA_MESH_ID` works; if both,
-    /// this field wins.
-    #[serde(default)]
-    mesh_id: Option<String>,
-    /// Optional extra env vars to merge into the child process env. Used by chaos
-    /// primitives like clock_skew to inject behavior switches at restart.
-    #[serde(default)]
-    extra_env: Option<std::collections::HashMap<String, String>>,
-    /// Optional CPU budget in cores (fractional ok). When set, admin-ui
-    /// spawns the child with `--cpu-budget <value>`. The child resolves
-    /// it at hydration (CLI > env > sysinfo) and broadcasts it in its
-    /// GossipDigest. Blank UI input → None → no flag passed → child
-    /// falls through to its own .env.dev value or sysinfo.
-    #[serde(default)]
-    cpu_budget: Option<f32>,
-    /// Same pattern for RAM budget in GB.
-    #[serde(default)]
-    ram_budget: Option<f32>,
+    mesh_id: String,
 }
 
 async fn handle_health() -> impl IntoResponse {
@@ -1152,7 +1127,7 @@ async fn handle_health() -> impl IntoResponse {
 }
 
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
-    let names: Vec<String> = state.lifecycle.processes().iter().map(|e| e.key().clone()).collect();
+    let names: Vec<String> = state.known.iter().map(|e| e.key().clone()).collect();
     let span = info_span!(
         "rafka.ui.spawned_list",
         count = names.len() as i64,
@@ -1217,7 +1192,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
         }));
     }
     // Pending entries (spawned, first digest not seen yet)
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         if !known_names.contains(entry.key()) {
             out.push(json!({
                 "node_name": entry.key(),
@@ -1252,7 +1227,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     }
     // Fallback: spawned_meta-only (no Jaeger enrichment yet)
     let mut out: Vec<Value> = Vec::new();
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         out.push(json!({
             "node_name": entry.key(),
             "node_type": entry.value().node_type,
@@ -1265,7 +1240,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     if !out.is_empty() {
         return (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response();
     }
-    let spawned: Vec<String> = state.lifecycle.processes().iter().map(|e| e.key().clone()).collect();
+    let spawned: Vec<String> = state.known.iter().map(|e| e.key().clone()).collect();
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -1277,7 +1252,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     let mut handles = Vec::with_capacity(spawned.len());
     for name in spawned {
         let state = state.clone();
-        let known_meta = state.lifecycle.spawned().get(&name).map(|e| e.value().clone());
+        let known_meta = state.known.get(&name).map(|e| e.value().clone());
         handles.push(tokio::spawn(async move {
             let node_type = known_meta
                 .as_ref()
@@ -1656,11 +1631,11 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // Pure local state — no Jaeger round-trips. The status banner polls this
     // every 3s; the Jaeger-backed version was 5+ serial queries adding 10s of
     // latency on every poll and starving the rest of the UI.
-    let spawned_count = state.lifecycle.processes().iter().count() as i64;
+    let spawned_count = state.known.iter().count() as i64;
     // EXCLUDE the "bridge" + "default" sentinels — those aren't real meshes,
     // they're "bridge has no mesh" / "node spawned without RAFKA_MESH_ID".
     let meshes: std::collections::HashSet<String> = state
-        .lifecycle.spawned()
+        .known
         .iter()
         .filter(|e| {
             let m = &e.value().mesh_id;
@@ -1675,8 +1650,7 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // Counts non-bridge nodes' actual peer counts.
     let mean_peers = {
         let snap: Vec<i64> = state
-            .lifecycle
-            .spawned()
+            .known
             .iter()
             .filter(|e| e.value().node_type != "bridge")
             .map(|_| 0i64) // placeholder; real values come from heartbeat enrichment
@@ -1923,11 +1897,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         let d = entry.value();
         // Look up spawn time so the UI can render a monotonic "age" (lifetime)
         // distinct from `wall_time_ms` which is per-digest emit time.
-        let spawn_time_ms = state
-            .lifecycle
-            .spawned()
-            .get(&d.node_name)
-            .map(|e| e.value().spawned_at_ms);
+        // Node-admin's view carries no spawn time; the digest's age stands.
+        let spawn_time_ms: Option<i64> = None;
         nodes.push(json!({
             "id": d.node_name,
             "node_id": d.node_id,
@@ -1950,7 +1921,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     // (they just spawned and their first digest hasn't arrived).
     let known_names: std::collections::HashSet<String> =
         digests.iter().map(|e| e.value().node_name.clone()).collect();
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         if !known_names.contains(entry.key()) {
             nodes.push(json!({
                 "id": entry.key(),
@@ -1962,7 +1933,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
                 "frames_sent_total": 0,
                 "frames_recv_total": 0,
                 "wall_time_ms": 0,
-                "spawn_time_ms": entry.value().spawned_at_ms,
+                "spawn_time_ms": Value::Null,
                 "cpu_used": 0.0,
                 "cpu_budget": 0.0,
                 "ram_used": 0.0,
@@ -1991,7 +1962,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         let d = entry.value();
         name_to_meta.insert(d.node_name.clone(), (d.mesh_id.clone(), d.node_type.clone()));
     }
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         if !name_to_meta.contains_key(entry.key()) {
             name_to_meta.insert(
                 entry.key().clone(),
@@ -2091,7 +2062,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     let mut nodes: Vec<Value> = Vec::new();
     let mut emitted_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         let name = entry.key().clone();
         let meta = entry.value();
         let live = name_to_id.get(&name).and_then(|id| id_to_live.get(id));
@@ -2129,8 +2100,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
     let mut edges: Vec<Value> = Vec::new();
     for (a, b) in &edge_set {
-        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -2369,8 +2340,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     // because Jaeger still has its frame.sent spans in the lookback window.
     let mut edges: Vec<Value> = Vec::new();
     for ((a, b), count) in &edge_counts {
-        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
         // Both endpoints MUST currently exist — drop ghosts from killed nodes.
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
@@ -2570,449 +2541,6 @@ async fn handle_heartbeat(
             axum::Json(json!({"error": "jaeger unreachable"})),
         ).into_response(),
     }
-}
-
-/// Shared spawn helper used by handle_spawn, handle_bootstrap, and the chaos
-/// loop. Returns the spawned node_name + pid on success, or an error string.
-/// Validate a node_name received from a URL path segment OR an operator-supplied
-/// body field. Must match the exact format `spawn_one` produces:
-/// `<type>-<8 lowercase hex>`. Rejects path traversal (`..`, `/`, `\`),
-/// uppercase, unicode, empty, oversize.
-fn is_valid_node_name(n: &str) -> bool {
-    let mut parts = n.splitn(2, '-');
-    let type_part = match parts.next() { Some(p) if !p.is_empty() => p, _ => return false };
-    let suffix = match parts.next() { Some(p) => p, _ => return false };
-    if !KNOWN_NODE_TYPES.contains(&type_part) {
-        return false;
-    }
-    if suffix.len() != 8 {
-        return false;
-    }
-    suffix.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-}
-
-/// Allow-list of `extra_env` keys an operator may inject into spawned children.
-/// Anything else is rejected with 400. Red-team round-2 F#2: prevents PATH,
-/// LD_PRELOAD, RAFKA_DATA_DIR (sandbox escape), etc.
-const ALLOWED_EXTRA_ENV_KEYS: &[&str] = &[
-    "RAFKA_MESH_ID",
-    "RAFKA_LINK_SLOW_MS",
-    "RAFKA_LINK_LOSS_PCT",
-    "RAFKA_CLOCK_SKEW_MS",
-    "RAFKA_NODE_BIND_ADDR",
-    "RAFKA_BRIDGE_TARGET_MESHES",
-    "RAFKA_AUTO_SHUTDOWN_SECS",
-    "RUST_LOG",
-];
-
-fn validate_extra_env(env: &HashMap<String, String>) -> Result<(), String> {
-    for k in env.keys() {
-        if !ALLOWED_EXTRA_ENV_KEYS.contains(&k.as_str()) {
-            return Err(format!(
-                "extra_env key '{k}' not in allow-list: {:?}",
-                ALLOWED_EXTRA_ENV_KEYS
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn is_safe_mesh_id(m: &str) -> bool {
-    // Allowed: LOWERCASE alphanumerics + dashes only, must start alphanumeric,
-    // len 1-64. Reject slashes, spaces, unicode, uppercase, dots — they break
-    // Jaeger query filtering, CSS class lookup, and gossip topic derivation
-    // (blake3 is byte-sensitive so "MESH-A" ≠ "mesh-a" → different topic).
-    // Red-team A#1: previously is_ascii_alphanumeric matched A-Z too.
-    if m.is_empty() || m.len() > 64 {
-        return false;
-    }
-    let is_safe_char = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-';
-    let is_safe_first = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
-    let mut chars = m.chars();
-    let first = chars.next().unwrap();
-    if !is_safe_first(first) {
-        return false;
-    }
-    chars.all(is_safe_char)
-}
-
-async fn spawn_one(
-    state: &AppState,
-    node_type: &str,
-    extra_env: HashMap<String, String>,
-    cpu_budget: Option<f32>,
-    ram_budget: Option<f32>,
-) -> Result<(String, u32), String> {
-    if !KNOWN_NODE_TYPES.contains(&node_type) {
-        return Err(format!("unknown node_type: {node_type}"));
-    }
-    // mesh_id is REQUIRED. "default" mesh shouldn't exist — every spawn
-    // must explicitly declare its mesh. This removes the fallback that
-    // silently created orphan nodes on the "default" gossip topic.
-    let mesh_id = extra_env
-        .get("RAFKA_MESH_ID")
-        .ok_or_else(|| {
-            "missing RAFKA_MESH_ID — every node must explicitly declare its mesh".to_string()
-        })?;
-    if !is_safe_mesh_id(mesh_id) {
-        return Err(format!(
-            "invalid mesh_id '{mesh_id}' — must match ^[a-z0-9][a-z0-9-]{{0,63}}$"
-        ));
-    }
-    // Red-team round-2 F#2 (defense-in-depth): re-validate extras inside
-    // spawn_one so chaos loop / bootstrap paths can't bypass the allow-list.
-    if let Err(e) = validate_extra_env(&extra_env) {
-        return Err(e);
-    }
-    // Red-team round-2 F#6: enforce pool cap inside spawn_one so the chaos
-    // loop's respawn path also obeys it (not just bootstrap). Otherwise
-    // crash-storm conditions could grow the pool past 50.
-    const POOL_CAP: usize = 50;
-    if state.lifecycle.spawned().iter().count() >= POOL_CAP {
-        return Err(format!("pool cap {POOL_CAP} reached — refusing spawn"));
-    }
-
-    let suffix: String = {
-        let mut rng = rand::thread_rng();
-        (0..8).map(|_| format!("{:x}", rng.gen::<u8>() & 0xf)).collect()
-    };
-    let node_name = format!("{}-{}", node_type, suffix);
-
-    let spawn_dir = state.lifecycle.spawn_dir(&node_name).to_string_lossy().into_owned();
-    if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
-        return Err(format!("failed to create spawn dir: {e}"));
-    }
-
-    // Default to debug builds (fast iteration). Set RAFKA_CHILD_BUILD_PROFILE=release
-    // to spawn release-optimized children — required for realistic per-node CPU
-    // numbers, since debug iroh-quinn-proto runs 5-20× slower than release. Real
-    // perf testing must use release; everyday dev iteration uses debug.
-    let profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
-        .unwrap_or_else(|_| "debug".to_string());
-    let binary = format!(
-        "{}/{}/rafka-{}{}",
-        state.cargo_target_dir, profile, node_type, std::env::consts::EXE_SUFFIX
-    );
-
-    let otlp = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4316".to_string());
-    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-
-    let mesh_id = extra_env
-        .get("RAFKA_MESH_ID")
-        .cloned()
-        .unwrap_or_else(|| "default".to_string());
-
-    // ---- pre-mint identity (so admin-ui knows the child's node_id) ----
-    let secret_key = iroh::SecretKey::generate();
-    let node_id_hex = secret_key.public().to_string();
-    let identity_json = serde_json::json!({
-        "secret_key_hex": hex::encode(secret_key.to_bytes())
-    });
-    let identity_path = std::path::PathBuf::from(&spawn_dir).join("node-identity.json");
-    if let Err(e) = tokio::fs::write(&identity_path, identity_json.to_string()).await {
-        return Err(format!("failed to write child identity: {e}"));
-    }
-
-    // ---- assign a unique bind port from the AppState pool ----
-    let bind_port = state
-        .next_bind_port
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let bind_addr_str = format!("127.0.0.1:{}", bind_port);
-
-    // ---- build seed list from already-spawned same-mesh nodes ----
-    // Admin-ui is ALWAYS prepended as the first seed so every child can
-    // dial back to admin-ui at boot. Admin-ui's NodeRuntime accept loop
-    // receives the connection; iroh-gossip HyParView then propagates peer
-    // info on every topic admin-ui is subscribed to (mesh-a, mesh-b, bridge),
-    // giving admin-ui visibility into every child's gossip digests.
-    // Additional same-mesh seeds follow so peers can also reach each other.
-    let admin_seed = format!(
-        "{}@127.0.0.1:{}",
-        state.admin_node_id_hex, state.admin_bind_port
-    );
-    let seeds_csv = {
-        let mut all_seeds = vec![admin_seed];
-        if node_type == "bridge" {
-            for target_mesh in ["mesh-a", "mesh-b"] {
-                if let Some(seed) = state
-                    .lifecycle.spawned()
-                    .iter()
-                    .find(|e| e.value().mesh_id == target_mesh)
-                    .map(|e| {
-                        format!(
-                            "{}@127.0.0.1:{}",
-                            e.value().node_id_hex,
-                            e.value().bind_port
-                        )
-                    })
-                {
-                    all_seeds.push(seed);
-                }
-            }
-        } else {
-            let same_mesh: Vec<String> = state
-                .lifecycle
-                .spawned()
-                .iter()
-                .filter(|e| e.value().mesh_id == mesh_id)
-                .take(2)
-                .map(|e| format!("{}@127.0.0.1:{}", e.value().node_id_hex, e.value().bind_port))
-                .collect();
-            all_seeds.extend(same_mesh);
-        }
-        all_seeds.join(",")
-    };
-
-    let mut cmd = tokio::process::Command::new(&binary);
-    // admin-ui's own load_env_dev_from at startup populates RAFKA_DEV_* in
-    // admin-ui's process env (so admin-ui broadcasts its own budget). By
-    // default tokio::process::Command inherits the parent env, which would
-    // leak admin-ui's RAFKA_DEV_CPU_BUDGET=2.0 into every spawned child
-    // and override the child's own .env.dev. Strip them so each child
-    // resolves its budget from its own .env.dev (or from the explicit CLI
-    // flags we add later in spawn_one).
-    cmd.env_remove("RAFKA_DEV_CPU_BUDGET")
-        .env_remove("RAFKA_DEV_RAM_BUDGET")
-        .env_remove("RAFKA_DEV_CPU_USED")
-        .env_remove("RAFKA_DEV_RAM_USED");
-    cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", &otlp)
-        .env("OTEL_SERVICE_NAME", node_type)
-        .env("RAFKA_DATA_DIR", &spawn_dir)
-        .env("RAFKA_NODE_NAME", &node_name)
-        .env("RUST_LOG", &rust_log);
-
-    for (k, v) in &extra_env {
-        cmd.env(k, v);
-    }
-
-    // ---- seed injection: set AFTER extra_env so admin-ui's values always win ----
-    // Disable mDNS for the child — we're using explicit seeds instead.
-    cmd.env("RAFKA_MDNS_ENABLE", "false");
-    // Assign the deterministic port we pre-allocated from the pool.
-    cmd.env("RAFKA_NODE_BIND_ADDR", &bind_addr_str);
-    if !seeds_csv.is_empty() {
-        cmd.env("RAFKA_SEED_NODES", &seeds_csv);
-    }
-
-    // Pass budgets as CLI flags (NOT env vars). The child binary parses
-    // these via rafka_node_base::parse_budget_cli_args(). The child
-    // resolves CLI > env > sysinfo at hydration; blank UI inputs upstream
-    // mean cpu_budget/ram_budget arrive as None here and no flag is added,
-    // so the child falls through to its own .env.dev or sysinfo defaults.
-    if let Some(c) = cpu_budget {
-        cmd.args(["--cpu-budget", &c.to_string()]);
-    }
-    if let Some(r) = ram_budget {
-        cmd.args(["--ram-budget", &r.to_string()]);
-    }
-
-    match cmd.spawn() {
-        Ok(child) => {
-            let pid = child.id().unwrap_or(0);
-            let spawned_at_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            state.lifecycle.register(
-                node_name.clone(),
-                child,
-                SpawnedMeta {
-                    node_type: node_type.to_string(),
-                    mesh_id: mesh_id.clone(),
-                    pid,
-                    node_id_hex: node_id_hex.clone(),
-                    bind_port,
-                    spawned_at_ms,
-                },
-            );
-            state.events.push(LocalEvent {
-                ts_us: now_us(),
-                kind: "node.spawn".to_string(),
-                node_name: Some(node_name.clone()),
-                node_type: Some(node_type.to_string()),
-                mesh_id: Some(mesh_id.clone()),
-                detail: Some(format!("pid={pid}")),
-            });
-            info_span!(
-                "rafka.ui.subprocess.spawned",
-                node_name = %node_name,
-                node_type = %node_type,
-                pid = pid,
-                "otel.kind" = "internal",
-            )
-            .in_scope(|| {
-                info!(node_name = %node_name, node_type = %node_type, pid, "subprocess spawned");
-            });
-            Ok((node_name, pid))
-        }
-        Err(e) => {
-            info_span!(
-                "rafka.ui.subprocess.spawn_failed",
-                node_name = %node_name,
-                node_type = %node_type,
-                error = %e,
-                "otel.kind" = "internal",
-            )
-            .in_scope(|| {
-                tracing::error!(error = %e, binary = %binary, "subprocess spawn failed");
-            });
-            Err(format!("spawn failed: {e}"))
-        }
-    }
-}
-
-async fn handle_spawn(
-    State(state): State<AppState>,
-    Json(body): Json<SpawnRequest>,
-) -> impl IntoResponse {
-    let mut extras = body.extra_env.unwrap_or_default();
-    // Red-team round-2 F#2: validate extra_env keys against allow-list.
-    if let Err(e) = validate_extra_env(&extras) {
-        return (StatusCode::BAD_REQUEST, axum::Json(json!({"error": e}))).into_response();
-    }
-    // Red-team A#1: validate body.mesh_id BEFORE injection. Previously
-    // spawn_one validated extras.RAFKA_MESH_ID — but the body.mesh_id path
-    // bypassed because we lowercased into extras after the validator already
-    // ran. Validate at the request edge so EVERY mesh_id source funnels
-    // through the same regex check.
-    if let Some(m) = body.mesh_id {
-        if !is_safe_mesh_id(&m) {
-            return (
-                StatusCode::BAD_REQUEST,
-                axum::Json(json!({
-                    "error": format!("invalid mesh_id '{m}' — must match ^[a-z0-9][a-z0-9-]{{0,63}}$")
-                })),
-            )
-                .into_response();
-        }
-        extras.insert("RAFKA_MESH_ID".to_string(), m);
-    }
-    match spawn_one(&state, &body.node_type, extras, body.cpu_budget, body.ram_budget).await {
-        Ok((node_name, pid)) => (
-            StatusCode::CREATED,
-            axum::Json(json!({"node_name": node_name, "pid": pid})),
-        )
-            .into_response(),
-        Err(e) => {
-            // Validation errors → 400; spawn-side I/O errors → 500.
-            let code = if e.starts_with("unknown node_type")
-                || e.starts_with("invalid mesh_id")
-            {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            (code, axum::Json(json!({"error": e}))).into_response()
-        }
-    }
-}
-
-/// POST /api/bootstrap — spawn the full two-mesh demo topology: 2 of each node
-/// type into mesh-a, the same into mesh-b, plus 2 bridges that don't carry a
-/// specific mesh tag (they bridge ALL meshes). Idempotent in spirit but each
-/// call adds another full set — the chaos loop / kill buttons remove drift.
-async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
-    // Red-team A#3: take the bootstrap mutex FIRST so concurrent callers
-    // queue. Then check the pool cap — second caller will see the actual
-    // post-first-bootstrap count. Without the mutex, 5 parallel callers all
-    // saw current=0, passed the check, and all spawned 18 → 90 total → tokio
-    // deadlock.
-    let _guard = state.bootstrap_mutex.lock().await;
-    let current = state.lifecycle.spawned().iter().count();
-    const POOL_CAP: usize = 50;
-    if current + 18 > POOL_CAP {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(json!({
-                "error": format!("pool cap {POOL_CAP} would be exceeded: current={current}, bootstrap=18"),
-                "current": current,
-                "cap": POOL_CAP,
-            })),
-        )
-            .into_response();
-    }
-    let mut spawned = Vec::new();
-    let mut errors = Vec::new();
-
-    let mesh_assignments: Vec<(&str, &[&str])> = vec![
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-a", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
-        ("mesh-b", &["gateway", "broker", "compute", "registry"]),
-    ];
-
-    for (mesh, types) in mesh_assignments {
-        for t in types {
-            let mut env = HashMap::new();
-            env.insert("RAFKA_MESH_ID".to_string(), mesh.to_string());
-            match spawn_one(&state, t, env, None, None).await {
-                Ok((name, _)) => spawned.push(name),
-                Err(e) => errors.push(e),
-            }
-            // Tiny stagger so PIDs don't collide on Windows FS namespace lookups.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    // 2 bridges — bridges live on the "bridge" mesh (their primary topic)
-    // AND subscribe to mesh-a + mesh-b via RAFKA_BRIDGE_TARGET_MESHES so
-    // they actually receive cross-mesh gossip. Without that env they're
-    // just orphan nodes on the bridge topic that no one watches.
-    for _ in 0..2 {
-        let mut env = HashMap::new();
-        env.insert("RAFKA_MESH_ID".to_string(), "bridge".to_string());
-        env.insert(
-            "RAFKA_BRIDGE_TARGET_MESHES".to_string(),
-            "mesh-a,mesh-b".to_string(),
-        );
-        match spawn_one(&state, "bridge", env, None, None).await {
-            Ok((name, _)) => spawned.push(name),
-            Err(e) => errors.push(e),
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    info_span!(
-        "rafka.ui.bootstrap",
-        spawned_count = spawned.len() as i64,
-        error_count = errors.len() as i64,
-        "otel.kind" = "internal",
-    )
-    .in_scope(|| info!(spawned = ?spawned, errors = ?errors, "bootstrap complete"));
-
-    (
-        StatusCode::CREATED,
-        axum::Json(json!({"spawned": spawned, "errors": errors})),
-    )
-        .into_response()
-}
-
-async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
-    let done = state.lifecycle.terminate(node_name).await?;
-    let pid = done.pid;
-    let reason = done.how.as_str();
-    let meta = done.meta;
-
-    state.events.push(LocalEvent {
-        ts_us: now_us(),
-        kind: "node.killed".to_string(),
-        node_name: Some(node_name.to_string()),
-        node_type: meta.as_ref().map(|m| m.node_type.clone()),
-        mesh_id: meta.as_ref().map(|m| m.mesh_id.clone()),
-        detail: Some(format!("{reason} pid={pid}")),
-    });
-
-    info_span!(
-        "rafka.ui.subprocess.killed",
-        node_name = %node_name,
-        pid = pid,
-        reason = reason,
-        "otel.kind" = "internal",
-    )
-    .in_scope(|| info!(node_name = %node_name, pid, reason, "subprocess killed"));
-
-    Ok(reason.to_string())
 }
 
 fn now_us() -> i64 {
@@ -3302,9 +2830,9 @@ fn chaos_state_json(state: &AppState) -> axum::Json<Value> {
     }))
 }
 
-/// Continuous chaos: every cadence_ms, pick a random non-bridge spawned node,
-/// kill it, then immediately respawn a same-type replacement in the same mesh.
-/// Bridges are protected so the network always has cross-mesh connectivity.
+/// Continuous chaos: every cadence_ms, pick a random live rpc node from
+/// node-admin's view and ask node-admin to restart it (a `RestartNode`
+/// Build). Node-admins are never chosen, so the fabric keeps its control.
 async fn chaos_loop(state: AppState) {
     loop {
         let cadence = state.chaos.cadence_ms.load(Ordering::SeqCst).max(1000);
@@ -3312,113 +2840,44 @@ async fn chaos_loop(state: AppState) {
         if !state.chaos.running.load(Ordering::SeqCst) {
             break;
         }
-
-        // Pick a random non-bridge from spawned_meta.
-        let candidates: Vec<(String, SpawnedMeta)> = state
-            .lifecycle
-            .spawned()
+        let Some(client) = state.admin.clone() else { continue };
+        let candidates: Vec<(String, KnownNode)> = state
+            .known
             .iter()
-            .filter(|e| e.value().node_type != "bridge")
+            .filter(|e| e.value().node_type == "rpc_node")
             .map(|e| (e.key().clone(), e.value().clone()))
             .collect();
         if candidates.is_empty() {
             continue;
         }
         let idx = rand::thread_rng().gen_range(0..candidates.len());
-        let (victim, meta) = &candidates[idx];
-
-        let victim_c = victim.clone();
-        let meta_c = meta.clone();
-        match kill_one(&state, &victim_c).await {
-            Ok(reason) => {
+        let (victim, meta) = candidates[idx].clone();
+        let Ok(node) = victim.parse::<PathName>() else { continue };
+        match client.restart(&node).await {
+            Ok(build_id) => {
                 state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
                 state.chaos.last_event_ts_us.store(now_us(), Ordering::SeqCst);
                 state.events.push(LocalEvent {
                     ts_us: now_us(),
-                    kind: "chaos.kill".to_string(),
-                    node_name: Some(victim_c.clone()),
-                    node_type: Some(meta_c.node_type.clone()),
-                    mesh_id: Some(meta_c.mesh_id.clone()),
-                    detail: Some(format!("chaos kill ({reason})")),
+                    kind: "chaos.restart".to_string(),
+                    node_name: Some(victim.clone()),
+                    node_type: Some(meta.node_type.clone()),
+                    mesh_id: Some(meta.mesh_id.clone()),
+                    detail: Some(format!("restart build {build_id}")),
                 });
                 info_span!(
-                    "rafka.ui.chaos.kill",
-                    node_name = %victim_c,
-                    node_type = %meta_c.node_type,
-                    mesh_id = %meta_c.mesh_id,
-                    reason = %reason,
+                    "rafka.ui.chaos.restart",
+                    node_name = %victim,
+                    mesh_id = %meta.mesh_id,
+                    build_id = %build_id,
                     "otel.kind" = "internal",
                 )
-                .in_scope(|| info!("chaos killed {victim_c}"));
+                .in_scope(|| info!("chaos asked node-admin to restart {victim}"));
             }
-            Err(e) => {
-                tracing::warn!(error = %e, victim = %victim_c, "chaos kill failed");
-                continue;
-            }
-        }
-
-        // Respawn replacement
-        let mut env = HashMap::new();
-        env.insert("RAFKA_MESH_ID".to_string(), meta_c.mesh_id.clone());
-        match spawn_one(&state, &meta_c.node_type, env, None, None).await {
-            Ok((new_name, _)) => {
-                state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
-                state.events.push(LocalEvent {
-                    ts_us: now_us(),
-                    kind: "chaos.respawn".to_string(),
-                    node_name: Some(new_name.clone()),
-                    node_type: Some(meta_c.node_type.clone()),
-                    mesh_id: Some(meta_c.mesh_id.clone()),
-                    detail: Some(format!("replaces {victim_c}")),
-                });
-                info_span!(
-                    "rafka.ui.chaos.respawn",
-                    node_name = %new_name,
-                    replaces = %victim_c,
-                    node_type = %meta_c.node_type,
-                    mesh_id = %meta_c.mesh_id,
-                    "otel.kind" = "internal",
-                )
-                .in_scope(|| info!("chaos respawned {new_name} replacing {victim_c}"));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "chaos respawn failed");
-            }
+            Err(e) => tracing::warn!(error = %e, victim = %victim, "chaos restart refused"),
         }
     }
     tracing::info!("chaos loop exited");
-}
-
-async fn handle_kill(
-    State(state): State<AppState>,
-    Path(node_name): Path<String>,
-) -> impl IntoResponse {
-    // Red-team round-2 F#1: validate the path segment FIRST before passing
-    // to kill_one. The processes DashMap guard would have rejected a crafted
-    // name anyway, but defense-in-depth requires we never construct a
-    // remove_dir_all() target from an unvalidated path component. Names are
-    // always `<type>-<8hex>` per spawn_one's naming convention.
-    if !is_valid_node_name(&node_name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": format!("invalid node_name '{node_name}' — must match ^(gateway|broker|compute|registry|bridge)-[0-9a-f]{{8}}$")})),
-        )
-            .into_response();
-    }
-    // Red-team A#7: DELETE is idempotent. A second call returning 404 broke
-    // operator retry loops; now we report 200 with reason="already_gone".
-    match kill_one(&state, &node_name).await {
-        Ok(reason) => (
-            StatusCode::OK,
-            axum::Json(json!({"node_name": node_name, "reason": reason})),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::OK,
-            axum::Json(json!({"node_name": node_name, "reason": "already_gone"})),
-        )
-            .into_response(),
-    }
 }
 
 async fn trace_middleware(req: Request, next: Next) -> Response {
@@ -3688,7 +3147,7 @@ async fn compute_snapshot(state: &AppState) -> TopologySnapshot {
     // Build nodes from spawned_meta + enrich with heartbeat data
     let mut nodes: Vec<Value> = Vec::new();
     let mut heartbeats: Vec<Value> = Vec::new();
-    for entry in state.lifecycle.spawned().iter() {
+    for entry in state.known.iter() {
         let name = entry.key().clone();
         let meta = entry.value();
         let pcount = *name_to_peer_count.get(&name).unwrap_or(&0);
@@ -3717,8 +3176,8 @@ async fn compute_snapshot(state: &AppState) -> TopologySnapshot {
     // Edges only between currently-spawned endpoints (filters ghost edges)
     let mut edges: Vec<Value> = Vec::new();
     for ((a, b), count) in &edge_counts {
-        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -3785,8 +3244,7 @@ async fn observer_task(state: AppState) {
         // Discover meshes via spawned_meta. Skip the "bridge" sentinel and
         // empty values — those aren't real meshes.
         let current: std::collections::HashSet<String> = state
-            .lifecycle
-            .spawned()
+            .known
             .iter()
             .map(|e| e.value().mesh_id.clone())
             .filter(|m| !m.is_empty() && m != "bridge")
@@ -3895,18 +3353,23 @@ async fn observer_task(state: AppState) {
     }
 }
 
-async fn reaper_loop(lifecycle: Arc<ProcessTable>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
+/// Keep `state.known` equal to node-admin's `GET /api/nodes`: the UI's
+/// read-only projection of what node-admin manages.
+async fn known_nodes_refresher(state: AppState) {
+    let Some(client) = state.admin.clone() else { return };
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
     loop {
         interval.tick().await;
-        for reaped in lifecycle.reap_exited().await {
-            tracing::info_span!(
-                "rafka.ui.subprocess.reaped",
-                node_name = %reaped.name,
-                exit_code = reaped.exit_code as i64,
-                "otel.kind" = "internal",
-            )
-            .in_scope(|| info!(node_name = %reaped.name, exit_code = reaped.exit_code, "subprocess reaped — exited without DELETE"));
+        match client.nodes().await {
+            Ok(nodes) => {
+                let names: std::collections::HashSet<String> = nodes.iter().map(|n| n.name.to_string()).collect();
+                state.known.retain(|k, _| names.contains(k));
+                for n in nodes {
+                    let kind = serde_json::to_value(n.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+                    state.known.insert(n.name.to_string(), KnownNode { node_type: kind, mesh_id: n.mesh });
+                }
+            }
+            Err(e) => tracing::info!(error = %e, "node-admin view unavailable"),
         }
     }
 }
@@ -4149,42 +3612,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     });
     tracing::info!(cargo_target_dir = %cargo_target_dir, "subprocess binary search root");
 
-    // Preflight: every KNOWN_NODE_TYPES binary must exist under
-    // {cargo_target_dir}/{profile}/, or spawn_one will silently return os
-    // error 2 from cmd.spawn() and bootstrap will report bogus errors.
-    // Two specific failure modes this catches:
-    //   - rafka-bridge was missing after `cargo build` ran without -p
-    //     rafka-bridge → bootstrap looked like "16 spawned, 2 errors"
-    //     and bridges never appeared in topology (caused
-    //     mesh-five-types-present + gossip-mesh-to-mesh to fail).
-    //   - CARGO_TARGET_DIR redirected to a stale build dir.
-    // Loud at startup beats silent at bootstrap. Honors
-    // RAFKA_CHILD_BUILD_PROFILE so release-built deployments preflight against
-    // {cargo_target_dir}/release/ instead of debug/.
-    {
-        let preflight_profile = std::env::var("RAFKA_CHILD_BUILD_PROFILE")
-            .unwrap_or_else(|_| "debug".to_string());
-        let mut missing: Vec<String> = Vec::new();
-        for nt in KNOWN_NODE_TYPES {
-            let p = format!("{cargo_target_dir}/{preflight_profile}/rafka-{nt}{}", std::env::consts::EXE_SUFFIX);
-            if !std::path::Path::new(&p).exists() {
-                missing.push(p);
-            }
-        }
-        if !missing.is_empty() {
-            eprintln!("[admin-ui] PREFLIGHT FAILURE: missing peer binaries:");
-            for p in &missing {
-                eprintln!("  - {p}");
-            }
-            eprintln!("[admin-ui] run: cargo build -p rafka-broker -p rafka-gateway -p rafka-compute -p rafka-registry -p rafka-bridge");
-            anyhow::bail!(
-                "preflight failed: {} peer binary/binaries missing under {}",
-                missing.len(),
-                cargo_target_dir
-            );
-        }
-        tracing::info!(types = ?KNOWN_NODE_TYPES, "preflight: all peer binaries present");
-    }
 
     let addr: SocketAddr = bind_addr.parse()?;
 
@@ -4201,16 +3628,13 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         http,
         jaeger_url,
         cargo_target_dir,
-        lifecycle: Arc::new(ProcessTable::new(spawn_root())),
+        admin: std::env::var("RAFKA_NODE_ADMIN_API_BASE").ok().filter(|b| !b.trim().is_empty()).map(NodeAdminClient::new),
+        known: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
         live: Arc::new(DashMap::new()),
         topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
-        bootstrap_mutex: Arc::new(tokio::sync::Mutex::new(())),
-        next_bind_port: Arc::new(std::sync::atomic::AtomicU16::new(16820)),
-        admin_node_id_hex: admin_node_id_hex.clone(),
-        admin_bind_port,
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -4256,10 +3680,10 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // (TODO next: expose those for HTTP read).
     let _live_observer_via_noderuntime = &node_handle;
 
-    let lifecycle_for_reaper = Arc::clone(&state.lifecycle);
-    supervise("reaper_loop", move || {
-        let l = Arc::clone(&lifecycle_for_reaper);
-        async move { reaper_loop(l).await }
+    let state_for_known = state.clone();
+    supervise("known_nodes_refresher", move || {
+        let s = state_for_known.clone();
+        async move { known_nodes_refresher(s).await }
     });
 
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
@@ -4276,7 +3700,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/nodes", get(handle_nodes))
         .route("/api/boot-trace", get(handle_boot_trace))
         .route("/api/heartbeat", get(handle_heartbeat))
-        .route("/api/nodes/spawn", post(handle_spawn))
         .route("/api/nodes/spawned", get(handle_spawned_list))
         .route("/api/topology", get(handle_topology))
         .route("/api/alerts", get(handle_alerts))
@@ -4286,15 +3709,14 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/heartbeats", get(handle_heartbeats))
         .route("/api/tests", get(handle_tests))
         .route("/api/cluster/summary", get(handle_cluster_summary))
-        .route("/api/bootstrap", post(handle_bootstrap))
         .route("/api/chaos/start", post(handle_chaos_start))
         .route("/api/chaos/stop", post(handle_chaos_stop))
         .route("/api/chaos/state", get(handle_chaos_state))
         .route("/api/tests/run", post(handle_test_run))
         .route("/api/messages", get(handle_messages))
-        .route("/api/nodes/{node_name}", delete(handle_kill))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
-        .with_state(state)
+        .with_state(state.clone())
+        .merge(control::router(state.admin.clone(), Arc::new(TimelineEvents(state.events.clone()))))
         .layer(middleware::from_fn(trace_middleware));
 
     info!("admin-ui listening on http://{addr}");

@@ -33,10 +33,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e6.s1 | #2767 | `a886ea808c` | Node RPC runtime (`rafka-node-rpc`); parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a MIRROR (rafka-v2 #2793) |
 | e2.s4 | #2746 | `6bb0abd0c1` | ContainerDeploymentProvider (`deployment/container.rs`): per-fabric bridge network, per-node `--ip`, netns bind check; CI `providers` job |
 | e2.s5 | #2747 | `d7c38b9f9d` | receipt-driven re-runs + retire pipeline; node two-phase shutdown; Leaving linger fix. Epic e2 closed |
+| e1.s5 | #2740 | `9b2a6b41` | fabric-projected Build state + BuildExecutor takeover; pinned intents; NeighborUp catch-up |
 
 ## In progress
 
-- e1.s5 drlukeangel/rafka-v2#2740 — fabric-projected Build + executor takeover (branch `i143-e1-s5`).
+- e1.s6 drlukeangel/rafka-v2#2741 — rafka-node-admin-client; Admin UI becomes its client (branch `i143-e1-s6`).
 
 ## Blockers
 

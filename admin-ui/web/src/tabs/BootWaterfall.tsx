@@ -28,7 +28,6 @@ export function BootWaterfall() {
   const [noTrace, setNoTrace] = useState(false);
   useEffect(() => {
     if (!pick) return;
-    setNoTrace(false);
     api
       .bootWaterfall(pick)
       .then((r) => {
@@ -50,6 +49,7 @@ export function BootWaterfall() {
           setNoTrace(true);
           setSpans([]);
         } else {
+          setNoTrace(false);
           setSpans([]);
         }
       });

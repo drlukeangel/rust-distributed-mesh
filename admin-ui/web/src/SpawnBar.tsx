@@ -1,17 +1,17 @@
 import { useEffect, useState } from "react";
-import { api, type NodeType } from "./api";
+import { api, type ManagedKind } from "./api";
 
-const TYPES: NodeType[] = ["gateway", "broker", "compute", "registry", "bridge"];
+/// What node-admin manages. Each button submits one Build to node-admin; the
+/// UI never starts or stops a runtime itself.
+const KINDS: ManagedKind[] = ["rpc_node", "node_admin"];
+
+const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function SpawnBar() {
-  const [mesh, setMesh] = useState("mesh-a");
+  const [mesh, setMesh] = useState("mesh1");
   const [chaosRunning, setChaosRunning] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
-  // Pure overrides. Blank = no extra_env entry → admin-ui spawn_one applies
-  // the per-crate .env.dev preset. Filled = override the preset for this spawn.
-  const [cpuOverride, setCpuOverride] = useState<string>("");
-  const [ramOverride, setRamOverride] = useState<string>("");
 
   useEffect(() => {
     api.chaosState()
@@ -26,35 +26,20 @@ export function SpawnBar() {
 
   const onMeshChange = (v: string) => {
     if (v === "__new__") {
-      const name = prompt("new mesh id (e.g. mesh-c)");
+      const name = prompt("mesh name (e.g. mesh2)");
       if (name && name.trim()) setMesh(name.trim());
     } else {
       setMesh(v);
     }
   };
 
-  const doSpawn = async (t: NodeType) => {
-    setBusy(`spawn-${t}`);
+  const doSpawn = async (kind: ManagedKind) => {
+    setBusy(`spawn-${kind}`);
     try {
-      // Blank inputs → no field sent → admin-ui adds no CLI flag → child
-      // binary's main() falls through to its .env.dev preset or sysinfo.
-      const opts: { cpu_budget?: number; ram_budget?: number } = {};
-      if (cpuOverride.trim() !== "") {
-        const c = parseFloat(cpuOverride.trim());
-        if (!Number.isNaN(c)) opts.cpu_budget = c;
-      }
-      if (ramOverride.trim() !== "") {
-        const r = parseFloat(ramOverride.trim());
-        if (!Number.isNaN(r)) opts.ram_budget = r;
-      }
-      const r = await api.spawn(t, mesh, opts);
-      const overridesNote =
-        cpuOverride || ramOverride
-          ? ` (overrides: cpu=${cpuOverride || "preset"} ram=${ramOverride || "preset"})`
-          : "";
-      note(`spawned ${r.node_name} into ${mesh}${overridesNote}`);
-    } catch (e: any) {
-      note(`spawn failed: ${e.message}`);
+      const r = await api.spawn(kind, mesh);
+      note(`add ${kind} to ${mesh}: build ${r.build_id}`);
+    } catch (e) {
+      note(`add ${kind} refused: ${reason(e)}`);
     } finally {
       setBusy(null);
     }
@@ -64,9 +49,9 @@ export function SpawnBar() {
     setBusy("bootstrap");
     try {
       const r = await api.bootstrap();
-      note(`bootstrapped ${r.spawned.length} nodes`);
-    } catch (e: any) {
-      note(`bootstrap failed: ${e.message}`);
+      note(`bootstrap: build ${r.build_id}`);
+    } catch (e) {
+      note(`bootstrap refused: ${reason(e)}`);
     } finally {
       setBusy(null);
     }
@@ -78,8 +63,8 @@ export function SpawnBar() {
       const next = chaosRunning ? await api.chaosStop() : await api.chaosStart();
       setChaosRunning(next.running);
       note(next.running ? "chaos started" : "chaos stopped");
-    } catch (e: any) {
-      note(`chaos toggle failed: ${e.message}`);
+    } catch (e) {
+      note(`chaos toggle failed: ${reason(e)}`);
     } finally {
       setBusy(null);
     }
@@ -89,49 +74,14 @@ export function SpawnBar() {
     <div className="spawn-bar">
       <label className="muted">mesh:</label>
       <select value={mesh} onChange={(e) => onMeshChange(e.target.value)}>
-        <option value="mesh-a">mesh-a (primary)</option>
-        <option value="mesh-b">mesh-b (secondary)</option>
-        {mesh !== "mesh-a" && mesh !== "mesh-b" && (
-          <option value={mesh}>{mesh}</option>
-        )}
-        <option value="__new__">+ new mesh…</option>
+        <option value="mesh1">mesh1</option>
+        {mesh !== "mesh1" && <option value={mesh}>{mesh}</option>}
+        <option value="__new__">+ other mesh…</option>
       </select>
 
-      <label
-        className="muted"
-        title="override cpu budget for the NEXT spawn (cores, fractional ok). leave blank to use the per-crate .env.dev preset."
-      >
-        cpu:
-      </label>
-      <input
-        style={{ width: 50 }}
-        placeholder="preset"
-        value={cpuOverride}
-        onChange={(e) => setCpuOverride(e.target.value)}
-        inputMode="decimal"
-      />
-      <label
-        className="muted"
-        title="override ram budget for the NEXT spawn (GB, fractional ok). leave blank to use the per-crate .env.dev preset."
-      >
-        ram:
-      </label>
-      <input
-        style={{ width: 50 }}
-        placeholder="preset"
-        value={ramOverride}
-        onChange={(e) => setRamOverride(e.target.value)}
-        inputMode="decimal"
-      />
-      <span className="muted" style={{ fontSize: "0.75rem" }}>gb</span>
-
-      {TYPES.map((t) => (
-        <button
-          key={t}
-          disabled={busy === `spawn-${t}`}
-          onClick={() => doSpawn(t)}
-        >
-          + {t}
+      {KINDS.map((k) => (
+        <button key={k} disabled={busy === `spawn-${k}`} onClick={() => doSpawn(k)}>
+          + {k}
         </button>
       ))}
       <span style={{ flex: 1 }} />
@@ -139,14 +89,15 @@ export function SpawnBar() {
         className="primary"
         disabled={busy === "bootstrap"}
         onClick={doBootstrap}
-        title="Spawn full two-mesh topology (4×each type per mesh + 2 bridges)"
+        title="Reconcile the fabric to the MN shape: mesh1 with 2 node-admins and 3 rpc nodes"
       >
-        bootstrap 2-mesh
+        bootstrap MN
       </button>
       <button
         className={chaosRunning ? "danger" : "warn"}
         disabled={busy === "chaos"}
         onClick={toggleChaos}
+        title="Every cadence, ask node-admin to restart a random rpc node"
       >
         {chaosRunning ? "stop chaos" : "start chaos"}
       </button>

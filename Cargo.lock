@@ -3394,6 +3394,7 @@ dependencies = [
  "futures-lite",
  "hex",
  "http",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "iroh",
@@ -3402,7 +3403,9 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "postcard",
+ "rafka-mesh-entity",
  "rafka-mesh-transport",
+ "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-base",
  "rafka-telemetry",
@@ -3527,6 +3530,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-node-admin-client"
+version = "0.1.0"
+dependencies = [
+ "rafka-mesh-entity",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rafka-node-admin-core"
 version = "0.1.0"
 dependencies = [
@@ -3542,6 +3555,7 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "rafka-mesh-entity",
+ "rafka-node-admin-client",
  "rafka-telemetry",
  "rand 0.8.6",
  "serde",

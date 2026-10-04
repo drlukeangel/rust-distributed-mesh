@@ -1,0 +1,12 @@
+[package]
+name = "rafka-node-admin-client"
+version = "0.1.0"
+edition = "2021"
+description = "Typed client and DTOs for the node-admin control API (Build, nodes, meshes, fabric)"
+publish = false
+
+[dependencies]
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+reqwest = { version = "0.13.3", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -114,6 +114,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
 | `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
+| `rafka.ui.build.create.via-node-admin` (the Admin UI submitted a Build) | `what`, `build_id` |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
 | `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire`), `build_id`, `provider`, `node`, `attempt`, `restart` |
@@ -324,9 +325,10 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rafka.mesh.peer.discovered` + `rafka.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
 | `RAFKA_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, node shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
 | `RAFKA_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the `rafka-topology-ui` HTTP server binds to. Override to expose on a different interface or port. |
+| `RAFKA_NODE_ADMIN_API_BASE` | _(unset)_ | The node-admin control API the Admin UI drives (the URL node-admin prints). The UI submits every topology change there as a Build through `rafka-node-admin-client`; unset, its spawn/restart/remove/bootstrap routes answer `503 no-node-admin`. |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Base URL of the Jaeger Query API. Used by `rafka-topology-ui` (chunk 2+) to fetch trace data for the boot-waterfall panel. |
 | `CARGO_TARGET_DIR` | `./target` | Read by `rafka-topology-ui` to locate node binaries for spawn. Set to `E:/cargo-target-sprint-02` in local dev so the UI can find debug builds without a separate install step. |
-| `RAFKA_DEPLOYMENT` | `prod` | One of `dev`, `staging`, `prod`. Gates all `RAFKA_DEV_*` overrides. Defaults to `prod` so a production manifest gets safe behavior without explicit setting. Set to `dev` automatically by admin-ui for every spawned child. |
+| `RAFKA_DEPLOYMENT` | `prod` | One of `dev`, `staging`, `prod`. Gates all `RAFKA_DEV_*` overrides. Defaults to `prod` so a production manifest gets safe behavior without explicit setting. |
 | `RAFKA_DEV_CPU_BUDGET` | _(measured via sysinfo)_ | Override the reported `cpu_budget` field in `GossipDigest` (cores, fractional). Honored only when `RAFKA_DEPLOYMENT != prod`. Used by per-crate `.env.dev` to give heterogeneous test brokers different CPU profiles. |
 | `RAFKA_DEV_RAM_BUDGET` | _(measured via sysinfo)_ | Override reported `ram_budget` in GB. Same gating as `RAFKA_DEV_CPU_BUDGET`. |
 | `RAFKA_DEV_CPU_USED` | _(measured via sysinfo)_ | Override reported `cpu_used` in cores. For deterministic routing/migration test scenarios (broker reports 95% load without actually being loaded). Same gating. |
