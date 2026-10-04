@@ -113,6 +113,10 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
+| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create`), `build_id`, `provider`, `node`, `restart` |
+| `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome`, `elapsed_ms` |
+| `rafka.mesh.node.create.via-deployment` (rpc node boot; parent: launch `TRACEPARENT`) | `node`, `node_id`, `incarnation_id`, `kind` |
+| `rafka.mesh.node.delete.via-signal` | `node`, `incarnation_id` |
 | `rafka.node_rpc.request.serve.via-direct` | `protocol`, `tag`, `peer`, `slot` (parent: the request's `traceparent`) |
 | `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` / `via-protocol-violation` | `tag`, `slot`, `reason` / `kind` |
 | `rafka.node_rpc.request.reject.via-busy` (DEBUG: refusal storms are counters) | `tag`, `reason` |
@@ -325,6 +329,14 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_DEV_RAM_USED` | _(measured via sysinfo)_ | Override reported `ram_used` in GB. Same gating. |
 | `RAFKA_CPU_ALERT_THRESHOLD` | `0.10` | Cores. Admin-ui `/api/alerts` emits a warn-severity alert for any node whose latest `GossipDigest.cpu_used` exceeds this. Release-build empty-shell baseline is ~0.02 cores; default 0.10 = ~5× headroom. Read once per `/api/alerts` request. |
 | `RAFKA_RAM_ALERT_THRESHOLD_GB` | `0.5` | GB. Same shape as `RAFKA_CPU_ALERT_THRESHOLD` but for `ram_used`. Release baseline ~0.06 GB; default 0.5 = ~8× headroom. |
+| `RAFKA_ENDPOINT_PORT_RANGE` | `41000-48999` | Node-admin's advertised-endpoint port range on `127.0.0.1` (`<first>-<last>`). Every slot a provider launches is assigned from it; a port another process holds is skipped. |
+| `RAFKA_EVIDENCE_DIR` | _(unset = no JSONL)_ | When set, every i143 binary writes its spans as JSONL to `<dir>/<service>.<pid>.spans.jsonl` (the blackbox evidence). OTLP export stays on `OTEL_EXPORTER_OTLP_ENDPOINT`. |
+| `RAFKA_FABRIC` | _(required, rpc node)_ | The fabric an rpc node joins; names its gossip membership topic. Written by node-admin at launch; an empty value is refused. |
+| `RAFKA_NODE_NAME` / `RAFKA_NODE_ID` / `RAFKA_INCARNATION_ID` | _(required, rpc node)_ | The node's `path.name` (`mesh1.rpc.2`), minted node id and this birth's incarnation id, assigned by node-admin. |
+| `RAFKA_SUPERSEDES` | _(unset = first birth)_ | The incarnation a restart replaces. |
+| `RAFKA_ENDPOINTS` | _(required, rpc node)_ | Comma-separated `slot=addr=freshness` the node must bind exactly; a provider never invents a port. |
+| `RAFKA_SEEDS` | _(empty)_ | Comma-separated `<public key>@<addr>` gossip members to join membership through. |
+| `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 

@@ -28,11 +28,12 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e2.s1 | #2743 | `e042a0a2e3` | MESH_SPAWN_TYPE fabric policy, provider-in-Build refusal |
 | e2.s2 | #2744 | `67a875dba8` | endpoint allocator + WaitForBind (`deployment/endpoint.rs`); node-admin-core reuses Mesh EF types |
 | e3.s1 | #2749 | `706ec022c1` | LifecycleTransitionPipeline (`lifecycle.rs`) |
+| e3.s2 | #2750 | `d71cded544` | Lifecycle hooks + receipts |
+| e6.s1 | #2767 | `a886ea808c` | Node RPC runtime (`rafka-node-rpc`); parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a MIRROR (rafka-v2 #2793) |
 
 ## In progress
 
-- e3.s2 drlukeangel/rafka-v2#2750 — PR drlukeangel/rust-distributed-mesh#18.
-- e6.s1 drlukeangel/rafka-v2#2767 — Node RPC runtime (branch `i143-e6-s1`); after merge flip parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a to MIRROR.
+- e2.s3 drlukeangel/rafka-v2#2745 — process provider + create DeploymentPipeline (branch `i143-e2-s3`).
 
 ## Blockers
 

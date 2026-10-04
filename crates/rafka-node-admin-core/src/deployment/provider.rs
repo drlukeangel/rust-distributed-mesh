@@ -75,6 +75,81 @@ pub fn build_names_a_provider(body: &serde_json::Value) -> bool {
         || body.get("meshes").and_then(|m| m.as_array()).is_some_and(|ms| ms.iter().any(|m| m.get("provider").is_some()))
 }
 
+
+// ---------------------------------------------------------------------------
+// The provider contract (mesh-control-plane.md §6). A provider realises or
+// retires one runtime from an already-resolved launch; it decides nothing.
+// ---------------------------------------------------------------------------
+
+use crate::model::{DeploymentId, EndpointSlot, PathName};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+/// Everything already decided by node-admin: identity, endpoints, storage, env.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedNodeLaunch {
+    pub node: PathName,
+    pub deployment_id: DeploymentId,
+    pub executable: PathBuf,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub data_dir: PathBuf,
+    /// The advertised endpoints the runtime must bind. The provider honours
+    /// them; it never invents one.
+    pub endpoints: Vec<EndpointSlot>,
+}
+
+/// A realised runtime.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeploymentHandle {
+    pub deployment_id: DeploymentId,
+    pub provider: ProviderKind,
+    /// Process id (process provider).
+    pub pid: Option<u32>,
+    /// Container name (container provider).
+    pub container: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationMode {
+    /// SIGTERM (or the provider's stop), then a forced kill after `grace`.
+    Graceful { grace: std::time::Duration },
+    Immediate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeploymentStatus {
+    Running,
+    Exited { code: Option<i32> },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployError {
+    Spawn { node: String, reason: String },
+    Terminate { deployment: String, reason: String },
+    /// The provider cannot run on this host (named, never a silent pass).
+    Unsupported { provider: ProviderKind, reason: String },
+}
+
+impl std::fmt::Display for DeployError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn { node, reason } => write!(f, "deploying {node} failed: {reason}"),
+            Self::Terminate { deployment, reason } => write!(f, "terminating deployment {deployment} failed: {reason}"),
+            Self::Unsupported { provider, reason } => write!(f, "{provider:?} provider is unsupported on this host: {reason}"),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait DeploymentProvider: Send + Sync {
+    fn kind(&self) -> ProviderKind;
+    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
+    async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
+    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

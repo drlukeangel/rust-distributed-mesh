@@ -14,3 +14,5 @@ opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry-http = "0.27"
 http = "1"
 tracing-flame = "0.2.0"
+serde_json = { workspace = true }
+futures-util = "0.3"
