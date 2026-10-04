@@ -100,7 +100,8 @@ measured for MM losing mesh1).
 | `RAFKA_MESH` | `rafka-node-admin` | the mesh this admin belongs to, default `mesh1` |
 | `RAFKA_DATA_DIR` | every binary | node data dir: identity, journal, proof store |
 | `RAFKA_NODE_ADMIN_API_BIND` | `rafka-node-admin` | HTTP bind, default `127.0.0.1:0` |
-| `RAFKA_NODE_ADMIN_JOIN` | spawned `rafka-node-admin` | control API base of an admin already in the fabric |
+| `RAFKA_NODE_ADMIN_LAUNCHER` | spawned `rafka-node-admin` | path name of the admin that launched it; the new admin joins over the mesh (its seeds), never over HTTP |
+| `RAFKA_NODE_ADMIN_EXPECT` | spawned `rafka-node-admin` | path names the launcher's view held live at launch; the new admin executes no Build before it has heard them (bounded at 30 s) |
 | `RAFKA_BIN_DIR` | `rafka-node-admin` | where `rafka-node-admin` / `rafka-rpc-node` live; default: beside the running exe |
 | `RAFKA_EVIDENCE_DIR` | every binary | when set, every process writes its spans as JSONL here and passes the var to its children |
 | `TRACEPARENT` | every spawned binary | W3C parent of the process's boot span: the deployment step that launched it |
