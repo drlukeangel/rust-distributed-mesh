@@ -28,3 +28,6 @@ docs/superpowers/
 
 # node_modules (also under admin-ui/web)
 node_modules/
+
+# e2e evidence written by canary runs
+crates/*/tests/artifacts/

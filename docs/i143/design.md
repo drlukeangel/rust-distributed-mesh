@@ -1,0 +1,155 @@
+# i143 — the generic Mesh product in RDM: working design
+
+Plan: rafka-v2 `docs/plans/i143-node-rpc-pos-on-RDM.md` (the PRD). Architecture:
+rafka-v2 `docs/architecture/{node-rpc-rdm-ownership,mesh-control-plane,node-rpc,connections}.md`.
+This doc states the concrete RDM contracts the stories build to: binaries, the control API,
+the node view, the probe, the evidence files and the span names. Where the PRD is silent this doc
+decides; where they differ the PRD wins and this doc is corrected.
+
+## 1. Packages and binaries
+
+| package | owns | binary |
+|---|---|---|
+| `rafka-node-rpc-contract` | framing, `RpcOutcome`, reply classes, reserved codes, catalog/seal, certainty rules; no Iroh | — |
+| `rafka-mesh-entity` | Mesh EF: logical node id, runtime incarnation, endpoint slots + freshness tokens, membership; imported connections model | — |
+| `rafka-node-rpc` | runtime over `rafka-mesh-transport`: server dispatch, client commit cut, admission, slot-aware pool, streaming, one-hop carried execution | — |
+| `rafka-node-admin-core` | Fabric/Mesh/Node model, Build, `BuildStateAdapter`, deployment providers/pipelines, lifecycle transitions, elections, HTTP | `rafka-node-admin` |
+| `rafka-node-admin-client` | typed DTOs + HTTP client for the control API | — |
+| `rafka-node-rpc-testkit` | Echo + stateful proof protocol/store, probes | `rafka-rpc-node`, `rafka-rpc-probe` |
+| `rafka-test-scenario` | scenario runner, evidence/replay manifests, the e2e canaries | `rafka-scenario` |
+| `rafka-chaos` | hostile layers: generator/shrinker, failpoints, simulated network/time, real fault backends | — |
+
+Proof shapes use exactly two node kinds: `node_admin` and `rpc_node`. Legacy role binaries are never
+proof-shape nodes (`docs/i143/e0-workspace-audit.md`).
+
+## 2. Names and identities
+
+| fact | form | survives restart | survives replacement |
+|---|---|---|---|
+| `path.name` | `<mesh>.<kind>.<ordinal>`, kind `admin` or `rpc`: `mesh1.rpc.2`, `mesh1.admin.1` | yes | yes (points at the replacement) |
+| `node_id` | logical node identity minted at `AllocateIdentity`, opaque | yes | no |
+| `fabric_id` | the node's Iroh key, kept in its data dir | yes | no |
+| `incarnation_id` | minted by node-admin for every process birth, opaque | no | no |
+| endpoint slot | `{slot, addr, freshness}`; freshness is an opaque token minted with each slot assignment | per slot policy | no |
+
+Freshness and incarnation tokens are compared by equality/supersession only, never ordered.
+
+An `rpc_node` has two Node RPC endpoint slots:
+
+- `rpc-0`, policy `fresh`: every process birth gets a newly allocated port and a new token;
+- `rpc-1`, policy `stable`: a restart keeps the advertised port and its token, and a replacement gets
+  new ones.
+
+A restart therefore always moves exactly one slot. That makes the per-slot supersession rules (PRD §1.19,
+§14) observable on every restart.
+
+## 3. Process contract (environment only)
+
+| var | read by | meaning |
+|---|---|---|
+| `MESH_SPAWN_TYPE` | first `rafka-node-admin` | `process` or `container`; any other value refuses startup |
+| `RAFKA_FABRIC` | `rafka-node-admin` (bootstrap) | fabric name, default `fabric1` |
+| `RAFKA_MESH` | `rafka-node-admin` | the mesh this admin belongs to, default `mesh1` |
+| `RAFKA_DATA_DIR` | every binary | node data dir: identity, journal, proof store |
+| `RAFKA_NODE_ADMIN_API_BIND` | `rafka-node-admin` | HTTP bind, default `127.0.0.1:0` |
+| `RAFKA_NODE_ADMIN_JOIN` | spawned `rafka-node-admin` | control API base of an admin already in the fabric |
+| `RAFKA_BIN_DIR` | `rafka-node-admin` | where `rafka-node-admin` / `rafka-rpc-node` live; default: beside the running exe |
+| `RAFKA_EVIDENCE_DIR` | every binary | when set, every process writes its spans as JSONL here and passes the var to its children |
+| `TRACEPARENT` | every spawned binary | W3C parent of the process's boot span: the deployment step that launched it |
+
+A node-admin that is serving prints exactly one stdout line `RAFKA_NODE_ADMIN_API_BASE=<url>` and writes
+`<data_dir>/node-admin.json` with the same `api_base`.
+
+## 4. Control API (PRD §7)
+
+Every topology mutation returns `202 {"build_id": "..."}` and does nothing else on the request path.
+
+```text
+POST   /api/build                 {"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}
+GET    /api/builds?id=<build_id>  {"build_id", "state": "pending|running|complete|failed", "intent", "attempt", "executor", "steps": [...]}
+DELETE /api/builds?id=<build_id>  Build-history administration only
+POST   /api/nodes/spawn           {"mesh": "mesh1", "kind": "rpc_node"}
+DELETE /api/nodes/<path.name>
+POST   /api/nodes/<path.name>/restart
+GET    /api/nodes                 {"nodes": [NodeView]}
+GET    /api/meshes/<id|name>      MeshView
+GET    /api/fabric                FabricView
+POST   /api/meshes                optional thin CreateMesh Build proxy
+DELETE /api/meshes/<id|name>      thin RemoveMesh Build proxy
+POST   /api/shutdown              runtime administration, not Build
+```
+
+`NodeView`:
+
+```json
+{
+  "name": "mesh1.rpc.2", "kind": "rpc_node", "mesh": "mesh1",
+  "node_id": "...", "fabric_id": "...", "incarnation_id": "...",
+  "deployment_id": "...", "provider": "process", "data_dir": "...",
+  "status": "pending|ready-for-traffic|draining|leaving|dead",
+  "is_primary": false, "is_fabric_primary": false,
+  "admin_api_base": null,
+  "endpoints": [{"slot": "rpc-0", "addr": "127.0.0.1:41001", "freshness": "..."}]
+}
+```
+
+`FabricView` and `MeshView` carry the live owning node-admin `admin_api_base` (PRD §1.16). Callers switch
+control endpoints only from these views.
+
+## 5. Probe (`rafka-rpc-probe`)
+
+```text
+rafka-rpc-probe --admin <api_base> <op> --target exact:<node_id>|path:<path.name> --key <u64>
+               [--value <s>] [--expected <s>] [--pin <slot>=<freshness>] [--cut-before-finish]
+op = put | get | delete | cas | echo
+```
+
+It prints one JSON line:
+
+```json
+{"outcome": "Reply|NotSent|Unserved|Indeterminate", "reason": "...",
+ "reply": {"executing_node": "...", "executing_mesh": "...", "incarnation_id": "...",
+           "slot": "rpc-0", "freshness": "...", "op": "put", "result": {...}}}
+```
+
+`--pin <slot>=<token>` asks the client to dial exactly that slot under that freshness token; a superseded
+token is refused pre-commit (`NotSent`, reason `superseded`). `--cut-before-finish` writes part of the request
+frame and then resets the stream (the 499 cut, PRD §1.18).
+
+## 6. Evidence
+
+With `RAFKA_EVIDENCE_DIR` set, each process appends finished spans to
+`<dir>/<service>.<pid>.spans.jsonl`, one JSON object per line:
+
+```json
+{"trace_id": "...", "span_id": "...", "parent_span_id": "...", "name": "...",
+ "service": "...", "start_unix_nano": 0, "end_unix_nano": 0, "attributes": {"build_id": "..."}}
+```
+
+Causality is asserted by `parent_span_id` only, never by timestamp enclosure (PRD §16). The
+`TRACEPARENT` handed to a spawned process makes the process boot span a child of the deployment step that
+launched it.
+
+E2E artifacts land under `tests/artifacts/<feature>/<test>/` in the owning crate: `manifest.json`
+(product/feature/subfeature/rung/provider/seed), `build-request.json`, `build-status.json`,
+`nodes-before.json`, `nodes-after.json`, `rpc-ledger.jsonl`, `spans/` and `trace-url.txt`.
+
+## 7. Span names (PRD §16)
+
+Five segments, `rafka.<component>.<entity>.<action>.<reason>`, whitelist verbs only.
+
+| span | where |
+|---|---|
+| `rafka.node_admin.build.create.via-rest` | a control route accepted a Build |
+| `rafka.node_admin.build.reject.via-<reason>` | a Build refused by name (`via-provider-mismatch`, `via-invalid-intent`, ...) |
+| `rafka.node_admin.build.update.via-reconcile` | one executor attempt reconciling desired − observed |
+| `rafka.node_admin.node.create.via-build` / `node.update.via-build` / `node.delete.via-permanent-release` | per-node Build operation |
+| `rafka.node_admin.deployment.update.via-pipeline` | one create/retire pipeline run (attrs `build_id`, `provider`) |
+| `rafka.node_admin.deployment.update.via-step` | one pipeline step (attrs `step`, `build_id`, `provider`, `outcome`, `attempt`, `elapsed_ms`) |
+| `rafka.mesh.node.create.via-deployment` | a spawned process's boot span (parent: the `DeployRuntime` step) |
+| `rafka.mesh.election.resolve.via-recompute` / `via-fabric-recompute` | election outcomes |
+| `rafka.node_rpc.request.serve.via-direct` | a dispatched invocation |
+| `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` | refusals |
+
+New entities (`build`, `deployment`, `lifecycle_hook`) are recorded in `CLAUDE.md`'s span table in the
+commit that first emits them.
