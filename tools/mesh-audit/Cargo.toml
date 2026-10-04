@@ -7,3 +7,10 @@ publish = false
 
 [dependencies]
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
+
+[[bin]]
+name = "parity-scan"
+path = "src/bin/parity_scan.rs"

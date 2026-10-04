@@ -5,6 +5,7 @@
 //! so one run names the whole gap.
 
 pub mod legacy;
+pub mod parity;
 
 use std::path::{Path, PathBuf};
 
