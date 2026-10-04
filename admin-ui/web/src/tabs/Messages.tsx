@@ -8,6 +8,8 @@ export function Messages() {
   const [msgs, setMsgs] = useState<MeshMessage[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  // Ages are relative to the last poll, not to whenever React renders.
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (paused) return;
@@ -18,6 +20,7 @@ export function Messages() {
         .then((r) => {
           if (!cancelled) {
             setMsgs(r.messages ?? []);
+            setNow(Date.now());
             setErr(null);
           }
         })
@@ -30,8 +33,6 @@ export function Messages() {
       clearInterval(id);
     };
   }, [paused]);
-
-  const now = Date.now();
 
   return (
     <div className="flex flex-col gap-2">
