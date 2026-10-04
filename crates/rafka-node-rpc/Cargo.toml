@@ -1,0 +1,18 @@
+[package]
+name = "rafka-node-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "Generic Node RPC runtime over Iroh: exact-target client/server, commit cut, admission (i143)"
+publish = false
+
+[dependencies]
+rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rafka-telemetry = { path = "../rafka-telemetry" }
+iroh = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

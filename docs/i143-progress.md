@@ -26,11 +26,13 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e5.s3 | #2765 | `849be45d33` | dispatch + certainty cells (`dispatch.rs`); epic e5 closed |
 | e1.s4 | #2739 | `8ff002391f` | control routes submit Build (`http.rs`), traceparent helpers |
 | e2.s1 | #2743 | `e042a0a2e3` | MESH_SPAWN_TYPE fabric policy, provider-in-Build refusal |
+| e2.s2 | #2744 | `67a875dba8` | endpoint allocator + WaitForBind (`deployment/endpoint.rs`); node-admin-core reuses Mesh EF types |
+| e3.s1 | #2749 | `706ec022c1` | LifecycleTransitionPipeline (`lifecycle.rs`) |
 
 ## In progress
 
-- e3.s1 drlukeangel/rafka-v2#2749 — PR drlukeangel/rust-distributed-mesh#16.
-- e2.s2 drlukeangel/rafka-v2#2744 — endpoint allocator (branch `i143-e2-s2`).
+- e3.s2 drlukeangel/rafka-v2#2750 — PR drlukeangel/rust-distributed-mesh#18.
+- e6.s1 drlukeangel/rafka-v2#2767 — Node RPC runtime (branch `i143-e6-s1`); after merge flip parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a to MIRROR.
 
 ## Blockers
 

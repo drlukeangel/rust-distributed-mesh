@@ -229,6 +229,44 @@ impl PreCommit {
     pub fn commit(self, _proof: RequestFinished) -> Committed {
         Committed { tag: self.tag }
     }
+
+    /// The server stopped the request direction (`422 REQUEST_STOP`) before
+    /// this caller finished it: an early typed refusal (TooLarge, Busy,
+    /// Draining, ...). The request never had its FIN, so it was never
+    /// dispatched; a valid typed reply is that refusal (node-rpc.md §27).
+    pub fn stopped_before_finish(self) -> EarlyRefusal {
+        EarlyRefusal { tag: self.tag }
+    }
+
+    /// The receiver answered the unfinished request with `421 UNSERVED_TAG`:
+    /// proof that its tag was never dispatched.
+    pub fn unserved_before_finish<R>(self) -> RpcOutcome<R> {
+        RpcOutcome::Unserved(Unserved { tag: self.tag })
+    }
+}
+
+/// A request the server refused before the caller could finish it.
+#[derive(Debug)]
+pub struct EarlyRefusal {
+    tag: u8,
+}
+
+impl EarlyRefusal {
+    pub fn tag(&self) -> u8 {
+        self.tag
+    }
+
+    /// A valid typed reply is the refusal (`Reply`); without one the request
+    /// is still provably undispatched (`NotSent`).
+    pub fn reply<P: NodeProtocol>(self, reply_payload: Option<&[u8]>) -> RpcOutcome<P::Reply> {
+        match reply_payload.map(P::decode_reply) {
+            Some(Ok(value)) => {
+                let class = P::classify_reply(&value);
+                RpcOutcome::Reply(Replied { value, class })
+            }
+            _ => RpcOutcome::NotSent(NotSent { reason: NotSentReason::FrameNotSent }),
+        }
+    }
 }
 
 impl Committed {
@@ -288,6 +326,15 @@ mod tests {
         let (code, cut): (_, RpcOutcome<EchoReply>) = PreCommit::begin(0x11).cut_before_finish();
         assert_eq!(code.code(), 499);
         assert!(matches!(&cut, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
+    }
+
+    #[test]
+    fn an_early_refusal_is_its_typed_reply_or_not_sent() {
+        let bytes = Echo::encode_reply(&Echo::malformed(MalformedKind::TooLarge)).unwrap();
+        let o = PreCommit::begin(0x11).stopped_before_finish().reply::<Echo>(Some(&bytes));
+        assert_eq!(o.reply().unwrap().class(), ReplyKind::Malformed(MalformedKind::TooLarge));
+        let o = PreCommit::begin(0x11).stopped_before_finish().reply::<Echo>(None);
+        assert!(matches!(&o, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
     }
 
     #[test]

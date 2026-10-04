@@ -113,6 +113,11 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
+| `rafka.node_rpc.request.serve.via-direct` | `protocol`, `tag`, `peer`, `slot` (parent: the request's `traceparent`) |
+| `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` / `via-protocol-violation` | `tag`, `slot`, `reason` / `kind` |
+| `rafka.node_rpc.request.reject.via-busy` (DEBUG: refusal storms are counters) | `tag`, `reason` |
+| `rafka.node_rpc.handler.reject.via-internal-rpc-failure` | `fault` |
+| `rafka.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
 
 **`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
 
