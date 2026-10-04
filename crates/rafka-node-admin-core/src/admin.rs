@@ -8,9 +8,9 @@
 //! Every admin holds the same two projections over iroh-gossip: fabric
 //! membership (each member's digest) and the fabric's Build facts. From
 //! membership it derives the observed topology it publishes on its views,
-//! with the settled primary rule: in each `(mesh, kind)` cohort the live
-//! member with the lowest ordinal that is ready for traffic is primary, and
-//! the admin primary of the lowest-named mesh is fabric primary. The fabric
+//! with each cohort's primary elected by `election` (the member ready for
+//! traffic longest), and the admin primary of the lowest-named mesh as
+//! fabric primary. The fabric
 //! primary executes Builds: it claims each active Build's next attempt and
 //! runs what is left through the deployment pipeline (create, restart,
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
@@ -23,6 +23,7 @@ use crate::deployment::pipeline::{
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy, TerminationMode};
 use crate::executor::{BuildExecutor, OperationRunner};
+use crate::election::{elect, Candidate, ElectionLog};
 use crate::fabric_builds::FabricBuildStateAdapter;
 use crate::http::{router, ControlPlane};
 use crate::lifecycle::{
@@ -163,6 +164,8 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
     let removed = records.removed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
+    // Each birth's election claim, by incarnation.
+    let mut claims: HashMap<IncarnationId, u64> = HashMap::new();
     let mut mesh_ids: BTreeMap<String, MeshId> = records.meshes.lock().unwrap().clone();
     for d in book.all() {
         if d.fabric != fabric {
@@ -188,6 +191,9 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
         n.status = if silent { NodeStatus::Dead } else { node_status(d.status) };
         n.admin_api_base = d.admin_api_base.clone();
         n.endpoints = d.node.endpoints.0.clone();
+        if let Some(since) = d.ready_since() {
+            claims.insert(d.node.incarnation.clone(), since);
+        }
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
@@ -210,7 +216,7 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
         nodes: nodes.into_values().collect(),
     };
     let mesh_names: BTreeSet<String> = mesh_ids.keys().cloned().chain(topology.nodes.iter().map(|n| n.mesh.clone())).collect();
-    // Settled primaries: lowest ready ordinal per cohort.
+    // Each cohort's primary: the member ready for traffic longest.
     let mut cohorts: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
     for (i, n) in topology.nodes.iter().enumerate() {
         if n.status == NodeStatus::ReadyForTraffic {
@@ -218,7 +224,15 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
         }
     }
     for members in cohorts.values() {
-        if let Some(&i) = members.iter().min_by_key(|&&i| topology.nodes[i].name.ordinal) {
+        let candidates: Vec<Candidate<'_>> = members
+            .iter()
+            .map(|&i| {
+                let n = &topology.nodes[i];
+                Candidate { name: &n.name, ready_since: n.incarnation_id.as_ref().and_then(|i| claims.get(i).copied()) }
+            })
+            .collect();
+        if let Some(k) = elect(&candidates) {
+            let i = members[k];
             topology.nodes[i].is_primary = true;
         }
     }
@@ -564,6 +578,8 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // Own digest, published on the membership cadence.
     let mut extra = BTreeMap::new();
     extra.insert(MESH_ID.to_string(), mesh_id.0.clone());
+    // Ready for traffic from birth: the election claim is this instant.
+    extra.insert(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string());
     let digest = Arc::new(Mutex::new(MeshDigest {
         fabric: cfg.fabric.clone(),
         node: MeshNode {
@@ -601,9 +617,11 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The projection, refreshed into the control plane's topology.
     {
         let (topology, fabric, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), policy.provider, book.clone(), records.clone());
+        let elections = ElectionLog::new(name.to_string());
         tasks.push(tokio::spawn(async move {
             loop {
                 let t = project(&fabric, provider, &book, &records);
+                elections.observe(&t);
                 *topology.write().await = t;
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
@@ -685,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lowest_ready_ordinal_of_each_cohort_is_primary_and_the_lowest_mesh_holds_the_fabric() {
+    fn without_claims_the_lowest_ready_ordinal_is_primary_and_the_lowest_mesh_holds_the_fabric() {
         use MemberStatus::*;
         let t = view(&[
             digest("mesh2.admin.1", ReadyForTraffic),
@@ -701,6 +719,19 @@ mod tests {
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, "id-mesh2");
         assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic);
+    }
+
+    #[test]
+    fn the_member_ready_longest_is_primary_and_a_recreated_path_does_not_take_over() {
+        let claim = |name: &str, since: u64| {
+            let mut d = digest(name, MemberStatus::ReadyForTraffic);
+            d.extra.insert(rafka_mesh_entity::READY_SINCE.into(), since.to_string());
+            d
+        };
+        // rpc.1 was killed and recreated: its new birth claims a later instant.
+        let t = view(&[claim("mesh1.admin.1", 10), claim("mesh1.rpc.1", 900), claim("mesh1.rpc.2", 200), claim("mesh1.rpc.3", 300)]);
+        let primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
+        assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.2"]);
     }
 
     #[test]

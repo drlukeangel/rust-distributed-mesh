@@ -155,7 +155,8 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         status: MemberStatus::ReadyForTraffic,
         admin_api_base: None,
         emitted_unix_ms: now_ms(),
-        extra: Default::default(),
+        // Ready for traffic from birth: the election claim is this instant.
+        extra: [(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string())].into_iter().collect(),
     };
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());

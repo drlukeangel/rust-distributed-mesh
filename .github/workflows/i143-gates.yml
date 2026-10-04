@@ -40,3 +40,7 @@ jobs:
           cargo test -p rafka-test-scenario --test mesh_shapes__shape_reconcile
       - name: live resize, MN and MM (process E2E)
         run: cargo test -p rafka-test-scenario --test mesh_shapes__live_resize
+      - name: cohort election matrix (process E2E, partition through iptables)
+        env:
+          RAFKA_REQUIRE_NETFAULT: "1"
+        run: cargo test -p rafka-test-scenario --test mesh_elections__cohort_election

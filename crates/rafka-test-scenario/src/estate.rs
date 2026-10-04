@@ -159,6 +159,12 @@ impl Estate {
         (status, r.json().await.unwrap_or(Value::Null))
     }
 
+    pub async fn delete(&self, path: &str) -> (u16, Value) {
+        let r = self.http.delete(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
     /// Wait until Build `id` is `complete`; a `failed` Build fails the test.
     pub async fn await_build(&self, id: &str, within: Duration) -> Value {
         wait_for(&format!("build {id} complete"), within, || async {
@@ -175,6 +181,14 @@ impl Estate {
     pub async fn nodes(&self) -> Vec<Value> {
         let (status, v) = self.get("/api/nodes").await;
         assert_eq!(status, 200, "GET /api/nodes: {v}");
+        v["nodes"].as_array().cloned().unwrap_or_default()
+    }
+
+    /// `GET /api/nodes` from the admin serving `base` (another admin's view).
+    pub async fn nodes_at(&self, base: &str) -> Vec<Value> {
+        let r = self.http.get(format!("{base}/api/nodes")).send().await.expect("control API reachable");
+        assert_eq!(r.status().as_u16(), 200, "GET {base}/api/nodes");
+        let v: Value = r.json().await.unwrap_or(Value::Null);
         v["nodes"].as_array().cloned().unwrap_or_default()
     }
 

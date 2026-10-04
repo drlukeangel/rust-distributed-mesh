@@ -36,10 +36,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e1.s5 | #2740 | `9b2a6b41` | fabric-projected Build state + BuildExecutor takeover; pinned intents; NeighborUp catch-up |
 | e1.s6 | #2741 | `435c40b65f` | rafka-node-admin-client; Admin UI is its client (ratchet); process table deleted. Epic e1 closed |
 | e3.s3 | #2751 | `21fa67580f` | `rafka-node-admin` binary (`admin.rs`); SN/MN/MM shape reconciler, process E2E `mesh_shapes__shape_reconcile` |
+| e3.s4 | #2752 | `ab603d0901` | live resize E2E `mesh_shapes__live_resize`; host-wide endpoint port claims. Epic e3 closed |
 
 ## In progress
 
-- e3.s4 drlukeangel/rafka-v2#2752 — live grow/shrink, E2E `mesh_shapes__live_resize`; host-wide endpoint port claims (branch `i143-e3-s4`).
+- e4.s4 drlukeangel/rafka-v2#2757 — cohort election (`election.rs`), E2E `mesh_elections__cohort_election` (branch `i143-e4-s4`).
 
 ## Blockers
 
@@ -55,3 +56,5 @@ A fresh session resumes from this file plus the open issues on that milestone.
 - Dependency rules: `cargo run -p rafka-mesh-audit --bin dep-rules` (also in `.github/workflows/i143-gates.yml`).
 - Container provider (e2.s4+): needs a reachable Docker daemon. In the cloud container start it with `dockerd > /tmp/dockerd.log 2>&1 &`.
   Build with `CARGO_INCREMENTAL=0`: the per-session disk is small and incremental caches fill it.
+- The election E2E's partition case drops UDP on loopback with `iptables` (root or `sudo -n`); CI sets
+  `RAFKA_REQUIRE_NETFAULT=1`.

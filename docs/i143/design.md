@@ -43,6 +43,21 @@ An `rpc_node` has two Node RPC endpoint slots:
 A restart therefore always moves exactly one slot. That makes the per-slot supersession rules (PRD §1.19,
 §14) observable on every restart.
 
+### 2.1 Cohort election (PRD §11)
+
+A cohort is one kind's members in one mesh. Every birth publishes, once, the instant it became ready
+for traffic (`ready_since_ms` in its membership digest's `extra`). In each admin's view a cohort's
+primary is its `ReadyForTraffic` member with the earliest claim, ties to the lowest ordinal; a member
+without a claim ranks last. Every observer reads the same claims, so converged views agree:
+
+- grow, restart and a recreated path claim a later instant and never displace the incumbent;
+- when the primary leaves the view (killed, removed, retired), the next oldest succeeds it;
+- a partition lets each side elect from what it hears; on heal the views agree again.
+
+The fabric primary is the admin primary of the lowest-named mesh. Each admin reports a change of a
+cohort's primary in its view as `rafka.mesh.election.resolve.via-recompute`
+(`crates/rafka-node-admin-core/src/election.rs`).
+
 ## 3. Process contract (environment only)
 
 | var | read by | meaning |

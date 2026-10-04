@@ -12,7 +12,7 @@ pub mod ids;
 pub mod membership;
 pub mod path;
 
-pub use digest::{MemberStatus, MeshDigest};
+pub use digest::{MemberStatus, MeshDigest, READY_SINCE};
 pub use endpoint::{EndpointSet, EndpointSlot, SlotPolicy};
 pub use ids::{FabricId, FreshnessToken, IncarnationId, NodeId};
 pub use membership::{Change, Freshness, MeshNode, Membership, MembershipRefusal, Resolution};
