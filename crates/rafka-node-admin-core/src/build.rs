@@ -6,8 +6,14 @@
 //! logical identities. It never resumes from a saved instruction pointer: each
 //! execution attempt re-plans from the current desired and observed state, so
 //! operations already satisfied are not replayed.
+//!
+//! An intent relative to the topology it was submitted against (add *a*
+//! node, restart *this* birth, remove *this* node) is pinned at submit by
+//! [`pin`]: it records the exact node or incarnation it means. A re-plan of
+//! a pinned intent, by any executor and any attempt, computes only what is
+//! left; once satisfied it plans nothing, never a second node or restart.
 
-use crate::model::{is_valid_mesh_name, NodeKind, NodeStatus, PathName};
+use crate::model::{is_valid_mesh_name, IncarnationId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -55,12 +61,26 @@ pub enum BuildIntent {
     ReconcileFabric { desired: FabricDesired },
     /// One mesh's desired counts (grow/shrink).
     ReconcileMesh { desired: MeshDesired },
-    /// `POST /api/nodes/spawn`.
-    AddNode { mesh: String, node_kind: NodeKind },
-    /// `DELETE /api/nodes/{name}`.
-    RemoveNode { node: PathName },
-    /// `POST /api/nodes/{name}/restart`.
-    RestartNode { node: PathName },
+    /// `POST /api/nodes/spawn`. Pinned: `target` is the node it adds.
+    AddNode {
+        mesh: String,
+        node_kind: NodeKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<PathName>,
+    },
+    /// `DELETE /api/nodes/{name}`. Pinned: `incarnation` is the birth it removes.
+    RemoveNode {
+        node: PathName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        incarnation: Option<IncarnationId>,
+    },
+    /// `POST /api/nodes/{name}/restart`. Pinned: `from_incarnation` is the
+    /// birth it replaces.
+    RestartNode {
+        node: PathName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_incarnation: Option<IncarnationId>,
+    },
     /// Retire the node and create a new logical node at the same path.
     ReplaceNode { node: PathName },
     /// `POST /api/meshes`.
@@ -262,7 +282,15 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             }
             reconcile_counts(observed, desired, &mut ops);
         }
-        BuildIntent::AddNode { mesh, node_kind } => {
+        BuildIntent::AddNode { mesh, target: Some(target), .. } => {
+            if !mesh_exists(mesh) {
+                return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
+            }
+            if !observed.node(target).is_some_and(|n| n.status.is_live()) {
+                ops.push(BuildOperation::CreateNode { node: target.clone() });
+            }
+        }
+        BuildIntent::AddNode { mesh, node_kind, target: None } => {
             if !mesh_exists(mesh) {
                 return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
             }
@@ -274,19 +302,29 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             };
             reconcile_counts(observed, &desired, &mut ops);
         }
-        BuildIntent::RemoveNode { node } => {
+        BuildIntent::RemoveNode { node, incarnation: Some(birth) } => {
+            // Done once that birth is gone or another birth holds the path.
+            if observed.node(node).is_some_and(|n| n.incarnation_id.as_ref() == Some(birth) && n.status.is_live()) {
+                ops.push(BuildOperation::RetireNode { node: node.clone(), permanent: true });
+            }
+        }
+        BuildIntent::RemoveNode { node, incarnation: None } => {
             find_live(observed, node)?;
             if node.kind == NodeKind::NodeAdmin && live(observed, &node.mesh, NodeKind::NodeAdmin).len() <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
             }
             ops.push(BuildOperation::RetireNode { node: node.clone(), permanent: true });
         }
-        BuildIntent::RestartNode { node } => {
+        BuildIntent::RestartNode { node, from_incarnation } => {
             let n = observed.node(node).ok_or_else(|| BuildReject::UnknownNode { node: node.to_string() })?;
             if n.status == NodeStatus::Leaving {
                 return Err(BuildReject::NodeNotLive { node: node.to_string() });
             }
-            ops.push(BuildOperation::RestartNode { node: node.clone() });
+            // Pinned: done once the node runs a birth other than the one replaced.
+            let already = from_incarnation.as_ref().is_some_and(|from| n.incarnation_id.as_ref() != Some(from));
+            if !already {
+                ops.push(BuildOperation::RestartNode { node: node.clone() });
+            }
         }
         BuildIntent::ReplaceNode { node } => {
             find_live(observed, node)?;
@@ -311,6 +349,31 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
         }
     }
     Ok(BuildPlan { operations: ops })
+}
+
+/// Validate `intent` against the topology it is submitted against and pin
+/// what it means there (see the module docs). The result is what a Build
+/// stores and every attempt re-plans.
+pub fn pin(intent: BuildIntent, observed: &Topology) -> Result<BuildIntent, BuildReject> {
+    let planned = plan(&intent, observed)?;
+    Ok(match intent {
+        BuildIntent::AddNode { mesh, node_kind, target: None } => {
+            let target = planned.operations.iter().find_map(|op| match op {
+                BuildOperation::CreateNode { node } if node.kind == node_kind => Some(node.clone()),
+                _ => None,
+            });
+            BuildIntent::AddNode { mesh, node_kind, target }
+        }
+        BuildIntent::RemoveNode { node, incarnation: None } => {
+            let incarnation = observed.node(&node).and_then(|n| n.incarnation_id.clone());
+            BuildIntent::RemoveNode { node, incarnation }
+        }
+        BuildIntent::RestartNode { node, from_incarnation: None } => {
+            let from_incarnation = observed.node(&node).and_then(|n| n.incarnation_id.clone());
+            BuildIntent::RestartNode { node, from_incarnation }
+        }
+        other => other,
+    })
 }
 
 #[cfg(test)]
@@ -357,6 +420,56 @@ mod tests {
 
     fn create(s: &str) -> BuildOperation {
         BuildOperation::CreateNode { node: p(s) }
+    }
+
+    fn with_incarnations(mut t: Topology) -> Topology {
+        for n in &mut t.nodes {
+            n.incarnation_id = Some(IncarnationId::mint());
+        }
+        t
+    }
+
+    #[test]
+    fn a_pinned_add_plans_its_one_node_until_it_is_live_and_then_nothing() {
+        let t = with_incarnations(mn());
+        let pinned = pin(BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode, target: None }, &t).unwrap();
+        assert_eq!(pinned, BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode, target: Some(p("mesh1.rpc.4")) });
+        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![create("mesh1.rpc.4")]);
+        let mut after = t.clone();
+        after.nodes.push(n("mesh1.rpc.4", NodeStatus::ReadyForTraffic, false));
+        assert_eq!(plan(&pinned, &after).unwrap().operations, vec![], "a re-plan never adds a second node");
+        // Unpinned, the same re-plan would have added mesh1.rpc.5.
+        let unpinned = BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode, target: None };
+        assert_eq!(plan(&unpinned, &after).unwrap().operations, vec![create("mesh1.rpc.5")]);
+    }
+
+    #[test]
+    fn a_pinned_restart_is_done_once_the_node_runs_another_birth() {
+        let t = with_incarnations(mn());
+        let pinned = pin(BuildIntent::RestartNode { node: p("mesh1.rpc.2"), from_incarnation: None }, &t).unwrap();
+        let BuildIntent::RestartNode { from_incarnation: Some(from), .. } = &pinned else { panic!("not pinned: {pinned:?}") };
+        assert_eq!(Some(from), t.node(&p("mesh1.rpc.2")).unwrap().incarnation_id.as_ref());
+        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RestartNode { node: p("mesh1.rpc.2") }]);
+        let mut after = t.clone();
+        after.nodes.iter_mut().find(|n| n.name == p("mesh1.rpc.2")).unwrap().incarnation_id = Some(IncarnationId::mint());
+        assert_eq!(plan(&pinned, &after).unwrap().operations, vec![], "a re-plan never restarts twice");
+    }
+
+    #[test]
+    fn a_pinned_remove_is_done_once_that_birth_is_gone_and_never_refused() {
+        let t = with_incarnations(mn());
+        let pinned = pin(BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None }, &t).unwrap();
+        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RetireNode { node: p("mesh1.rpc.3"), permanent: true }]);
+        let mut gone = t.clone();
+        gone.nodes.retain(|n| n.name != p("mesh1.rpc.3"));
+        assert_eq!(plan(&pinned, &gone), Ok(BuildPlan { operations: vec![] }), "done, not unknown-node");
+        let mut reborn = gone.clone();
+        let mut fresh = n("mesh1.rpc.3", NodeStatus::ReadyForTraffic, false);
+        fresh.incarnation_id = Some(IncarnationId::mint());
+        reborn.nodes.push(fresh);
+        assert_eq!(plan(&pinned, &reborn).unwrap().operations, vec![], "another birth at the path is not this Build's");
+        // Submit-time refusals are unchanged.
+        assert_eq!(pin(BuildIntent::RemoveNode { node: p("mesh1.rpc.9"), incarnation: None }, &t), Err(BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }));
     }
 
     fn retire(s: &str) -> BuildOperation {
@@ -417,11 +530,11 @@ mod tests {
     #[test]
     fn spawn_delete_restart_and_replace_each_plan_one_shape() {
         let t = mn();
-        let add = plan(&BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, &t).unwrap();
+        let add = plan(&BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode, target: None }, &t).unwrap();
         assert_eq!(add.operations, vec![create("mesh1.rpc.4")]);
-        let del = plan(&BuildIntent::RemoveNode { node: p("mesh1.rpc.2") }, &t).unwrap();
+        let del = plan(&BuildIntent::RemoveNode { node: p("mesh1.rpc.2"), incarnation: None }, &t).unwrap();
         assert_eq!(del.operations, vec![retire("mesh1.rpc.2")]);
-        let rs = plan(&BuildIntent::RestartNode { node: p("mesh1.rpc.2") }, &t).unwrap();
+        let rs = plan(&BuildIntent::RestartNode { node: p("mesh1.rpc.2"), from_incarnation: None }, &t).unwrap();
         assert_eq!(rs.operations, vec![BuildOperation::RestartNode { node: p("mesh1.rpc.2") }]);
         let rp = plan(&BuildIntent::ReplaceNode { node: p("mesh1.rpc.2") }, &t).unwrap();
         assert_eq!(rp.operations, vec![retire("mesh1.rpc.2"), create("mesh1.rpc.2")]);
@@ -455,9 +568,9 @@ mod tests {
         let intents = [
             desired(&[("mesh1", 3, 7), ("mesh2", 2, 3)]),
             BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 4 } },
-            BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::NodeAdmin },
-            BuildIntent::RemoveNode { node: p("mesh1.rpc.3") },
-            BuildIntent::RestartNode { node: p("mesh1.rpc.1") },
+            BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::NodeAdmin, target: None },
+            BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None },
+            BuildIntent::RestartNode { node: p("mesh1.rpc.1"), from_incarnation: None },
             BuildIntent::ReplaceNode { node: p("mesh1.rpc.1") },
             BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh9".into(), node_admin: 1, rpc_node: 2 } },
         ];
@@ -487,9 +600,9 @@ mod tests {
                 BuildIntent::ReconcileFabric { desired: FabricDesired { fabric: "other".into(), meshes: vec![] } },
                 BuildReject::FabricMismatch { requested: "other".into(), fabric: "fabric1".into() },
             ),
-            (BuildIntent::AddNode { mesh: "mesh7".into(), node_kind: NodeKind::RpcNode }, BuildReject::UnknownMesh { mesh: "mesh7".into() }),
-            (BuildIntent::RemoveNode { node: p("mesh1.rpc.9") }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
-            (BuildIntent::RestartNode { node: p("mesh1.rpc.9") }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
+            (BuildIntent::AddNode { mesh: "mesh7".into(), node_kind: NodeKind::RpcNode, target: None }, BuildReject::UnknownMesh { mesh: "mesh7".into() }),
+            (BuildIntent::RemoveNode { node: p("mesh1.rpc.9"), incarnation: None }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
+            (BuildIntent::RestartNode { node: p("mesh1.rpc.9"), from_incarnation: None }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
             (
                 BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 0 } },
                 BuildReject::MeshAlreadyExists { mesh: "mesh1".into() },
@@ -503,17 +616,17 @@ mod tests {
         let mut lone = mn();
         lone.nodes.remove(1);
         assert_eq!(
-            plan(&BuildIntent::RemoveNode { node: p("mesh1.admin.1") }, &lone),
+            plan(&BuildIntent::RemoveNode { node: p("mesh1.admin.1"), incarnation: None }, &lone),
             Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: "mesh1".into() })
         );
         let mut dead = mn();
         dead.nodes[3].status = NodeStatus::Dead;
-        assert_eq!(plan(&BuildIntent::RemoveNode { node: p("mesh1.rpc.2") }, &dead), Err(BuildReject::NodeNotLive { node: "mesh1.rpc.2".into() }));
+        assert_eq!(plan(&BuildIntent::RemoveNode { node: p("mesh1.rpc.2"), incarnation: None }, &dead), Err(BuildReject::NodeNotLive { node: "mesh1.rpc.2".into() }));
     }
 
     #[test]
     fn intents_serialize_with_a_kind_tag() {
-        let v = serde_json::to_value(BuildIntent::RestartNode { node: p("mesh1.rpc.2") }).unwrap();
+        let v = serde_json::to_value(BuildIntent::RestartNode { node: p("mesh1.rpc.2"), from_incarnation: None }).unwrap();
         assert_eq!(v["kind"], "restart_node");
         assert_eq!(v["node"], "mesh1.rpc.2");
         assert!(BuildId::mint().0.starts_with("bld-"));

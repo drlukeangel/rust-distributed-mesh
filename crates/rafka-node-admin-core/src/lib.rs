@@ -8,6 +8,8 @@
 pub mod build;
 pub mod build_state;
 pub mod deployment;
+pub mod executor;
+pub mod fabric_builds;
 pub mod http;
 pub mod lifecycle;
 pub mod model;

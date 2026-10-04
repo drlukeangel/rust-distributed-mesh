@@ -16,6 +16,10 @@ tracing = { workspace = true }
 async-trait = "0.1"
 libc = "0.2"
 iroh = { workspace = true }
+iroh-gossip = "0.100"
+blake3 = "1"
+futures-lite = "2"
+bytes = "1"
 axum = "0.8.9"
 rafka-telemetry = { path = "../rafka-telemetry" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
