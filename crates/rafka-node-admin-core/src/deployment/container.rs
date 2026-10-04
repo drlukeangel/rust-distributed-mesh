@@ -72,6 +72,11 @@ async fn docker(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// One launch's container: fixed by node and deployment id, so a re-run finds it.
+fn container_name(spec: &ResolvedNodeLaunch) -> String {
+    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.0))
+}
+
 /// Container names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]`.
 fn docker_safe(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' }).collect()
@@ -230,7 +235,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;
         let exe_in = Path::new(BIN_DIR).join(exe_name);
-        let name = format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.0));
+        let name = container_name(spec);
         let data = spec.data_dir.display().to_string();
         let mut args: Vec<String> = vec![
             "run".into(),
@@ -299,6 +304,32 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             },
             Err(_) => DeploymentStatus::Unknown,
         }
+    }
+
+    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
+        let name = self.container_of(handle)?;
+        if self.inspect(handle).await == DeploymentStatus::Running {
+            docker(&["kill", "--signal", "TERM", name])
+                .await
+                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason })?;
+        }
+        Ok(())
+    }
+
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+        let name = container_name(spec);
+        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}}", &name]).await.ok()?;
+        let (status, pid) = state.split_once(' ')?;
+        if status != "running" {
+            return None;
+        }
+        self.data_dirs.lock().unwrap().insert(name.clone(), spec.data_dir.clone());
+        Some(DeploymentHandle {
+            deployment_id: spec.deployment_id.clone(),
+            provider: ProviderKind::Container,
+            pid: pid.parse().ok().filter(|p| *p > 0),
+            container: Some(name),
+        })
     }
 
     async fn holds_udp(&self, handle: &DeploymentHandle, addr: SocketAddr) -> bool {

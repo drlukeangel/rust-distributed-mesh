@@ -10,7 +10,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_admin_core::build::{BuildId, BuildIntent};
 use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
-use rafka_node_admin_core::deployment::pipeline::{CreatePipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
 use std::collections::BTreeMap;
@@ -21,6 +21,7 @@ use std::time::Duration;
 struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
+    fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -43,6 +44,12 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         async fn ready(&self, _: &Node) -> Result<(), String> {
             Err("never".into())
         }
+        async fn drained(&self, _: &Node) -> bool {
+            false
+        }
+        async fn admission_closed(&self, _: &Node) -> Result<(), String> {
+            Err("never".into())
+        }
     }
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
@@ -57,7 +64,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         .unwrap();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58200, 58299));
     let provider = ProcessDeploymentProvider::new();
-    let pipeline = CreatePipeline {
+    let pipeline = DeploymentPipeline {
         provider: &provider,
         allocator: &allocator,
         observer: &Never,
@@ -67,7 +74,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
     };
     let err = pipeline
-        .run(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
         .await
         .unwrap_err();
     assert_eq!(err.step, "WaitForBind");

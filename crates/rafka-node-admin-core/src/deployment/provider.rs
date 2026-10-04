@@ -149,6 +149,15 @@ pub trait DeploymentProvider: Send + Sync {
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
 
+    /// Stage one of the stop ladder: ask the runtime to drain and stop
+    /// (SIGTERM). A runtime already gone is not an error.
+    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError>;
+
+    /// The live runtime this exact launch (`spec.deployment_id`) already
+    /// started, if any: a re-run after a crash mid-`DeployRuntime` adopts it
+    /// instead of starting a second one.
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle>;
+
     /// Does the runtime hold UDP `addr` (`WaitForBind`)? Asked of the
     /// operating system, never of the runtime. Default: something on this
     /// host's network namespace holds it.

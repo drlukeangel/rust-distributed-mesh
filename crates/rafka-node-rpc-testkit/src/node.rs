@@ -45,18 +45,66 @@ pub struct RunningNode {
     pub server: NodeRpcServer,
     pub status: Arc<Mutex<MemberStatus>>,
     pub digest: MeshDigest,
+    gossip: iroh_gossip::net::Gossip,
     publisher: tokio::task::JoinHandle<()>,
 }
 
+/// The digest key carrying a node's in-flight handler count.
+pub const IN_FLIGHT: &str = "in_flight";
+
+/// `RAFKA_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
+/// for in-flight handlers. Strictly shorter than node-admin's stop grace.
+/// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
+/// announcing `Leaving` before it closes. Drain deadline plus linger stay
+/// inside node-admin's stop grace.
+pub fn leave_linger_from_env() -> Duration {
+    Duration::from_millis(std::env::var("RAFKA_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
+}
+
+pub fn drain_deadline_from_env() -> Duration {
+    Duration::from_millis(std::env::var("RAFKA_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
+}
+
 impl RunningNode {
+    /// Two-phase shutdown, phase one (node-rpc §35): new calls get a typed
+    /// `Draining`, the digest says `Draining` with the in-flight count, and
+    /// existing handlers may finish until `deadline`. Returns how many were
+    /// still running at the deadline.
+    pub async fn drain(&self, deadline: Duration) -> u64 {
+        self.server.drain();
+        *self.status.lock().unwrap() = MemberStatus::Draining;
+        let stats = self.server.stats();
+        let until = tokio::time::Instant::now() + deadline;
+        loop {
+            let in_flight = rafka_node_rpc::ServerStats::get(&stats.in_flight);
+            let mut d = self.digest.clone();
+            d.status = MemberStatus::Draining;
+            d.emitted_unix_ms = now_ms();
+            d.extra.insert(IN_FLIGHT.into(), in_flight.to_string());
+            let _ = self.membership.publish(&d).await;
+            if in_flight == 0 || tokio::time::Instant::now() >= until {
+                return in_flight;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Publish `Leaving` and stop serving.
-    pub async fn stop(self) {
+    /// Phase two: say `Leaving` on the fabric, keep saying it on the digest
+    /// cadence for `linger`, then leave gossip and close every endpoint.
+    ///
+    /// iroh-gossip queues a broadcast and acknowledges nothing, and closing
+    /// the endpoint drops whatever is still unsent; the linger keeps the
+    /// node on the fabric long enough for its own `Leaving` to go out.
+    pub async fn stop(self, linger: Duration) {
         *self.status.lock().unwrap() = MemberStatus::Leaving;
         let mut d = self.digest.clone();
         d.status = MemberStatus::Leaving;
         d.emitted_unix_ms = now_ms();
         let _ = self.membership.publish(&d).await;
+        tokio::time::sleep(linger).await;
         self.publisher.abort();
+        let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
         }
@@ -110,12 +158,13 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         extra: Default::default(),
     };
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
-    let (d, st) = (digest.clone(), status.clone());
+    let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
     let publisher = membership.publish_every(Duration::from_millis(500), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
         d.emitted_unix_ms = now_ms();
+        d.extra.insert(IN_FLIGHT.into(), rafka_node_rpc::ServerStats::get(&stats.in_flight).to_string());
         d
     });
-    Ok(RunningNode { routers, membership, server, status, digest, publisher })
+    Ok(RunningNode { routers, membership, server, status, digest, gossip: g, publisher })
 }

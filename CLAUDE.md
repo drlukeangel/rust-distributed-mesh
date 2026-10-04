@@ -113,9 +113,10 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
-| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create`), `build_id`, `provider`, `node`, `restart` |
-| `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome`, `elapsed_ms` |
+| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire`), `build_id`, `provider`, `node`, `attempt`, `restart` |
+| `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome` (`complete` / `failed` / `reused`: decided by an earlier attempt's receipt), `elapsed_ms` |
 | `rafka.mesh.node.create.via-deployment` (rpc node boot; parent: launch `TRACEPARENT`) | `node`, `node_id`, `incarnation_id`, `kind` |
+| `rafka.mesh.node.update.via-drain` (SIGTERM: typed `Draining` for new calls, in-flight handlers finish) | `node`, `incarnation_id`, `deadline_ms`, `in_flight_at_deadline` |
 | `rafka.mesh.node.delete.via-signal` | `node`, `incarnation_id` |
 | `rafka.node_rpc.request.serve.via-direct` | `protocol`, `tag`, `peer`, `slot` (parent: the request's `traceparent`) |
 | `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` / `via-protocol-violation` | `tag`, `slot`, `reason` / `kind` |
@@ -340,6 +341,8 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_ENDPOINTS` | _(required, rpc node)_ | Comma-separated `slot=addr=freshness` the node must bind exactly; a provider never invents a port. |
 | `RAFKA_SEEDS` | _(empty)_ | Comma-separated `<public key>@<addr>` gossip members to join membership through. |
 | `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |
+| `RAFKA_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
+| `RAFKA_LEAVE_LINGER_MS` | `1000` | rpc node: how long a stopping node keeps announcing `Leaving` on membership before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 
