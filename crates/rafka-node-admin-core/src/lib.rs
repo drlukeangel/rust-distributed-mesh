@@ -5,6 +5,7 @@
 //! the state adapter, deployment providers, lifecycle transitions and
 //! elections land here in later stories; nothing here knows a Rafka role.
 
+pub mod build;
 pub mod model;
 pub mod process_table;
 pub mod topology;
