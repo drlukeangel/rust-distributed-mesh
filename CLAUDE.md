@@ -110,7 +110,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 |---|---|
 | `rafka.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
 | `rafka.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `provider-mismatch`, `invalid-intent`) | `route`, `detail` |
-| `rafka.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `operations`, `outcome` (`converged` / `failed` / `lost` / `finished`) |
+| `rafka.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `operations`, `outcome` (`converged` / `failed` / `lost` / `finished` / `handed-off`: the attempt stopped at an operation another admin executes) |
 | `rafka.node_admin.node.create.via-build` / `node.update.via-build` (restart) / `node.delete.via-build` (child of `via-reconcile`; parent of the deployment pipeline and the node's lifecycle transition) | `build_id`, `node`, `attempt` |
 | `rafka.node_admin.fabric.update.via-join` (a launched admin heard the admin it joined; it may now execute Builds) | `node`, `joined` |
 | `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |

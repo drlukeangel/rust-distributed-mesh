@@ -10,9 +10,9 @@
 //! membership it derives the observed topology it publishes on its views,
 //! with each cohort's primary elected by `election` (the member ready for
 //! traffic longest), and the admin primary of the lowest-named mesh as
-//! fabric primary. The fabric
-//! primary executes Builds: it claims each active Build's next attempt and
-//! runs what is left through the deployment pipeline (create, restart,
+//! fabric primary. Admins execute Builds (`executor`): the fabric primary
+//! and each mesh's admin primary claim the attempts whose next operation is
+//! theirs and run what is left through the deployment pipeline (create, restart,
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
 
 use crate::build::BuildOperation;
@@ -727,9 +727,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             }
         }));
     }
-    // The executor: active while this admin is fabric primary. An admin that
-    // joined an existing fabric first waits to hear the admin it joined: until
-    // then its view holds only itself and would name itself fabric primary.
+    // The executor: continues every Build whose next operation this admin
+    // executes (`executor::executor_for`). An admin that joined an existing
+    // fabric first waits to hear the admin it joined: until then its view
+    // holds only itself and would name itself fabric primary.
     {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, me, submitted) = (control.topology.clone(), name.clone(), control.build_submitted.clone());
@@ -747,9 +748,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
                 let now = project(&fabric, provider, &book, &records);
-                let primary = heard_fabric && now.fabric_primary().is_some_and(|p| p.name == me);
                 *topology.write().await = now;
-                if primary {
+                if heard_fabric {
+                    // Every Build whose next operation this admin executes.
                     exec.reconcile_active().await;
                 }
                 tokio::select! {

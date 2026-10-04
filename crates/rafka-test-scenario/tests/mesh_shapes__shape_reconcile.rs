@@ -9,8 +9,9 @@
 //!   `is_fabric_primary`, a node-admin that is its own mesh's admin primary;
 //! - the evidence links Build -> deployment -> lifecycle by parent span id,
 //!   across processes: every node this Build created booted under the
-//!   `DeployRuntime` step that launched it, which runs under the Build's
-//!   reconcile, which descends from the request that accepted the Build; and
+//!   `DeployRuntime` step that launched it, which runs under a reconcile of
+//!   the Build (an MM's second mesh's members run on that mesh's own primary,
+//!   a later attempt), which descends from the request that accepted it; and
 //!   every node's `Pending -> ReadyForTraffic` transition descends from it too.
 //!
 //! The shapes run one after another in one test, each on its own fabric.
@@ -45,20 +46,14 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     estate.artifact("build.json", &build);
 
     // Every desired node is live and ready; nothing else exists.
-    let nodes = estate.nodes().await;
-    estate.artifact("nodes.json", &json!(nodes));
     let mut want: Vec<String> = Vec::new();
     for (m, a, r) in meshes {
         want.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
         want.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
     }
     want.sort();
-    let mut have: Vec<String> = nodes.iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
-    have.sort();
-    assert_eq!(have, want, "{shape}: the node set");
-    for n in &nodes {
-        assert_eq!(n["status"], "ready-for-traffic", "{shape}: {n}");
-    }
+    let nodes = estate.settled(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
+    estate.artifact("nodes.json", &json!(nodes));
 
     // One primary per cohort, one fabric primary (an admin primary).
     let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
@@ -93,12 +88,18 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))
         .clone();
-    let reconcile = named(&spans, "rafka.node_admin.build.update.via-reconcile")
+    // The fabric primary runs the attempt that creates the admin cohorts; a
+    // new mesh's own primary runs a later attempt for its members. Every
+    // attempt descends from the accepting request, and the last converges.
+    let reconciles: Vec<Value> = named(&spans, "rafka.node_admin.build.update.via-reconcile")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == build_id.as_str() && s["attributes"]["outcome"] == "converged")
-        .unwrap_or_else(|| panic!("{shape}: no converged reconcile of {build_id}"))
-        .clone();
-    assert!(descends_from(&spans, &reconcile, &accepted_span), "{shape}: the reconcile descends from the accepting request");
+        .filter(|s| s["attributes"]["build_id"] == build_id.as_str())
+        .cloned()
+        .collect();
+    assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "converged"), "{shape}: no converged reconcile of {build_id}");
+    for r in &reconciles {
+        assert!(descends_from(&spans, r, &accepted_span), "{shape}: every reconcile descends from the accepting request");
+    }
     let created: Vec<&String> = want.iter().filter(|n| *n != "mesh1.admin.1").collect();
     for node in created {
         let step = named(&spans, "rafka.node_admin.deployment.update.via-step")
@@ -106,7 +107,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
             .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
             .unwrap_or_else(|| panic!("{shape}: no DeployRuntime step for {node}"))
             .clone();
-        assert!(descends_from(&spans, &step, &reconcile), "{shape}: {node}'s DeployRuntime runs under the reconcile");
+        assert!(reconciles.iter().any(|r| descends_from(&spans, &step, r)), "{shape}: {node}'s DeployRuntime runs under a reconcile of the Build");
         let boot = named(&spans, "rafka.mesh.node.create.via-deployment")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str())

@@ -48,3 +48,5 @@ jobs:
         run: cargo test -p rafka-test-scenario --test mesh_elections__cohort_election
       - name: fabric-primary failover and path fence (process E2E)
         run: cargo test -p rafka-test-scenario --test mesh_elections__fabric_primary
+      - name: mesh creation contract (process E2E)
+        run: cargo test -p rafka-test-scenario --test mesh_lifecycle__mesh_create

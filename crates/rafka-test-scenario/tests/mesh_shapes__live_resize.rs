@@ -5,7 +5,8 @@
 //! - MM: mesh1 and mesh2 grow and shrink independently.
 //!
 //! After every step, from public surfaces only:
-//! - the Build completes and exactly the desired nodes are `ready-for-traffic`;
+//! - the Build completes and the view settles on exactly the desired nodes,
+//!   all `ready-for-traffic`;
 //! - the incumbent primaries never change (shrink retires non-primaries,
 //!   highest ordinal first; grow only adds);
 //! - no two nodes advertise the same endpoint (no port collision);
@@ -56,13 +57,8 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], incum
     assert_eq!(status, 202, "{label}: {accepted}");
     let build_id = accepted["build_id"].as_str().unwrap().to_string();
     estate.await_build(&build_id, Duration::from_secs(120)).await;
-
-    let nodes = estate.nodes().await;
-    let have: BTreeSet<String> = nodes.iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(have, names(meshes), "{label}: the node set");
-    for n in &nodes {
-        assert_eq!(n["status"], "ready-for-traffic", "{label}: {n}");
-    }
+    // Exactly the desired nodes, all ready.
+    let nodes = estate.settled(&names(meshes), Duration::from_secs(15)).await;
     // One primary per cohort, and it is the incumbent.
     let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for n in nodes.iter().filter(|n| n["is_primary"] == true) {
