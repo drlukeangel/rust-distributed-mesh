@@ -104,6 +104,14 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.frame.received` | `node_id` (dst), `peer_id` (src), `op_kind`, `bytes`, `trace_id` |
 | `rafka.mesh.frame.decode_failed` | `node_id`, `peer_id`, `bytes`, `error` |
 
+**i143 Mesh product spans (PRD §16 five-segment grammar `rafka.<component>.<entity>.<action>.<reason>`, whitelist verbs only; full list in `docs/i143/design.md` §7):**
+
+| Span | Required attributes |
+|---|---|
+| `rafka.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
+| `rafka.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `invalid-intent`) | `route`, `detail` |
+| `rafka.node_admin.fabric.update.via-shutdown` | — |
+
 **`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
 
 **`node_type` enum (locked):** `"gateway"`, `"broker"`, `"compute"`, `"registry"`. Future node types append.

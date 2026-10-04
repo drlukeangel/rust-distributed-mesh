@@ -81,6 +81,9 @@ pub enum BuildFact {
     Claim(BuildAttemptClaim),
     Step(BuildStepReceipt),
     Attempt(BuildAttemptReceipt),
+    /// Build-history administration (`DELETE /api/builds?id=`): a finished
+    /// Build leaves the views. Never a topology mutation.
+    Forget { build_id: BuildId },
 }
 
 impl BuildFact {
@@ -90,6 +93,7 @@ impl BuildFact {
             Self::Claim(f) => &f.build_id,
             Self::Step(f) => &f.build_id,
             Self::Attempt(f) => &f.build_id,
+            Self::Forget { build_id } => build_id,
         }
     }
 }
@@ -200,6 +204,11 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     }
                 }
             }
+            BuildFact::Forget { build_id } => {
+                if out.get(build_id).is_some_and(|p| matches!(p.state, BuildState::Complete | BuildState::Failed)) {
+                    out.remove(build_id);
+                }
+            }
         }
     }
     out
@@ -217,6 +226,8 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
     /// Every fact, in append order (what the fabric projection carries).
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
+    /// Drop a finished Build from the views (history administration).
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
 }
 
 /// The shared append-and-fold core of both RDM adapters.
@@ -329,6 +340,11 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(self.log.lock().unwrap().facts.clone())
     }
+
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        self.log.lock().unwrap().facts.push(BuildFact::Forget { build_id: build_id.clone() });
+        Ok(())
+    }
 }
 
 /// The journal file name inside an admin's own data dir.
@@ -422,6 +438,11 @@ impl BuildStateAdapter for FileJournal {
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         Ok(self.log.lock().unwrap().facts.clone())
+    }
+
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        let mut log = self.log.lock().unwrap();
+        self.append(&mut log, BuildFact::Forget { build_id: build_id.clone() })
     }
 }
 

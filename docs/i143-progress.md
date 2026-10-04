@@ -18,12 +18,16 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e7.s1 | #2773 | `0471b4d6ef` | FIRST RED restart canary (`crates/rafka-test-scenario/tests/node_lifecycle__node_restart.rs`, ignored until e7.s5) + `docs/i143/design.md` contract |
 | e7.s2 | #2774 | `504fb7cbc8` | SECOND RED seed scenario + runner (`rafka-scenario`), ignored until e7.s5 |
 | e1.s1 | #2736 | `8ef30c8f4b` | `rafka-node-admin-core` model/topology + ProcessTable; admin-ui lifecycle moved behind it |
+| e4.s1 | #2754 | `c892769960` | `rafka-mesh-entity`: identity, incarnation lineage, membership, per-slot freshness |
+| e5.s1 | #2763 | `7314309cc1` | `rafka-node-rpc-contract`: framing, codes, NodeProtocol, Echo, RpcOutcome |
+| e1.s2 | #2737 | `e41c804fe7` | Build intents + deterministic planner (`build.rs`) |
+| e5.s2 | #2764 | `8efacf4a24` | sealed catalog + tag ledger + transitional adapters (`catalog.rs`) |
+| e1.s3 | #2738 | `4f7217f9ff` | BuildStateAdapter: fold, memory adapter, file journal (`build_state.rs`) |
 
 ## In progress
 
-- e5.s1 drlukeangel/rafka-v2#2763 — PR drlukeangel/rust-distributed-mesh#8.
-- e4.s1 drlukeangel/rafka-v2#2754 — PR drlukeangel/rust-distributed-mesh#9.
-- e1.s2 drlukeangel/rafka-v2#2737 — Build intents + planner (branch `i143-e1-s2`).
+- e5.s3 drlukeangel/rafka-v2#2765 — PR drlukeangel/rust-distributed-mesh#13.
+- e1.s4 drlukeangel/rafka-v2#2739 — control routes submit Build (branch `i143-e1-s4`).
 
 ## Blockers
 
