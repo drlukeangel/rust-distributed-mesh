@@ -68,8 +68,12 @@ pub struct AdminConfig {
     pub api_bind: SocketAddr,
     /// Set when a deployment pipeline launched this admin.
     pub launch: Option<Launch>,
-    /// The control API of an admin already in the fabric.
-    pub join: Option<String>,
+    /// The admin that launched this one (`RAFKA_NODE_ADMIN_LAUNCHER`, a path
+    /// name); unset for the bootstrap admin.
+    pub launcher: Option<PathName>,
+    /// The members the launcher's view held live at launch
+    /// (`RAFKA_NODE_ADMIN_EXPECT`, comma-separated path names).
+    pub expect: Vec<PathName>,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
 }
@@ -107,7 +111,10 @@ impl AdminConfig {
             spawn_type: get(crate::deployment::provider::SPAWN_TYPE_ENV),
             api_bind,
             launch,
-            join: get("RAFKA_NODE_ADMIN_JOIN"),
+            launcher: get("RAFKA_NODE_ADMIN_LAUNCHER").and_then(|v| v.parse().ok()),
+            expect: get("RAFKA_NODE_ADMIN_EXPECT")
+                .map(|v| v.split(',').filter(|p| !p.is_empty()).filter_map(|p| p.parse().ok()).collect())
+                .unwrap_or_default(),
             passthrough,
         })
     }
@@ -354,6 +361,9 @@ impl AdminRunner {
             NodeKind::NodeAdmin => {
                 t.executable = self.bin_dir.join(format!("rafka-node-admin{}", std::env::consts::EXE_SUFFIX));
                 t.env.extend(self.admin_env.clone());
+                let live: Vec<String> =
+                    self.topology.read().await.nodes.iter().filter(|n| n.status.is_live()).map(|n| n.name.to_string()).collect();
+                t.env.insert("RAFKA_NODE_ADMIN_EXPECT".into(), live.join(","));
                 let id = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known);
                 if let Some(id) = id {
                     t.env.insert("RAFKA_MESH_ID".into(), id.0);
@@ -666,37 +676,13 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             Vec::new(),
         ),
     };
-    // Fabric policy: bootstrapped from MESH_SPAWN_TYPE, or inherited.
-    let policy = match &cfg.join {
-        None => FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?,
-        Some(base) => {
-            let fabric = rafka_node_admin_client::NodeAdminClient::new(base.clone()).fabric().await.map_err(|e| format!("joining {base}: {e}"))?;
-            let established = FabricPolicy {
-                provider: match fabric.provider {
-                    rafka_node_admin_client::ProviderKind::Process => ProviderKind::Process,
-                    rafka_node_admin_client::ProviderKind::Container => ProviderKind::Container,
-                },
-            };
-            FabricPolicy::inherit(established, cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
-        }
-    };
-    // The members the admin it joined holds live: this admin executes no
-    // Build before it has heard each of them, or else it would plan from a
-    // view missing live members (and re-create them at their paths).
-    let expected: Vec<PathName> = match &cfg.join {
-        None => Vec::new(),
-        Some(base) => rafka_node_admin_client::NodeAdminClient::new(base.clone())
-            .nodes()
-            .await
-            .map_err(|e| format!("joining {base}: {e}"))?
-            .into_iter()
-            .filter(|n| {
-                use rafka_node_admin_client::NodeStatus as S;
-                matches!(n.status, S::Pending | S::ReadyForTraffic | S::Draining) && n.name.to_string() != name.to_string()
-            })
-            .filter_map(|n| n.name.to_string().parse().ok())
-            .collect(),
-    };
+    // Fabric policy: MESH_SPAWN_TYPE, which a launching admin writes as the
+    // fabric's own; nothing is asked of another admin over HTTP.
+    let policy = FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?;
+    // The members the launcher held live: this admin executes no Build before
+    // it has heard each of them, or else it would plan from a view missing
+    // live members (and re-create them at their paths).
+    let expected: Vec<PathName> = cfg.expect.iter().filter(|p| **p != name).cloned().collect();
 
     // The mesh endpoint: gossip for membership and Build facts.
     let endpoint = Endpoint::builder(presets::Minimal)
@@ -731,7 +717,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let prepared = crate::deployment::prepare(policy, &cfg.fabric).await.map_err(|e| e.to_string())?;
     let mut admin_env = BTreeMap::new();
     admin_env.insert(crate::deployment::provider::SPAWN_TYPE_ENV.to_string(), format!("{:?}", policy.provider).to_lowercase());
-    admin_env.insert("RAFKA_NODE_ADMIN_JOIN".to_string(), api_base.clone());
+    admin_env.insert("RAFKA_NODE_ADMIN_LAUNCHER".to_string(), name.to_string());
     admin_env.insert("RAFKA_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
     let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
     let template = LaunchTemplate {
@@ -820,21 +806,21 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, me, submitted) = (control.topology.clone(), name.clone(), control.build_submitted.clone());
-        let (join, book, records, fabric, provider) = (cfg.join.clone(), book.clone(), records.clone(), cfg.fabric.clone(), policy.provider);
+        let (launcher, book, records, fabric, provider) = (cfg.launcher.clone(), book.clone(), records.clone(), cfg.fabric.clone(), policy.provider);
         tasks.push(tokio::spawn(async move {
-            let mut heard_fabric = join.is_none();
+            let mut heard_fabric = launcher.is_none();
             let joined_at = Instant::now();
             loop {
                 if !heard_fabric {
                     let all = book.all();
-                    let heard_join = all.iter().any(|d| d.admin_api_base.as_deref() == join.as_deref());
+                    let heard_join = all.iter().any(|d| Some(&d.node.name) == launcher.as_ref());
                     let unheard: Vec<&PathName> = expected.iter().filter(|p| !all.iter().any(|d| &d.node.name == *p)).collect();
                     // A listed member still unheard after the bound is gone.
                     let timed_out = joined_at.elapsed() >= JOIN_VIEW_BOUND;
                     heard_fabric = heard_join && (unheard.is_empty() || timed_out);
                     if heard_fabric {
                         let unheard = unheard.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
-                        tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %me, joined = join.as_deref().unwrap_or(""), expected = expected.len(), unheard = %unheard)
+                        tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %me, joined = %launcher.as_ref().map(|l| l.to_string()).unwrap_or_default(), expected = expected.len(), unheard = %unheard)
                             .in_scope(|| tracing::info!("heard the fabric; eligible to execute Builds"));
                     }
                 }
