@@ -1,0 +1,10 @@
+[package]
+name = "rafka-node-rpc-contract"
+version = "0.1.0"
+edition = "2021"
+description = "Node RPC protocol contract: framing, outcomes, reserved codes, protocol traits (no transport dependency)"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
