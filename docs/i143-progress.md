@@ -16,10 +16,12 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e0.s4 | #2734 | `ecdd17b892` | dependency-rule check `dep-rules` + CI workflow `.github/workflows/i143-gates.yml` |
 | e0.s3 | #2733 | `2e0b27c847` | connections-parity gate in `parity-scan` + ledger rows (rafka-v2 #2792 `5aa2e8a05e`); epic e0 closed |
 | e7.s1 | #2773 | `0471b4d6ef` | FIRST RED restart canary (`crates/rafka-test-scenario/tests/node_lifecycle__node_restart.rs`, ignored until e7.s5) + `docs/i143/design.md` contract |
+| e7.s2 | #2774 | `504fb7cbc8` | SECOND RED seed scenario + runner (`rafka-scenario`), ignored until e7.s5 |
 
 ## In progress
 
-- e7.s2 drlukeangel/rafka-v2#2774 — SECOND RED seed scenario + runner (branch `i143-e7-s2`).
+- e1.s1 drlukeangel/rafka-v2#2736 — PR drlukeangel/rust-distributed-mesh#7 open.
+- e5.s1 drlukeangel/rafka-v2#2763 — rafka-node-rpc-contract (branch `i143-e5-s1`).
 
 ## Blockers
 
