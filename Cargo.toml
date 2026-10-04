@@ -12,6 +12,7 @@ members = [
     "bridge",
     "admin-ui",
     "cli/rfa",
+    "tools/mesh-audit",
 ]
 resolver = "2"
 
@@ -53,15 +54,6 @@ dashmap = "6"
 # GSO/TLP segment-size assertion is fixed upstream as of 0.98's bundled
 # iroh-quinn-proto, so the local fork override is no longer needed.
 
-[patch.crates-io]
-# Churn-memory-leak fixes live in standalone repos at E:/<repo> (branch
-# fix/churn-memory-leak), one clone per upstream crate — no nested vendor/ copies.
-# Each crate-family is patched from its OWN repo so iroh + iroh-base resolve to one
-# source (else cargo double-sources iroh-base -> two PublicKey types), same for noq*.
-# To publish PRs: push each repo's branch to a fork and swap `path` -> `git`+`branch`.
-iroh = { path = "E:/iroh/iroh" }
-iroh-base = { path = "E:/iroh/iroh-base" }
-iroh-gossip = { path = "E:/iroh-gossip" }
-noq = { path = "E:/noq/noq" }
-noq-proto = { path = "E:/noq/noq-proto" }
-noq-udp = { path = "E:/noq/noq-udp" }
+# The Windows-host churn-memory-leak forks (E:/iroh, E:/iroh-gossip, E:/noq)
+# are opted into per host, never from this file: a path patch that does not
+# exist breaks cargo everywhere else. See deployment/dev/windows-iroh-patches.toml.
