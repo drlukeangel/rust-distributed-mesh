@@ -193,8 +193,20 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     // address on the fabric network: nothing on the host holds its ports.
     if let Some(c) = &prepared.container {
         let pid = created.handle.pid.expect("a container handle carries its init pid");
-        let ns = |p: &str| std::fs::read_link(format!("/proc/{p}/ns/net")).unwrap();
-        assert_ne!(ns(&pid.to_string()), ns("self"), "the node shares the host network namespace");
+        // /proc/<pid>/net/* shows the namespace of <pid> and is readable by
+        // any user (the ns/net link of another user's process is not).
+        let interfaces = |p: &str| -> Vec<String> {
+            std::fs::read_to_string(format!("/proc/{p}/net/dev"))
+                .unwrap()
+                .lines()
+                .skip(2)
+                .filter_map(|l| l.split(':').next().map(|i| i.trim().to_string()))
+                .collect()
+        };
+        let mut node_ifs = interfaces(&pid.to_string());
+        node_ifs.sort();
+        assert_eq!(node_ifs, vec!["eth0".to_string(), "lo".to_string()], "the node sees only its own namespace's interfaces");
+        assert_ne!(interfaces("self"), interfaces(&pid.to_string()), "the node shares the host network namespace");
         let (first, last) = c.network().node_range();
         for e in &created.node.endpoints {
             let std::net::IpAddr::V4(ip) = e.addr.ip() else { panic!("{} is not IPv4", e.addr) };
