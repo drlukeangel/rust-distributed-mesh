@@ -12,10 +12,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | story | issue | RDM merge SHA | what |
 |---|---|---|---|
 | e0.s1 | #2731 | `76e6a192e7` | legacy-binary disposition gate + workspace audit (`docs/i143/e0-workspace-audit.md`, `tools/mesh-audit`) |
+| e0.s2 | #2732 | `9a4966fee3` | parity scanner `parity-scan` + ledger rows (rafka-v2 #2791 `7ee07f8481`) |
 
 ## In progress
 
-- e0.s2 drlukeangel/rafka-v2#2732 — parity scanner `parity-scan` (branch `i143-e0-s2`); ledger PR drlukeangel/rafka-v2#2791 merged (`7ee07f8481`).
+- e0.s4 drlukeangel/rafka-v2#2734 — dependency-rule check `dep-rules` (branch `i143-e0-s4`).
 
 ## Blockers
 
@@ -28,3 +29,4 @@ A fresh session resumes from this file plus the open issues on that milestone.
 - Audit gates live in `tools/mesh-audit` (`cargo test -p rafka-mesh-audit`).
 - Parity gate: `cargo run -p rafka-mesh-audit --bin parity-scan -- --repo ../rafka-v2 --json docs/i143/e0-parity-report.json`.
   The rafka-v2 checkout must have full history (`git fetch --unshallow`).
+- Dependency rules: `cargo run -p rafka-mesh-audit --bin dep-rules` (also in `.github/workflows/i143-gates.yml`).

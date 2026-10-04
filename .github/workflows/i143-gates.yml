@@ -1,0 +1,19 @@
+name: i143 gates
+
+# The i143 opening-audit gates (tools/mesh-audit): legacy-binary disposition,
+# transport-parity scanner fixtures and the PRD §4 dependency rules.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: audit gate tests
+        run: cargo test -p rafka-mesh-audit
+      - name: dependency rules
+        run: cargo run -q -p rafka-mesh-audit --bin dep-rules
