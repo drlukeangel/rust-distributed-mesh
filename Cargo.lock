@@ -3486,6 +3486,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-mesh-entity"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rafka-mesh-ops"
 version = "0.1.0"
 dependencies = [

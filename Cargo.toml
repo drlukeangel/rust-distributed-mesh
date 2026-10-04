@@ -7,6 +7,7 @@ members = [
     "crates/rafka-chaos",
     "crates/rafka-node-admin-core",
     "crates/rafka-node-rpc-contract",
+    "crates/rafka-mesh-entity",
     "crates/rafka-test-scenario",
     "gateway",
     "broker",
