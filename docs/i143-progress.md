@@ -13,14 +13,15 @@ A fresh session resumes from this file plus the open issues on that milestone.
 |---|---|---|---|
 | e0.s1 | #2731 | `76e6a192e7` | legacy-binary disposition gate + workspace audit (`docs/i143/e0-workspace-audit.md`, `tools/mesh-audit`) |
 | e0.s2 | #2732 | `9a4966fee3` | parity scanner `parity-scan` + ledger rows (rafka-v2 #2791 `7ee07f8481`) |
+| e0.s4 | #2734 | `ecdd17b892` | dependency-rule check `dep-rules` + CI workflow `.github/workflows/i143-gates.yml` |
 
 ## In progress
 
-- e0.s4 drlukeangel/rafka-v2#2734 — dependency-rule check `dep-rules` (branch `i143-e0-s4`).
+- e0.s3 drlukeangel/rafka-v2#2733 — connections parity mapping (branch `i143-e0-s3`); ledger PR drlukeangel/rafka-v2#2792 merged (`5aa2e8a05e`).
 
 ## Blockers
 
-- none
+- #2755 (e4.s2) and #2756 (e4.s3) wait on rafka-v2 #2722 (i66.e3 connections build, open). Skip them until it closes.
 
 ## Notes for the next session
 

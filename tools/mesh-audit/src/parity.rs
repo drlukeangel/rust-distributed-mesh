@@ -181,6 +181,16 @@ pub enum Violation {
     MirrorPending { sha: String, line: usize },
     /// The ledger names no base, or no boundary path, or a ref does not resolve.
     Ledger { reason: String },
+    /// A connections.md §13 acceptance clause has no `## Connections parity` row.
+    ConnectionsClauseUnmapped { clause: String },
+    /// A connections row names no owner (an i143 story for MIRROR / MIRROR pending).
+    ConnectionsRowWithoutOwner { clause: String, line: usize },
+    /// A connections row names no carrying proof.
+    ConnectionsRowWithoutProof { clause: String, line: usize },
+    /// Two rows map the same connections clause.
+    ConnectionsDuplicate { clause: String, lines: Vec<usize> },
+    /// A MIRROR row (SHA or clause) that does not name the RDM SHA (`RDM `<sha>``).
+    MirrorWithoutRdmProof { row: String, line: usize },
 }
 
 impl fmt::Display for Violation {
@@ -206,6 +216,22 @@ impl fmt::Display for Violation {
             }
             Self::MirrorPending { sha, line } => write!(f, "line {line}: {sha} is MIRROR pending; import is blocked"),
             Self::Ledger { reason } => write!(f, "ledger: {reason}"),
+            Self::ConnectionsClauseUnmapped { clause } => {
+                write!(f, "connections clause {clause} (connections.md §13) has no Connections parity row")
+            }
+            Self::ConnectionsRowWithoutOwner { clause, line } => write!(
+                f,
+                "line {line}: connections row {clause} names no owner (MIRROR/MIRROR pending rows name an i143.eN.sM story)"
+            ),
+            Self::ConnectionsRowWithoutProof { clause, line } => {
+                write!(f, "line {line}: connections row {clause} names no carrying proof")
+            }
+            Self::ConnectionsDuplicate { clause, lines } => {
+                write!(f, "connections clause {clause} has rows at ledger lines {lines:?}")
+            }
+            Self::MirrorWithoutRdmProof { row, line } => {
+                write!(f, "line {line}: row {row} is MIRROR but names no RDM SHA (`RDM `<sha>``) and carrying test")
+            }
         }
     }
 }
@@ -231,6 +257,7 @@ pub struct Report {
     pub boundary_paths: Vec<String>,
     pub boundary_commits: usize,
     pub rows: Vec<ReportRow>,
+    pub connections: Vec<ConnectionsRow>,
     pub dispositions: BTreeMap<String, usize>,
     pub mirror_pending: usize,
     pub violations: Vec<Violation>,
@@ -243,6 +270,142 @@ pub struct ScanInput<'a> {
     pub ledger_text: &'a str,
     /// Overrides the ledger's review-through tip.
     pub through: Option<&'a str>,
+    /// rafka-v2 `docs/architecture/connections.md`; `None` skips the
+    /// connections-parity gate (the CLI always supplies it).
+    pub connections_text: Option<&'a str>,
+}
+
+/// One `## Connections parity` row: an i66.e3 acceptance clause mapped to its
+/// RDM owner story and carrying proof.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConnectionsRow {
+    pub clause: String,
+    pub source: String,
+    pub owner: String,
+    pub proof: String,
+    pub disposition: Option<Disposition>,
+    pub line: usize,
+}
+
+/// `CONN-<letter>` for every `### <letter>. ...` heading under
+/// `## 13. Required acceptance tests` in connections.md.
+pub fn required_connection_clauses(connections_md: &str) -> Vec<String> {
+    let mut in_section = false;
+    let mut out = Vec::new();
+    for line in connections_md.lines() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix("## ") {
+            in_section = h.starts_with("13.") && h.contains("acceptance tests");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some(h) = t.strip_prefix("### ") {
+            if let Some((letter, _)) = h.split_once('.') {
+                if !letter.is_empty() && letter.chars().all(|c| c.is_ascii_uppercase()) {
+                    out.push(format!("CONN-{letter}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn is_placeholder(cell: &str) -> bool {
+    matches!(cell.trim().trim_matches('`'), "" | "-" | "—" | "TBD" | "tbd" | "?" | "none")
+}
+
+/// `i143.e<N>.s<M>` somewhere in the owner cell.
+fn names_i143_story(owner: &str) -> bool {
+    owner.match_indices("i143.e").any(|(at, _)| {
+        let rest = &owner[at + "i143.e".len()..];
+        let n = rest.chars().take_while(char::is_ascii_digit).count();
+        n > 0 && rest[n..].starts_with(".s") && rest[n + 2..].chars().next().is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
+/// A MIRROR row records the RDM SHA as ``RDM `<hex>` ``.
+fn names_rdm_sha(cell: &str) -> bool {
+    cell.match_indices("RDM `").any(|(at, m)| {
+        let rest = &cell[at + m.len()..];
+        let n = rest.chars().take_while(char::is_ascii_hexdigit).count();
+        (7..=40).contains(&n) && rest[n..].starts_with('`')
+    })
+}
+
+/// Check the `## Connections parity` rows against connections.md §13.
+pub fn check_connections(ledger_text: &str, connections_md: &str) -> (Vec<ConnectionsRow>, Vec<Violation>) {
+    let mut rows = Vec::new();
+    let mut violations = Vec::new();
+    let mut in_section = false;
+    for (i, line) in ledger_text.lines().enumerate() {
+        let t = line.trim();
+        if let Some(h) = t.strip_prefix("## ") {
+            in_section = h.starts_with("Connections parity");
+            continue;
+        }
+        if !in_section || !t.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = t.trim_matches('|').split('|').map(str::trim).collect();
+        let Some(clause) = cells.first().and_then(|c| c.strip_prefix('`')).and_then(|c| c.strip_suffix('`')) else {
+            continue;
+        };
+        if !clause.starts_with("CONN-") || cells.len() < 5 {
+            continue;
+        }
+        let cell = cells[4..].join(" | ");
+        let ds: Vec<Disposition> = bold_segments(&cell).iter().filter_map(|b| Disposition::parse(b)).collect();
+        let row = ConnectionsRow {
+            clause: clause.to_string(),
+            source: cells[1].to_string(),
+            owner: cells[2].to_string(),
+            proof: cells[3].to_string(),
+            disposition: if ds.len() == 1 { Some(ds[0]) } else { None },
+            line: i + 1,
+        };
+        if ds.len() != 1 {
+            violations.push(Violation::AmbiguousDisposition { sha_prefix: row.clause.clone(), line: row.line, cell: cell.clone() });
+        }
+        let needs_story = matches!(row.disposition, Some(Disposition::Mirror | Disposition::MirrorPending));
+        if is_placeholder(&row.owner) || (needs_story && !names_i143_story(&row.owner)) {
+            violations.push(Violation::ConnectionsRowWithoutOwner { clause: row.clause.clone(), line: row.line });
+        }
+        if is_placeholder(&row.proof) {
+            violations.push(Violation::ConnectionsRowWithoutProof { clause: row.clause.clone(), line: row.line });
+        }
+        match row.disposition {
+            Some(Disposition::MirrorPending) => {
+                violations.push(Violation::MirrorPending { sha: row.clause.clone(), line: row.line })
+            }
+            Some(Disposition::Mirror) if !names_rdm_sha(&cell) && !names_rdm_sha(&row.proof) => {
+                violations.push(Violation::MirrorWithoutRdmProof { row: row.clause.clone(), line: row.line })
+            }
+            _ => {}
+        }
+        rows.push(row);
+    }
+    let mut by_clause: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for r in &rows {
+        by_clause.entry(&r.clause).or_default().push(r.line);
+    }
+    for (clause, lines) in &by_clause {
+        if lines.len() > 1 {
+            violations.push(Violation::ConnectionsDuplicate { clause: clause.to_string(), lines: lines.clone() });
+        }
+    }
+    for clause in required_connection_clauses(connections_md) {
+        if !by_clause.contains_key(clause.as_str()) {
+            violations.push(Violation::ConnectionsClauseUnmapped { clause });
+        }
+    }
+    if required_connection_clauses(connections_md).is_empty() {
+        violations.push(Violation::Ledger {
+            reason: "connections doc has no `## 13. Required acceptance tests` clauses".into(),
+        });
+    }
+    (rows, violations)
 }
 
 struct Git<'a>(&'a Path);
@@ -374,6 +537,9 @@ pub fn scan(input: &ScanInput<'_>) -> Report {
         }
         if let Some(d) = disposition {
             *dispositions.entry(serde_json::to_value(d).unwrap().as_str().unwrap().to_string()).or_default() += 1;
+            if d == Disposition::Mirror && !names_rdm_sha(&row.disposition_cell) {
+                violations.push(Violation::MirrorWithoutRdmProof { row: row.sha_prefix.clone(), line: row.line });
+            }
             if d == Disposition::MirrorPending {
                 mirror_pending += 1;
                 violations.push(Violation::MirrorPending { sha: sha.clone(), line: row.line });
@@ -395,6 +561,13 @@ pub fn scan(input: &ScanInput<'_>) -> Report {
             violations.push(Violation::Duplicate { sha: sha.clone(), lines: lines.clone() });
         }
     }
+    let mut connections = Vec::new();
+    if let Some(md) = input.connections_text {
+        let (rows, v) = check_connections(input.ledger_text, md);
+        mirror_pending += rows.iter().filter(|r| r.disposition == Some(Disposition::MirrorPending)).count();
+        connections = rows;
+        violations.extend(v);
+    }
     for sha in &boundary_commits {
         if !by_sha.contains_key(sha) {
             violations.push(Violation::Unclassified { sha: sha.clone(), subject: git.subject(sha) });
@@ -409,6 +582,7 @@ pub fn scan(input: &ScanInput<'_>) -> Report {
         boundary_commits: boundary_commits.len(),
         eligible: violations.is_empty(),
         rows,
+        connections,
         dispositions,
         mirror_pending,
         violations,
@@ -416,9 +590,30 @@ pub fn scan(input: &ScanInput<'_>) -> Report {
 }
 
 /// Read a ledger file and scan.
-pub fn scan_files(repo: &Path, ledger: &Path, through: Option<&str>) -> std::io::Result<Report> {
+/// `connections` defaults to `<repo>/docs/architecture/connections.md`; an
+/// unreadable connections doc is a gate violation, not a skip.
+pub fn scan_files(repo: &Path, ledger: &Path, through: Option<&str>, connections: Option<&Path>) -> std::io::Result<Report> {
     let text = std::fs::read_to_string(ledger)?;
-    Ok(scan(&ScanInput { repo, ledger_text: &text, through }))
+    let conn_path = connections.map(Path::to_path_buf).unwrap_or_else(|| default_connections(repo));
+    let conn = std::fs::read_to_string(&conn_path);
+    let mut report = scan(&ScanInput {
+        repo,
+        ledger_text: &text,
+        through,
+        connections_text: Some(conn.as_deref().unwrap_or("")),
+    });
+    if let Err(e) = conn {
+        report.violations.push(Violation::Ledger {
+            reason: format!("connections doc {} is unreadable: {e}", conn_path.display()),
+        });
+        report.eligible = false;
+    }
+    Ok(report)
+}
+
+/// Default connections architecture doc inside a rafka-v2 checkout.
+pub fn default_connections(repo: &Path) -> PathBuf {
+    repo.join("docs/architecture/connections.md")
 }
 
 /// Default ledger location inside a rafka-v2 checkout.
