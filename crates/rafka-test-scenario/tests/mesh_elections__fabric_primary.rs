@@ -136,9 +136,13 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert!(
         named(&spans, "rafka.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| {
             let a = &sp["attributes"];
-            a["primary"] == new_primary.as_str() && a["previous"] == old_primary.as_str() && a["observer"].as_str().is_some_and(|o| o.starts_with("mesh2."))
+            // The lost mesh's admins fall silent milliseconds apart: the
+            // previous holder is whichever mesh1 admin went silent last.
+            a["primary"] == new_primary.as_str()
+                && a["previous"].as_str().is_some_and(|p| p.starts_with("mesh1.admin."))
+                && a["observer"].as_str().is_some_and(|o| o.starts_with("mesh2."))
         }),
-        "a surviving admin announced the new fabric primary"
+        "a surviving admin announced the new fabric primary, succeeding the lost mesh's"
     );
 }
 
