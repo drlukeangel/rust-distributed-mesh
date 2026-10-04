@@ -230,14 +230,41 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route and
-    /// wait for the bootstrap admin to exit. Every process flushes its
-    /// evidence on exit, so read `spans()` after this.
+    /// Stop the whole estate through the runtime-administration route of
+    /// `self.admin` (the bootstrap admin, or whichever admin the test switched
+    /// control to) and wait until every runtime of the estate has exited.
+    /// Every process flushes its evidence on exit, so read `spans()` after this.
     pub async fn stop(&mut self) {
-        let _ = self.post("/api/shutdown", &json!({})).await;
+        let _ = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
         if let Some(mut c) = self.bootstrap.take() {
             let _ = tokio::task::spawn_blocking(move || c.wait()).await;
         }
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && !self.live_runtimes().is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// SIGKILL the bootstrap admin (a fault: it flushes nothing).
+    pub fn kill_bootstrap(&mut self) {
+        if let Some(mut c) = self.bootstrap.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Every runtime a provider started for this estate that still runs:
+    /// `(data dir, pid)` from each node's `deployment.json` (process provider).
+    pub fn live_runtimes(&self) -> Vec<(PathBuf, u32)> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&self.root).into_iter().flatten().flatten() {
+            let Ok(raw) = std::fs::read_to_string(e.path().join("deployment.json")) else { continue };
+            let Some(pid) = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v["pid"].as_u64()) else { continue };
+            if Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+                out.push((e.path(), pid as u32));
+            }
+        }
+        out
     }
 
     /// [`Self::stop`], consuming the estate.
@@ -248,6 +275,16 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
+        // Whatever still runs after the test (a failed run, or a fabric whose
+        // control moved) is stopped here, never left behind.
+        let sweep = |e: &Estate| {
+            for (_, pid) in e.live_runtimes() {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            }
+        };
+        if self.bootstrap.is_none() {
+            sweep(self);
+        }
         if let Some(mut c) = self.bootstrap.take() {
             // Best-effort fabric shutdown on a failed run, then the bootstrap process.
             if let Some(hostport) = self.admin.strip_prefix("http://") {
@@ -266,6 +303,7 @@ impl Drop for Estate {
             }
             let _ = c.kill();
             let _ = c.wait();
+            sweep(self);
         }
     }
 }

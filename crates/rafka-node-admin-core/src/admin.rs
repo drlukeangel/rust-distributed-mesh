@@ -316,6 +316,8 @@ pub struct AdminRunner {
     pub fabric: String,
     pub fabric_provider: ProviderKind,
     pub book: DigestBook,
+    /// This admin's own path.
+    pub me: PathName,
 }
 
 impl AdminRunner {
@@ -353,6 +355,79 @@ impl AdminRunner {
         }
     }
 
+    /// The runtime of `node`'s birth: this admin's own handle, or the one the
+    /// Build that launched it recorded (another admin's launch, e.g. a lost
+    /// fabric primary's), adopted. Found through the birth's `AllocateIdentity`
+    /// receipt (its incarnation) and the `DeployRuntime` receipt of the same
+    /// deployment.
+    async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
+        if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.name).cloned() {
+            if node.incarnation_id.is_none() || rec.incarnation_id == node.incarnation_id {
+                return Ok((rec, h));
+            }
+        }
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
+        let facts = self.builds.facts().await.map_err(|e| format!("reading Build facts to adopt {}: {e}", node.name))?;
+        let ops = [format!("create-node:{}", node.name), format!("restart-node:{}", node.name)];
+        let identity = facts.iter().find_map(|f| match f {
+            crate::build_state::BuildFact::Step(r)
+                if r.step == "AllocateIdentity" && ops.contains(&r.operation)
+                    && r.output.as_ref().and_then(|o| o.get("incarnation")).and_then(|v| v.as_str()) == Some(incarnation.0.as_str()) =>
+            {
+                r.output.clone()
+            }
+            _ => None,
+        });
+        let identity = identity.ok_or_else(|| format!("no Build recorded the birth {} of {}; it cannot be adopted", incarnation.0, node.name))?;
+        let deployment = identity.get("deployment_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let handle = facts
+            .iter()
+            .find_map(|f| match f {
+                crate::build_state::BuildFact::Step(r) if r.step == "DeployRuntime" && ops.contains(&r.operation) => r
+                    .output
+                    .clone()
+                    .and_then(|o| serde_json::from_value::<DeploymentHandle>(o).ok())
+                    .filter(|h| h.deployment_id.0 == deployment),
+                _ => None,
+            })
+            .ok_or_else(|| format!("no Build recorded the runtime of {} (deployment {deployment}); it cannot be adopted", node.name))?;
+        let mut record = node.clone();
+        record.deployment_id = Some(handle.deployment_id.clone());
+        if record.data_dir.is_none() {
+            let node_id = identity.get("node_id").and_then(|v| v.as_str()).unwrap_or(&node.node_id.0).to_string();
+            record.data_dir = Some(self.template.data_root.join(format!("{}-{}", node.name, node_id)).display().to_string());
+        }
+        tracing::info!(node = %node.name, deployment_id = %handle.deployment_id, "adopted a runtime another admin launched");
+        self.handles.lock().unwrap().insert(node.name.clone(), (record.clone(), handle.clone()));
+        Ok((record, handle))
+    }
+
+    /// A new birth at a path whose previous birth this view holds as not live
+    /// (killed, or only unheard): if that runtime still runs, stop it first,
+    /// so a path never has two live runtimes.
+    async fn fence_predecessor(&self, path: &PathName) {
+        let Some(prev) = self.topology.read().await.node(path).cloned() else { return };
+        if prev.status.is_live() || prev.incarnation_id.is_none() {
+            return;
+        }
+        let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
+        let outcome = match self.handle_for(&prev).await {
+            Err(e) => format!("not-found: {e}"),
+            Ok((_, h)) => match self.provider.inspect(&h).await {
+                crate::deployment::provider::DeploymentStatus::Running => {
+                    match self.provider.terminate(&h, TerminationMode::Graceful { grace: Duration::from_secs(8) }).await {
+                        Ok(()) => "terminated".to_string(),
+                        Err(e) => format!("terminate-failed: {e}"),
+                    }
+                }
+                other => format!("not-running: {other:?}"),
+            },
+        };
+        self.handles.lock().unwrap().remove(path);
+        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome)
+            .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
+    }
+
     /// `Node: Pending -> ReadyForTraffic`, committed once the node reports ready.
     async fn bring_into_traffic(&self, node: &Node) -> Result<(), String> {
         let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
@@ -366,6 +441,9 @@ impl AdminRunner {
     }
 
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>) -> Result<(), String> {
+        if restart_of.is_none() {
+            self.fence_predecessor(node).await;
+        }
         let template = self.template_for(node.kind, &node.mesh);
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), slots: slots_for(node.kind), restart_of };
         let created = self.pipeline(&template).create(&req).await.map_err(|e| e.to_string())?;
@@ -375,8 +453,10 @@ impl AdminRunner {
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
-        let Some((record, handle)) = self.handles.lock().unwrap().get(node).cloned() else {
-            return Err(format!("{node} was not started by this admin; it holds no handle for it"));
+        let seen = self.topology.read().await.node(node).cloned();
+        let (record, handle) = match seen {
+            Some(n) => self.handle_for(&n).await?,
+            None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
         let template = self.template_for(node.kind, &node.mesh);
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent };
@@ -385,9 +465,23 @@ impl AdminRunner {
         Ok(Some(record))
     }
 
-    /// Stop every runtime this admin started, all at once (fabric shutdown).
+    /// Fabric shutdown: stop every runtime this admin started, all at once;
+    /// the fabric primary also stops every other live node of the fabric
+    /// (adopting the ones another admin launched).
     pub async fn stop_all(&self) {
         let mut all: Vec<(String, DeploymentHandle)> = self.handles.lock().unwrap().iter().map(|(k, (_, h))| (k.to_string(), h.clone())).collect();
+        let view = self.topology.read().await.clone();
+        if view.fabric_primary().is_some_and(|p| p.name == self.me) {
+            for n in view.nodes.iter().filter(|n| n.name != self.me && n.status.is_live()) {
+                if all.iter().any(|(k, _)| *k == n.name.to_string()) {
+                    continue;
+                }
+                match self.handle_for(n).await {
+                    Ok((_, h)) => all.push((n.name.to_string(), h)),
+                    Err(e) => tracing::info!(node = %n.name, error = %e, "a live node of the fabric cannot be stopped from here"),
+                }
+            }
+        }
         // And whatever the provider started that no create recorded (a create
         // that failed after DeployRuntime).
         for h in self.provider.launched() {
@@ -439,7 +533,12 @@ impl AdminRunner {
                 self.retire(build_id, attempt, node, *permanent).instrument(span).await.map(|_| ())
             }
             BuildOperation::RetireMesh { mesh } => {
-                let members: Vec<PathName> = self.handles.lock().unwrap().keys().filter(|n| n.mesh == *mesh).cloned().collect();
+                let members: Vec<PathName> = {
+                    let view = self.topology.read().await;
+                    let mut m: BTreeSet<PathName> = view.nodes.iter().filter(|n| n.mesh == *mesh && n.status.is_live()).map(|n| n.name.clone()).collect();
+                    m.extend(self.handles.lock().unwrap().keys().filter(|n| n.mesh == *mesh).cloned());
+                    m.into_iter().collect()
+                };
                 for node in members {
                     let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                     self.retire(build_id, attempt, &node, true).instrument(span).await?;
@@ -573,6 +672,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         fabric: cfg.fabric.clone(),
         fabric_provider: policy.provider,
         book: book.clone(),
+        me: name.clone(),
     });
 
     // Own digest, published on the membership cadence.

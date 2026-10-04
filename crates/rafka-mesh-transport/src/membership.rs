@@ -38,8 +38,25 @@ pub struct DigestBook {
 }
 
 impl DigestBook {
-    pub fn record(&self, d: MeshDigest) {
-        self.inner.lock().unwrap().insert(d.node.node_id.0.clone(), (d, Instant::now()));
+    /// Hold `d` as its member's latest word, unless it is older than what is
+    /// held: a digest of the same birth emitted no later than the held one,
+    /// or a digest of the birth the held one supersedes. Gossip can deliver
+    /// a digest late; a late one never refreshes a silent member or reverts
+    /// its status. `false` when `d` was not taken.
+    pub fn record(&self, d: MeshDigest) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some((held, _)) = inner.get(&d.node.node_id.0) {
+            let older = if held.node.incarnation == d.node.incarnation {
+                d.emitted_unix_ms <= held.emitted_unix_ms
+            } else {
+                held.node.supersedes.as_ref() == Some(&d.node.incarnation)
+            };
+            if older {
+                return false;
+            }
+        }
+        inner.insert(d.node.node_id.0.clone(), (d, Instant::now()));
+        true
     }
 
     /// Digests heard within `fresh` of now.
@@ -156,5 +173,53 @@ impl Membership {
         let sender = self.sender.read().await.clone();
         sender.join_peers(peers.iter().map(|p| p.id).collect()).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::{EndpointSet, FabricId, IncarnationId, MemberStatus, MeshNode, NodeId};
+
+    fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
+        MeshDigest {
+            fabric: "fabric1".into(),
+            node: MeshNode {
+                node_id: node_id.clone(),
+                name: "mesh1.rpc.1".parse().unwrap(),
+                fabric_id: FabricId("key".into()),
+                incarnation: incarnation.clone(),
+                supersedes,
+                endpoints: EndpointSet(vec![]),
+            },
+            status,
+            admin_api_base: None,
+            emitted_unix_ms: at,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_late_digest_never_refreshes_a_member_or_reverts_its_status() {
+        let book = DigestBook::default();
+        let (id, birth) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 200)));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)), "an older digest of the same birth");
+        assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "a duplicate");
+        let (held, age) = book.get(&id.0).unwrap();
+        assert_eq!(held.status, MemberStatus::Leaving, "the status is not reverted");
+        assert!(age >= Duration::from_millis(30), "the member's silence is not reset");
+        assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 300)), "a newer digest is taken");
+    }
+
+    #[test]
+    fn a_successor_birth_is_taken_and_its_predecessors_late_digests_are_not() {
+        let book = DigestBook::default();
+        let (id, first, second) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 500)));
+        assert!(book.record(digest(&id, &second, Some(first.clone()), MemberStatus::ReadyForTraffic, 100)), "a new birth, whatever its clock");
+        assert!(!book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 900)), "the superseded birth's late digest");
+        assert_eq!(book.get(&id.0).unwrap().0.node.incarnation, second);
     }
 }

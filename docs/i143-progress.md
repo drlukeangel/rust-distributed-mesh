@@ -38,10 +38,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e3.s3 | #2751 | `21fa67580f` | `rafka-node-admin` binary (`admin.rs`); SN/MN/MM shape reconciler, process E2E `mesh_shapes__shape_reconcile` |
 | e3.s4 | #2752 | `ab603d0901` | live resize E2E `mesh_shapes__live_resize`; host-wide endpoint port claims. Epic e3 closed |
 | e4.s4 | #2757 | `511b9cd299` | cohort election by incumbency (`election.rs`, `ready_since_ms` claim); E2E `mesh_elections__cohort_election` incl. partition |
+| e6.s2 | #2768 | `8fc9f8a416` | scoped slot-aware Node RPC pool (`crates/rafka-node-rpc/src/pool.rs`), 7 functional cells; parity rows 3644b2e5b9 / 65d17cdc1b MIRROR (rafka-v2 #2799 `c11d781783`) |
 
 ## In progress
 
-- e6.s2 drlukeangel/rafka-v2#2768 — scoped slot-aware pool (`crates/rafka-node-rpc/src/pool.rs`), functional `crates/rafka-node-rpc/tests/pool.rs` (branch `i143-e6-s2`). Next: e4.s5 #2758.
+- e4.s5 drlukeangel/rafka-v2#2758 — fabric-primary failover E2E `mesh_elections__fabric_primary`; adoption from Build facts, path fence, DigestBook late-digest fix (branch `i143-e4-s5`).
 
 ## Blockers
 
