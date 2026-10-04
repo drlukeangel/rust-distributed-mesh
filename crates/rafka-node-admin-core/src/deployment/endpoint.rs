@@ -5,6 +5,13 @@
 //! an advertised port. `WaitForBind` checks that independently: it asks the
 //! operating system whether the assigned UDP port is actually held, rather than
 //! trusting the runtime's own report.
+//!
+//! On a shared host every node-admin (of any fabric) draws from the same port
+//! range, and a probe bind sees a port free until the launched runtime binds
+//! it. A port is therefore also claimed host-wide before it is handed out:
+//! an exclusive create of `<temp dir>/rafka-endpoint-ports/<ip>-<port>`,
+//! holding the claiming process's pid. A claim whose process is gone is
+//! stale and is taken over.
 
 use crate::model::{EndpointSlot, FreshnessToken, PathName, SlotPolicy};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,7 +182,9 @@ impl EndpointAllocator {
                 continue;
             }
             let free = match self.addressing {
-                Addressing::SharedHost(_) => UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok(),
+                Addressing::SharedHost(_) => {
+                    UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok() && reserve_on_host(a)
+                }
                 Addressing::PerNode { .. } => true,
             };
             if free {
@@ -217,7 +226,7 @@ impl EndpointAllocator {
                 }
                 Err(e) => {
                     for a in taken {
-                        self.in_use.remove(&a);
+                        self.free(a);
                     }
                     return Err(e);
                 }
@@ -226,7 +235,7 @@ impl EndpointAllocator {
         // Release the fresh slots' old ports now that the new ones are held.
         for p in &prior {
             if !out.iter().any(|e| e.addr == p.addr) {
-                self.in_use.remove(&p.addr);
+                self.free(p.addr);
             }
         }
         self.held.insert(node.clone(), out.clone());
@@ -237,8 +246,15 @@ impl EndpointAllocator {
     pub fn release(&mut self, node: &PathName) {
         if let Some(slots) = self.held.remove(node) {
             for s in slots {
-                self.in_use.remove(&s.addr);
+                self.free(s.addr);
             }
+        }
+    }
+
+    /// Return `addr` to the range, and drop its host-wide claim.
+    fn free(&mut self, addr: SocketAddr) {
+        if self.in_use.remove(&addr) && matches!(self.addressing, Addressing::SharedHost(_)) {
+            release_on_host(addr);
         }
     }
 
@@ -246,7 +262,9 @@ impl EndpointAllocator {
     /// node after a takeover), so its ports are never handed out again.
     pub fn adopt(&mut self, node: &PathName, slots: Vec<EndpointSlot>) {
         for s in &slots {
-            self.in_use.insert(s.addr);
+            if self.in_use.insert(s.addr) && matches!(self.addressing, Addressing::SharedHost(_)) {
+                claim_on_host(s.addr);
+            }
         }
         self.held.insert(node.clone(), slots);
     }
@@ -259,6 +277,86 @@ impl EndpointAllocator {
     pub fn held(&self, node: &PathName) -> Option<&[EndpointSlot]> {
         self.held.get(node).map(Vec::as_slice)
     }
+}
+
+impl Drop for EndpointAllocator {
+    /// A node-admin that goes away drops its host-wide claims; a runtime it
+    /// leaves running still holds its port, which the probe bind sees.
+    fn drop(&mut self) {
+        if matches!(self.addressing, Addressing::SharedHost(_)) {
+            for a in std::mem::take(&mut self.in_use) {
+                release_on_host(a);
+            }
+        }
+    }
+}
+
+/// Where the host-wide claim of `addr` lives.
+fn reservation_path(addr: SocketAddr) -> std::path::PathBuf {
+    std::env::temp_dir().join("rafka-endpoint-ports").join(format!("{}-{}", addr.ip(), addr.port()))
+}
+
+/// Is process `pid` alive on this host?
+fn process_is_alive(pid: u32) -> bool {
+    pid == std::process::id() || std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Run `f` holding the host-wide lock over every endpoint claim, so a claim
+/// is decided (free, live owner, or stale) and written as one step. `None`
+/// when the claims directory cannot be locked.
+fn with_claims_locked<T>(f: impl FnOnce(&std::path::Path) -> T) -> Option<T> {
+    let dir = std::env::temp_dir().join("rafka-endpoint-ports");
+    let lock = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".lock")))
+        .and_then(|f| f.lock().map(|()| f));
+    match lock {
+        Ok(_held) => Some(f(&dir)),
+        Err(e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "endpoint claims cannot be locked");
+            None
+        }
+    }
+}
+
+fn claim_owner(path: &std::path::Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// Claim `addr` host-wide. `false` when a live process holds the claim or it
+/// cannot be written; a claim whose owner process is gone is taken over.
+fn reserve_on_host(addr: SocketAddr) -> bool {
+    let path = reservation_path(addr);
+    with_claims_locked(|_| {
+        if claim_owner(&path).is_some_and(process_is_alive) {
+            return false;
+        }
+        match std::fs::write(&path, std::process::id().to_string()) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "endpoint claim cannot be written; port {addr} is not handed out");
+                false
+            }
+        }
+    })
+    .unwrap_or(false)
+}
+
+/// Record a claim for an address this admin adopted (it already runs).
+fn claim_on_host(addr: SocketAddr) {
+    let path = reservation_path(addr);
+    with_claims_locked(|_| {
+        let _ = std::fs::write(&path, std::process::id().to_string());
+    });
+}
+
+/// Drop this process's claim on `addr` (another process's claim is kept).
+fn release_on_host(addr: SocketAddr) {
+    let path = reservation_path(addr);
+    with_claims_locked(|_| {
+        if claim_owner(&path) == Some(std::process::id()) {
+            let _ = std::fs::remove_file(&path);
+        }
+    });
 }
 
 /// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>`, default `41000-48999`.
@@ -392,5 +490,41 @@ mod tests {
         let got = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
         assert!(got.iter().all(|e| e.addr.port() != 56000));
         drop(squatter);
+    }
+
+    /// Two node-admins on one host (two fabrics, or two admins of one fabric)
+    /// each assign before either launch binds: the probe bind alone sees
+    /// every port free, so only the host-wide reservation keeps them apart.
+    #[test]
+    fn two_allocators_on_one_host_never_hand_out_the_same_port() {
+        let (mut a, mut b) = (
+            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56107),
+            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56107),
+        );
+        let x = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
+        let y = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
+        let mut seen = BTreeSet::new();
+        for e in x.iter().chain(&y) {
+            assert!(seen.insert(e.addr), "{} handed out twice", e.addr);
+        }
+        // A released port is free to the other allocator again.
+        a.release(&p("mesh1.rpc.1"));
+        b.release(&p("mesh1.rpc.1"));
+        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56101);
+        assert!(c.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).is_ok(), "released reservations are gone");
+    }
+
+    /// A reservation whose owner process is gone is stale and is taken over.
+    #[test]
+    fn a_reservation_left_by_a_dead_process_is_taken_over() {
+        let addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 56200);
+        let path = reservation_path(addr);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // pid_max on Linux is at most 2^22: this pid cannot be live.
+        std::fs::write(&path, "4194305").unwrap();
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56200, 56200);
+        assert!(a.assign(&p("mesh1.admin.2"), &[SlotSpec { slot: "control", policy: SlotPolicy::Fresh, transport: SlotTransport::Tcp }], false).is_ok());
+        a.release(&p("mesh1.admin.2"));
+        assert!(!path.exists(), "release removes the reservation");
     }
 }
