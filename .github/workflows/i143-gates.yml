@@ -32,3 +32,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: provider smokes
         run: cargo test -p rafka-node-admin-core -p rafka-node-rpc-testkit
+      - name: admin-ui is a node-admin client
+        run: cargo test -p rafka-admin-ui --test ui_flows
