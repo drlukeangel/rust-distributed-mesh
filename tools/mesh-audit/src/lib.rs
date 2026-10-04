@@ -4,6 +4,7 @@
 //! workspace. A gate returns every violation it finds, never just the first,
 //! so one run names the whole gap.
 
+pub mod deps;
 pub mod legacy;
 pub mod parity;
 
