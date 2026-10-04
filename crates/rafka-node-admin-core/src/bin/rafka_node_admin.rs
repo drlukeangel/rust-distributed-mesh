@@ -43,12 +43,15 @@ async fn main() {
     drop(boot);
     println!("RAFKA_NODE_ADMIN_API_BASE={}", running.api_base);
 
-    // Stop on the shutdown route (the whole fabric this admin started) or a signal.
-    let shutdown = running.control.shutdown.clone();
+    // Stop on the shutdown route (the whole fabric this admin started), a
+    // Build's request that this admin leave (its own retirement), or a signal.
+    let (shutdown, leave) = (running.control.shutdown.clone(), running.control.leave.clone());
     let by_route = shutdown.notified();
-    tokio::pin!(by_route);
+    let by_build = leave.notified();
+    tokio::pin!(by_route, by_build);
     let fabric_shutdown = tokio::select! {
         _ = &mut by_route => true,
+        _ = &mut by_build => false,
         _ = signal() => false,
     };
     let span = tracing::info_span!("rafka.mesh.node.delete.via-signal", fabric_shutdown);

@@ -192,6 +192,17 @@ fn live<'a>(t: &'a Topology, mesh: &str, kind: NodeKind) -> Vec<&'a crate::model
     t.cohort(mesh, kind).filter(|n| n.status.is_live()).collect()
 }
 
+/// Retire `mesh`: its own admin controls its members, so each live rpc node
+/// is retired on its own (executed by the mesh's primary); then the mesh
+/// itself, its admins and its place in the fabric (fabric state, executed
+/// from outside the mesh: `executor::executor_for`).
+fn retire_mesh(observed: &Topology, mesh: &str, ops: &mut Vec<BuildOperation>) {
+    let mut rpcs: Vec<PathName> = live(observed, mesh, NodeKind::RpcNode).into_iter().map(|n| n.name.clone()).collect();
+    rpcs.sort();
+    ops.extend(rpcs.into_iter().map(|node| BuildOperation::RetireNode { node, permanent: true }));
+    ops.push(BuildOperation::RetireMesh { mesh: mesh.to_string() });
+}
+
 /// Bring one existing mesh's live cohorts to `desired` counts.
 ///
 /// Grow fills the lowest free ordinals; a dead member's path is reused by a
@@ -272,7 +283,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             let mut gone: Vec<&String> = observed.meshes.iter().map(|m| &m.name).filter(|m| !names.contains(*m)).collect();
             gone.sort();
             for m in gone {
-                ops.push(BuildOperation::RetireMesh { mesh: m.clone() });
+                retire_mesh(observed, m, &mut ops);
             }
         }
         BuildIntent::ReconcileMesh { desired } => {
@@ -345,7 +356,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if observed.meshes.len() <= 1 {
                 return Err(BuildReject::EmptyFabric);
             }
-            ops.push(BuildOperation::RetireMesh { mesh: mesh.clone() });
+            retire_mesh(observed, mesh, &mut ops);
         }
     }
     Ok(BuildPlan { operations: ops })
@@ -557,6 +568,9 @@ mod tests {
                 create("mesh2.admin.1"),
                 BuildOperation::CreateMesh { mesh: "mesh3".into() },
                 create("mesh3.admin.1"),
+                retire("mesh1.rpc.1"),
+                retire("mesh1.rpc.2"),
+                retire("mesh1.rpc.3"),
                 BuildOperation::RetireMesh { mesh: "mesh1".into() },
             ]
         );

@@ -10,10 +10,14 @@
 //! - no mesh1 runtime is left, and mesh1 is no longer a mesh of the fabric;
 //! - control stays reachable through the advertised endpoints throughout.
 //!
-//! Evidence: every mesh1 node leaves through the retire pipeline under the
-//! Build (`node.delete.via-build` above `deployment.update.via-pipeline`
-//! with `pipeline=retire`), which descends from the accepting request; no
-//! mesh1 path is created or fenced (that would be recovery).
+//! Evidence: every mesh1 node leaves under the Build (`node.delete.via-build`,
+//! descending from the accepting request) and an admin of another mesh runs
+//! it. A node another admin launched leaves through the retire pipeline
+//! (`deployment.update.via-pipeline`, `pipeline=retire`); the bootstrap admin,
+//! which holds its own runtime, is asked to leave through the Build
+//! (`node.delete.via-leave-request`) and leaves on its own
+//! (`rafka.mesh.node.delete.via-leave-request`). No mesh1 path is created or
+//! fenced (that would be recovery).
 
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
@@ -120,11 +124,30 @@ async fn replacing_a_mesh_retires_it_and_creates_a_new_one() {
             .find(|d| d["attributes"]["node"] == node.as_str())
             .unwrap_or_else(|| panic!("{node} leaves under the Build"));
         assert!(descends_from(&spans, delete, &accepted), "{node}'s retire descends from the replacement request");
-        assert!(
-            retires.iter().any(|r| r["attributes"]["node"] == node.as_str() && descends_from(&spans, r, delete)),
-            "{node} leaves through the retire pipeline"
-        );
+        if node == "mesh1.admin.1" {
+            let asked = named(&spans, "rafka.node_admin.node.delete.via-leave-request")
+                .into_iter()
+                .find(|r| r["attributes"]["node"] == node.as_str() && descends_from(&spans, r, delete))
+                .unwrap_or_else(|| panic!("the bootstrap admin {node} is asked to leave under the Build"));
+            assert_eq!(asked["attributes"]["outcome"], "left", "{asked}");
+            assert!(
+                named(&spans, "rafka.mesh.node.delete.via-leave-request").iter().any(|l| l["attributes"]["node"] == node.as_str() && l["attributes"]["build_id"] == b.as_str()),
+                "{node} reads the request from the Build and leaves"
+            );
+        } else {
+            assert!(
+                retires.iter().any(|r| r["attributes"]["node"] == node.as_str() && descends_from(&spans, r, delete)),
+                "{node} leaves through the retire pipeline"
+            );
+        }
     }
+    // A mesh never retires itself: another mesh's admin runs the retirement.
+    let executors: BTreeSet<String> = named(&spans, "rafka.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .filter(|r| r["attributes"]["build_id"] == b.as_str() && s(&r["attributes"]["operations"]).contains("retire-mesh:mesh1"))
+        .map(|r| s(&r["attributes"]["executor"]))
+        .collect();
+    assert!(!executors.is_empty() && executors.iter().all(|e| !e.starts_with("mesh1.")), "mesh1 is retired from outside: {executors:?}");
     // Not recovery: no mesh1 path is created or fenced under the Build.
     let creates: Vec<String> = named(&spans, "rafka.node_admin.node.create.via-build")
         .into_iter()

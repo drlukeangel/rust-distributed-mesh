@@ -299,6 +299,9 @@ impl NodeObserver for MembershipObserver {
     }
 }
 
+/// The Build step that asks an admin holding its own runtime to leave.
+pub const LEAVE_REQUEST: &str = "RequestLeave";
+
 /// What this admin answers an entry pull with.
 struct EntryState {
     name: PathName,
@@ -428,6 +431,52 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
+    /// Did a Build record `node`'s current birth (so its runtime is adoptable)?
+    async fn has_recorded_birth(&self, node: &Node) -> bool {
+        let Some(incarnation) = &node.incarnation_id else { return false };
+        let Ok(facts) = self.builds.facts().await else { return false };
+        facts.iter().any(|f| {
+            matches!(f, crate::build_state::BuildFact::Step(r)
+                if r.step == "AllocateIdentity"
+                    && r.output.as_ref().and_then(|o| o.get("incarnation")).and_then(|v| v.as_str()) == Some(incarnation.0.as_str()))
+        })
+    }
+
+    /// Retire an admin that holds its own runtime: record the request on the
+    /// Build (the admin reads it from the Build facts it gossips, never over
+    /// HTTP), then wait until the view no longer holds it live.
+    async fn request_leave(&self, build_id: &crate::build::BuildId, attempt: u32, node: &Node) -> Result<(), String> {
+        use crate::build_state::{BuildStepReceipt, StepOutcome};
+        let incarnation = node.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
+        let span = tracing::info_span!("rafka.node_admin.node.delete.via-leave-request", build_id = %build_id, node = %node.name, attempt, outcome = tracing::field::Empty);
+        let operation = format!("retire-node:{}", node.name);
+        let receipt = |step: &str, outcome: StepOutcome| BuildStepReceipt {
+            build_id: build_id.clone(),
+            attempt,
+            operation: operation.clone(),
+            step: step.into(),
+            outcome,
+            output: Some(serde_json::json!({ "incarnation": incarnation })),
+        };
+        self.builds.append_step_receipt(&receipt(LEAVE_REQUEST, StepOutcome::Complete)).await.map_err(|e| e.to_string())?;
+        let until = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            self.refresh_view().await;
+            let live = self.topology.read().await.node(&node.name).is_some_and(|n| n.status.is_live() && n.incarnation_id == node.incarnation_id);
+            if !live {
+                span.record("outcome", "left");
+                return self.builds.append_step_receipt(&receipt("AwaitLeft", StepOutcome::Complete)).await.map_err(|e| e.to_string());
+            }
+            if std::time::Instant::now() >= until {
+                span.record("outcome", "still-live");
+                let reason = format!("{} was asked to leave and is still live after 30s", node.name);
+                let _ = self.builds.append_step_receipt(&receipt("AwaitLeft", StepOutcome::Failed { reason: reason.clone() })).await;
+                return Err(reason);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// A new birth at a path whose previous birth this view holds as not live
     /// (killed, or only unheard): if that runtime still runs, stop it first,
     /// so a path never has two live runtimes.
@@ -525,6 +574,11 @@ impl AdminRunner {
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
+            // An admin no Build launched (the fabric's bootstrap admin) has no
+            // runtime another admin can stop: it is asked to leave.
+            Some(n) if n.kind == NodeKind::NodeAdmin && !self.has_recorded_birth(&n).await && !self.handles.lock().unwrap().contains_key(node) => {
+                return self.request_leave(build_id, attempt, &n).await.map(|_| None);
+            }
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
@@ -785,7 +839,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             node_id: node_id.clone(),
             name: name.clone(),
             fabric_id: FabricId(key.public().to_string()),
-            incarnation,
+            incarnation: incarnation.clone(),
             supersedes,
             endpoints: EndpointSet(vec![
                 EndpointSlot { slot: "mesh".into(), addr: mesh_addr, freshness: FreshnessToken::mint() },
@@ -853,6 +907,36 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     _ = submitted.notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(300)) => {}
                 }
+            }
+        }));
+    }
+    // Its own retirement: a Build that asks this birth to leave (it holds its
+    // own runtime, so no other admin can stop it) is read from the Build
+    // facts on gossip.
+    {
+        let (builds, leave, me, me_inc) = (builds.clone(), control.leave.clone(), name.clone(), incarnation.0.clone());
+        tasks.push(tokio::spawn(async move {
+            let op = format!("retire-node:{me}");
+            loop {
+                if let Ok(facts) = builds.facts().await {
+                    let asked = facts.iter().find_map(|f| match f {
+                        crate::build_state::BuildFact::Step(r)
+                            if r.operation == op
+                                && r.step == LEAVE_REQUEST
+                                && r.output.as_ref().and_then(|o| o.get("incarnation")).and_then(|v| v.as_str()) == Some(me_inc.as_str()) =>
+                        {
+                            Some(r.build_id.clone())
+                        }
+                        _ => None,
+                    });
+                    if let Some(build_id) = asked {
+                        tracing::info_span!("rafka.mesh.node.delete.via-leave-request", node = %me, build_id = %build_id)
+                            .in_scope(|| tracing::info!("a Build asked this admin to leave"));
+                        leave.notify_one();
+                        return;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
         }));
     }

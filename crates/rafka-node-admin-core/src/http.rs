@@ -31,6 +31,8 @@ pub struct ControlPlane {
     pub build_submitted: Arc<Notify>,
     /// Woken by `POST /api/shutdown`.
     pub shutdown: Arc<Notify>,
+    /// Woken when a Build asks this admin to leave (its own retirement).
+    pub leave: Arc<Notify>,
 }
 
 impl ControlPlane {
@@ -40,6 +42,7 @@ impl ControlPlane {
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
+            leave: Arc::new(Notify::new()),
         }
     }
 
