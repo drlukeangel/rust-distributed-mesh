@@ -1,5 +1,13 @@
 export type NodeType = "gateway" | "broker" | "compute" | "registry" | "bridge";
 
+/// The node kinds node-admin manages; every change is a Build there.
+export type ManagedKind = "rpc_node" | "node_admin";
+
+/// A Build node-admin accepted.
+export interface BuildAccepted {
+  build_id: string;
+}
+
 export interface TopologyNode {
   id: string;
   type: NodeType;
@@ -156,30 +164,19 @@ export const api = {
   chaosState: () => j<ChaosState>("/api/chaos/state"),
   chaosStart: () => j<ChaosState>("/api/chaos/start", { method: "POST" }),
   chaosStop: () => j<ChaosState>("/api/chaos/stop", { method: "POST" }),
-  bootstrap: () =>
-    j<{ spawned: string[] }>("/api/bootstrap", { method: "POST" }),
+  bootstrap: () => j<BuildAccepted>("/api/bootstrap", { method: "POST" }),
   runTest: (name: string, seed = 42) =>
     j<TestReport>("/api/tests/run", {
       method: "POST",
       body: JSON.stringify({ name, seed }),
     }),
-  spawn: (
-    node_type: NodeType,
-    mesh_id: string,
-    opts?: { cpu_budget?: number; ram_budget?: number; extra_env?: Record<string, string> },
-  ) =>
-    j<{ node_name: string; pid: number }>("/api/nodes/spawn", {
+  spawn: (kind: ManagedKind, mesh: string) =>
+    j<BuildAccepted>("/api/nodes/spawn", {
       method: "POST",
-      body: JSON.stringify({
-        node_type,
-        extra_env: { RAFKA_MESH_ID: mesh_id, ...(opts?.extra_env ?? {}) },
-        ...(opts?.cpu_budget !== undefined ? { cpu_budget: opts.cpu_budget } : {}),
-        ...(opts?.ram_budget !== undefined ? { ram_budget: opts.ram_budget } : {}),
-      }),
+      body: JSON.stringify({ mesh, kind }),
     }),
+  restart: (node_name: string) =>
+    j<BuildAccepted>(`/api/nodes/${encodeURIComponent(node_name)}/restart`, { method: "POST" }),
   kill: (node_name: string) =>
-    j<{ node_name: string; reason: string }>(
-      `/api/nodes/${encodeURIComponent(node_name)}`,
-      { method: "DELETE" },
-    ),
+    j<BuildAccepted>(`/api/nodes/${encodeURIComponent(node_name)}`, { method: "DELETE" }),
 };
