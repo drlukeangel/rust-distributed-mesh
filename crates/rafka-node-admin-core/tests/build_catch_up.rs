@@ -90,3 +90,48 @@ async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_bu
     a_router.shutdown().await.unwrap();
     c_router.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection() {
+    use rafka_node_admin_core::build_state::{BuildStepReceipt, StepOutcome};
+    let (a_ep, a_router, a) = admin(vec![]).await;
+    let id = BuildId::mint();
+    a.publish_intent(&intent(&id)).await.unwrap();
+    a.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    // Far more than one gossip message's worth of receipts, each with output.
+    for i in 0..120 {
+        a.append_step_receipt(&BuildStepReceipt {
+            build_id: id.clone(),
+            attempt: 1,
+            operation: format!("create-node:mesh1.rpc.{i}"),
+            step: "AllocateEndpoints".into(),
+            outcome: StepOutcome::Complete,
+            output: Some(serde_json::json!([{"slot": "rpc-0", "addr": format!("127.0.0.1:{}", 41000 + i), "freshness": "f".repeat(32)}])),
+        })
+        .await
+        .unwrap();
+    }
+    let (_c_ep, c_router, c) = admin(vec![addr(&a_ep)]).await;
+    let mut all = false;
+    for _ in 0..200 {
+        if c.read_build(&id).await.is_ok_and(|v| v.steps.len() == 120) {
+            all = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(all, "C did not receive the whole catch-up: {:?}", c.read_build(&id).await.map(|v| v.steps.len()));
+    // The connection survived: a fact appended afterwards still arrives.
+    a.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    let mut complete = false;
+    for _ in 0..200 {
+        if c.read_build(&id).await.is_ok_and(|v| v.state == BuildState::Complete) {
+            complete = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(complete, "the connection did not survive the catch-up");
+    a_router.shutdown().await.unwrap();
+    c_router.shutdown().await.unwrap();
+}

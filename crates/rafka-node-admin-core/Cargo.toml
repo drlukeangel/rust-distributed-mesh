@@ -19,13 +19,19 @@ iroh = { workspace = true }
 iroh-gossip = "0.100"
 blake3 = "1"
 futures-lite = "2"
+futures-util = "0.3"
 bytes = "1"
 axum = "0.8.9"
 rafka-telemetry = { path = "../rafka-telemetry" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
+
+[[bin]]
+name = "rafka-node-admin"
+path = "src/bin/rafka_node_admin.rs"
 
 [dev-dependencies]
-rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true }
 http-body-util = "0.1"

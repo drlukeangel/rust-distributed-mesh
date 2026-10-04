@@ -24,12 +24,14 @@ async fn main() {
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_telemetry::set_parent(&boot, &tp);
     }
+    // The node's long-lived tasks (endpoints, gossip) must not hold the boot
+    // span open: it closes, and is exported, once booted.
     let running = {
-        let _g = boot.enter();
-        match node::start(&launch, |b| b).await {
+        use tracing::Instrument;
+        match node::start(&launch, |b| b).instrument(tracing::Span::none()).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!(error = %e, "node failed to come up");
+                boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
                 eprintln!("rafka-rpc-node: {e:#}");
                 std::process::exit(3);
             }

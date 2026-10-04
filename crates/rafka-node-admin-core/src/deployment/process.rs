@@ -14,10 +14,19 @@ use std::time::Duration;
 /// Written into the node's data dir at spawn: `{"deployment_id", "pid"}`.
 pub const DEPLOYMENT_FILE: &str = "deployment.json";
 
+/// One child this provider started: its deployment, and its exit once seen.
+#[derive(Debug, Clone)]
+struct Launched {
+    deployment_id: crate::model::DeploymentId,
+    /// `None` while it runs; `Some(code)` once it exited (reaped).
+    exit: Option<Option<i32>>,
+}
+
 #[derive(Default)]
 pub struct ProcessDeploymentProvider {
-    /// Children this admin spawned, so their exit can be reaped.
-    children: Mutex<HashMap<u32, std::process::Child>>,
+    /// Children this provider started. A watcher thread per child waits on
+    /// it, so an exit is reaped at once (no zombie) and its code recorded.
+    children: std::sync::Arc<Mutex<HashMap<u32, Launched>>>,
 }
 
 impl ProcessDeploymentProvider {
@@ -70,7 +79,18 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         // Which deployment this pid realises, so a re-run can find it.
         let record = serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid });
         std::fs::write(spec.data_dir.join(DEPLOYMENT_FILE), record.to_string()).map_err(|e| err(format!("{DEPLOYMENT_FILE}: {e}")))?;
-        self.children.lock().unwrap().insert(pid, child);
+        self.children.lock().unwrap().insert(pid, Launched { deployment_id: spec.deployment_id.clone(), exit: None });
+        let children = self.children.clone();
+        std::thread::Builder::new()
+            .name(format!("reap-{pid}"))
+            .spawn(move || {
+                let mut child = child;
+                let code = child.wait().ok().and_then(|s| s.code());
+                if let Some(l) = children.lock().unwrap().get_mut(&pid) {
+                    l.exit = Some(code);
+                }
+            })
+            .map_err(|e| err(format!("watching pid {pid}: {e}")))?;
         Ok(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(pid), container: None })
     }
 
@@ -89,15 +109,13 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             };
             let until = tokio::time::Instant::now() + grace;
             loop {
-                self.reap(pid);
-                if !alive(pid) {
+                if !self.running(pid) {
                     break;
                 }
                 if tokio::time::Instant::now() >= until {
                     signal(pid, libc::SIGKILL);
                     for _ in 0..100 {
-                        self.reap(pid);
-                        if !alive(pid) {
+                        if !self.running(pid) {
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -107,7 +125,6 @@ impl DeploymentProvider for ProcessDeploymentProvider {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
-        self.children.lock().unwrap().remove(&pid);
         Ok(())
     }
 
@@ -116,11 +133,8 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             return Err(DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason: "no pid".into() });
         };
         #[cfg(unix)]
-        {
-            self.reap(pid);
-            if alive(pid) {
-                signal(pid, libc::SIGTERM);
-            }
+        if self.running(pid) {
+            signal(pid, libc::SIGTERM);
         }
         Ok(())
     }
@@ -132,7 +146,6 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             return None;
         }
         let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
-        self.reap(pid);
         #[cfg(unix)]
         if !Self::runs(pid, &spec.executable) {
             return None;
@@ -140,13 +153,22 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         Some(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(pid), container: None })
     }
 
+    fn launched(&self) -> Vec<DeploymentHandle> {
+        self.children
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| l.exit.is_none())
+            .map(|(pid, l)| DeploymentHandle { deployment_id: l.deployment_id.clone(), provider: ProviderKind::Process, pid: Some(*pid), container: None })
+            .collect()
+    }
+
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
         let Some(pid) = handle.pid else { return DeploymentStatus::Unknown };
-        if let Some(c) = self.children.lock().unwrap().get_mut(&pid) {
-            return match c.try_wait() {
-                Ok(Some(s)) => DeploymentStatus::Exited { code: s.code() },
-                Ok(None) => DeploymentStatus::Running,
-                Err(_) => DeploymentStatus::Unknown,
+        if let Some(l) = self.children.lock().unwrap().get(&pid) {
+            return match l.exit {
+                Some(code) => DeploymentStatus::Exited { code },
+                None => DeploymentStatus::Running,
             };
         }
         #[cfg(unix)]
@@ -167,9 +189,15 @@ impl ProcessDeploymentProvider {
             })
     }
 
-    fn reap(&self, pid: u32) {
-        if let Some(c) = self.children.lock().unwrap().get_mut(&pid) {
-            let _ = c.try_wait();
+    /// Still running: a child of ours not yet seen to exit, or any other
+    /// live process with that pid.
+    fn running(&self, pid: u32) -> bool {
+        match self.children.lock().unwrap().get(&pid) {
+            Some(l) => l.exit.is_none(),
+            #[cfg(unix)]
+            None => alive(pid),
+            #[cfg(not(unix))]
+            None => false,
         }
     }
 }

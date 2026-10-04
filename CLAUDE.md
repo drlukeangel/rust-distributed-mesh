@@ -111,6 +111,10 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
 | `rafka.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `provider-mismatch`, `invalid-intent`) | `route`, `detail` |
 | `rafka.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `operations`, `outcome` (`converged` / `failed` / `lost` / `finished`) |
+| `rafka.node_admin.node.create.via-build` / `node.update.via-build` (restart) / `node.delete.via-build` (child of `via-reconcile`; parent of the deployment pipeline and the node's lifecycle transition) | `build_id`, `node`, `attempt` |
+| `rafka.node_admin.fabric.update.via-join` (a launched admin heard the admin it joined; it may now execute Builds) | `node`, `joined` |
+| `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
+| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message, 4096 bytes) | `fabric`, `detail` |
 | `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
 | `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
@@ -340,11 +344,16 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_CONTAINER_SUBNET_POOL` | `10.231.0.0/16` | Container provider: the IPv4 block each fabric's bridge network (`rafka-<fabric>`) takes a `/24` from; node-admin picks the subnet so it can assign every node's address (`--ip`). A `/24` another network uses is skipped. |
 | `RAFKA_REQUIRE_CONTAINER` | _(unset)_ | Tests only. `1` turns the container smoke's named skip on an unsupported host into a failure (set in CI). |
 | `RAFKA_EVIDENCE_DIR` | _(unset = no JSONL)_ | When set, every i143 binary writes its spans as JSONL to `<dir>/<service>.<pid>.spans.jsonl` (the blackbox evidence). OTLP export stays on `OTEL_EXPORTER_OTLP_ENDPOINT`. |
-| `RAFKA_FABRIC` | _(required, rpc node)_ | The fabric an rpc node joins; names its gossip membership topic. Written by node-admin at launch; an empty value is refused. |
-| `RAFKA_NODE_NAME` / `RAFKA_NODE_ID` / `RAFKA_INCARNATION_ID` | _(required, rpc node)_ | The node's `path.name` (`mesh1.rpc.2`), minted node id and this birth's incarnation id, assigned by node-admin. |
+| `RAFKA_FABRIC` | `fabric1` (bootstrap admin); required for a launched node | The fabric a node joins; names its gossip membership and Build topics. The first `rafka-node-admin` reads it to name the fabric it bootstraps; for every node a pipeline launches, node-admin writes it. An empty value is refused. |
+| `RAFKA_NODE_NAME` / `RAFKA_NODE_ID` / `RAFKA_INCARNATION_ID` | _(required for a launched node)_ | The node's `path.name` (`mesh1.rpc.2`, `mesh1.admin.2`), minted node id and this birth's incarnation id, assigned by node-admin. A `rafka-node-admin` without them is the bootstrap admin of its fabric. |
 | `RAFKA_SUPERSEDES` | _(unset = first birth)_ | The incarnation a restart replaces. |
 | `RAFKA_ENDPOINTS` | _(required, rpc node)_ | Comma-separated `slot=addr=freshness` the node must bind exactly; a provider never invents a port. |
 | `RAFKA_SEEDS` | _(empty)_ | Comma-separated `<public key>@<addr>` gossip members to join membership through. |
+| `RAFKA_MESH` | `mesh1` | `rafka-node-admin` (bootstrap): the mesh it belongs to; it becomes `<mesh>.admin.1`. |
+| `RAFKA_MESH_ID` | _(minted)_ | `rafka-node-admin`: the mesh's id, written by the launching admin so every admin of a mesh advertises the same one. |
+| `RAFKA_NODE_ADMIN_API_BIND` | `127.0.0.1:0` | `rafka-node-admin` (bootstrap): the control API's HTTP bind. A launched admin binds the `control` slot node-admin assigned. It prints `RAFKA_NODE_ADMIN_API_BASE=<url>` once serving. |
+| `RAFKA_NODE_ADMIN_JOIN` | _(unset = bootstrap)_ | `rafka-node-admin`: the control API of the admin that launched it; the fabric's provider policy is inherited from there, and it executes no Build before it has heard that admin on membership. |
+| `RAFKA_BIN_DIR` | _(beside the running exe)_ | `rafka-node-admin`: where `rafka-node-admin` and `rafka-rpc-node` live. |
 | `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |
 | `RAFKA_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
 | `RAFKA_LEAVE_LINGER_MS` | `1000` | rpc node: how long a stopping node keeps announcing `Leaving` on membership before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |

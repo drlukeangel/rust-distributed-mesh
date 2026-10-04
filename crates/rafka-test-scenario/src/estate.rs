@@ -216,12 +216,19 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route.
-    pub async fn shutdown(mut self) {
+    /// Stop the whole estate through the runtime-administration route and
+    /// wait for the bootstrap admin to exit. Every process flushes its
+    /// evidence on exit, so read `spans()` after this.
+    pub async fn stop(&mut self) {
         let _ = self.post("/api/shutdown", &json!({})).await;
         if let Some(mut c) = self.bootstrap.take() {
-            let _ = c.wait();
+            let _ = tokio::task::spawn_blocking(move || c.wait()).await;
         }
+    }
+
+    /// [`Self::stop`], consuming the estate.
+    pub async fn shutdown(mut self) {
+        self.stop().await;
     }
 }
 
@@ -237,6 +244,11 @@ impl Drop for Estate {
                         "POST /api/shutdown HTTP/1.1\r\nHost: {hostport}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
                     );
                 }
+            }
+            // Give it the time to stop what it started before forcing it.
+            let until = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < until && matches!(c.try_wait(), Ok(None)) {
+                std::thread::sleep(Duration::from_millis(100));
             }
             let _ = c.kill();
             let _ = c.wait();

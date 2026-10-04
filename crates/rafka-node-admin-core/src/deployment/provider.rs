@@ -158,11 +158,21 @@ pub trait DeploymentProvider: Send + Sync {
     /// instead of starting a second one.
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle>;
 
-    /// Does the runtime hold UDP `addr` (`WaitForBind`)? Asked of the
-    /// operating system, never of the runtime. Default: something on this
-    /// host's network namespace holds it.
-    async fn holds_udp(&self, _handle: &DeploymentHandle, addr: std::net::SocketAddr) -> bool {
-        super::endpoint::udp_port_is_held(addr)
+    /// Does the runtime hold `addr` over `transport` (`WaitForBind`)? Asked
+    /// of the operating system, never of the runtime. Default: something in
+    /// this host's network namespace holds it.
+    async fn holds(&self, _handle: &DeploymentHandle, addr: std::net::SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
+        match transport {
+            super::endpoint::SlotTransport::Udp => super::endpoint::udp_port_is_held(addr),
+            super::endpoint::SlotTransport::Tcp => super::endpoint::tcp_port_is_held(addr),
+        }
+    }
+
+    /// Every runtime this provider started that it has not seen exit: what a
+    /// fabric shutdown stops, including a runtime whose create failed after
+    /// `DeployRuntime`.
+    fn launched(&self) -> Vec<DeploymentHandle> {
+        Vec::new()
     }
 
     /// The runtime's last words, for a named failure when it stopped early.
