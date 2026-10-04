@@ -3532,6 +3532,7 @@ dependencies = [
  "dashmap",
  "hex",
  "http-body-util",
+ "rafka-mesh-entity",
  "rafka-telemetry",
  "rand 0.8.6",
  "serde",

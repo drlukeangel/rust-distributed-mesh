@@ -23,11 +23,14 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e1.s2 | #2737 | `e41c804fe7` | Build intents + deterministic planner (`build.rs`) |
 | e5.s2 | #2764 | `8efacf4a24` | sealed catalog + tag ledger + transitional adapters (`catalog.rs`) |
 | e1.s3 | #2738 | `4f7217f9ff` | BuildStateAdapter: fold, memory adapter, file journal (`build_state.rs`) |
+| e5.s3 | #2765 | `849be45d33` | dispatch + certainty cells (`dispatch.rs`); epic e5 closed |
+| e1.s4 | #2739 | `8ff002391f` | control routes submit Build (`http.rs`), traceparent helpers |
+| e2.s1 | #2743 | `e042a0a2e3` | MESH_SPAWN_TYPE fabric policy, provider-in-Build refusal |
 
 ## In progress
 
-- e2.s1 drlukeangel/rafka-v2#2743 — PR drlukeangel/rust-distributed-mesh#15.
-- e3.s1 drlukeangel/rafka-v2#2749 — LifecycleTransitionPipeline (branch `i143-e3-s1`).
+- e3.s1 drlukeangel/rafka-v2#2749 — PR drlukeangel/rust-distributed-mesh#16.
+- e2.s2 drlukeangel/rafka-v2#2744 — endpoint allocator (branch `i143-e2-s2`).
 
 ## Blockers
 

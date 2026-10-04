@@ -5,177 +5,39 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::net::SocketAddr;
-use std::str::FromStr;
 
-macro_rules! opaque_id {
-    ($(#[$m:meta])* $name:ident) => {
-        $(#[$m])*
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(transparent)]
-        pub struct $name(pub String);
+/// Opaque id local to node-admin: one runtime realised by a provider.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DeploymentId(pub String);
 
-        impl $name {
-            /// Mint a fresh id: 128 random bits, lower-case hex.
-            pub fn mint() -> Self {
-                Self(hex::encode(rand::random::<[u8; 16]>()))
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-    };
-}
-
-opaque_id!(
-    /// Logical node identity, minted once at `AllocateIdentity`; kept across restarts.
-    NodeId
-);
-opaque_id!(
-    /// One process birth of a logical node (`RuntimeIncarnationId`).
-    IncarnationId
-);
-opaque_id!(
-    /// The node's authenticated transport (Iroh) identity.
-    FabricId
-);
-opaque_id!(
-    /// One runtime realised by a deployment provider.
-    DeploymentId
-);
-opaque_id!(
-    /// Opaque per-slot freshness token, minted with each endpoint assignment.
-    FreshnessToken
-);
-opaque_id!(
-    /// A mesh's minted identity. Recovery keeps it; replacement mints a new one.
-    MeshId
-);
-
-/// The two generic node kinds of the Mesh product proof estate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    NodeAdmin,
-    RpcNode,
-}
-
-impl NodeKind {
-    /// The `path.name` kind segment.
-    pub fn segment(self) -> &'static str {
-        match self {
-            Self::NodeAdmin => "admin",
-            Self::RpcNode => "rpc",
-        }
-    }
-
-    pub fn from_segment(s: &str) -> Option<Self> {
-        match s {
-            "admin" => Some(Self::NodeAdmin),
-            "rpc" => Some(Self::RpcNode),
-            _ => None,
-        }
+impl DeploymentId {
+    pub fn mint() -> Self {
+        Self(hex::encode(rand::random::<[u8; 16]>()))
     }
 }
 
-/// A stable topology slot: `<mesh>.<admin|rpc>.<ordinal>`, ordinal from 1.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PathName {
-    pub mesh: String,
-    pub kind: NodeKind,
-    pub ordinal: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PathNameError {
-    Shape(String),
-    MeshName(String),
-    Kind(String),
-    Ordinal(String),
-}
-
-impl fmt::Display for PathNameError {
+impl fmt::Display for DeploymentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Shape(s) => write!(f, "`{s}` is not <mesh>.<admin|rpc>.<ordinal>"),
-            Self::MeshName(s) => write!(f, "mesh name `{s}` must match [a-z0-9][a-z0-9-]{{0,63}}"),
-            Self::Kind(s) => write!(f, "node kind `{s}` is not admin or rpc"),
-            Self::Ordinal(s) => write!(f, "ordinal `{s}` is not a number >= 1"),
-        }
+        f.write_str(&self.0)
     }
 }
 
-/// `[a-z0-9][a-z0-9-]{0,63}`.
-pub fn is_valid_mesh_name(m: &str) -> bool {
-    let b = m.as_bytes();
-    !b.is_empty()
-        && b.len() <= 64
-        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-}
+/// A mesh's minted identity. Recovery keeps it; replacement mints a new one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MeshId(pub String);
 
-impl PathName {
-    pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self { mesh: mesh.into(), kind, ordinal }
+impl MeshId {
+    pub fn mint() -> Self {
+        Self(hex::encode(rand::random::<[u8; 16]>()))
     }
 }
 
-impl FromStr for PathName {
-    type Err = PathNameError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split('.').collect();
-        let [mesh, kind, ord] = parts[..] else { return Err(PathNameError::Shape(s.into())) };
-        if !is_valid_mesh_name(mesh) {
-            return Err(PathNameError::MeshName(mesh.into()));
-        }
-        let kind = NodeKind::from_segment(kind).ok_or_else(|| PathNameError::Kind(kind.into()))?;
-        let ordinal = ord
-            .parse::<u32>()
-            .ok()
-            .filter(|n| *n >= 1 && !ord.starts_with('0'))
-            .ok_or_else(|| PathNameError::Ordinal(ord.into()))?;
-        Ok(Self { mesh: mesh.into(), kind, ordinal })
-    }
-}
-
-impl fmt::Display for PathName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)
-    }
-}
-
-impl Serialize for PathName {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for PathName {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-/// Per-slot restart policy (`docs/i143/design.md` §2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SlotPolicy {
-    /// A new port and token on every process birth.
-    Fresh,
-    /// A restart keeps the advertised port and token; a replacement does not.
-    Stable,
-}
-
-/// One advertised endpoint slot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EndpointSlot {
-    pub slot: String,
-    pub addr: SocketAddr,
-    pub freshness: FreshnessToken,
-}
+// Identity, path and endpoint-slot types are the Mesh EF's (rafka-mesh-entity);
+// node-admin uses them, it does not redefine them.
+pub use rafka_mesh_entity::path::is_valid_mesh_name;
+pub use rafka_mesh_entity::{EndpointSlot, FabricId, FreshnessToken, IncarnationId, NodeId, NodeKind, PathName, PathNameError, SlotPolicy};
 
 /// Node lifecycle status as published on views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

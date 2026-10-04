@@ -16,6 +16,7 @@ tracing = { workspace = true }
 async-trait = "0.1"
 axum = "0.8.9"
 rafka-telemetry = { path = "../rafka-telemetry" }
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
