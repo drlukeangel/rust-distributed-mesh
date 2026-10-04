@@ -23,11 +23,12 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e1.s2 | #2737 | `e41c804fe7` | Build intents + deterministic planner (`build.rs`) |
 | e5.s2 | #2764 | `8efacf4a24` | sealed catalog + tag ledger + transitional adapters (`catalog.rs`) |
 | e1.s3 | #2738 | `4f7217f9ff` | BuildStateAdapter: fold, memory adapter, file journal (`build_state.rs`) |
+| e5.s3 | #2765 | `849be45d33` | dispatch + certainty cells (`dispatch.rs`); epic e5 closed |
+| e1.s4 | #2739 | `8ff002391f` | control routes submit Build (`http.rs`), traceparent helpers |
 
 ## In progress
 
-- e5.s3 drlukeangel/rafka-v2#2765 — PR drlukeangel/rust-distributed-mesh#13.
-- e1.s4 drlukeangel/rafka-v2#2739 — control routes submit Build (branch `i143-e1-s4`).
+- e2.s1 drlukeangel/rafka-v2#2743 — MESH_SPAWN_TYPE fabric policy (branch `i143-e2-s1`).
 
 ## Blockers
 

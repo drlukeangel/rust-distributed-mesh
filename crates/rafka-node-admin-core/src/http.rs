@@ -96,7 +96,8 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "would-leave-mesh-without-admin",
         "mesh-already-exists",
         "fabric-mismatch",
-        "empty-fabric"
+        "empty-fabric",
+        "provider-mismatch"
     );
 }
 
@@ -157,6 +158,12 @@ struct BuildQuery {
 type Shared = Arc<ControlPlane>;
 
 async fn post_build(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {
+    let value: Value = body(&raw)?;
+    if crate::deployment::provider::build_names_a_provider(&value) {
+        let reject = BuildReject::ProviderInBuild { fabric_provider: cp.topology.read().await.fabric.provider };
+        reject_span("POST /api/build", &reject);
+        return Err(Refusal::Reject(reject));
+    }
     let desired: FabricDesired = body(&raw)?;
     Ok(accepted(cp.submit("POST /api/build", BuildIntent::ReconcileFabric { desired }).await?))
 }

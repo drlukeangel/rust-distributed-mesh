@@ -114,6 +114,8 @@ pub enum BuildReject {
     MeshAlreadyExists { mesh: String },
     FabricMismatch { requested: String, fabric: String },
     EmptyFabric,
+    /// A Build tried to choose a provider; provider is fabric policy (PRD §1.7).
+    ProviderInBuild { fabric_provider: crate::model::ProviderKind },
 }
 
 impl BuildReject {
@@ -130,6 +132,7 @@ impl BuildReject {
             Self::MeshAlreadyExists { .. } => "mesh-already-exists",
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
+            Self::ProviderInBuild { .. } => "provider-mismatch",
         }
     }
 }
@@ -147,6 +150,10 @@ impl fmt::Display for BuildReject {
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
             Self::FabricMismatch { requested, fabric } => write!(f, "Build names fabric `{requested}`, this is `{fabric}`"),
             Self::EmptyFabric => write!(f, "a fabric needs at least one desired mesh"),
+            Self::ProviderInBuild { fabric_provider } => write!(
+                f,
+                "a Build may not choose a deployment provider; this fabric's policy is {fabric_provider:?}, fixed at bootstrap"
+            ),
         }
     }
 }
