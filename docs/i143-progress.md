@@ -17,11 +17,13 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e0.s3 | #2733 | `2e0b27c847` | connections-parity gate in `parity-scan` + ledger rows (rafka-v2 #2792 `5aa2e8a05e`); epic e0 closed |
 | e7.s1 | #2773 | `0471b4d6ef` | FIRST RED restart canary (`crates/rafka-test-scenario/tests/node_lifecycle__node_restart.rs`, ignored until e7.s5) + `docs/i143/design.md` contract |
 | e7.s2 | #2774 | `504fb7cbc8` | SECOND RED seed scenario + runner (`rafka-scenario`), ignored until e7.s5 |
+| e1.s1 | #2736 | `8ef30c8f4b` | `rafka-node-admin-core` model/topology + ProcessTable; admin-ui lifecycle moved behind it |
 
 ## In progress
 
-- e1.s1 drlukeangel/rafka-v2#2736 — PR drlukeangel/rust-distributed-mesh#7 open.
-- e5.s1 drlukeangel/rafka-v2#2763 — rafka-node-rpc-contract (branch `i143-e5-s1`).
+- e5.s1 drlukeangel/rafka-v2#2763 — PR drlukeangel/rust-distributed-mesh#8.
+- e4.s1 drlukeangel/rafka-v2#2754 — PR drlukeangel/rust-distributed-mesh#9.
+- e1.s2 drlukeangel/rafka-v2#2737 — Build intents + planner (branch `i143-e1-s2`).
 
 ## Blockers
 
