@@ -148,6 +148,25 @@ pub trait DeploymentProvider: Send + Sync {
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
+
+    /// Does the runtime hold UDP `addr` (`WaitForBind`)? Asked of the
+    /// operating system, never of the runtime. Default: something on this
+    /// host's network namespace holds it.
+    async fn holds_udp(&self, _handle: &DeploymentHandle, addr: std::net::SocketAddr) -> bool {
+        super::endpoint::udp_port_is_held(addr)
+    }
+
+    /// The runtime's last words, for a named failure when it stopped early.
+    /// Default: the tail of `stderr.log` in its data dir.
+    async fn failure_detail(&self, _handle: &DeploymentHandle, data_dir: &std::path::Path) -> String {
+        tail(&std::fs::read_to_string(data_dir.join("stderr.log")).unwrap_or_default(), 5)
+    }
+}
+
+/// The last `n` lines of `text`, joined with ` | `.
+pub fn tail(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" | ")
 }
 
 #[cfg(test)]

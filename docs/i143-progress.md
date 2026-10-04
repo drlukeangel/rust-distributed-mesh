@@ -28,12 +28,13 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e2.s1 | #2743 | `e042a0a2e3` | MESH_SPAWN_TYPE fabric policy, provider-in-Build refusal |
 | e2.s2 | #2744 | `67a875dba8` | endpoint allocator + WaitForBind (`deployment/endpoint.rs`); node-admin-core reuses Mesh EF types |
 | e3.s1 | #2749 | `706ec022c1` | LifecycleTransitionPipeline (`lifecycle.rs`) |
-| e3.s2 | #2750 | `d71cded544` | Lifecycle hooks + receipts |
+| e3.s2 | #2750 | `d71cded544` | readiness gates: topology-derived and explicit shape predicates (`readiness.rs`) |
+| e2.s3 | #2745 | `433d934404` | DeploymentProvider + ProcessDeploymentProvider + create pipeline; `rafka-rpc-node` (`crates/rafka-node-rpc-testkit`) |
 | e6.s1 | #2767 | `a886ea808c` | Node RPC runtime (`rafka-node-rpc`); parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a MIRROR (rafka-v2 #2793) |
 
 ## In progress
 
-- e2.s3 drlukeangel/rafka-v2#2745 — process provider + create DeploymentPipeline (branch `i143-e2-s3`).
+- e2.s4 drlukeangel/rafka-v2#2746 — ContainerDeploymentProvider (branch `i143-e2-s4`).
 
 ## Blockers
 
@@ -47,3 +48,5 @@ A fresh session resumes from this file plus the open issues on that milestone.
 - Parity gate: `cargo run -p rafka-mesh-audit --bin parity-scan -- --repo ../rafka-v2 --json docs/i143/e0-parity-report.json`.
   The rafka-v2 checkout must have full history (`git fetch --unshallow`).
 - Dependency rules: `cargo run -p rafka-mesh-audit --bin dep-rules` (also in `.github/workflows/i143-gates.yml`).
+- Container provider (e2.s4+): needs a reachable Docker daemon. In the cloud container start it with `dockerd > /tmp/dockerd.log 2>&1 &`.
+  Build with `CARGO_INCREMENTAL=0`: the per-session disk is small and incremental caches fill it.

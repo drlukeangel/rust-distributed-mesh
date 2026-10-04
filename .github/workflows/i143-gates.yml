@@ -1,7 +1,8 @@
 name: i143 gates
 
 # The i143 opening-audit gates (tools/mesh-audit): legacy-binary disposition,
-# transport-parity scanner fixtures and the PRD §4 dependency rules.
+# transport-parity scanner fixtures and the PRD §4 dependency rules; and the
+# deployment-provider smokes against real processes and containers.
 on:
   push:
     branches: [main]
@@ -11,9 +12,23 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: audit gate tests
         run: cargo test -p rafka-mesh-audit
       - name: dependency rules
         run: cargo run -q -p rafka-mesh-audit --bin dep-rules
+
+  # The deployment providers against real runtimes: the same smoke with
+  # MESH_SPAWN_TYPE=process and =container. On this runner the container
+  # provider is supported, so a skip is a failure.
+  providers:
+    runs-on: ubuntu-latest
+    env:
+      RAFKA_REQUIRE_CONTAINER: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: provider smokes
+        run: cargo test -p rafka-node-admin-core -p rafka-node-rpc-testkit

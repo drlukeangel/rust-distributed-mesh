@@ -12,7 +12,7 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .keep_alive_interval(std::time::Duration::from_secs(15))
         .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?))
         .build();
-    let ep = Endpoint::builder(presets::N0DisableRelay)
+    let ep = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(vec![crate::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
@@ -21,4 +21,16 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .bind()
         .await?;
     Ok(ep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_bound_endpoint_publishes_to_no_address_lookup_service() {
+        let ep = bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        assert!(ep.address_lookup().unwrap().is_empty(), "Node RPC endpoints are addressed by node-admin, never by a discovery service");
+        ep.close().await;
+    }
 }
