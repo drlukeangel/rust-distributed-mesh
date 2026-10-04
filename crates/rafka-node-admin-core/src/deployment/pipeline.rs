@@ -12,7 +12,7 @@
 //! pipeline's parent span. Optional steps (DNS, load balancer, firewall) have
 //! no realisation on the process provider and are not run.
 
-use super::endpoint::{verify_bound, EndpointAllocator, SlotSpec};
+use super::endpoint::{verify_bound_with, EndpointAllocator, SlotSpec};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch};
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
@@ -304,22 +304,23 @@ impl CreatePipeline<'_> {
             })
             .await?;
         self.step(req, CreateStep::WaitForBind, async {
-            let mut last = String::new();
-            let ok = poll(self.timeouts.bind, || {
-                let r = verify_bound(&endpoints, &[]);
-                last = r.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
-                let h = handle.clone();
-                async move { r.is_ok() || matches!(self.provider.inspect(&h).await, DeploymentStatus::Exited { .. }) }
-            })
-            .await;
-            match self.provider.inspect(&handle).await {
-                DeploymentStatus::Exited { code } => {
-                    let tail = std::fs::read_to_string(data_dir.join("stderr.log")).unwrap_or_default();
-                    let tail: String = tail.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
-                    Err(format!("runtime exited (code {code:?}) before binding: {tail}"))
+            let until = Instant::now() + self.timeouts.bind;
+            loop {
+                if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
+                    let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                    return Err(format!("runtime exited (code {code:?}) before binding: {detail}"));
                 }
-                _ if ok && last.is_empty() => Ok(()),
-                _ => Err(if last.is_empty() { "timed out".into() } else { last }),
+                let mut held = Vec::new();
+                for e in &endpoints {
+                    if self.provider.holds_udp(&handle, e.addr).await {
+                        held.push(e.addr);
+                    }
+                }
+                match verify_bound_with(&endpoints, &[], |a| held.contains(&a)) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if Instant::now() >= until => return Err(e.to_string()),
+                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                }
             }
         })
         .await?;

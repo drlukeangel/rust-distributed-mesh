@@ -31,6 +31,8 @@ pub const NODE_ADMIN_SLOTS: &[SlotSpec] =
 pub enum AllocationError {
     /// No free port left in the configured range.
     Exhausted { first: u16, last: u16 },
+    /// Every node address of the range is held.
+    AddressesExhausted,
     /// A stable slot was asked to survive a restart it has no prior assignment for.
     NoPriorAssignment { node: PathName, slot: String },
 }
@@ -39,6 +41,7 @@ impl fmt::Display for AllocationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exhausted { first, last } => write!(f, "no free port left in {first}..={last}"),
+            Self::AddressesExhausted => write!(f, "every node address of the range is held"),
             Self::NoPriorAssignment { node, slot } => write!(f, "{node} slot {slot}: a restart keeps a stable slot, but none was assigned"),
         }
     }
@@ -67,50 +70,96 @@ impl fmt::Display for BindRefusal {
     }
 }
 
-/// Allocates advertised endpoints from a port range on one host address.
-/// Ports already handed out are never handed out again until released.
+/// Where a node's advertised addresses live.
+#[derive(Debug, Clone)]
+enum Addressing {
+    /// Every node shares one host address (process provider): a port is unique
+    /// per host, and one another process holds is skipped.
+    SharedHost(IpAddr),
+    /// Every node owns one address from `first..=last` in its own network
+    /// namespace (container provider): ports are unique per node address, and
+    /// the host's own sockets cannot collide with them.
+    PerNode { first: u32, last: u32, next: u32 },
+}
+
+/// Allocates advertised endpoints. Addresses already handed out are never
+/// handed out again until released.
 #[derive(Debug)]
 pub struct EndpointAllocator {
-    host: IpAddr,
+    addressing: Addressing,
     first: u16,
     last: u16,
     next: u16,
     held: BTreeMap<PathName, Vec<EndpointSlot>>,
-    in_use: BTreeSet<u16>,
+    in_use: BTreeSet<SocketAddr>,
 }
 
 impl EndpointAllocator {
     pub fn new(host: IpAddr, first: u16, last: u16) -> Self {
         assert!(first <= last, "empty port range");
-        Self { host, first, last, next: first, held: BTreeMap::new(), in_use: BTreeSet::new() }
+        Self { addressing: Addressing::SharedHost(host), first, last, next: first, held: BTreeMap::new(), in_use: BTreeSet::new() }
+    }
+
+    /// One address per node from `first_ip..=last_ip`, ports from `first..=last`.
+    pub fn per_node(first_ip: std::net::Ipv4Addr, last_ip: std::net::Ipv4Addr, first: u16, last: u16) -> Self {
+        assert!(first <= last, "empty port range");
+        let (a, b) = (u32::from(first_ip), u32::from(last_ip));
+        assert!(a <= b, "empty address range");
+        Self {
+            addressing: Addressing::PerNode { first: a, last: b, next: a },
+            first,
+            last,
+            next: first,
+            held: BTreeMap::new(),
+            in_use: BTreeSet::new(),
+        }
     }
 
     /// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>` (default `41000-48999`) on `127.0.0.1`.
     pub fn from_env() -> Self {
-        let (first, last) = std::env::var("RAFKA_ENDPOINT_PORT_RANGE")
-            .ok()
-            .and_then(|r| {
-                let (a, b) = r.split_once('-')?;
-                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-            })
-            .unwrap_or((41000, 48999));
+        let (first, last) = port_range_from_env();
         Self::new(IpAddr::from([127, 0, 0, 1]), first, last)
     }
 
-    /// The next port that is neither held by this allocator nor bound by any
-    /// other process on the host (checked by a probe bind of UDP and TCP).
-    fn take_port(&mut self) -> Result<u16, AllocationError> {
+    /// The address `node` advertises on: the shared host, the node's own
+    /// address when it holds one, or the next address no node holds.
+    fn node_ip(&mut self, node: &PathName) -> Result<IpAddr, AllocationError> {
+        match &mut self.addressing {
+            Addressing::SharedHost(h) => Ok(*h),
+            Addressing::PerNode { first, last, next } => {
+                if let Some(e) = self.held.get(node).and_then(|s| s.first()) {
+                    return Ok(e.addr.ip());
+                }
+                let taken: BTreeSet<IpAddr> = self.held.values().flatten().map(|e| e.addr.ip()).collect();
+                for _ in 0..=(*last - *first) {
+                    let ip = IpAddr::from(std::net::Ipv4Addr::from(*next));
+                    *next = if *next == *last { *first } else { *next + 1 };
+                    if !taken.contains(&ip) {
+                        return Ok(ip);
+                    }
+                }
+                Err(AllocationError::AddressesExhausted)
+            }
+        }
+    }
+
+    /// The next free port on `ip`. On a shared host a port bound by any other
+    /// process is skipped (checked by a probe bind of UDP and TCP).
+    fn take_addr(&mut self, ip: IpAddr) -> Result<SocketAddr, AllocationError> {
         let span = (self.last - self.first) as u32 + 1;
         for _ in 0..span {
-            let p = self.next;
+            let a = SocketAddr::new(ip, self.next);
             self.next = if self.next == self.last { self.first } else { self.next + 1 };
-            if self.in_use.contains(&p) {
+            if self.in_use.contains(&a) {
                 continue;
             }
-            let free = UdpSocket::bind((self.host, p)).is_ok() && std::net::TcpListener::bind((self.host, p)).is_ok();
+            let free = match self.addressing {
+                Addressing::SharedHost(_) => UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok(),
+                Addressing::PerNode { .. } => true,
+            };
             if free {
-                self.in_use.insert(p);
-                return Ok(p);
+                self.in_use.insert(a);
+                return Ok(a);
             }
         }
         Err(AllocationError::Exhausted { first: self.first, last: self.last })
@@ -132,6 +181,7 @@ impl EndpointAllocator {
         } else {
             self.release(node);
         }
+        let ip = self.node_ip(node)?;
         let mut out = Vec::new();
         let mut taken = Vec::new();
         for s in slots {
@@ -139,14 +189,14 @@ impl EndpointAllocator {
                 out.push(prior.iter().find(|e| e.slot == s.slot).expect("checked above").clone());
                 continue;
             }
-            match self.take_port() {
-                Ok(port) => {
-                    taken.push(port);
-                    out.push(EndpointSlot { slot: s.slot.into(), addr: SocketAddr::new(self.host, port), freshness: FreshnessToken::mint() });
+            match self.take_addr(ip) {
+                Ok(addr) => {
+                    taken.push(addr);
+                    out.push(EndpointSlot { slot: s.slot.into(), addr, freshness: FreshnessToken::mint() });
                 }
                 Err(e) => {
-                    for p in taken {
-                        self.in_use.remove(&p);
+                    for a in taken {
+                        self.in_use.remove(&a);
                     }
                     return Err(e);
                 }
@@ -155,7 +205,7 @@ impl EndpointAllocator {
         // Release the fresh slots' old ports now that the new ones are held.
         for p in &prior {
             if !out.iter().any(|e| e.addr == p.addr) {
-                self.in_use.remove(&p.addr.port());
+                self.in_use.remove(&p.addr);
             }
         }
         self.held.insert(node.clone(), out.clone());
@@ -166,7 +216,7 @@ impl EndpointAllocator {
     pub fn release(&mut self, node: &PathName) {
         if let Some(slots) = self.held.remove(node) {
             for s in slots {
-                self.in_use.remove(&s.addr.port());
+                self.in_use.remove(&s.addr);
             }
         }
     }
@@ -175,7 +225,7 @@ impl EndpointAllocator {
     /// node after a takeover), so its ports are never handed out again.
     pub fn adopt(&mut self, node: &PathName, slots: Vec<EndpointSlot>) {
         for s in &slots {
-            self.in_use.insert(s.addr.port());
+            self.in_use.insert(s.addr);
         }
         self.held.insert(node.clone(), slots);
     }
@@ -183,6 +233,17 @@ impl EndpointAllocator {
     pub fn held(&self, node: &PathName) -> Option<&[EndpointSlot]> {
         self.held.get(node).map(Vec::as_slice)
     }
+}
+
+/// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>`, default `41000-48999`.
+pub fn port_range_from_env() -> (u16, u16) {
+    std::env::var("RAFKA_ENDPOINT_PORT_RANGE")
+        .ok()
+        .and_then(|r| {
+            let (a, b) = r.split_once('-')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        })
+        .unwrap_or((41000, 48999))
 }
 
 /// Is something on this host holding UDP `addr`? A bind that fails with
@@ -194,6 +255,16 @@ pub fn udp_port_is_held(addr: SocketAddr) -> bool {
 /// `WaitForBind`: every assigned slot is held at its assigned address, and the
 /// runtime's own report (when it gives one) names exactly that address.
 pub fn verify_bound(assigned: &[EndpointSlot], reported: &[(String, SocketAddr)]) -> Result<(), BindRefusal> {
+    verify_bound_with(assigned, reported, udp_port_is_held)
+}
+
+/// [`verify_bound`] with the provider's own view of what the runtime holds
+/// (a container's sockets live in its network namespace, not the host's).
+pub fn verify_bound_with(
+    assigned: &[EndpointSlot],
+    reported: &[(String, SocketAddr)],
+    held: impl Fn(SocketAddr) -> bool,
+) -> Result<(), BindRefusal> {
     for a in assigned {
         match reported.iter().find(|(s, _)| *s == a.slot) {
             None if !reported.is_empty() => return Err(BindRefusal::SlotMissing { slot: a.slot.clone() }),
@@ -202,7 +273,7 @@ pub fn verify_bound(assigned: &[EndpointSlot], reported: &[(String, SocketAddr)]
             }
             _ => {}
         }
-        if !udp_port_is_held(a.addr) {
+        if !held(a.addr) {
             return Err(BindRefusal::NotBoundAtAssigned { slot: a.slot.clone(), assigned: a.addr });
         }
     }
@@ -260,6 +331,27 @@ mod tests {
             a.assign(&p("mesh1.rpc.9"), RPC_NODE_SLOTS, true),
             Err(AllocationError::NoPriorAssignment { node: p("mesh1.rpc.9"), slot: "rpc-1".into() })
         );
+    }
+
+    #[test]
+    fn per_node_addressing_gives_each_node_its_own_address_kept_across_a_restart() {
+        let first = std::net::Ipv4Addr::new(10, 9, 0, 2);
+        let mut a = EndpointAllocator::per_node(first, std::net::Ipv4Addr::new(10, 9, 0, 3), 41000, 41001);
+        let one = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
+        let two = a.assign(&p("mesh1.rpc.2"), RPC_NODE_SLOTS, false).unwrap();
+        assert!(one.iter().all(|e| e.addr.ip() == IpAddr::from(first)));
+        assert!(two.iter().all(|e| e.addr.ip() == IpAddr::from([10, 9, 0, 3])));
+        assert_eq!(one.iter().map(|e| e.addr.port()).collect::<Vec<_>>(), two.iter().map(|e| e.addr.port()).collect::<Vec<_>>(), "ports repeat across node addresses");
+        assert_eq!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false), Err(AllocationError::AddressesExhausted));
+        a.release(&p("mesh1.rpc.2"));
+        a.assign(&p("mesh1.rpc.3"), &RPC_NODE_SLOTS[1..], false).unwrap();
+        // A restart keeps the node's address and its stable slot; the fresh
+        // slot moves to the one free port left on that address.
+        let mut b = EndpointAllocator::per_node(first, first, 41000, 41002);
+        let before = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
+        let after = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, true).unwrap();
+        assert_eq!(after[1], before[1]);
+        assert_eq!(after[0].addr, SocketAddr::new(IpAddr::from(first), 41002));
     }
 
     #[test]
