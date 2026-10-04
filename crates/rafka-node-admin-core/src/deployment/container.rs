@@ -97,6 +97,45 @@ pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
     }))
 }
 
+/// `RAFKA_CONTAINER_SUBNET_POOL` (default `10.231.0.0/16`): the IPv4 block
+/// fabric networks are carved from, one `/24` each.
+pub fn subnet_pool_from_env() -> Result<(Ipv4Addr, u8), String> {
+    let raw = std::env::var("RAFKA_CONTAINER_SUBNET_POOL").unwrap_or_else(|_| "10.231.0.0/16".into());
+    match parse_cidr(&raw) {
+        Some((base, prefix)) if prefix <= 24 => Ok((base, prefix)),
+        _ => Err(format!("RAFKA_CONTAINER_SUBNET_POOL={raw} is not an IPv4 block of /24 or wider")),
+    }
+}
+
+/// The `/24`s of `pool`, starting at one picked from `fabric` so concurrent
+/// fabrics rarely contend for the same one.
+pub fn candidate_subnets(pool: (Ipv4Addr, u8), fabric: &str) -> Vec<Ipv4Addr> {
+    let count = 1u32 << (24 - pool.1 as u32);
+    let start = fabric.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % count;
+    let base = u32::from(pool.0) & !((1u32 << (32 - pool.1 as u32)) - 1);
+    (0..count).map(|i| Ipv4Addr::from(base + (((start + i) % count) << 8))).collect()
+}
+
+/// Create the fabric's network on a node-admin-chosen subnet: an `--ip`
+/// assignment needs a user-configured subnet. A subnet another network
+/// already uses is skipped.
+async fn create_fabric_network(fabric: &str, name: &str) -> Result<(), String> {
+    let pool = subnet_pool_from_env()?;
+    let mut last = String::new();
+    for net in candidate_subnets(pool, fabric) {
+        let gateway = Ipv4Addr::from(u32::from(net) + 1);
+        let subnet = format!("{net}/24");
+        match docker(&["network", "create", "--label", &format!("rafka.fabric={fabric}"), "--subnet", &subnet, "--gateway", &gateway.to_string(), name]).await {
+            Ok(_) => return Ok(()),
+            // A concurrent admin of the same fabric created it first.
+            Err(_) if docker(&["network", "inspect", name]).await.is_ok() => return Ok(()),
+            Err(e) if e.contains("overlap") => last = e,
+            Err(e) => return Err(format!("cannot create network {name} on {subnet}: {e}")),
+        }
+    }
+    Err(format!("cannot create network {name}: every /24 of RAFKA_CONTAINER_SUBNET_POOL is in use ({last})"))
+}
+
 impl ContainerDeploymentProvider {
     /// Check the host can run containers, then make sure the runtime image
     /// and the fabric's network exist. An unsupported host is refused by name.
@@ -129,10 +168,7 @@ impl ContainerDeploymentProvider {
         }
         let name = format!("rafka-{}", docker_safe(fabric));
         if docker(&["network", "inspect", &name]).await.is_err() {
-            if let Err(e) = docker(&["network", "create", "--label", &format!("rafka.fabric={fabric}"), &name]).await {
-                // A concurrent admin of the same fabric may have created it.
-                docker(&["network", "inspect", &name]).await.map_err(|_| unsupported(format!("cannot create network {name}: {e}")))?;
-            }
+            create_fabric_network(fabric, &name).await.map_err(unsupported)?;
         }
         let ipam = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}} {{.Gateway}};{{end}}", &name])
             .await
@@ -296,6 +332,17 @@ mod tests {
         drop(sock);
         assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(false));
         assert!(netns_holds_udp(u32::MAX, addr).unwrap_err().contains("/proc/"));
+    }
+
+    #[test]
+    fn fabric_subnets_are_every_slash_24_of_the_pool_once() {
+        let pool = (Ipv4Addr::new(10, 231, 0, 0), 22);
+        let nets = candidate_subnets(pool, "fabric-a");
+        assert_eq!(nets.len(), 4);
+        let mut sorted = nets.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![Ipv4Addr::new(10, 231, 0, 0), Ipv4Addr::new(10, 231, 1, 0), Ipv4Addr::new(10, 231, 2, 0), Ipv4Addr::new(10, 231, 3, 0)]);
+        assert_eq!(candidate_subnets(pool, "fabric-a"), nets, "deterministic per fabric");
     }
 
     #[test]
