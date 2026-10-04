@@ -7,6 +7,7 @@
 
 pub mod catalog;
 pub mod codes;
+pub mod dispatch;
 pub mod echo;
 pub mod framing;
 pub mod outcome;
