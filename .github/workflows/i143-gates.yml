@@ -12,7 +12,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: audit gate tests
         run: cargo test -p rafka-mesh-audit
@@ -28,7 +28,7 @@ jobs:
       RAFKA_REQUIRE_CONTAINER: "1"
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: provider smokes
         run: cargo test -p rafka-node-admin-core -p rafka-node-rpc-testkit
