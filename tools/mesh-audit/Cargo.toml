@@ -1,0 +1,9 @@
+[package]
+name = "rafka-mesh-audit"
+version = "0.1.0"
+edition = "2021"
+description = "i143 opening-audit gates: legacy-binary disposition, parity ledger scanner, dependency rules"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
