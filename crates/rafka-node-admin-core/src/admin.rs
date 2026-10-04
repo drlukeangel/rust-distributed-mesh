@@ -42,13 +42,17 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// The digest key carrying a node-admin's mesh id.
 pub const MESH_ID: &str = "mesh_id";
 /// How long a member stays in the view without a fresh digest.
 const SILENT_AFTER: Duration = Duration::from_secs(3);
+/// How long a launched admin waits to hear the members its join admin held
+/// live before it executes Builds anyway: past it, a member still unheard is
+/// taken as gone. Losing many peers at once costs gossip ~26 s to re-form.
+const JOIN_VIEW_BOUND: Duration = Duration::from_secs(30);
 
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
@@ -299,6 +303,15 @@ impl NodeObserver for MembershipObserver {
     }
 }
 
+/// What fencing a path's previous birth found.
+#[derive(Debug, PartialEq, Eq)]
+enum FenceOutcome {
+    /// Nothing runs there any more: a new birth may take the path.
+    Clear,
+    /// The previous birth answers directly: it is alive and keeps the path.
+    Alive,
+}
+
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
     pub provider: Arc<dyn DeploymentProvider>,
@@ -318,6 +331,8 @@ pub struct AdminRunner {
     pub book: DigestBook,
     /// This admin's own path.
     pub me: PathName,
+    /// This admin's Iroh endpoint: it asks a node directly whether it answers.
+    pub endpoint: Option<Endpoint>,
 }
 
 impl AdminRunner {
@@ -328,15 +343,20 @@ impl AdminRunner {
         *self.topology.write().await = t;
     }
 
-    fn template_for(&self, kind: NodeKind, mesh: &str) -> LaunchTemplate {
+    /// A launch of `kind` in `mesh`. A node-admin carries its mesh's identity:
+    /// the one this admin created, else the one the fabric knows (a recovered
+    /// mesh is reconstructed as itself, never under a new id).
+    async fn template_for(&self, kind: NodeKind, mesh: &str) -> LaunchTemplate {
+        let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh && !m.id.0.starts_with("unknown-")).map(|m| m.id.clone());
         let mut t = self.template.clone();
         match kind {
             NodeKind::RpcNode => t.executable = self.bin_dir.join(format!("rafka-rpc-node{}", std::env::consts::EXE_SUFFIX)),
             NodeKind::NodeAdmin => {
                 t.executable = self.bin_dir.join(format!("rafka-node-admin{}", std::env::consts::EXE_SUFFIX));
                 t.env.extend(self.admin_env.clone());
-                if let Some(id) = self.records.meshes.lock().unwrap().get(mesh) {
-                    t.env.insert("RAFKA_MESH_ID".into(), id.0.clone());
+                let id = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known);
+                if let Some(id) = id {
+                    t.env.insert("RAFKA_MESH_ID".into(), id.0);
                 }
             }
         }
@@ -405,12 +425,20 @@ impl AdminRunner {
     /// A new birth at a path whose previous birth this view holds as not live
     /// (killed, or only unheard): if that runtime still runs, stop it first,
     /// so a path never has two live runtimes.
-    async fn fence_predecessor(&self, path: &PathName) {
-        let Some(prev) = self.topology.read().await.node(path).cloned() else { return };
+    async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
+        let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear };
         if prev.status.is_live() || prev.incarnation_id.is_none() {
-            return;
+            return FenceOutcome::Clear;
         }
         let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
+        // Unheard is not dead: losing many peers costs gossip a window (the
+        // dead peers' connections time out) in which a healthy member's
+        // digests do not arrive. A predecessor that answers directly is alive.
+        if self.answers(&prev).await {
+            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "answers")
+                .in_scope(|| tracing::info!("the previous birth is unheard but answers directly: it stays"));
+            return FenceOutcome::Alive;
+        }
         let outcome = match self.handle_for(&prev).await {
             Err(e) => format!("not-found: {e}"),
             Ok((_, h)) => match self.provider.inspect(&h).await {
@@ -426,6 +454,45 @@ impl AdminRunner {
         self.handles.lock().unwrap().remove(path);
         tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome)
             .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
+        FenceOutcome::Clear
+    }
+
+    /// Does `node`'s runtime answer when asked directly (not through gossip)?
+    /// An rpc node: a Node RPC `Echo` on its first slot. A node-admin: its
+    /// control API. Two seconds each; a frozen or gone runtime does not.
+    async fn answers(&self, node: &Node) -> bool {
+        const WITHIN: Duration = Duration::from_secs(2);
+        match node.kind {
+            NodeKind::NodeAdmin => {
+                let Some(base) = node.admin_api_base.as_deref().and_then(|b| b.strip_prefix("http://")) else { return false };
+                let ask = async {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut s = tokio::net::TcpStream::connect(base.trim_end_matches('/')).await.ok()?;
+                    s.write_all(format!("GET /api/fabric HTTP/1.1\r\nHost: {base}\r\nConnection: close\r\n\r\n").as_bytes()).await.ok()?;
+                    let mut head = [0u8; 12];
+                    s.read_exact(&mut head).await.ok()?;
+                    Some(head.starts_with(b"HTTP/1.1 200"))
+                };
+                matches!(tokio::time::timeout(WITHIN, ask).await, Ok(Some(true)))
+            }
+            NodeKind::RpcNode => {
+                let (Some(ep), Some(fabric_id), Some(incarnation)) = (&self.endpoint, &node.fabric_id, &node.incarnation_id) else { return false };
+                let Ok(peer) = fabric_id.0.parse::<iroh::PublicKey>() else { return false };
+                let resolver = Arc::new(rafka_node_rpc::StaticResolver::new());
+                resolver.insert(rafka_node_rpc::ResolvedNode {
+                    node_id: node.node_id.clone(),
+                    name: node.name.clone(),
+                    fabric_id: peer,
+                    incarnation: incarnation.clone(),
+                    endpoints: node.endpoints.clone(),
+                });
+                let client = rafka_node_rpc::NodeRpcClient::new(ep.clone(), resolver);
+                let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
+                let req = rafka_node_rpc_contract::echo::EchoRequest::Echo { traceparent: None, payload: b"fence".to_vec() };
+                let (out, _) = client.call::<rafka_node_rpc_contract::echo::Echo>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
+                out.reply().is_some()
+            }
+        }
     }
 
     /// `Node: Pending -> ReadyForTraffic`, committed once the node reports ready.
@@ -441,10 +508,11 @@ impl AdminRunner {
     }
 
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>) -> Result<(), String> {
-        if restart_of.is_none() {
-            self.fence_predecessor(node).await;
+        if restart_of.is_none() && self.fence_predecessor(node).await == FenceOutcome::Alive {
+            // The member is alive, only unheard: nothing to create.
+            return Ok(());
         }
-        let template = self.template_for(node.kind, &node.mesh);
+        let template = self.template_for(node.kind, &node.mesh).await;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), slots: slots_for(node.kind), restart_of };
         let created = self.pipeline(&template).create(&req).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
@@ -458,7 +526,7 @@ impl AdminRunner {
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
-        let template = self.template_for(node.kind, &node.mesh);
+        let template = self.template_for(node.kind, &node.mesh).await;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
@@ -612,6 +680,23 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             FabricPolicy::inherit(established, cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
     };
+    // The members the admin it joined holds live: this admin executes no
+    // Build before it has heard each of them, or else it would plan from a
+    // view missing live members (and re-create them at their paths).
+    let expected: Vec<PathName> = match &cfg.join {
+        None => Vec::new(),
+        Some(base) => rafka_node_admin_client::NodeAdminClient::new(base.clone())
+            .nodes()
+            .await
+            .map_err(|e| format!("joining {base}: {e}"))?
+            .into_iter()
+            .filter(|n| {
+                use rafka_node_admin_client::NodeStatus as S;
+                matches!(n.status, S::Pending | S::ReadyForTraffic | S::Draining) && n.name.to_string() != name.to_string()
+            })
+            .filter_map(|n| n.name.to_string().parse().ok())
+            .collect(),
+    };
 
     // The mesh endpoint: gossip for membership and Build facts.
     let endpoint = Endpoint::builder(presets::Minimal)
@@ -673,6 +758,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         fabric_provider: policy.provider,
         book: book.clone(),
         me: name.clone(),
+        endpoint: Some(endpoint.clone()),
     });
 
     // Own digest, published on the membership cadence.
@@ -737,11 +823,18 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         let (join, book, records, fabric, provider) = (cfg.join.clone(), book.clone(), records.clone(), cfg.fabric.clone(), policy.provider);
         tasks.push(tokio::spawn(async move {
             let mut heard_fabric = join.is_none();
+            let joined_at = Instant::now();
             loop {
                 if !heard_fabric {
-                    heard_fabric = book.all().iter().any(|d| d.admin_api_base.as_deref() == join.as_deref());
+                    let all = book.all();
+                    let heard_join = all.iter().any(|d| d.admin_api_base.as_deref() == join.as_deref());
+                    let unheard: Vec<&PathName> = expected.iter().filter(|p| !all.iter().any(|d| &d.node.name == *p)).collect();
+                    // A listed member still unheard after the bound is gone.
+                    let timed_out = joined_at.elapsed() >= JOIN_VIEW_BOUND;
+                    heard_fabric = heard_join && (unheard.is_empty() || timed_out);
                     if heard_fabric {
-                        tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %me, joined = join.as_deref().unwrap_or(""))
+                        let unheard = unheard.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+                        tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %me, joined = join.as_deref().unwrap_or(""), expected = expected.len(), unheard = %unheard)
                             .in_scope(|| tracing::info!("heard the fabric; eligible to execute Builds"));
                     }
                 }

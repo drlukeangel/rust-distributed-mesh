@@ -40,10 +40,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e4.s4 | #2757 | `511b9cd299` | cohort election by incumbency (`election.rs`, `ready_since_ms` claim); E2E `mesh_elections__cohort_election` incl. partition |
 | e6.s2 | #2768 | `8fc9f8a416` | scoped slot-aware Node RPC pool (`crates/rafka-node-rpc/src/pool.rs`), 7 functional cells; parity rows 3644b2e5b9 / 65d17cdc1b MIRROR (rafka-v2 #2799 `c11d781783`) |
 | e4.s5 | #2758 | `b013688b21` | fabric-primary failover E2E `mesh_elections__fabric_primary`; adoption from Build facts, path fence, DigestBook late-digest fix |
+| e4.s6 | #2759 | `a220f343e3` | mesh creation contract: per-operation executor, `handed-off` attempts; E2E `mesh_lifecycle__mesh_create` |
 
 ## In progress
 
-- e4.s6 drlukeangel/rafka-v2#2759 — mesh creation contract: per-operation executor (a mesh's own primary runs its members), `handed-off` attempts; E2E `mesh_lifecycle__mesh_create` (branch `i143-e4-s6`).
+- e4.s7 drlukeangel/rafka-v2#2760 — mesh recovery contract: E2E `mesh_lifecycle__mesh_recover`; fresh birth for a dead launch, mesh id kept, direct-answer fence, join-view gate (branch `i143-e4-s7`).
 
 ## Blockers
 

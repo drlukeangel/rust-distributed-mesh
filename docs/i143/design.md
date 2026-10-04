@@ -70,6 +70,16 @@ that creates a mesh therefore runs in two attempts: the fabric primary creates t
 new mesh's primary creates its members. A Build can complete on an admin other than the one a client
 asked; the client's admin view settles within gossip delay.
 
+A lost mesh is recovered as itself (PRD §1.15, §12.2). The Build that was active when the mesh was
+lost keeps its id: a surviving admin takes over its next attempt and re-creates the mesh's paths
+under the mesh's known id. Each re-created node is a new birth: a new incarnation and endpoints the
+allocator hands out now. A create step's receipt is reused only while the runtime it names still
+runs, and a run that failed a step hands nothing on. Before a new birth takes a path, the previous
+birth is fenced, unless it answers directly (Node RPC `Echo` for an rpc node, the control API for an
+admin): a member gossip has not heard yet is not a dead one. A launched admin executes no Build
+before it has heard every member its join admin held live (bounded at 30 s), so it never plans from
+a view that is missing live members.
+
 Control moves with the fabric primary. An admin that must retire, restart or stop a node another admin
 launched adopts its runtime from the Build facts: the birth's `AllocateIdentity` receipt (incarnation,
 deployment id) and the `DeployRuntime` receipt of that deployment (the handle). The fabric primary's

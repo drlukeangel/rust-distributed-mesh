@@ -50,3 +50,5 @@ jobs:
         run: cargo test -p rafka-test-scenario --test mesh_elections__fabric_primary
       - name: mesh creation contract (process E2E)
         run: cargo test -p rafka-test-scenario --test mesh_lifecycle__mesh_create
+      - name: mesh recovery contract (process E2E)
+        run: cargo test -p rafka-test-scenario --test mesh_lifecycle__mesh_recover
