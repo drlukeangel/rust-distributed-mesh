@@ -3572,6 +3572,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-node-rpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "iroh",
+ "rafka-mesh-entity",
+ "rafka-node-rpc-contract",
+ "rafka-telemetry",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rafka-node-rpc-contract"
 version = "0.1.0"
 dependencies = [

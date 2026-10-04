@@ -47,6 +47,11 @@ impl<'c> RequestAssembly<'c> {
         Self { catalog, buf: Vec::new(), head: None, done: false }
     }
 
+    /// The tag, once the head has been read and the tag is served.
+    pub fn head_tag(&self) -> Option<u8> {
+        self.head.map(|(t, _, _)| t)
+    }
+
     /// Bytes arrived. Head decisions (unserved tag, oversize declaration) are
     /// made as soon as the head is readable — before the body.
     pub fn push(&mut self, bytes: &[u8]) -> ServerAction {
