@@ -3555,6 +3555,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-node-rpc-contract"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+]
+
+[[package]]
 name = "rafka-registry"
 version = "0.1.0"
 dependencies = [
