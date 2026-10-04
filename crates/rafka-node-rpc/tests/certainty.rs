@@ -38,6 +38,10 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                     unreachable!()
                 }
+                b"slow" => {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    Ok(EchoReply::Echoed { payload })
+                }
                 b"fault" => Err(HandlerFault::invariant_broken("test fault")),
                 b"panic" => panic!("test panic"),
                 _ => Ok(EchoReply::Echoed { payload }),
@@ -179,4 +183,17 @@ async fn resolution_failures_and_a_superseded_pin_are_not_sent_before_any_dial()
     let (out, _) = r.client.call::<Echo>(&r.target, &echo(b"x"), &opts).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Superseded { slot: "rpc-0".into() }), "{out:?}");
     assert_eq!(ServerStats::get(&r.stats.dispatched), 0);
+}
+
+#[tokio::test]
+async fn a_running_handler_is_counted_in_flight_until_it_finishes() {
+    let r = Arc::new(rig(None).await);
+    assert_eq!(ServerStats::get(&r.stats.in_flight), 0);
+    let call = {
+        let r = r.clone();
+        tokio::spawn(async move { r.client.call::<Echo>(&r.target, &echo(b"slow"), &CallOptions::default()).await.0.name() })
+    };
+    eventually("one handler in flight", || ServerStats::get(&r.stats.in_flight) == 1).await;
+    assert_eq!(call.await.unwrap(), "Reply");
+    eventually("no handler in flight", || ServerStats::get(&r.stats.in_flight) == 0).await;
 }

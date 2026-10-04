@@ -48,6 +48,10 @@ pub struct BuildStepReceipt {
     pub operation: String,
     pub step: String,
     pub outcome: StepOutcome,
+    /// What a completed step decided (ids, endpoints, the runtime handle), so
+    /// a re-run reuses it instead of deciding again. Absent on older lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,6 +452,16 @@ impl BuildStateAdapter for FileJournal {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_step_line_written_before_receipts_carried_output_still_decodes() {
+        let old = r#"{"fact":"step","build_id":"b1","attempt":1,"operation":"create-node:mesh1.rpc.1","step":"DeployRuntime","outcome":"complete"}"#;
+        let fact: BuildFact = serde_json::from_str(old).unwrap();
+        assert!(matches!(fact, BuildFact::Step(BuildStepReceipt { output: None, .. })));
+        let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, "create-node:mesh1.rpc.1") };
+        let back: BuildStepReceipt = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
+    }
+
     use super::*;
     use crate::build::BuildIntent;
 
@@ -465,7 +479,7 @@ mod tests {
     }
 
     fn step(id: &str, attempt: u32, op: &str) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId(id.into()), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete }
+        BuildStepReceipt { build_id: BuildId(id.into()), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None }
     }
 
     fn attempt(id: &str, attempt: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {

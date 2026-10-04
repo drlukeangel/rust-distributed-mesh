@@ -7,6 +7,11 @@
 //! The admin side is in-process (a gossip seed plus a Node RPC client); the
 //! node is a real `rafka-rpc-node` runtime started by the provider the
 //! `MESH_SPAWN_TYPE` value selects.
+//!
+//! The pieces (admin side, observer, sink, span capture) are shared with the
+//! e2.s5 re-run and retire tests.
+
+#![allow(dead_code)]
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -16,10 +21,10 @@ use rafka_node_admin_core::build::{BuildId, BuildIntent};
 use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE_SLOTS;
 use rafka_node_admin_core::deployment::pipeline::{
-    CreatePipeline, CreateRequest, CreateStep, LaunchTemplate, NodeObserver, Timeouts, TopologySink,
+    CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, NodeObserver, Timeouts, TopologySink,
 };
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentStatus, FabricPolicy, TerminationMode};
-use rafka_node_admin_core::model::{Node, NodeStatus};
+use rafka_node_admin_core::model::{Node, NodeStatus, PathName};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -31,7 +36,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 /// Every span: name, parent name, and its recorded fields.
 #[derive(Clone, Default)]
-struct Spans(Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>);
+pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>);
 
 struct Fields<'a>(&'a mut BTreeMap<String, String>);
 impl tracing::field::Visit for Fields<'_> {
@@ -66,20 +71,55 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
     }
 }
 
+/// Every record published, and every name removed, in order.
 #[derive(Default)]
-struct Published(Mutex<Vec<Node>>);
+pub struct Published {
+    pub nodes: Mutex<Vec<Node>>,
+    pub removed: Mutex<Vec<PathName>>,
+}
 impl TopologySink for Published {
     fn publish(&self, node: Node) {
-        self.0.lock().unwrap().push(node);
+        self.nodes.lock().unwrap().push(node);
+    }
+    fn remove(&self, name: &PathName) {
+        self.removed.lock().unwrap().push(name.clone());
     }
 }
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = an Echo answered on every advertised slot.
-struct LiveMesh {
-    membership: Membership,
-    client: NodeRpcClient,
-    resolver: Arc<StaticResolver>,
+/// membership; ready = an Echo answered on every advertised slot; drained =
+/// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
+/// admission closed = no slot runs an Echo any more.
+pub struct LiveMesh {
+    pub membership: Membership,
+    pub client: NodeRpcClient,
+    pub resolver: Arc<StaticResolver>,
+}
+
+impl LiveMesh {
+    fn echo_target(&self, node: &Node) -> Result<NodeTarget, String> {
+        let fabric_id = node.fabric_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
+        self.resolver.insert(ResolvedNode {
+            node_id: node.node_id.clone(),
+            name: node.name.clone(),
+            fabric_id,
+            incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
+            endpoints: node.endpoints.clone(),
+        });
+        Ok(NodeTarget::ExactNode(node.node_id.clone()))
+    }
+
+    /// One Echo on `slot`. On loopback a live endpoint answers in
+    /// milliseconds; the budget bounds a dial to an endpoint that is gone.
+    async fn echo(&self, target: &NodeTarget, slot: &str) -> RpcOutcome<EchoReply> {
+        let opts = CallOptions {
+            slot: Some(slot.into()),
+            budget: rafka_node_rpc::Budget::Overall(Duration::from_millis(500)),
+            ..CallOptions::default()
+        };
+        let req = EchoRequest::Echo { traceparent: None, payload: b"ready?".to_vec() };
+        self.client.call::<Echo>(target, &req, &opts).await.0
+    }
 }
 
 #[async_trait::async_trait]
@@ -89,24 +129,85 @@ impl NodeObserver for LiveMesh {
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
-        let fabric_id = node.fabric_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
-        self.resolver.insert(ResolvedNode {
-            node_id: node.node_id.clone(),
-            name: node.name.clone(),
-            fabric_id,
-            incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
-            endpoints: node.endpoints.clone(),
-        });
+        let target = self.echo_target(node)?;
         for slot in &node.endpoints {
-            let opts = CallOptions { slot: Some(slot.slot.clone()), ..CallOptions::default() };
-            let req = EchoRequest::Echo { traceparent: None, payload: b"ready?".to_vec() };
-            match self.client.call::<Echo>(&NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await.0 {
+            match self.echo(&target, &slot.slot).await {
                 RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {}
                 other => return Err(format!("slot {} answered {}", slot.slot, other.name())),
             }
         }
         Ok(())
     }
+
+    async fn drained(&self, node: &Node) -> bool {
+        use rafka_mesh_entity::MemberStatus;
+        self.membership.book.get(&node.node_id.0).is_some_and(|(d, _)| {
+            Some(&d.node.incarnation) == node.incarnation_id.as_ref()
+                && (d.status == MemberStatus::Leaving
+                    || (d.status == MemberStatus::Draining && d.extra.get("in_flight").map(String::as_str) == Some("0")))
+        })
+    }
+
+    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
+        let target = self.echo_target(node)?;
+        for slot in &node.endpoints {
+            match self.echo(&target, &slot.slot).await {
+                RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {
+                    return Err(format!("slot {} still runs new calls", slot.slot))
+                }
+                // A typed Draining (the handler never ran), or nothing admits the call.
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
+/// the nodes' membership seed, and the observer over it.
+pub struct AdminSide {
+    pub observer: LiveMesh,
+    pub seed: (String, SocketAddr),
+    _router: Router,
+}
+
+pub async fn admin_side(ip: std::net::IpAddr, fabric: &str) -> AdminSide {
+    let admin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), SocketAddr::new(ip, 0)).await.unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
+    let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, vec![]).await.unwrap();
+    let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    AdminSide {
+        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver },
+        seed: (admin_ep.id().to_string(), addr),
+        _router: router,
+    }
+}
+
+/// A launch template for `rafka-rpc-node` with a fresh data root.
+pub fn template(fabric: &str, seed: (String, SocketAddr)) -> LaunchTemplate {
+    LaunchTemplate {
+        fabric: fabric.into(),
+        executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
+        seeds: vec![seed],
+        env: BTreeMap::new(),
+        data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
+    }
+}
+
+/// Publish one Build intent and return its id.
+pub async fn publish_build(builds: &MemoryBuildStateAdapter, intent: BuildIntent) -> BuildId {
+    let build_id = BuildId::mint();
+    builds
+        .publish_intent(&BuildIntentFact { build_id: build_id.clone(), intent, traceparent: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    build_id
+}
+
+pub fn add_node() -> BuildIntent {
+    BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode }
 }
 
 /// What `deploy_through_every_step` found.
@@ -133,42 +234,20 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let provider = prepared.provider.clone();
     let expected_provider = format!("{:?}", provider.kind());
 
-    // The admin side: one endpoint serving gossip, used as the node's seed,
-    // on the address the provider's runtimes can reach.
-    let admin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), SocketAddr::new(prepared.admin_ip, 0)).await.unwrap();
-    let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
-    let _router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let membership = Membership::join(&gossip, &admin_ep, &fabric, vec![]).await.unwrap();
-    let admin_addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == prepared.admin_ip).unwrap();
-    let resolver = Arc::new(StaticResolver::new());
-    let observer = LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver };
-
-    let data_root = std::env::temp_dir().join(format!("i143-e2s3-{}", NodeId::mint()));
-    let template = LaunchTemplate {
-        fabric: fabric.clone(),
-        executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
-        seeds: vec![(admin_ep.id().to_string(), admin_addr)],
-        env: BTreeMap::new(),
-        data_root: data_root.clone(),
-    };
+    // The admin side, on the address the provider's runtimes can reach.
+    let admin = admin_side(prepared.admin_ip, &fabric).await;
+    let observer = &admin.observer;
+    let template = template(&fabric, admin.seed.clone());
+    let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
-    let build_id = BuildId::mint();
+    let build_id = publish_build(&builds, add_node()).await;
     let node_name = "mesh1.rpc.1".parse().unwrap();
-    builds
-        .publish_intent(&BuildIntentFact {
-            build_id: build_id.clone(),
-            intent: BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode },
-            traceparent: None,
-            submitted_at_ms: 0,
-        })
-        .await
-        .unwrap();
     let allocator = Mutex::new(prepared.allocator);
     let sink = Published::default();
-    let pipeline = CreatePipeline {
+    let pipeline = DeploymentPipeline {
         provider: &*provider,
         allocator: &allocator,
-        observer: &observer,
+        observer,
         sink: &sink,
         builds: &builds,
         template: &template,
@@ -176,7 +255,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     };
 
     let created = pipeline
-        .run(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, slots: RPC_NODE_SLOTS, restart_of: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -185,7 +264,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
 
     // The node is live, published Pending then ReadyForTraffic, at the assigned endpoints.
     assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
-    let published = sink.0.lock().unwrap().clone();
+    let published = sink.nodes.lock().unwrap().clone();
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
     assert_eq!(created.node.endpoints, allocator.lock().unwrap().held(&created.node.name).unwrap().to_vec());
 

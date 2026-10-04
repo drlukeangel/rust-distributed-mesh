@@ -31,10 +31,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e3.s2 | #2750 | `d71cded544` | readiness gates: topology-derived and explicit shape predicates (`readiness.rs`) |
 | e2.s3 | #2745 | `433d934404` | DeploymentProvider + ProcessDeploymentProvider + create pipeline; `rafka-rpc-node` (`crates/rafka-node-rpc-testkit`) |
 | e6.s1 | #2767 | `a886ea808c` | Node RPC runtime (`rafka-node-rpc`); parity rows f4a8732be5 / bb891eeaa8 / 196cad0d4a MIRROR (rafka-v2 #2793) |
+| e2.s4 | #2746 | `6bb0abd0c1` | ContainerDeploymentProvider (`deployment/container.rs`): per-fabric bridge network, per-node `--ip`, netns bind check; CI `providers` job |
 
 ## In progress
 
-- e2.s4 drlukeangel/rafka-v2#2746 — ContainerDeploymentProvider (branch `i143-e2-s4`).
+- e2.s5 drlukeangel/rafka-v2#2747 — step receipts, idempotent re-runs, retire pipeline (branch `i143-e2-s5`).
 
 ## Blockers
 

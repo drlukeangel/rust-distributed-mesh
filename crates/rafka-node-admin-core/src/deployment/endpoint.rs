@@ -230,6 +230,11 @@ impl EndpointAllocator {
         self.held.insert(node.clone(), slots);
     }
 
+    /// How many advertised addresses are held across all nodes.
+    pub fn in_use_count(&self) -> usize {
+        self.in_use.len()
+    }
+
     pub fn held(&self, node: &PathName) -> Option<&[EndpointSlot]> {
         self.held.get(node).map(Vec::as_slice)
     }

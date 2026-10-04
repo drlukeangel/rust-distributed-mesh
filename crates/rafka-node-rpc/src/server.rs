@@ -123,6 +123,25 @@ pub struct ServerStats {
     pub draining: AtomicU64,
     pub violations: AtomicU64,
     pub faults: AtomicU64,
+    /// Handlers dispatched and not yet finished (WaitForDrain reads it).
+    pub in_flight: AtomicU64,
+}
+
+/// Counts one dispatched handler for as long as it lives, however its
+/// invocation ends.
+struct InFlight(Arc<ServerStats>);
+
+impl InFlight {
+    fn enter(stats: &Arc<ServerStats>) -> Self {
+        stats.in_flight.fetch_add(1, Ordering::SeqCst);
+        Self(stats.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl ServerStats {
@@ -300,7 +319,13 @@ impl NodeRpcServer {
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
                 let ctx = PeerContext { fabric_id: peer, slot: self.slot.clone() };
                 // Supervised: a panic is caught at this boundary.
-                let joined = tokio::spawn(h.call(ctx, payload)).await;
+                let handler = h.call(ctx, payload);
+                let counted = InFlight::enter(&stats);
+                let joined = tokio::spawn(async move {
+                    let _counted = counted;
+                    handler.await
+                })
+                .await;
                 drop(permit);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
