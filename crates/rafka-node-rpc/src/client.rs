@@ -8,17 +8,17 @@
 //! call ends `Reply`, `Unserved` (a `421`) or `Indeterminate`. Node RPC never
 //! dials a second slot, peer or target inside one call and never replays.
 
+use crate::pool::{DialError, DialSpec, Failpoint, Pool, PoolKey};
 use crate::resolve::{NodeResolver, NodeTarget};
-use iroh::endpoint::{Connection, ReadError, ReadToEndError, VarInt, WriteError};
-use iroh::{Endpoint, EndpointAddr};
+use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
+use iroh::Endpoint;
 use rafka_mesh_entity::{FreshnessToken, NodeId};
 use rafka_node_rpc_contract::codes::ResetCode;
 use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, MAX_VARINT_LEN};
 use rafka_node_rpc_contract::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{timeout_at, Instant};
 
@@ -41,11 +41,24 @@ pub struct CallOptions {
     pub pin: Option<(String, FreshnessToken)>,
     /// Failpoint: write part of the request, then reset it with 499.
     pub cut_before_finish: bool,
+    /// The caller's execution scope: part of the pool identity, so two
+    /// scopes never share a pooled connection.
+    pub scope: Option<String>,
+    /// Failpoint: a dial this call starts stops after connecting, before it
+    /// is checked against the resolver and pooled.
+    pub after_connect: Option<Arc<Failpoint>>,
 }
 
 impl Default for CallOptions {
     fn default() -> Self {
-        Self { budget: Budget::Overall(Duration::from_secs(10)), slot: None, pin: None, cut_before_finish: false }
+        Self {
+            budget: Budget::Overall(Duration::from_secs(10)),
+            slot: None,
+            pin: None,
+            cut_before_finish: false,
+            scope: None,
+            after_connect: None,
+        }
     }
 }
 
@@ -57,14 +70,16 @@ pub struct CallEvidence {
     pub addr: SocketAddr,
     pub freshness: FreshnessToken,
     pub committed: bool,
+    /// The connection the call rode (`stable_id`), once it had one.
+    pub connection: Option<usize>,
+    /// The connection came from the pool rather than a dial this call waited on.
+    pub reused: bool,
 }
 
 pub struct NodeRpcClient {
     endpoint: Endpoint,
     resolver: Arc<dyn NodeResolver>,
-    /// Open connections by `(peer, address)`. e6.s2 replaces this with the
-    /// scoped, slot- and freshness-aware pool.
-    conns: Mutex<HashMap<(iroh::PublicKey, SocketAddr), Connection>>,
+    pool: Pool,
 }
 
 /// How the reply direction is decoded: after the commit cut, or after an
@@ -83,26 +98,16 @@ enum Committed {
 
 impl NodeRpcClient {
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
-        Self { endpoint, resolver, conns: Mutex::new(HashMap::new()) }
+        Self { endpoint, resolver, pool: Pool::default() }
     }
 
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
 
-    async fn connection(&self, peer: iroh::PublicKey, addr: SocketAddr) -> Result<Connection, String> {
-        if let Some(c) = self.conns.lock().unwrap().get(&(peer, addr)).cloned() {
-            if c.close_reason().is_none() {
-                return Ok(c);
-            }
-        }
-        let c = self
-            .endpoint
-            .connect(EndpointAddr::new(peer).with_ip_addr(addr), crate::ALPN)
-            .await
-            .map_err(|e| e.to_string())?;
-        self.conns.lock().unwrap().insert((peer, addr), c.clone());
-        Ok(c)
+    /// Every pooled connection's key.
+    pub fn pooled(&self) -> Vec<PoolKey> {
+        self.pool.keys()
     }
 
     /// Invoke protocol `P` on `target`.
@@ -147,6 +152,8 @@ impl NodeRpcClient {
             Ok(n) => n,
             Err(f) => return (pre.not_sent(NotSentReason::Resolve(f)), None),
         };
+        // Whatever this node's record no longer names leaves the pool now.
+        self.pool.purge_stale(&node);
         // The exact slot target and its freshness.
         let want = opts.pin.as_ref().map(|(s, _)| s.clone()).or_else(|| opts.slot.clone());
         let slot = match want {
@@ -170,16 +177,38 @@ impl NodeRpcClient {
             addr: slot.addr,
             freshness: slot.freshness.clone(),
             committed: false,
+            connection: None,
+            reused: false,
         };
-        let conn = match timeout_at(send_deadline, self.connection(node.fabric_id, slot.addr)).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => return (pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
-            Err(_) => return (pre.not_sent(NotSentReason::Deadline), Some(evidence)),
+        let key = PoolKey {
+            scope: opts.scope.clone(),
+            peer: node.fabric_id,
+            incarnation: node.incarnation.clone(),
+            slot: slot.slot.clone(),
+            freshness: slot.freshness.clone(),
+        };
+        let spec = DialSpec {
+            endpoint: self.endpoint.clone(),
+            resolver: self.resolver.clone(),
+            target: target.clone(),
+            addr: slot.addr,
+            deadline: send_deadline,
+            failpoint: opts.after_connect.clone(),
+        };
+        let conn = match self.pool.get_or_dial(&key, spec).await {
+            Ok((c, reused)) => {
+                evidence.connection = Some(c.stable_id());
+                evidence.reused = reused;
+                c
+            }
+            Err(DialError::Superseded) => return (pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), Some(evidence)),
+            Err(DialError::Deadline) => return (pre.not_sent(NotSentReason::Deadline), Some(evidence)),
+            Err(DialError::Failed(e)) => return (pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
         };
         let (mut send, mut recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
-                self.conns.lock().unwrap().remove(&(node.fabric_id, slot.addr));
+                self.pool.broken(&key, &conn);
                 return (pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
             }
             Err(_) => return (pre.not_sent(NotSentReason::Deadline), Some(evidence)),
@@ -195,7 +224,9 @@ impl NodeRpcClient {
         }
         let written = timeout_at(send_deadline, send.write_all(&frame)).await;
         if let Ok(Err(WriteError::Stopped(stop))) = &written {
-            // The server refused before this request finished (node-rpc.md §27).
+            // The server refused before this request finished (node-rpc.md §27):
+            // a healthy answer on a healthy connection.
+            self.pool.healthy(&key);
             if stop.into_inner() == u64::from(ResetCode::UnservedTag.code()) {
                 return (pre.unserved_before_finish(), Some(evidence));
             }
@@ -211,6 +242,9 @@ impl NodeRpcClient {
             return (out, Some(evidence));
         }
         if !matches!(written, Ok(Ok(()))) {
+            if let Ok(Err(WriteError::ConnectionLost(_))) = &written {
+                self.pool.broken(&key, &conn);
+            }
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
             return (out, Some(evidence));
@@ -235,6 +269,13 @@ impl NodeRpcClient {
             Ok(Err(ReadToEndError::TooLong)) => Committed::Lost(IndeterminateReason::ProtocolViolation("reply longer than the protocol ceiling".into())),
             Ok(Err(e)) => Committed::Lost(IndeterminateReason::ReplyLost(e.to_string())),
         };
+        // Pool health from what came back (never reachability).
+        match &got {
+            Committed::Reply(_) | Committed::Reset(_) => self.pool.healthy(&key),
+            Committed::Lost(IndeterminateReason::ReplyDeadline) => self.pool.timed_out(&key, &conn),
+            Committed::Lost(IndeterminateReason::ReplyLost(_)) => self.pool.broken(&key, &conn),
+            Committed::Lost(_) => {}
+        }
         let out = match got {
             Committed::Reply(bytes) => match decode_single_frame(&bytes, max_reply) {
                 Ok(payload) => decode(Decode::Committed(committed, payload)),
