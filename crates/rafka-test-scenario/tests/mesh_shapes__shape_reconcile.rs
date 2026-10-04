@@ -13,8 +13,7 @@
 //!   reconcile, which descends from the request that accepted the Build; and
 //!   every node's `Pending -> ReadyForTraffic` transition descends from it too.
 //!
-//! The shapes run one after another in one test: estates on one host share
-//! the endpoint port range.
+//! The shapes run one after another in one test, each on its own fabric.
 
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
