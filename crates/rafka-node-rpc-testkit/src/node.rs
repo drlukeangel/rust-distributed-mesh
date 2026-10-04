@@ -141,7 +141,18 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
+    let anchor = seeds.first().cloned();
     let membership = Membership::join(&g, &ep0, &launch.fabric, seeds).await?;
+    // Entry: take the launching admin's membership before marking ready. An
+    // admin that cannot answer does not hold the node: its view fills from
+    // gossip instead (the pull is named either way).
+    if let Some(anchor) = anchor {
+        if let Ok(answer) = rafka_mesh_transport::entry::pull(&ep0, anchor, &launch.name.to_string(), 5).await {
+            for d in answer.members.into_iter().filter(|d| d.fabric == launch.fabric) {
+                membership.book.record(d);
+            }
+        }
+    }
     let digest = MeshDigest {
         fabric: launch.fabric.clone(),
         node: MeshNode {

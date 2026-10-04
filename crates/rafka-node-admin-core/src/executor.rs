@@ -38,6 +38,14 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
+        // A mesh never retires itself: the admin primary of the lowest-named
+        // other mesh does (the fabric primary, unless that is in `mesh`; then
+        // the one control moves to once `mesh` is gone).
+        BuildOperation::RetireMesh { mesh } => {
+            let mut others: Vec<&str> = t.meshes.iter().map(|m| m.name.as_str()).filter(|m| *m != mesh).collect();
+            others.sort();
+            others.into_iter().find_map(|m| t.cohort_primary(m, NodeKind::NodeAdmin)).map(|n| n.name.clone())
+        }
         _ => fabric(),
     }
 }
@@ -253,6 +261,7 @@ mod tests {
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
+        assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh1".into() }, &t), "mesh2.admin.1", "a mesh never retires itself");
     }
 
     #[test]
