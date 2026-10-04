@@ -11,6 +11,7 @@ pub mod admin;
 pub mod build;
 pub mod build_state;
 pub mod deployment;
+pub mod election;
 pub mod executor;
 pub mod fabric_builds;
 pub mod http;
