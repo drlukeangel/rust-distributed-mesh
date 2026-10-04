@@ -192,3 +192,101 @@ pub fn set_parent(span: &tracing::Span, traceparent: &str) {
         span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc));
     }
 }
+
+/// Writes every finished span as one JSON line to
+/// `<RAFKA_EVIDENCE_DIR>/<service>.<pid>.spans.jsonl` (`docs/i143/design.md` §6).
+/// Causality is carried by `parent_span_id`; a consumer never infers it from
+/// timestamps.
+#[derive(Debug)]
+pub struct JsonlSpanExporter {
+    service: String,
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+impl JsonlSpanExporter {
+    pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join(format!("{service}.{}.spans.jsonl", std::process::id()));
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        Ok(Self { service: service.to_string(), file: std::sync::Arc::new(std::sync::Mutex::new(file)) })
+    }
+
+    fn line(&self, s: &opentelemetry_sdk::export::trace::SpanData) -> String {
+        let nanos = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        let parent = if s.parent_span_id == opentelemetry::trace::SpanId::INVALID { String::new() } else { s.parent_span_id.to_string() };
+        let attrs: serde_json::Map<String, serde_json::Value> =
+            s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.as_str().into_owned()))).collect();
+        serde_json::json!({
+            "trace_id": s.span_context.trace_id().to_string(),
+            "span_id": s.span_context.span_id().to_string(),
+            "parent_span_id": parent,
+            "name": s.name,
+            "service": self.service,
+            "start_unix_nano": nanos(s.start_time),
+            "end_unix_nano": nanos(s.end_time),
+            "attributes": attrs,
+        })
+        .to_string()
+    }
+}
+
+impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
+    fn export(
+        &mut self,
+        batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
+    ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult> {
+        use std::io::Write;
+        let mut out = String::new();
+        for s in &batch {
+            out.push_str(&self.line(s));
+            out.push('\n');
+        }
+        let file = self.file.clone();
+        let r = file.lock().map_err(|e| e.to_string()).and_then(|mut f| f.write_all(out.as_bytes()).map_err(|e| e.to_string()));
+        Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(e.into())) })
+    }
+}
+
+/// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when
+/// `RAFKA_EVIDENCE_DIR` is set and to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
+/// is set; with neither, only the fmt layer runs. Returns `None` when no
+/// exporter is configured.
+pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+    install_propagator();
+    let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
+    let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
+    let mut any = false;
+    if let Ok(dir) = std::env::var("RAFKA_EVIDENCE_DIR") {
+        match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
+            Ok(e) => {
+                builder = builder.with_span_processor(SimpleSpanProcessor::new(Box::new(e)));
+                any = true;
+            }
+            Err(e) => eprintln!("telemetry: RAFKA_EVIDENCE_DIR={dir} is unusable: {e}"),
+        }
+    }
+    if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        let processor = BatchSpanProcessor::builder(build_exporter(endpoint), opentelemetry_sdk::runtime::Tokio).build();
+        builder = builder.with_span_processor(processor);
+        any = true;
+    }
+    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into());
+    if !any {
+        let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter)).try_init();
+        return None;
+    }
+    let provider = builder.build();
+    let tracer = provider.tracer(service.clone());
+    let otel_filter = EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("iroh=warn".parse().expect("static directive"))
+        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
+        .add_directive("noq=warn".parse().expect("static directive"))
+        .add_directive("noq_proto=warn".parse().expect("static directive"));
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
+        .with(OpenTelemetryLayer::new(tracer).with_filter(otel_filter))
+        .try_init();
+    Some(TelemetryGuard { provider })
+}

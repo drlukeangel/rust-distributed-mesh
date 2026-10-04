@@ -3513,10 +3513,13 @@ name = "rafka-mesh-transport"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
+ "bytes",
  "futures-lite",
  "iroh",
  "iroh-gossip",
  "iroh-mdns-address-lookup",
+ "rafka-mesh-entity",
  "serde",
  "serde_json",
  "tokio",
@@ -3532,6 +3535,8 @@ dependencies = [
  "dashmap",
  "hex",
  "http-body-util",
+ "iroh",
+ "libc",
  "rafka-mesh-entity",
  "rafka-telemetry",
  "rand 0.8.6",
@@ -3594,6 +3599,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-node-rpc-testkit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "rafka-mesh-entity",
+ "rafka-mesh-transport",
+ "rafka-node-admin-core",
+ "rafka-node-rpc",
+ "rafka-node-rpc-contract",
+ "rafka-telemetry",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rafka-registry"
 version = "0.1.0"
 dependencies = [
@@ -3606,12 +3633,14 @@ dependencies = [
 name = "rafka-telemetry"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "http",
  "opentelemetry",
  "opentelemetry-http",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "serde_json",
  "tracing",
  "tracing-flame",
  "tracing-opentelemetry",

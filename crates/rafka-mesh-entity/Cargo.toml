@@ -9,6 +9,5 @@ publish = false
 serde = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
-
-[dev-dependencies]
 serde_json = { workspace = true }
+

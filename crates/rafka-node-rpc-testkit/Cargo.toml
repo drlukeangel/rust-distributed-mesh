@@ -1,0 +1,30 @@
+[package]
+name = "rafka-node-rpc-testkit"
+version = "0.1.0"
+edition = "2021"
+description = "Generic RPC proof node, protocols and probes for the i143 Mesh product proof"
+publish = false
+
+[dependencies]
+rafka-node-rpc = { path = "../rafka-node-rpc" }
+rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+rafka-telemetry = { path = "../rafka-telemetry" }
+iroh = { workspace = true }
+iroh-gossip = "0.100"
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+async-trait = "0.1"
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "rafka-rpc-node"
+path = "src/bin/rafka_rpc_node.rs"
