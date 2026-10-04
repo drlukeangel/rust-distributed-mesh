@@ -26,6 +26,8 @@ rafka-telemetry = { path = "../rafka-telemetry" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
+rafka-node-rpc = { path = "../rafka-node-rpc" }
+rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 
 [[bin]]
 name = "rafka-node-admin"

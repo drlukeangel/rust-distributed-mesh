@@ -3558,6 +3558,8 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
+ "rafka-node-rpc",
+ "rafka-node-rpc-contract",
  "rafka-telemetry",
  "rand 0.8.6",
  "serde",

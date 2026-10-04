@@ -293,14 +293,22 @@ struct Run<'r> {
 }
 
 impl DeploymentPipeline<'_> {
+    /// The decisions earlier attempts made for this operation and may hand
+    /// on: the `Complete` receipts of runs that were cut short (the executor
+    /// died mid-run). A run that failed a step decided nothing worth
+    /// keeping, so the first attempt after the latest failure starts afresh
+    /// and later attempts build on that run.
     async fn begin<'r>(&self, build_id: &'r BuildId, attempt: u32, node: &'r PathName, operation: String) -> Run<'r> {
         let done = match self.builds.read_build(build_id).await {
-            Ok(view) => view
-                .steps
-                .into_iter()
-                .filter(|r| r.operation == operation && r.attempt < attempt && r.outcome == StepOutcome::Complete)
-                .map(|r| (r.step, r.output))
-                .collect(),
+            Ok(view) => {
+                let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
+                let last_failed = earlier.iter().filter(|r| matches!(r.outcome, StepOutcome::Failed { .. })).map(|r| r.attempt).max().unwrap_or(0);
+                earlier
+                    .into_iter()
+                    .filter(|r| r.attempt > last_failed && r.outcome == StepOutcome::Complete)
+                    .map(|r| (r.step, r.output))
+                    .collect()
+            }
             Err(_) => HashMap::new(),
         };
         Run { build_id, attempt, node, operation, done, reusing: true }
@@ -377,6 +385,20 @@ impl DeploymentPipeline<'_> {
     async fn create_steps(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
         let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" };
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("{op}:{}", req.node)).await;
+        // A receipt names a runtime; its birth is reused only while that
+        // runtime runs. A launch that has since died (its executor's mesh was
+        // lost with it) is a lost birth: everything is decided afresh, a new
+        // identity and endpoints the current allocator hands out.
+        if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
+            let alive = match serde_json::from_value::<DeploymentHandle>(h.clone()) {
+                Ok(h) => self.provider.inspect(&h).await == DeploymentStatus::Running,
+                Err(_) => false,
+            };
+            if !alive {
+                tracing::info!(node = %req.node, "the earlier attempt's runtime is gone: a fresh birth");
+                run.done.clear();
+            }
+        }
         let prior = req.restart_of.clone();
         let id: Identity = self
             .step(&mut run, CreateStep::AllocateIdentity.name(), async {
@@ -438,18 +460,6 @@ impl DeploymentPipeline<'_> {
                 endpoints: endpoints.clone(),
             }
         };
-        // A receipt names a runtime; it is reused only while that runtime runs.
-        if run.reusing {
-            if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
-                let alive = match serde_json::from_value::<DeploymentHandle>(h.clone()) {
-                    Ok(h) => self.provider.inspect(&h).await == DeploymentStatus::Running,
-                    Err(_) => false,
-                };
-                if !alive {
-                    run.reusing = false;
-                }
-            }
-        }
         let handle: DeploymentHandle = self
             .step(&mut run, CreateStep::DeployRuntime.name(), async {
                 let spec = spec_for(rafka_telemetry::current_traceparent());
