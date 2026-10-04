@@ -12,4 +12,5 @@ pub mod http;
 pub mod lifecycle;
 pub mod model;
 pub mod process_table;
+pub mod readiness;
 pub mod topology;
