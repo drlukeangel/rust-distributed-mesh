@@ -1,0 +1,15 @@
+[package]
+name = "rafka-node-admin-core"
+version = "0.1.0"
+edition = "2021"
+description = "Generic Fabric/Mesh/Node control: model, topology, Build, deployment and lifecycle (i143)"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+dashmap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

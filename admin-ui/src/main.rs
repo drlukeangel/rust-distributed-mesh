@@ -28,7 +28,7 @@ use std::{
 };
 use tower_http::services::ServeDir;
 use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership};
-use tokio::{process::Child, sync::Mutex};
+
 use tracing::{info, info_span, Instrument};
 
 const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
@@ -986,23 +986,20 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
 </body>
 </html>"##;
 
-#[derive(Clone, Debug)]
-struct SpawnedMeta {
-    node_type: String,
-    mesh_id: String,
-    pid: u32,
-    /// hex-encoded iroh EndpointId (== public key) of this spawned child.
-    /// Pre-minted by admin-ui before launching the child process, so admin-ui
-    /// can use it as a seed for subsequent spawns.
-    node_id_hex: String,
-    /// TCP/UDP port assigned to this child by admin-ui's port pool. Combined
-    /// with localhost to form `RAFKA_SEED_NODES` entries.
-    bind_port: u16,
-    /// UNIX-ms timestamp when admin-ui spawned this child. Used by the UI to
-    /// render a monotonically-increasing "age" (lifetime), distinct from
-    /// `wall_time_ms` on GossipDigest which is the per-digest emit time
-    /// (staleness, bounces with gossip cadence).
-    spawned_at_ms: u64,
+// Node lifecycle ownership (process map, termination, reaping) lives in
+// rafka-node-admin-core; the Admin UI calls it (i143.e1.s1).
+use rafka_node_admin_core::process_table::{ProcessTable, SpawnedMeta};
+
+/// Root of the per-child spawn data dirs: `RAFKA_UI_SPAWN_ROOT`, default
+/// `E:/tmp/rafka-ui-nodes` on Windows and `<temp>/rafka-ui-nodes` elsewhere.
+fn spawn_root() -> std::path::PathBuf {
+    std::env::var("RAFKA_UI_SPAWN_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|_| {
+        if cfg!(windows) {
+            std::path::PathBuf::from("E:/tmp/rafka-ui-nodes")
+        } else {
+            std::env::temp_dir().join("rafka-ui-nodes")
+        }
+    })
 }
 
 struct ChaosController {
@@ -1091,8 +1088,7 @@ struct AppState {
     http: reqwest::Client,
     jaeger_url: String,
     cargo_target_dir: String,
-    processes: Arc<DashMap<String, Mutex<Child>>>,
-    spawned_meta: Arc<DashMap<String, SpawnedMeta>>,
+    lifecycle: Arc<ProcessTable>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
     /// Phase C: live state from gossip digests, keyed by node_id (hex).
@@ -1156,7 +1152,7 @@ async fn handle_health() -> impl IntoResponse {
 }
 
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
-    let names: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
+    let names: Vec<String> = state.lifecycle.processes().iter().map(|e| e.key().clone()).collect();
     let span = info_span!(
         "rafka.ui.spawned_list",
         count = names.len() as i64,
@@ -1221,7 +1217,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
         }));
     }
     // Pending entries (spawned, first digest not seen yet)
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         if !known_names.contains(entry.key()) {
             out.push(json!({
                 "node_name": entry.key(),
@@ -1256,7 +1252,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     }
     // Fallback: spawned_meta-only (no Jaeger enrichment yet)
     let mut out: Vec<Value> = Vec::new();
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         out.push(json!({
             "node_name": entry.key(),
             "node_type": entry.value().node_type,
@@ -1269,7 +1265,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     if !out.is_empty() {
         return (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response();
     }
-    let spawned: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
+    let spawned: Vec<String> = state.lifecycle.processes().iter().map(|e| e.key().clone()).collect();
     let now_us = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as i64)
@@ -1281,7 +1277,7 @@ async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
     let mut handles = Vec::with_capacity(spawned.len());
     for name in spawned {
         let state = state.clone();
-        let known_meta = state.spawned_meta.get(&name).map(|e| e.value().clone());
+        let known_meta = state.lifecycle.spawned().get(&name).map(|e| e.value().clone());
         handles.push(tokio::spawn(async move {
             let node_type = known_meta
                 .as_ref()
@@ -1660,11 +1656,11 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // Pure local state — no Jaeger round-trips. The status banner polls this
     // every 3s; the Jaeger-backed version was 5+ serial queries adding 10s of
     // latency on every poll and starving the rest of the UI.
-    let spawned_count = state.processes.iter().count() as i64;
+    let spawned_count = state.lifecycle.processes().iter().count() as i64;
     // EXCLUDE the "bridge" + "default" sentinels — those aren't real meshes,
     // they're "bridge has no mesh" / "node spawned without RAFKA_MESH_ID".
     let meshes: std::collections::HashSet<String> = state
-        .spawned_meta
+        .lifecycle.spawned()
         .iter()
         .filter(|e| {
             let m = &e.value().mesh_id;
@@ -1679,7 +1675,8 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // Counts non-bridge nodes' actual peer counts.
     let mean_peers = {
         let snap: Vec<i64> = state
-            .spawned_meta
+            .lifecycle
+            .spawned()
             .iter()
             .filter(|e| e.value().node_type != "bridge")
             .map(|_| 0i64) // placeholder; real values come from heartbeat enrichment
@@ -1927,7 +1924,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         // Look up spawn time so the UI can render a monotonic "age" (lifetime)
         // distinct from `wall_time_ms` which is per-digest emit time.
         let spawn_time_ms = state
-            .spawned_meta
+            .lifecycle
+            .spawned()
             .get(&d.node_name)
             .map(|e| e.value().spawned_at_ms);
         nodes.push(json!({
@@ -1952,7 +1950,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     // (they just spawned and their first digest hasn't arrived).
     let known_names: std::collections::HashSet<String> =
         digests.iter().map(|e| e.value().node_name.clone()).collect();
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         if !known_names.contains(entry.key()) {
             nodes.push(json!({
                 "id": entry.key(),
@@ -1993,7 +1991,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
         let d = entry.value();
         name_to_meta.insert(d.node_name.clone(), (d.mesh_id.clone(), d.node_type.clone()));
     }
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         if !name_to_meta.contains_key(entry.key()) {
             name_to_meta.insert(
                 entry.key().clone(),
@@ -2093,7 +2091,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     let mut nodes: Vec<Value> = Vec::new();
     let mut emitted_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         let name = entry.key().clone();
         let meta = entry.value();
         let live = name_to_id.get(&name).and_then(|id| id_to_live.get(id));
@@ -2131,8 +2129,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     }
     let mut edges: Vec<Value> = Vec::new();
     for (a, b) in &edge_set {
-        let mesh_a = state.spawned_meta.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.spawned_meta.get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -2371,8 +2369,8 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
     // because Jaeger still has its frame.sent spans in the lookback window.
     let mut edges: Vec<Value> = Vec::new();
     for ((a, b), count) in &edge_counts {
-        let mesh_a = state.spawned_meta.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.spawned_meta.get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
         // Both endpoints MUST currently exist — drop ghosts from killed nodes.
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
@@ -2670,7 +2668,7 @@ async fn spawn_one(
     // loop's respawn path also obeys it (not just bootstrap). Otherwise
     // crash-storm conditions could grow the pool past 50.
     const POOL_CAP: usize = 50;
-    if state.spawned_meta.iter().count() >= POOL_CAP {
+    if state.lifecycle.spawned().iter().count() >= POOL_CAP {
         return Err(format!("pool cap {POOL_CAP} reached — refusing spawn"));
     }
 
@@ -2680,7 +2678,7 @@ async fn spawn_one(
     };
     let node_name = format!("{}-{}", node_type, suffix);
 
-    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
+    let spawn_dir = state.lifecycle.spawn_dir(&node_name).to_string_lossy().into_owned();
     if let Err(e) = std::fs::create_dir_all(&spawn_dir) {
         return Err(format!("failed to create spawn dir: {e}"));
     }
@@ -2738,7 +2736,7 @@ async fn spawn_one(
         if node_type == "bridge" {
             for target_mesh in ["mesh-a", "mesh-b"] {
                 if let Some(seed) = state
-                    .spawned_meta
+                    .lifecycle.spawned()
                     .iter()
                     .find(|e| e.value().mesh_id == target_mesh)
                     .map(|e| {
@@ -2754,7 +2752,8 @@ async fn spawn_one(
             }
         } else {
             let same_mesh: Vec<String> = state
-                .spawned_meta
+                .lifecycle
+                .spawned()
                 .iter()
                 .filter(|e| e.value().mesh_id == mesh_id)
                 .take(2)
@@ -2811,13 +2810,13 @@ async fn spawn_one(
     match cmd.spawn() {
         Ok(child) => {
             let pid = child.id().unwrap_or(0);
-            state.processes.insert(node_name.clone(), Mutex::new(child));
             let spawned_at_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
-            state.spawned_meta.insert(
+            state.lifecycle.register(
                 node_name.clone(),
+                child,
                 SpawnedMeta {
                     node_type: node_type.to_string(),
                     mesh_id: mesh_id.clone(),
@@ -2920,7 +2919,7 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
     // saw current=0, passed the check, and all spawned 18 → 90 total → tokio
     // deadlock.
     let _guard = state.bootstrap_mutex.lock().await;
-    let current = state.spawned_meta.iter().count();
+    let current = state.lifecycle.spawned().iter().count();
     const POOL_CAP: usize = 50;
     if current + 18 > POOL_CAP {
         return (
@@ -2990,28 +2989,10 @@ async fn handle_bootstrap(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 async fn kill_one(state: &AppState, node_name: &str) -> Result<String, String> {
-    let entry = state.processes.remove(node_name);
-    let (_, mutex_child) = entry.ok_or_else(|| format!("no subprocess named {node_name}"))?;
-
-    let mut child = mutex_child.into_inner();
-    let pid = child.id().unwrap_or(0);
-    let _ = child.start_kill();
-
-    let reason = match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-        Ok(_) => "graceful",
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            "forced"
-        }
-    };
-
-    let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", node_name);
-    if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
-        tracing::warn!(dir = %spawn_dir, error = %e, "failed to remove subprocess data dir");
-    }
-
-    let meta = state.spawned_meta.remove(node_name).map(|(_, m)| m);
+    let done = state.lifecycle.terminate(node_name).await?;
+    let pid = done.pid;
+    let reason = done.how.as_str();
+    let meta = done.meta;
 
     state.events.push(LocalEvent {
         ts_us: now_us(),
@@ -3334,7 +3315,8 @@ async fn chaos_loop(state: AppState) {
 
         // Pick a random non-bridge from spawned_meta.
         let candidates: Vec<(String, SpawnedMeta)> = state
-            .spawned_meta
+            .lifecycle
+            .spawned()
             .iter()
             .filter(|e| e.value().node_type != "bridge")
             .map(|e| (e.key().clone(), e.value().clone()))
@@ -3706,7 +3688,7 @@ async fn compute_snapshot(state: &AppState) -> TopologySnapshot {
     // Build nodes from spawned_meta + enrich with heartbeat data
     let mut nodes: Vec<Value> = Vec::new();
     let mut heartbeats: Vec<Value> = Vec::new();
-    for entry in state.spawned_meta.iter() {
+    for entry in state.lifecycle.spawned().iter() {
         let name = entry.key().clone();
         let meta = entry.value();
         let pcount = *name_to_peer_count.get(&name).unwrap_or(&0);
@@ -3735,8 +3717,8 @@ async fn compute_snapshot(state: &AppState) -> TopologySnapshot {
     // Edges only between currently-spawned endpoints (filters ghost edges)
     let mut edges: Vec<Value> = Vec::new();
     for ((a, b), count) in &edge_counts {
-        let mesh_a = state.spawned_meta.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.spawned_meta.get(b).map(|e| e.value().mesh_id.clone());
+        let mesh_a = state.lifecycle.spawned().get(a).map(|e| e.value().mesh_id.clone());
+        let mesh_b = state.lifecycle.spawned().get(b).map(|e| e.value().mesh_id.clone());
         let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
             (Some(a), Some(b)) => (a, b),
             _ => continue,
@@ -3803,7 +3785,8 @@ async fn observer_task(state: AppState) {
         // Discover meshes via spawned_meta. Skip the "bridge" sentinel and
         // empty values — those aren't real meshes.
         let current: std::collections::HashSet<String> = state
-            .spawned_meta
+            .lifecycle
+            .spawned()
             .iter()
             .map(|e| e.value().mesh_id.clone())
             .filter(|m| !m.is_empty() && m != "bridge")
@@ -3912,53 +3895,18 @@ async fn observer_task(state: AppState) {
     }
 }
 
-async fn reaper_loop(
-    processes: Arc<DashMap<String, Mutex<tokio::process::Child>>>,
-    spawned_meta: Arc<DashMap<String, SpawnedMeta>>,
-) {
+async fn reaper_loop(lifecycle: Arc<ProcessTable>) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         interval.tick().await;
-        let names: Vec<String> = processes.iter().map(|e| e.key().clone()).collect();
-        for name in names {
-            let exited_status = if let Some(entry) = processes.get(&name) {
-                let mut guard = entry.value().lock().await;
-                match guard.try_wait() {
-                    Ok(Some(status)) => Some(status),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            if let Some(status) = exited_status {
-                processes.remove(&name);
-                spawned_meta.remove(&name); // Red-team A#6: also clear meta so topology drops the ghost
-                // Red-team A#6 + A#5: delete data dir on reap. Contains node-identity.json
-                // (secret key) which must not persist after the node dies.
-                let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", name);
-                if let Err(e) = tokio::fs::remove_dir_all(&spawn_dir).await {
-                    tracing::warn!(dir = %spawn_dir, error = %e, "reaper: data dir cleanup failed");
-                }
-                tracing::info_span!(
-                    "rafka.ui.subprocess.reaped",
-                    node_name = %name,
-                    exit_code = status.code().unwrap_or(-1) as i64,
-                    "otel.kind" = "internal",
-                )
-                .in_scope(|| info!(node_name = %name, exit_code = status.code().unwrap_or(-1), "subprocess reaped — exited without DELETE"));
-            }
-        }
-
-        // Red-team A#6 second pass: orphan data dirs (no matching process or
-        // meta) get swept. Catches dirs left over from crashes pre-reaper.
-        if let Ok(mut rd) = tokio::fs::read_dir("E:/tmp/rafka-ui-nodes/").await {
-            while let Ok(Some(entry)) = rd.next_entry().await {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !processes.contains_key(&name) && !spawned_meta.contains_key(&name) {
-                    let path = entry.path();
-                    let _ = tokio::fs::remove_dir_all(&path).await;
-                }
-            }
+        for reaped in lifecycle.reap_exited().await {
+            tracing::info_span!(
+                "rafka.ui.subprocess.reaped",
+                node_name = %reaped.name,
+                exit_code = reaped.exit_code as i64,
+                "otel.kind" = "internal",
+            )
+            .in_scope(|| info!(node_name = %reaped.name, exit_code = reaped.exit_code, "subprocess reaped — exited without DELETE"));
         }
     }
 }
@@ -4253,8 +4201,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         http,
         jaeger_url,
         cargo_target_dir,
-        processes: Arc::new(DashMap::new()),
-        spawned_meta: Arc::new(DashMap::new()),
+        lifecycle: Arc::new(ProcessTable::new(spawn_root())),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
         live: Arc::new(DashMap::new()),
@@ -4309,12 +4256,10 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // (TODO next: expose those for HTTP read).
     let _live_observer_via_noderuntime = &node_handle;
 
-    let procs_for_reaper = Arc::clone(&state.processes);
-    let meta_for_reaper = Arc::clone(&state.spawned_meta);
+    let lifecycle_for_reaper = Arc::clone(&state.lifecycle);
     supervise("reaper_loop", move || {
-        let p = Arc::clone(&procs_for_reaper);
-        let m = Arc::clone(&meta_for_reaper);
-        async move { reaper_loop(p, m).await }
+        let l = Arc::clone(&lifecycle_for_reaper);
+        async move { reaper_loop(l).await }
     });
 
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
