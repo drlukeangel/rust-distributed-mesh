@@ -1,0 +1,14 @@
+[package]
+name = "rafka-mesh-entity"
+version = "0.1.0"
+edition = "2021"
+description = "Generic Mesh EF: exact-node identity, process incarnation, membership and endpoint-slot freshness (i143)"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
