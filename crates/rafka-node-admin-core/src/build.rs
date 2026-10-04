@@ -32,6 +32,7 @@ impl fmt::Display for BuildId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MeshDesired {
     pub name: String,
     pub node_admin: u32,
@@ -39,6 +40,7 @@ pub struct MeshDesired {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FabricDesired {
     pub fabric: String,
     pub meshes: Vec<MeshDesired>,

@@ -164,3 +164,31 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
         .with(otel_layer)
         .init();
 }
+
+/// W3C `traceparent` of the current tracing span, when an OpenTelemetry layer
+/// is installed and the span context is valid. Carried inside protocol codecs
+/// and Build intents so causality survives process and executor boundaries.
+pub fn current_traceparent() -> Option<String> {
+    use opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    let cx = tracing::Span::current().context();
+    let span = cx.span();
+    let sc = span.span_context();
+    sc.is_valid().then(|| format!("00-{}-{}-{:02x}", sc.trace_id(), sc.span_id(), sc.trace_flags().to_u8()))
+}
+
+/// Make `span` a child of the remote span named by `traceparent`.
+/// A malformed value leaves `span` a root, never panics.
+pub fn set_parent(span: &tracing::Span, traceparent: &str) {
+    use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    let [_, trace, span_id, flags] = parts[..] else { return };
+    let (Ok(t), Ok(s), Ok(f)) = (TraceId::from_hex(trace), SpanId::from_hex(span_id), u8::from_str_radix(flags, 16)) else {
+        return;
+    };
+    let sc = SpanContext::new(t, s, TraceFlags::new(f), true, TraceState::default());
+    if sc.is_valid() {
+        span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc));
+    }
+}

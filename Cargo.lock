@@ -3528,13 +3528,18 @@ name = "rafka-node-admin-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum 0.8.9",
  "dashmap",
  "hex",
+ "http-body-util",
+ "rafka-telemetry",
  "rand 0.8.6",
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

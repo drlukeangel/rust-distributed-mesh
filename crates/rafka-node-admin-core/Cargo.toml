@@ -14,3 +14,10 @@ dashmap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
+axum = "0.8.9"
+rafka-telemetry = { path = "../rafka-telemetry" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tracing-subscriber = { workspace = true }
+http-body-util = "0.1"
