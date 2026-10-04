@@ -7,13 +7,14 @@
 use rafka_node_admin_core::deployment::endpoint::{verify_bound, BindRefusal, EndpointAllocator, RPC_NODE_SLOTS};
 use std::net::{IpAddr, UdpSocket};
 
-fn allocator() -> EndpointAllocator {
-    EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 57000, 57999)
+/// Each test gets its own range: the tests run in parallel and bind real ports.
+fn allocator(first: u16) -> EndpointAllocator {
+    EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, first + 99)
 }
 
 #[test]
 fn a_provider_honouring_the_assignment_passes_wait_for_bind() {
-    let mut a = allocator();
+    let mut a = allocator(57000);
     let slots = a.assign(&"mesh1.rpc.1".parse().unwrap(), RPC_NODE_SLOTS, false).unwrap();
     let held: Vec<UdpSocket> = slots.iter().map(|s| UdpSocket::bind(s.addr).unwrap()).collect();
     let reported: Vec<(String, std::net::SocketAddr)> = slots.iter().map(|s| (s.slot.clone(), s.addr)).collect();
@@ -23,7 +24,7 @@ fn a_provider_honouring_the_assignment_passes_wait_for_bind() {
 
 #[test]
 fn a_provider_that_binds_a_different_port_is_refused() {
-    let mut a = allocator();
+    let mut a = allocator(57200);
     let slots = a.assign(&"mesh1.rpc.2".parse().unwrap(), RPC_NODE_SLOTS, false).unwrap();
     // The runtime ignores the assignment and binds an OS-chosen port instead.
     let elsewhere = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -40,7 +41,7 @@ fn a_provider_that_binds_a_different_port_is_refused() {
 
 #[test]
 fn a_runtime_that_reports_the_assignment_but_never_binds_it_is_refused() {
-    let mut a = allocator();
+    let mut a = allocator(57400);
     let slots = a.assign(&"mesh1.rpc.3".parse().unwrap(), RPC_NODE_SLOTS, false).unwrap();
     let reported: Vec<_> = slots.iter().map(|s| (s.slot.clone(), s.addr)).collect();
     assert_eq!(verify_bound(&slots, &reported), Err(BindRefusal::NotBoundAtAssigned { slot: "rpc-0".into(), assigned: slots[0].addr }));
