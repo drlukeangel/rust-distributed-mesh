@@ -11,20 +11,41 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
+/// What a slot's runtime binds: an Iroh endpoint (UDP) or a listener (TCP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotTransport {
+    Udp,
+    Tcp,
+}
+
 /// One slot a node kind declares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotSpec {
     pub slot: &'static str,
     pub policy: SlotPolicy,
+    pub transport: SlotTransport,
 }
 
 /// The two Node RPC endpoint slots of an rpc node (`docs/i143/design.md` §2).
-pub const RPC_NODE_SLOTS: &[SlotSpec] =
-    &[SlotSpec { slot: "rpc-0", policy: SlotPolicy::Fresh }, SlotSpec { slot: "rpc-1", policy: SlotPolicy::Stable }];
+pub const RPC_NODE_SLOTS: &[SlotSpec] = &[
+    SlotSpec { slot: "rpc-0", policy: SlotPolicy::Fresh, transport: SlotTransport::Udp },
+    SlotSpec { slot: "rpc-1", policy: SlotPolicy::Stable, transport: SlotTransport::Udp },
+];
 
-/// A node-admin's mesh endpoint and its control API (both fresh on restart).
-pub const NODE_ADMIN_SLOTS: &[SlotSpec] =
-    &[SlotSpec { slot: "mesh", policy: SlotPolicy::Fresh }, SlotSpec { slot: "control", policy: SlotPolicy::Fresh }];
+/// A node-admin's mesh endpoint (Iroh) and its control API (HTTP), both
+/// fresh on restart.
+pub const NODE_ADMIN_SLOTS: &[SlotSpec] = &[
+    SlotSpec { slot: "mesh", policy: SlotPolicy::Fresh, transport: SlotTransport::Udp },
+    SlotSpec { slot: "control", policy: SlotPolicy::Fresh, transport: SlotTransport::Tcp },
+];
+
+/// The slots a node kind declares.
+pub fn slots_for(kind: crate::model::NodeKind) -> &'static [SlotSpec] {
+    match kind {
+        crate::model::NodeKind::RpcNode => RPC_NODE_SLOTS,
+        crate::model::NodeKind::NodeAdmin => NODE_ADMIN_SLOTS,
+    }
+}
 
 /// Why an allocation was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +276,11 @@ pub fn port_range_from_env() -> (u16, u16) {
 /// `AddrInUse` means yes.
 pub fn udp_port_is_held(addr: SocketAddr) -> bool {
     matches!(UdpSocket::bind(addr), Err(e) if e.kind() == std::io::ErrorKind::AddrInUse)
+}
+
+/// Is something on this host listening on TCP `addr`?
+pub fn tcp_port_is_held(addr: SocketAddr) -> bool {
+    matches!(std::net::TcpListener::bind(addr), Err(e) if e.kind() == std::io::ErrorKind::AddrInUse)
 }
 
 /// `WaitForBind`: every assigned slot is held at its assigned address, and the

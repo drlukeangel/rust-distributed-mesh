@@ -420,19 +420,23 @@ impl DeploymentPipeline<'_> {
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
         };
-        let mut env = self.template.env.clone();
-        env.extend(launch.to_env());
-        if let Some(tp) = rafka_telemetry::current_traceparent() {
-            env.insert("TRACEPARENT".into(), tp);
-        }
-        let spec = ResolvedNodeLaunch {
-            node: req.node.clone(),
-            deployment_id: id.deployment_id.clone(),
-            executable: self.template.executable.clone(),
-            args: vec![],
-            env,
-            data_dir: data_dir.clone(),
-            endpoints: endpoints.clone(),
+        // The launch environment; its TRACEPARENT is taken inside the
+        // DeployRuntime step, so the runtime's boot span is that step's child.
+        let spec_for = |traceparent: Option<String>| {
+            let mut env = self.template.env.clone();
+            env.extend(launch.to_env());
+            if let Some(tp) = traceparent {
+                env.insert("TRACEPARENT".into(), tp);
+            }
+            ResolvedNodeLaunch {
+                node: req.node.clone(),
+                deployment_id: id.deployment_id.clone(),
+                executable: self.template.executable.clone(),
+                args: vec![],
+                env,
+                data_dir: data_dir.clone(),
+                endpoints: endpoints.clone(),
+            }
         };
         // A receipt names a runtime; it is reused only while that runtime runs.
         if run.reusing {
@@ -448,6 +452,7 @@ impl DeploymentPipeline<'_> {
         }
         let handle: DeploymentHandle = self
             .step(&mut run, CreateStep::DeployRuntime.name(), async {
+                let spec = spec_for(rafka_telemetry::current_traceparent());
                 if let Some(h) = self.provider.find(&spec).await {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
@@ -464,7 +469,8 @@ impl DeploymentPipeline<'_> {
                 }
                 let mut held = Vec::new();
                 for e in &endpoints {
-                    if self.provider.holds_udp(&handle, e.addr).await {
+                    let transport = req.slots.iter().find(|s| s.slot == e.slot).map(|s| s.transport).unwrap_or(super::endpoint::SlotTransport::Udp);
+                    if self.provider.holds(&handle, e.addr, transport).await {
                         held.push(e.addr);
                     }
                 }

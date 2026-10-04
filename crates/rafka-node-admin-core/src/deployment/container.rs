@@ -91,9 +91,24 @@ fn parse_cidr(cidr: &str) -> Option<(Ipv4Addr, u8)> {
 /// `/proc/<pid>/net/udp`: `sl local_address ...`, address as the in-memory
 /// network-order word printed in hex, then `:port` in hex.
 pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
-    let path = format!("/proc/{pid}/net/udp");
+    netns_table_holds(pid, "udp", addr, None)
+}
+
+/// Is TCP `addr` listened on in the network namespace of `pid`
+/// (`/proc/<pid>/net/tcp`, state `0A` = LISTEN)?
+pub fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
+    netns_table_holds(pid, "tcp", addr, Some("0A"))
+}
+
+fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
+    let path = format!("/proc/{pid}/net/{table}");
     let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
     Ok(table.lines().skip(1).any(|line| {
+        if let Some(want) = state {
+            if line.split_whitespace().nth(3) != Some(want) {
+                return false;
+            }
+        }
         let Some(local) = line.split_whitespace().nth(1) else { return false };
         let Some((ip, port)) = local.split_once(':') else { return false };
         let (Ok(ip), Ok(port)) = (u32::from_str_radix(ip, 16), u16::from_str_radix(port, 16)) else { return false };
@@ -332,8 +347,25 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         })
     }
 
-    async fn holds_udp(&self, handle: &DeploymentHandle, addr: SocketAddr) -> bool {
-        handle.pid.is_some_and(|pid| netns_holds_udp(pid, addr).unwrap_or(false))
+    fn launched(&self) -> Vec<DeploymentHandle> {
+        self.data_dirs
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|name| DeploymentHandle {
+                deployment_id: crate::model::DeploymentId(name.clone()),
+                provider: ProviderKind::Container,
+                pid: None,
+                container: Some(name.clone()),
+            })
+            .collect()
+    }
+
+    async fn holds(&self, handle: &DeploymentHandle, addr: SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
+        handle.pid.is_some_and(|pid| match transport {
+            super::endpoint::SlotTransport::Udp => netns_holds_udp(pid, addr).unwrap_or(false),
+            super::endpoint::SlotTransport::Tcp => netns_listens_tcp(pid, addr).unwrap_or(false),
+        })
     }
 
     async fn failure_detail(&self, handle: &DeploymentHandle, _data_dir: &Path) -> String {
@@ -374,6 +406,15 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, vec![Ipv4Addr::new(10, 231, 0, 0), Ipv4Addr::new(10, 231, 1, 0), Ipv4Addr::new(10, 231, 2, 0), Ipv4Addr::new(10, 231, 3, 0)]);
         assert_eq!(candidate_subnets(pool, "fabric-a"), nets, "deterministic per fabric");
+    }
+
+    #[test]
+    fn a_tcp_listener_is_found_and_a_bare_socket_is_not() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        assert_eq!(netns_listens_tcp(std::process::id(), addr), Ok(true));
+        drop(l);
+        assert_eq!(netns_listens_tcp(std::process::id(), addr), Ok(false));
     }
 
     #[test]

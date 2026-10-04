@@ -40,8 +40,44 @@ struct Wire {
     facts: Vec<BuildFact>,
 }
 
+/// iroh-gossip's message limit (`DEFAULT_MAX_MESSAGE_SIZE`): a larger frame
+/// is refused by the receiving connection, which drops it, and with it every
+/// topic sharing that connection.
+pub const MAX_MESSAGE_BYTES: usize = 4096;
+
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    serde_json::to_vec(&Wire { nonce: rand::random(), facts }).map(Into::into).map_err(|e| BuildStateError::Io(e.to_string()))
+    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts }).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return Err(BuildStateError::Io(format!(
+            "a Build message of {} bytes exceeds the gossip limit of {MAX_MESSAGE_BYTES}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes.into())
+}
+
+/// `facts` packed, in order, into messages that each fit the gossip limit.
+/// A fact that fits no message on its own is left out and named.
+pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
+    let (mut out, mut refused, mut batch) = (Vec::new(), Vec::new(), Vec::new());
+    for f in facts {
+        batch.push(f);
+        if encode(batch.clone()).is_ok() {
+            continue;
+        }
+        let last = batch.pop().expect("just pushed");
+        if !batch.is_empty() {
+            out.push(encode(std::mem::take(&mut batch)).expect("fitted before the last fact"));
+        }
+        match encode(vec![last.clone()]) {
+            Ok(_) => batch.push(last),
+            Err(e) => refused.push(e),
+        }
+    }
+    if !batch.is_empty() {
+        out.push(encode(batch).expect("fitted"));
+    }
+    (out, refused)
 }
 
 /// The facts of every active Build `local` holds, in append order.
@@ -61,7 +97,7 @@ pub fn build_topic(fabric: &str) -> TopicId {
 /// A node-admin's Build state: its own copy of the fabric's Build facts.
 pub struct FabricBuildStateAdapter {
     local: Arc<MemoryBuildStateAdapter>,
-    sender: GossipSender,
+    sender: Arc<tokio::sync::RwLock<GossipSender>>,
 }
 
 impl FabricBuildStateAdapter {
@@ -83,41 +119,75 @@ impl FabricBuildStateAdapter {
         }
         .map_err(|e| io(e.to_string()))?;
         let (sender, mut receiver) = topic.split();
+        let sender = Arc::new(tokio::sync::RwLock::new(sender));
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        let (absorb, catch_up) = (local.clone(), sender.clone());
-        let fabric_name = fabric.to_string();
+        let (absorb, shared) = (local.clone(), sender.clone());
+        let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
+        let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         tokio::spawn(async move {
-            while let Some(ev) = receiver.next().await {
-                match ev {
-                    Ok(Event::Received(m)) => match serde_json::from_slice::<Wire>(&m.content) {
-                        Ok(w) => absorb.absorb(&w.facts),
-                        Err(e) => tracing::info_span!("rafka.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
-                            .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
-                    },
-                    Ok(Event::NeighborUp(peer)) => {
-                        let facts = active_facts(&absorb).await;
-                        let span = tracing::info_span!(
-                            "rafka.node_admin.build.update.via-neighbor-up",
-                            fabric = %fabric_name,
-                            peer = %peer,
-                            facts = facts.len(),
-                        );
-                        if !facts.is_empty() {
-                            if let Ok(bytes) = encode(facts) {
-                                let _ = catch_up.broadcast_neighbors(bytes).await;
-                            }
+            let mut known: Vec<iroh::EndpointId> = seed_ids.clone();
+            loop {
+                // Receive until the subscription lags or ends; iroh-gossip
+                // closes a lagging subscriber and expects it to be re-opened.
+                let reason = loop {
+                    match receiver.next().await {
+                        Some(Ok(Event::Received(m))) => match serde_json::from_slice::<Wire>(&m.content) {
+                            Ok(w) => absorb.absorb(&w.facts),
+                            Err(e) => tracing::info_span!("rafka.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
+                                .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
+                        },
+                        Some(Ok(Event::NeighborUp(peer))) => {
+                            known.push(peer);
+                            // Sent from its own task: the receive loop never waits on the actor.
+                            let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
+                            tokio::spawn(async move {
+                                let facts = active_facts(&absorb).await;
+                                let _span = tracing::info_span!(
+                                    "rafka.node_admin.build.update.via-neighbor-up",
+                                    fabric = %fabric_name,
+                                    peer = %peer,
+                                    facts = facts.len(),
+                                );
+                                let (messages, refused) = encode_chunks(facts);
+                                for e in refused {
+                                    tracing::info_span!("rafka.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
+                                        .in_scope(|| tracing::info!("a Build fact does not fit one gossip message"));
+                                }
+                                let sender = shared.read().await.clone();
+                                for bytes in messages {
+                                    let _ = sender.broadcast_neighbors(bytes).await;
+                                }
+                            });
                         }
-                        drop(span);
+                        Some(Ok(Event::Lagged)) => break "lagged: events were dropped".to_string(),
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => break format!("subscription error: {e}"),
+                        None => break "subscription ended".to_string(),
                     }
-                    _ => {}
-                }
+                };
+                known.sort();
+                known.dedup();
+                let span = tracing::info_span!("rafka.node_admin.build.update.via-resubscribe", fabric = %fabric_name, reason = %reason, peers = known.len());
+                // A refused subscribe means the gossip actor itself has stopped.
+                let reopened = match gossip.subscribe(topic_id, known.clone()).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the Build topic ends"));
+                        return;
+                    }
+                };
+                span.in_scope(|| tracing::info!("Build topic subscription re-opened"));
+                let (s, r) = reopened.split();
+                *shared.write().await = s;
+                receiver = r;
             }
         });
         Ok(Self { local, sender })
     }
 
     async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {
-        self.sender.broadcast(encode(vec![fact])?).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
+        let sender = self.sender.read().await.clone();
+        sender.broadcast(encode(vec![fact])?).await.map_err(|e| BuildStateError::Io(format!("broadcasting Build fact: {e}")))
     }
 }
 

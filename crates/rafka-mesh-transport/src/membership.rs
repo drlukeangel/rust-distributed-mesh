@@ -57,30 +57,72 @@ impl DigestBook {
 }
 
 /// A joined membership topic.
+///
+/// iroh-gossip closes a subscriber that falls behind (`Lagged`) and expects
+/// it to be re-opened; a subscription can also end. Either way this member
+/// re-subscribes through its seeds and every member it has heard, so it
+/// never silently stops hearing the fabric.
 #[derive(Clone)]
 pub struct Membership {
-    sender: GossipSender,
+    sender: Arc<tokio::sync::RwLock<GossipSender>>,
     pub book: DigestBook,
+}
+
+/// Why a subscription was re-opened, if it was.
+fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Option<String> {
+    match ev {
+        None => Some("subscription ended".into()),
+        Some(Err(e)) => Some(format!("subscription error: {e}")),
+        Some(Ok(Event::Lagged)) => Some("lagged: events were dropped".into()),
+        Some(Ok(_)) => None,
+    }
 }
 
 impl Membership {
     /// Join `fabric`'s membership topic through `seeds`.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
         learn_addresses(endpoint, &seeds)?;
-        let topic = gossip.subscribe(fabric_topic(fabric), seeds.iter().map(|s| s.id).collect()).await?;
+        let topic_id = fabric_topic(fabric);
+        let topic = gossip.subscribe(topic_id, seeds.iter().map(|s| s.id).collect()).await?;
         let (sender, mut receiver) = topic.split();
+        let sender = Arc::new(tokio::sync::RwLock::new(sender));
         let book = DigestBook::default();
-        let b = book.clone();
-        let fabric = fabric.to_string();
+        let (b, shared, gossip, fabric) = (book.clone(), sender.clone(), gossip.clone(), fabric.to_string());
+        let seed_ids: Vec<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
         tokio::spawn(async move {
-            while let Some(ev) = receiver.next().await {
-                if let Ok(Event::Received(m)) = ev {
-                    if let Some(d) = MeshDigest::decode(&m.content) {
-                        if d.fabric == fabric {
-                            b.record(d);
+            loop {
+                let reason = loop {
+                    let ev = receiver.next().await;
+                    if let Some(Ok(Event::Received(m))) = &ev {
+                        if let Some(d) = MeshDigest::decode(&m.content) {
+                            if d.fabric == fabric {
+                                b.record(d);
+                            }
                         }
+                        continue;
                     }
-                }
+                    if let Some(r) = ended(ev) {
+                        break r;
+                    }
+                };
+                // Re-open through the seeds and every member heard so far.
+                let mut peers = seed_ids.clone();
+                peers.extend(b.all().iter().filter_map(|d| d.node.fabric_id.0.parse::<iroh::EndpointId>().ok()));
+                peers.sort();
+                peers.dedup();
+                let span = tracing::info_span!("rafka.mesh.membership.update.via-resubscribe", fabric = %fabric, reason = %reason, peers = peers.len());
+                // A refused subscribe means the gossip actor itself has stopped.
+                let reopened = match gossip.subscribe(topic_id, peers.clone()).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; membership ends"));
+                        return;
+                    }
+                };
+                span.in_scope(|| tracing::info!("membership subscription re-opened"));
+                let (s, r) = reopened.split();
+                *shared.write().await = s;
+                receiver = r;
             }
         });
         Ok(Self { sender, book })
@@ -89,7 +131,8 @@ impl Membership {
     /// Broadcast one digest (and record it locally).
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
         self.book.record(d.clone());
-        self.sender.broadcast(Bytes::from(d.encode())).await?;
+        let sender = self.sender.read().await.clone();
+        sender.broadcast(Bytes::from(d.encode())).await?;
         Ok(())
     }
 
@@ -110,7 +153,8 @@ impl Membership {
     /// Ask gossip to connect to more peers.
     pub async fn join_peers(&self, endpoint: &Endpoint, peers: Vec<EndpointAddr>) -> Result<()> {
         learn_addresses(endpoint, &peers)?;
-        self.sender.join_peers(peers.iter().map(|p| p.id).collect()).await?;
+        let sender = self.sender.read().await.clone();
+        sender.join_peers(peers.iter().map(|p| p.id).collect()).await?;
         Ok(())
     }
 }

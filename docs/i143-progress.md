@@ -34,10 +34,11 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e2.s4 | #2746 | `6bb0abd0c1` | ContainerDeploymentProvider (`deployment/container.rs`): per-fabric bridge network, per-node `--ip`, netns bind check; CI `providers` job |
 | e2.s5 | #2747 | `d7c38b9f9d` | receipt-driven re-runs + retire pipeline; node two-phase shutdown; Leaving linger fix. Epic e2 closed |
 | e1.s5 | #2740 | `9b2a6b41` | fabric-projected Build state + BuildExecutor takeover; pinned intents; NeighborUp catch-up |
+| e1.s6 | #2741 | `435c40b65f` | rafka-node-admin-client; Admin UI is its client (ratchet); process table deleted. Epic e1 closed |
 
 ## In progress
 
-- e1.s6 drlukeangel/rafka-v2#2741 — rafka-node-admin-client; Admin UI becomes its client (branch `i143-e1-s6`).
+- e3.s3 drlukeangel/rafka-v2#2751 — `rafka-node-admin` binary; SN/MN/MM shape reconciler, process E2E (branch `i143-e3-s3`).
 
 ## Blockers
 
