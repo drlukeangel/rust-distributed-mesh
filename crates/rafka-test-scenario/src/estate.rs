@@ -192,6 +192,26 @@ impl Estate {
         v["nodes"].as_array().cloned().unwrap_or_default()
     }
 
+    /// The view once it holds exactly `names`, every one ready for traffic.
+    /// A Build can complete on another admin (a mesh's own primary) before
+    /// this admin hears the last member it created: the view converges
+    /// within gossip delay, and a view that does not within `within` fails.
+    pub async fn settled(&self, names: &std::collections::BTreeSet<String>, within: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + within;
+        loop {
+            let nodes = self.nodes().await;
+            let have: std::collections::BTreeSet<String> = nodes.iter().filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
+            if &have == names && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
+                return nodes;
+            }
+            if Instant::now() >= deadline {
+                let seen: Vec<String> = nodes.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect();
+                panic!("the view never settled on {names:?} within {within:?}; last view: {seen:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     pub async fn node(&self, name: &str) -> Value {
         self.nodes().await.into_iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name}"))
     }

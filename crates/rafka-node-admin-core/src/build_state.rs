@@ -75,6 +75,10 @@ pub enum AttemptOutcome {
     Converged,
     /// This attempt stopped; a later attempt may continue the same Build.
     Failed { reason: String },
+    /// This attempt ran what its executor was eligible for and stopped at an
+    /// operation another admin executes (`to`); that admin claims the next
+    /// attempt of the same Build.
+    HandedOff { to: String },
 }
 
 /// One appended fact.
@@ -205,6 +209,8 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
                         }
+                        // No attempt is in flight: the Build waits for the next claim.
+                        AttemptOutcome::HandedOff { .. } => p.state = BuildState::Pending,
                     }
                 }
             }

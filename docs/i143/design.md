@@ -60,6 +60,16 @@ live owning admin's control API. Each admin reports a change of a cohort's prima
 `rafka.mesh.election.resolve.via-recompute`, and of the fabric primary as `…via-fabric-recompute`
 (`crates/rafka-node-admin-core/src/election.rs`).
 
+Which admin executes a Build operation (`crates/rafka-node-admin-core/src/executor.rs`,
+`executor_for`; PRD §12.1): a mesh's admin primary runs the operations on that mesh's members; the
+fabric primary runs mesh creation and retirement, every node-admin cohort, and a mesh's members while
+that mesh has no admin primary. An admin claims a Build's next attempt only when it executes the first
+operation left and no live admin holds an open attempt. An attempt that reaches an operation another
+admin executes ends `handed-off`; that admin claims the next attempt of the same Build. A fabric Build
+that creates a mesh therefore runs in two attempts: the fabric primary creates the mesh's admins, the
+new mesh's primary creates its members. A Build can complete on an admin other than the one a client
+asked; the client's admin view settles within gossip delay.
+
 Control moves with the fabric primary. An admin that must retire, restart or stop a node another admin
 launched adopts its runtime from the Build facts: the birth's `AllocateIdentity` receipt (incarnation,
 deployment id) and the `DeployRuntime` receipt of that deployment (the handle). The fabric primary's

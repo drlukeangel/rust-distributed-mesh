@@ -67,7 +67,30 @@ fn observed() -> Topology {
     Topology {
         fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-        nodes: vec![node("mesh1.admin.1", true), node("mesh1.admin.2", false), node("mesh1.rpc.1", true)],
+        nodes: vec![
+            Node { is_fabric_primary: true, ..node("mesh1.admin.1", true) },
+            node("mesh1.admin.2", false),
+            node("mesh1.rpc.1", true),
+        ],
+    }
+}
+
+/// The view once A is lost: its admin is dead and B holds mesh1 and the fabric.
+async fn lose_a(topology: &RwLock<Topology>) {
+    let mut t = topology.write().await;
+    for n in t.nodes.iter_mut() {
+        match n.name.to_string().as_str() {
+            "mesh1.admin.1" => {
+                n.status = NodeStatus::Dead;
+                n.is_primary = false;
+                n.is_fabric_primary = false;
+            }
+            "mesh1.admin.2" => {
+                n.is_primary = true;
+                n.is_fabric_primary = true;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -176,6 +199,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     drop(a_exec);
     drop(a_builds);
     router.shutdown().await.unwrap();
+    lose_a(&topology).await;
 
     // B takes over: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
@@ -184,7 +208,17 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
     assert_eq!(
         ours,
-        vec![&(build_id.clone(), Reconciled::Converged { attempt: 2, operations: vec![BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }] })]
+        vec![&(
+            build_id.clone(),
+            Reconciled::Converged {
+                attempt: 2,
+                operations: vec![
+                    // A's admin is lost too: its path is part of what is left.
+                    BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() },
+                    BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() },
+                ]
+            }
+        )]
     );
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
@@ -193,7 +227,14 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
             (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }),
         ]
     );
-    assert_eq!(*b_runner.ran.lock().unwrap(), vec![(2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() })], "mesh1.rpc.2 is never created twice");
+    assert_eq!(
+        *b_runner.ran.lock().unwrap(),
+        vec![
+            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() }),
+            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }),
+        ],
+        "mesh1.rpc.2 is never created twice"
+    );
     let rpcs = topology.read().await.nodes.iter().filter(|n| n.kind == NodeKind::RpcNode).count();
     assert_eq!(rpcs, 3);
 
@@ -210,7 +251,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).expect("B's reconcile span");
     assert_eq!(takeover.get("attempt").map(String::as_str), Some("2"));
     assert_eq!(takeover.get("previous_executor").map(String::as_str), Some("mesh1.admin.1"));
-    assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.rpc.3"));
+    assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.admin.1,create-node:mesh1.rpc.3"));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     b.router.shutdown().await.unwrap();
 }
