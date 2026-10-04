@@ -9,6 +9,7 @@ pub mod build;
 pub mod build_state;
 pub mod deployment;
 pub mod http;
+pub mod lifecycle;
 pub mod model;
 pub mod process_table;
 pub mod topology;
