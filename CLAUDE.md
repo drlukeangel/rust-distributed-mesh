@@ -132,6 +132,8 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_rpc.request.reject.via-busy` (DEBUG: refusal storms are counters) | `tag`, `reason` |
 | `rafka.node_rpc.handler.reject.via-internal-rpc-failure` | `fault` |
 | `rafka.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
+| `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` (the pool dropped a connection or dial whose exact slot target, or process birth, the resolver no longer names; `crates/rafka-node-rpc/src/pool.rs`) | `peer`, `slot`, `outcome` (`cancelled` / `late-connect-dropped` / `evicted`), `elapsed_ms` |
+| `rafka.node_rpc.connection.evict.via-timeout-strikes` (two consecutive reply deadlines evicted a pooled connection; never reachability) | `peer`, `slot`, `strikes` |
 
 **`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
 

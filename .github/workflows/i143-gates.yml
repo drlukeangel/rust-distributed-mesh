@@ -18,6 +18,8 @@ jobs:
         run: cargo test -p rafka-mesh-audit
       - name: dependency rules
         run: cargo run -q -p rafka-mesh-audit --bin dep-rules
+      - name: Node RPC runtime and pool (functional)
+        run: cargo test -p rafka-node-rpc-contract -p rafka-node-rpc
 
   # The deployment providers against real runtimes: the same smoke with
   # MESH_SPAWN_TYPE=process and =container. On this runner the container

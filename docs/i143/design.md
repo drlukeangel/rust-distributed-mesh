@@ -165,6 +165,7 @@ Five segments, `rafka.<component>.<entity>.<action>.<reason>`, whitelist verbs o
 | `rafka.mesh.election.resolve.via-recompute` / `via-fabric-recompute` | election outcomes |
 | `rafka.node_rpc.request.serve.via-direct` | a dispatched invocation |
 | `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` | refusals |
+| `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` / `via-timeout-strikes` | the pool dropped a dial or connection (`crates/rafka-node-rpc/src/pool.rs`; pool identity `(scope, peer, incarnation, slot, freshness)`) |
 
 New entities (`build`, `deployment`, `lifecycle_hook`) are recorded in `CLAUDE.md`'s span table in the
 commit that first emits them.

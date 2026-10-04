@@ -28,13 +28,27 @@ pub struct ResolvedNode {
 
 pub trait NodeResolver: Send + Sync {
     fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure>;
+
+    /// Ticks whenever an answer may have changed: a dial in flight re-resolves
+    /// on each tick and is cancelled the moment its exact target moved. `None`:
+    /// changes are seen on the next call only.
+    fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
 }
 
 /// A resolver over a fixed table (tests, probes fed from a node view).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StaticResolver {
     nodes: RwLock<HashMap<NodeId, ResolvedNode>>,
     gone: RwLock<Vec<NodeId>>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for StaticResolver {
+    fn default() -> Self {
+        Self { nodes: RwLock::default(), gone: RwLock::default(), changed: tokio::sync::watch::Sender::new(0) }
+    }
 }
 
 impl StaticResolver {
@@ -44,11 +58,13 @@ impl StaticResolver {
 
     pub fn insert(&self, n: ResolvedNode) {
         self.nodes.write().unwrap().insert(n.node_id.clone(), n);
+        self.changed.send_modify(|v| *v += 1);
     }
 
     pub fn remove_gone(&self, id: &NodeId) {
         self.nodes.write().unwrap().remove(id);
         self.gone.write().unwrap().push(id.clone());
+        self.changed.send_modify(|v| *v += 1);
     }
 }
 
@@ -65,5 +81,9 @@ impl NodeResolver for StaticResolver {
             }),
             NodeTarget::CurrentPath(p) => nodes.values().find(|n| &n.name == p).cloned().ok_or(ResolveFailure::Unknown),
         }
+    }
+
+    fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        Some(self.changed.subscribe())
     }
 }
