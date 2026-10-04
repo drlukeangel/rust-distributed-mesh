@@ -7,7 +7,7 @@
 //! [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault routes
 //! are runtime administration, outside Build.
 
-use crate::build::{plan, BuildId, BuildIntent, BuildReject, FabricDesired, MeshDesired};
+use crate::build::{pin, BuildId, BuildIntent, BuildReject, FabricDesired, MeshDesired};
 use crate::build_state::{BuildIntentFact, BuildStateAdapter, BuildStateError};
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
@@ -43,7 +43,8 @@ impl ControlPlane {
         }
     }
 
-    /// Validate `intent` against observed state and publish it as a Build.
+    /// Validate `intent` against observed state, pin what it means there, and
+    /// publish it as a Build.
     pub async fn submit(&self, route: &'static str, intent: BuildIntent) -> Result<BuildId, Refusal> {
         let span = tracing::info_span!(
             "rafka.node_admin.build.create.via-rest",
@@ -53,11 +54,14 @@ impl ControlPlane {
         );
         let _g = span.enter();
         let observed = self.topology.read().await.clone();
-        if let Err(reject) = plan(&intent, &observed) {
-            drop(_g);
-            reject_span(route, &reject);
-            return Err(Refusal::Reject(reject));
-        }
+        let intent = match pin(intent, &observed) {
+            Ok(pinned) => pinned,
+            Err(reject) => {
+                drop(_g);
+                reject_span(route, &reject);
+                return Err(Refusal::Reject(reject));
+            }
+        };
         let build_id = BuildId::mint();
         span.record("build_id", build_id.0.as_str());
         span.record("intent", serde_json::to_string(&intent).unwrap_or_default().as_str());
@@ -191,17 +195,17 @@ async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> 
 
 async fn spawn_node(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {
     let b: SpawnBody = body(&raw)?;
-    Ok(accepted(cp.submit("POST /api/nodes/spawn", BuildIntent::AddNode { mesh: b.mesh, node_kind: b.kind }).await?))
+    Ok(accepted(cp.submit("POST /api/nodes/spawn", BuildIntent::AddNode { mesh: b.mesh, node_kind: b.kind, target: None }).await?))
 }
 
 async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.submit("DELETE /api/nodes/{name}", BuildIntent::RemoveNode { node }).await?))
+    Ok(accepted(cp.submit("DELETE /api/nodes/{name}", BuildIntent::RemoveNode { node, incarnation: None }).await?))
 }
 
 async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.submit("POST /api/nodes/{name}/restart", BuildIntent::RestartNode { node }).await?))
+    Ok(accepted(cp.submit("POST /api/nodes/{name}/restart", BuildIntent::RestartNode { node, from_incarnation: None }).await?))
 }
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {

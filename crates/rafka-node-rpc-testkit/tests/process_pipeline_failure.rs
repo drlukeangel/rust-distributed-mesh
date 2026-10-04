@@ -56,7 +56,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
     builds
         .publish_intent(&BuildIntentFact {
             build_id: build_id.clone(),
-            intent: BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode },
+            intent: BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode, target: None },
             traceparent: None,
             submitted_at_ms: 0,
         })

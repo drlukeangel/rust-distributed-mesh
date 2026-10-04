@@ -468,7 +468,7 @@ mod tests {
     fn intent(id: &str) -> BuildIntentFact {
         BuildIntentFact {
             build_id: BuildId(id.into()),
-            intent: BuildIntent::RestartNode { node: "mesh1.rpc.2".parse().unwrap() },
+            intent: BuildIntent::RestartNode { node: "mesh1.rpc.2".parse().unwrap(), from_incarnation: None },
             traceparent: None,
             submitted_at_ms: 1,
         }

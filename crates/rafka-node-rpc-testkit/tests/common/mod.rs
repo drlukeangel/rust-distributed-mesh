@@ -207,7 +207,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, intent: BuildIntent
 }
 
 pub fn add_node() -> BuildIntent {
-    BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode }
+    BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode, target: None }
 }
 
 /// What `deploy_through_every_step` found.

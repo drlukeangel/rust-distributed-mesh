@@ -110,6 +110,9 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 |---|---|
 | `rafka.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
 | `rafka.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `provider-mismatch`, `invalid-intent`) | `route`, `detail` |
+| `rafka.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `operations`, `outcome` (`converged` / `failed` / `lost` / `finished`) |
+| `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
+| `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
