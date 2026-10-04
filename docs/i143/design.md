@@ -54,9 +54,22 @@ without a claim ranks last. Every observer reads the same claims, so converged v
 - when the primary leaves the view (killed, removed, retired), the next oldest succeeds it;
 - a partition lets each side elect from what it hears; on heal the views agree again.
 
-The fabric primary is the admin primary of the lowest-named mesh. Each admin reports a change of a
-cohort's primary in its view as `rafka.mesh.election.resolve.via-recompute`
+The fabric primary is the admin primary of the lowest-named mesh that has one; when that mesh is lost,
+the next mesh's admin primary holds the fabric, and every admin's fabric and mesh views advertise the
+live owning admin's control API. Each admin reports a change of a cohort's primary in its view as
+`rafka.mesh.election.resolve.via-recompute`, and of the fabric primary as `…via-fabric-recompute`
 (`crates/rafka-node-admin-core/src/election.rs`).
+
+Control moves with the fabric primary. An admin that must retire, restart or stop a node another admin
+launched adopts its runtime from the Build facts: the birth's `AllocateIdentity` receipt (incarnation,
+deployment id) and the `DeployRuntime` receipt of that deployment (the handle). The fabric primary's
+shutdown stops every live node of the fabric. A new birth at a path whose previous birth the view no
+longer hears first stops that runtime if it still runs (`deployment.delete.via-fence`), so a path never
+has two live runtimes.
+
+Losing half a fabric costs a failure-detection window: until the dead peers' connections time out
+(iroh's idle timeout), gossip may not deliver some survivors' digests, and they read as dead (~26 s
+measured for MM losing mesh1).
 
 ## 3. Process contract (environment only)
 

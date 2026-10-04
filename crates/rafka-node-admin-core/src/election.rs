@@ -20,8 +20,14 @@
 //!
 //! A member whose digest makes no claim ranks after every member that does.
 //!
+//! The fabric primary is the admin primary of the lowest-named mesh that has
+//! one, so when that mesh is lost the next mesh's admin primary holds the
+//! fabric.
+//!
 //! An admin reports each change of a cohort's primary in its own view as
-//! `rafka.mesh.election.resolve.via-recompute` (`ElectionLog`).
+//! `rafka.mesh.election.resolve.via-recompute`, and each change of the
+//! fabric primary as `rafka.mesh.election.resolve.via-fabric-recompute`
+//! (`ElectionLog`).
 
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
@@ -46,11 +52,13 @@ pub fn elect(ready: &[Candidate<'_>]) -> Option<usize> {
 pub struct ElectionLog {
     observer: String,
     last: Mutex<BTreeMap<(String, NodeKind), Option<PathName>>>,
+    /// `None` until the first view.
+    last_fabric: Mutex<Option<Option<PathName>>>,
 }
 
 impl ElectionLog {
     pub fn new(observer: impl Into<String>) -> Self {
-        Self { observer: observer.into(), last: Mutex::new(BTreeMap::new()) }
+        Self { observer: observer.into(), last: Mutex::new(BTreeMap::new()), last_fabric: Mutex::new(None) }
     }
 
     /// Record `t`'s primaries; a cohort whose primary changed since the last
@@ -87,6 +95,24 @@ impl ElectionLog {
         }
         // A cohort that left the view entirely is forgotten.
         *last = now;
+        drop(last);
+
+        let fabric = t.fabric_primary().map(|n| n.name.clone());
+        let mut last_fabric = self.last_fabric.lock().unwrap();
+        if last_fabric.as_ref() != Some(&fabric) {
+            let previous = last_fabric.clone().flatten();
+            let span = tracing::info_span!(
+                parent: None,
+                "rafka.mesh.election.resolve.via-fabric-recompute",
+                observer = %self.observer,
+                fabric = %t.fabric.name,
+                primary = %fabric.as_ref().map(ToString::to_string).unwrap_or_default(),
+                previous = %previous.as_ref().map(ToString::to_string).unwrap_or_default(),
+                meshes = t.meshes.len(),
+            );
+            span.in_scope(|| tracing::info!("fabric primary resolved"));
+            *last_fabric = Some(fabric);
+        }
     }
 }
 
