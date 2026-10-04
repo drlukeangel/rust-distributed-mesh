@@ -90,7 +90,8 @@ fn ledger(r: &Repo, divergence: &str, rows: &str) -> String {
 }
 
 fn row(sha: &str, disp: &str) -> String {
-    format!("| `{}` | #1 | change | {disp}. proof text |\n", short(sha))
+    let proof = if disp == "**MIRROR**" { "RDM `0123abcd99`, test `carrying_test`" } else { "proof text" };
+    format!("| `{}` | #1 | change | {disp}. {proof} |\n", short(sha))
 }
 
 fn complete(r: &Repo) -> (String, String) {
@@ -101,7 +102,7 @@ fn complete(r: &Repo) -> (String, String) {
 }
 
 fn scan(r: &Repo, text: &str) -> parity::Report {
-    parity::scan(&ScanInput { repo: &r.dir, ledger_text: text, through: None })
+    parity::scan(&ScanInput { repo: &r.dir, ledger_text: text, through: None, connections_text: None })
 }
 
 #[test]
@@ -223,7 +224,7 @@ fn through_override_narrows_the_range() {
     let r = fixture();
     let rows = row(&r.c1, "**MIRROR**");
     let text = ledger(&r, "", &rows);
-    let rep = parity::scan(&ScanInput { repo: &r.dir, ledger_text: &text, through: Some(&r.c1) });
+    let rep = parity::scan(&ScanInput { repo: &r.dir, ledger_text: &text, through: Some(&r.c1), connections_text: None });
     assert_eq!(rep.violations, vec![]);
     assert_eq!(rep.boundary_commits, 1);
     assert_eq!(rep.rafka_parity_through, r.c1);
@@ -234,7 +235,7 @@ fn row_past_the_through_sha_fails() {
     let r = fixture();
     let rows = [row(&r.c1, "**MIRROR**"), row(&r.c2, "**MIRROR**")].concat();
     let text = ledger(&r, "", &rows);
-    let rep = parity::scan(&ScanInput { repo: &r.dir, ledger_text: &text, through: Some(&r.c1) });
+    let rep = parity::scan(&ScanInput { repo: &r.dir, ledger_text: &text, through: Some(&r.c1), connections_text: None });
     assert!(matches!(&rep.violations[..], [Violation::RowOutsideRange { sha, .. }] if *sha == r.c2), "{:#?}", rep.violations);
 }
 
@@ -245,4 +246,18 @@ fn ledger_without_base_or_boundary_fails() {
     assert!(!rep.eligible);
     assert!(rep.violations.iter().all(|v| matches!(v, Violation::Ledger { .. })));
     assert!(rep.violations.len() >= 2);
+}
+
+#[test]
+fn mirror_row_without_rdm_sha_fails() {
+    let r = fixture();
+    let (d, _) = complete(&r);
+    let rows = [
+        format!("| `{}` | #1 | change | **MIRROR**. proved somewhere |\n", short(&r.c1)),
+        row(&r.c2, "**RAFKA DOMAIN**"),
+        row(&r.old_dated, "**MIRROR**"),
+    ]
+    .concat();
+    let rep = scan(&r, &ledger(&r, &d, &rows));
+    assert!(matches!(&rep.violations[..], [Violation::MirrorWithoutRdmProof { row, .. }] if row == short(&r.c1)), "{:#?}", rep.violations);
 }

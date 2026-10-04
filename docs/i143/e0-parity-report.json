@@ -1,7 +1,7 @@
 {
   "rafka_parity_base": "870455807082449d0d95c94c63c4c7aaa229f8c6",
   "rafka_parity_through": "f92173b9c85dea2945cd784ebf22759f99a9c1a5",
-  "parity_ledger_digest": "sha256:6732eaa95434d5821505ae56a11413d7aa961d4bafdf230b5cbbad11160dab8a",
+  "parity_ledger_digest": "sha256:42904d711148f4909b7c3a9bf5716cb7ea3c028fcd3ab333cac8660d6305594b",
   "boundary_paths": [
     "crates/rafka-mesh-transport",
     "crates/rafka-node-base",
@@ -851,12 +851,126 @@
       "line": 148
     }
   ],
+  "connections": [
+    {
+      "clause": "CONN-FACTS",
+      "source": "connections.md §1–§2; #2722a",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: `NodeConnection` kind `Direct`/`Proxy`, state `Connected`/`Disconnected`/`Failed`, source/destination/carrier incarnations, recovery epoch + attempt ordinal on Direct Failed",
+      "disposition": "MIRROR pending",
+      "line": 163
+    },
+    {
+      "clause": "CONN-ROUTE",
+      "source": "connections.md §5–§6; #2722b",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: effective route precedence valid Proxy → `ViaPeer(carrier)`, else active Direct → `Direct`, else `NoActiveRoute`, under the protocol carrier-policy hook; carrier spread by `(source, destination, destination_incarnation)`",
+      "disposition": "MIRROR pending",
+      "line": 164
+    },
+    {
+      "clause": "CONN-A",
+      "source": "connections.md §13 A; #2722b",
+      "owner": "i143.e6.s5 (#2771)",
+      "proof": "functional: the first proven Proxy is reused by the next call to the same destination with no direct dial ladder",
+      "disposition": "MIRROR pending",
+      "line": 165
+    },
+    {
+      "clause": "CONN-B",
+      "source": "connections.md §13 B; #2722c",
+      "owner": "i143.e4.s3 (#2756)",
+      "proof": "functional: a source restart hydrates the latest Proxy row and the first call uses it without rediscovery",
+      "disposition": "MIRROR pending",
+      "line": 166
+    },
+    {
+      "clause": "CONN-C",
+      "source": "connections.md §13 C; #2722c",
+      "owner": "i143.e4.s3 (#2756)",
+      "proof": "functional: restart reconstructs `next_due` from the latest Direct Failed row; no attempt before it, ordinal not reset",
+      "disposition": "MIRROR pending",
+      "line": 167
+    },
+    {
+      "clause": "CONN-D",
+      "source": "connections.md §13 D; #2722a",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: many failed attempts leave the raw log growing and the current index at one Direct + one Proxy per pair",
+      "disposition": "MIRROR pending",
+      "line": 168
+    },
+    {
+      "clause": "CONN-E",
+      "source": "connections.md §13 E; #2722a",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: peers' held projection holds active Direct edges only, never Failed/Dead history",
+      "disposition": "MIRROR pending",
+      "line": 169
+    },
+    {
+      "clause": "CONN-F",
+      "source": "connections.md §13 F; #2722c",
+      "owner": "i143.e4.s3 (#2756)",
+      "proof": "functional: Direct Connected → Proxy still effective → Proxy Disconnected(direct-restored) → Direct effective, in that order",
+      "disposition": "MIRROR pending",
+      "line": 170
+    },
+    {
+      "clause": "CONN-G",
+      "source": "connections.md §13 G; #2722c",
+      "owner": "i143.e4.s3 (#2756)",
+      "proof": "functional: an accepted inbound Direct Connected creates the same retirement obligation",
+      "disposition": "MIRROR pending",
+      "line": 171
+    },
+    {
+      "clause": "CONN-H",
+      "source": "connections.md §13 H; #2722c",
+      "owner": "i143.e4.s3 (#2756)",
+      "proof": "functional: a failed retirement write keeps traffic on Proxy and is retried until it lands",
+      "disposition": "MIRROR pending",
+      "line": 172
+    },
+    {
+      "clause": "CONN-I",
+      "source": "connections.md §13 I; #2722b",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: a destination or carrier incarnation change fences the old Direct/Proxy evidence",
+      "disposition": "MIRROR pending",
+      "line": 173
+    },
+    {
+      "clause": "CONN-J",
+      "source": "connections.md §13 J; #2722b",
+      "owner": "i143.e4.s2 (#2755)",
+      "proof": "functional: losing the carrier's Direct edge to the destination invalidates the Proxy",
+      "disposition": "MIRROR pending",
+      "line": 174
+    },
+    {
+      "clause": "CONN-K",
+      "source": "connections.md §13 K; #2722b",
+      "owner": "i143.e6.s5 (#2771)",
+      "proof": "functional: a post-commit timeout is `Indeterminate`, never resent on another route, and does not invalidate a working Proxy",
+      "disposition": "MIRROR pending",
+      "line": 175
+    },
+    {
+      "clause": "CONN-L",
+      "source": "connections.md §13 L; #2722b",
+      "owner": "rafka-v2 (stays downstream)",
+      "proof": "RDM has no semantic route, route barrier or watermark: `orgs.topics` and #2640 are Rafka application state, and `dep-rules` rule 1 keeps rafka-v2 domain crates out of RDM generic packages",
+      "disposition": "RAFKA DOMAIN",
+      "line": 176
+    }
+  ],
   "dispositions": {
     "MIRROR pending": 7,
     "RAFKA AUTH ONLY": 2,
     "RAFKA DOMAIN": 75
   },
-  "mirror_pending": 7,
+  "mirror_pending": 20,
   "violations": [
     {
       "kind": "mirror-pending",
@@ -892,6 +1006,71 @@
       "kind": "mirror-pending",
       "sha": "cac997ece234a2904e3a18618139d810013f7e57",
       "line": 136
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-FACTS",
+      "line": 163
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-ROUTE",
+      "line": 164
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-A",
+      "line": 165
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-B",
+      "line": 166
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-C",
+      "line": 167
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-D",
+      "line": 168
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-E",
+      "line": 169
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-F",
+      "line": 170
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-G",
+      "line": 171
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-H",
+      "line": 172
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-I",
+      "line": 173
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-J",
+      "line": 174
+    },
+    {
+      "kind": "mirror-pending",
+      "sha": "CONN-K",
+      "line": 175
     }
   ],
   "eligible": false

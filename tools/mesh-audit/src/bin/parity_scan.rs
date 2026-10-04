@@ -1,4 +1,4 @@
-//! `parity-scan --repo <rafka-v2 checkout> [--ledger <path>] [--through <sha>] [--json <out>]`
+//! `parity-scan --repo <rafka-v2 checkout> [--ledger <path>] [--through <sha>] [--connections <md>] [--json <out>]`
 //!
 //! Runs the i143 transport-parity gate and prints the JSON report. Exits 1
 //! when the gate fails (any unclassified boundary commit, duplicate or
@@ -12,6 +12,7 @@ fn main() {
     let mut ledger: Option<PathBuf> = None;
     let mut through: Option<String> = None;
     let mut json: Option<PathBuf> = None;
+    let mut connections: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| usage(&format!("{a} needs a value")));
@@ -20,12 +21,13 @@ fn main() {
             "--ledger" => ledger = Some(val().into()),
             "--through" => through = Some(val()),
             "--json" => json = Some(val().into()),
+            "--connections" => connections = Some(val().into()),
             _ => usage(&format!("unknown argument {a}")),
         }
     }
     let repo = repo.unwrap_or_else(|| usage("--repo is required"));
     let ledger = ledger.unwrap_or_else(|| parity::default_ledger(&repo));
-    let report = match parity::scan_files(&repo, &ledger, through.as_deref()) {
+    let report = match parity::scan_files(&repo, &ledger, through.as_deref(), connections.as_deref()) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("parity-scan: cannot read {}: {e}", ledger.display());
@@ -56,6 +58,6 @@ fn main() {
 }
 
 fn usage(msg: &str) -> ! {
-    eprintln!("parity-scan: {msg}\nusage: parity-scan --repo <rafka-v2> [--ledger <md>] [--through <sha>] [--json <out>]");
+    eprintln!("parity-scan: {msg}\nusage: parity-scan --repo <rafka-v2> [--ledger <md>] [--through <sha>] [--connections <md>] [--json <out>]");
     std::process::exit(2)
 }
