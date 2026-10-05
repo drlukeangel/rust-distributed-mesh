@@ -196,7 +196,7 @@ fn live<'a>(t: &'a Topology, mesh: &str, kind: NodeKind) -> Vec<&'a crate::model
 ///
 /// Grow fills the lowest free ordinals; a dead member's path is reused by a
 /// new node. Shrink retires the highest-ordinal non-primary members first, so
-/// the incumbent primary stays while any other member can go.
+/// no seat moves while any other member can go.
 fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     for (kind, want) in [(NodeKind::NodeAdmin, desired.node_admin), (NodeKind::RpcNode, desired.rpc_node)] {
         let members = live(t, &desired.name, kind);
@@ -517,10 +517,10 @@ mod tests {
     }
 
     #[test]
-    fn shrink_retires_highest_non_primaries_and_keeps_the_incumbent() {
+    fn shrink_retires_highest_non_primaries_and_keeps_the_primary() {
         let mut t = mn();
         t.nodes[2].is_primary = false;
-        t.nodes[4].is_primary = true; // rpc.3 is the incumbent
+        t.nodes[4].is_primary = true; // rpc.3 holds the seat
         let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 1 } }, &t).unwrap();
         assert_eq!(ops.operations, vec![retire("mesh1.rpc.2"), retire("mesh1.rpc.1")]);
         let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 3 } }, &mn()).unwrap();

@@ -1,118 +1,217 @@
-//! Per-cohort primary election (PRD §11; `docs/i143/design.md` §3).
+//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2;
+//! `docs/i143/design.md` §2.1).
 //!
-//! A cohort is the members of one kind in one mesh. Its primary is the
-//! member that has been ready for traffic longest: among the members that
-//! are `ReadyForTraffic` in the observer's view, the one with the earliest
-//! election claim (`ready_since_ms`, which each birth publishes once in its own
-//! membership digest). Ties go to the lowest ordinal: a view holds one birth
-//! per path, so the order is total within a cohort. Incarnations are never
-//! ordered.
+//! An election is a projection of converged topology facts, not a voting
+//! protocol: no ballot, term, quorum or election message exists. Every
+//! election applies one function: among the candidates that are
+//! `ReadyForTraffic`, the one with the lowest complete `NodeId` wins. A
+//! canonical NodeId is a fixed-width Crockford value, so comparing the
+//! strings compares the values. The id is random; its order means nothing
+//! but itself. Ready time, ordinal, path, mesh name, MeshId, FabricId,
+//! incarnation, transport identity and incumbency are not election inputs.
 //!
-//! Every observer reads the same claims, so every converged view names the
-//! same primary; no vote and no message beyond membership is involved. The
-//! rule gives the matrix its shape:
-//! - a new member (grow) or a new birth (restart, a recreated path) claims a
-//!   later instant, so it never displaces the incumbent;
-//! - when the primary leaves the view (killed, removed, retired), the next
-//!   oldest member succeeds it, and there is exactly one;
-//! - a partition lets each side elect from what it hears (a transient split);
-//!   on heal every view sees the same claims again and agrees.
+//! The hierarchy:
+//! - node-type (cohort) election: a cohort is the members of one kind in one
+//!   mesh; node-admin owns the elections of its own mesh's cohorts, ordinary
+//!   nodes only publish their facts;
+//! - mesh primary: the winner of the mesh's node-admin cohort, the same seat
+//!   (no second election);
+//! - fabric-primary election: the candidates are the mesh primaries, the
+//!   function is the same; mesh primaries own it.
 //!
-//! A member whose digest makes no claim ranks after every member that does.
+//! Every observer holding the same facts computes the same winners. A
+//! partition lets each side elect from what it hears; when the views heal
+//! they agree again. A restarted node keeps its NodeId and may retake a seat;
+//! a replacement has a new NodeId and wins or not by that id.
 //!
-//! The fabric primary is the admin primary of the lowest-named mesh that has
-//! one, so when that mesh is lost the next mesh's admin primary holds the
-//! fabric.
-//!
-//! An admin reports each change of a cohort's primary in its own view as
-//! `rafka.mesh.election.resolve.via-recompute`, and each change of the
-//! fabric primary as `rafka.mesh.election.resolve.via-fabric-recompute`
-//! (`ElectionLog`).
+//! An admin reports each change it owns (`ElectionLog`):
+//! `rafka.mesh.election.resolve.via-recompute` (its mesh's cohorts),
+//! `rafka.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
+//! while it is a mesh primary, `rafka.mesh.election.resolve.via-fabric-recompute`.
 
-use crate::model::{NodeKind, PathName};
+use crate::model::{Node, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
+use rafka_mesh_entity::ids::NodeId;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-/// One member of a cohort as the election sees it.
-#[derive(Debug, Clone)]
+/// The election key every span names.
+pub const ELECTION_KEY: &str = "node_id_crockford";
+
+/// One candidate as the election sees it: its identity, and whether it is
+/// eligible (committed `ReadyForTraffic`).
+#[derive(Debug, Clone, Copy)]
 pub struct Candidate<'a> {
-    pub name: &'a PathName,
-    /// `ready_since_ms` from the member's digest.
-    pub ready_since: Option<u64>,
+    pub node_id: &'a NodeId,
+    pub ready: bool,
 }
 
-/// The index of the cohort's primary among `ready` members (every candidate
-/// passed is ready for traffic); `None` for an empty cohort.
-pub fn elect(ready: &[Candidate<'_>]) -> Option<usize> {
-    (0..ready.len()).min_by_key(|&i| (ready[i].ready_since.unwrap_or(u64::MAX), ready[i].name.ordinal))
+/// The index of the winner among `candidates`: the eligible candidate with
+/// the lowest NodeId; `None` when none is eligible.
+pub fn elect(candidates: &[Candidate<'_>]) -> Option<usize> {
+    (0..candidates.len()).filter(|&i| candidates[i].ready).min_by_key(|&i| candidates[i].node_id)
 }
 
-/// What one admin last saw as each cohort's primary; reports every change.
+fn candidate(n: &Node) -> Candidate<'_> {
+    Candidate { node_id: &n.node_id, ready: n.status == NodeStatus::ReadyForTraffic }
+}
+
+/// Mark each cohort's primary and the fabric primary in `nodes`.
+pub fn resolve(nodes: &mut [Node]) {
+    for n in nodes.iter_mut() {
+        n.is_primary = false;
+        n.is_fabric_primary = false;
+    }
+    let mut cohorts: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
+    }
+    let mut winners = Vec::new();
+    for members in cohorts.values() {
+        let c: Vec<Candidate<'_>> = members.iter().map(|&i| candidate(&nodes[i])).collect();
+        if let Some(k) = elect(&c) {
+            winners.push(members[k]);
+        }
+    }
+    for &i in &winners {
+        nodes[i].is_primary = true;
+    }
+    // The fabric's candidates: every mesh primary.
+    let mesh_primaries: Vec<usize> = winners.into_iter().filter(|&i| nodes[i].kind == NodeKind::NodeAdmin).collect();
+    let c: Vec<Candidate<'_>> = mesh_primaries.iter().map(|&i| candidate(&nodes[i])).collect();
+    if let Some(k) = elect(&c) {
+        nodes[mesh_primaries[k]].is_fabric_primary = true;
+    }
+}
+
+/// A seat's holder as a span names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Seat {
+    node_id: String,
+    path: String,
+    mesh: String,
+}
+
+impl Seat {
+    fn of(n: &Node) -> Self {
+        Self { node_id: n.node_id.to_string(), path: n.name.to_string(), mesh: n.mesh.clone() }
+    }
+}
+
+fn field<T>(s: &Option<Seat>, f: impl Fn(&Seat) -> &T) -> String
+where
+    T: ToString + ?Sized,
+{
+    s.as_ref().map(|s| f(s).to_string()).unwrap_or_default()
+}
+
+/// What one admin last saw of the seats it owns; reports every change.
 pub struct ElectionLog {
-    observer: String,
-    last: Mutex<BTreeMap<(String, NodeKind), Option<PathName>>>,
+    /// This admin's path.
+    observer: PathName,
+    last: Mutex<BTreeMap<NodeKind, Option<Seat>>>,
     /// `None` until the first view.
-    last_fabric: Mutex<Option<Option<PathName>>>,
+    last_mesh: Mutex<Option<Option<Seat>>>,
+    last_fabric: Mutex<Option<Option<Seat>>>,
 }
 
 impl ElectionLog {
-    pub fn new(observer: impl Into<String>) -> Self {
-        Self { observer: observer.into(), last: Mutex::new(BTreeMap::new()), last_fabric: Mutex::new(None) }
+    pub fn new(observer: PathName) -> Self {
+        Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None) }
     }
 
-    /// Record `t`'s primaries; a cohort whose primary changed since the last
-    /// view (including to or from none) emits one
-    /// `rafka.mesh.election.resolve.via-recompute`.
+    /// Record `t`'s winners. Each change of a seat this admin owns, and each
+    /// first resolution, emits one span.
     pub fn observe(&self, t: &Topology) {
-        let mut now: BTreeMap<(String, NodeKind), Option<PathName>> = BTreeMap::new();
-        for n in &t.nodes {
-            let e = now.entry((n.mesh.clone(), n.kind)).or_default();
+        let mesh = self.observer.mesh.clone();
+        let mut last = self.last.lock().unwrap();
+        let mut now: BTreeMap<NodeKind, Option<Seat>> = BTreeMap::new();
+        for n in t.nodes.iter().filter(|n| n.mesh == mesh) {
+            let e = now.entry(n.kind).or_default();
             if n.is_primary {
-                *e = Some(n.name.clone());
+                *e = Some(Seat::of(n));
             }
         }
-        let mut last = self.last.lock().unwrap();
-        for ((mesh, kind), primary) in &now {
-            let previous = last.get(&(mesh.clone(), *kind)).cloned().flatten();
-            if last.contains_key(&(mesh.clone(), *kind)) && previous == *primary {
+        for (kind, winner) in &now {
+            let previous = last.get(kind).cloned().flatten();
+            if last.contains_key(kind) && previous == *winner {
                 continue;
             }
-            let members = t.cohort(mesh, *kind).count();
-            let ready = t.cohort(mesh, *kind).filter(|n| n.status == crate::model::NodeStatus::ReadyForTraffic).count();
+            let candidates = t.cohort(&mesh, *kind).count();
+            let eligible = t.cohort(&mesh, *kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count();
             let span = tracing::info_span!(
                 parent: None,
                 "rafka.mesh.election.resolve.via-recompute",
+                election_level = "node_type",
                 observer = %self.observer,
                 mesh = %mesh,
                 kind = kind_name(*kind),
-                primary = %primary.as_ref().map(ToString::to_string).unwrap_or_default(),
-                previous = %previous.as_ref().map(ToString::to_string).unwrap_or_default(),
-                members,
-                ready,
+                candidate_count = candidates,
+                eligible_count = eligible,
+                winner_node_id = %field(winner, |s| &s.node_id),
+                winner_path = %field(winner, |s| &s.path),
+                election_key = ELECTION_KEY,
+                previous_node_id = %field(&previous, |s| &s.node_id),
+                primary = %field(winner, |s| &s.path),
+                previous = %field(&previous, |s| &s.path),
+                members = candidates,
+                ready = eligible,
             );
             span.in_scope(|| tracing::info!("cohort primary resolved"));
         }
-        // A cohort that left the view entirely is forgotten.
-        *last = now;
+        *last = now.clone();
         drop(last);
 
-        let fabric = t.fabric_primary().map(|n| n.name.clone());
+        // The mesh primary is the node-admin cohort's winner: the same seat.
+        let mesh_primary = now.get(&NodeKind::NodeAdmin).cloned().flatten();
+        let mut last_mesh = self.last_mesh.lock().unwrap();
+        if last_mesh.as_ref() != Some(&mesh_primary) {
+            let previous = last_mesh.clone().flatten();
+            let span = tracing::info_span!(
+                parent: None,
+                "rafka.mesh.election.resolve.via-mesh-primary",
+                election_level = "mesh_primary",
+                observer = %self.observer,
+                mesh = %mesh,
+                winner_node_id = %field(&mesh_primary, |s| &s.node_id),
+                winner_path = %field(&mesh_primary, |s| &s.path),
+                previous_node_id = %field(&previous, |s| &s.node_id),
+                source_kind = "node_admin",
+            );
+            span.in_scope(|| tracing::info!("mesh primary resolved"));
+            *last_mesh = Some(mesh_primary.clone());
+        }
+        drop(last_mesh);
+
+        // The fabric election is the mesh primaries' to own.
+        let fabric = t.fabric_primary().map(Seat::of);
         let mut last_fabric = self.last_fabric.lock().unwrap();
-        if last_fabric.as_ref() != Some(&fabric) {
+        let owner = mesh_primary.as_ref().is_some_and(|s| s.path == self.observer.to_string());
+        if owner && last_fabric.as_ref() != Some(&fabric) {
             let previous = last_fabric.clone().flatten();
+            let candidates: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rafka.mesh.election.resolve.via-fabric-recompute",
+                election_level = "fabric_primary",
                 observer = %self.observer,
                 fabric = %t.fabric.name,
-                primary = %fabric.as_ref().map(ToString::to_string).unwrap_or_default(),
-                previous = %previous.as_ref().map(ToString::to_string).unwrap_or_default(),
+                fabric_id = %t.fabric.id,
+                candidate_mesh_primaries = %candidates.join(","),
+                winner_node_id = %field(&fabric, |s| &s.node_id),
+                winner_path = %field(&fabric, |s| &s.path),
+                winner_mesh = %field(&fabric, |s| &s.mesh),
+                previous_node_id = %field(&previous, |s| &s.node_id),
+                election_key = ELECTION_KEY,
+                primary = %field(&fabric, |s| &s.path),
+                previous = %field(&previous, |s| &s.path),
                 meshes = t.meshes.len(),
             );
             span.in_scope(|| tracing::info!("fabric primary resolved"));
-            *last_fabric = Some(fabric);
         }
+        // A non-owner still tracks the seat, so it reports only a change it
+        // sees after it becomes an owner.
+        *last_fabric = Some(fabric);
     }
 }
 
@@ -127,29 +226,109 @@ fn kind_name(k: NodeKind) -> &'static str {
 mod tests {
     use super::*;
 
-    fn p(s: &str) -> PathName {
-        s.parse().unwrap()
+    fn id(s: &str) -> NodeId {
+        NodeId::parse(s).unwrap()
     }
 
-    fn c<'a>(name: &'a PathName, since: Option<u64>) -> Candidate<'a> {
-        Candidate { name, ready_since: since }
+    fn node(path: &str, node_id: &str, ready: bool) -> Node {
+        let mut n = Node::allocated(path.parse().unwrap());
+        n.node_id = id(node_id);
+        n.status = if ready { NodeStatus::ReadyForTraffic } else { NodeStatus::Pending };
+        n
+    }
+
+    fn primaries(nodes: &[Node]) -> Vec<String> {
+        nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect()
+    }
+
+    fn fabric(nodes: &[Node]) -> Vec<String> {
+        nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.name.to_string()).collect()
     }
 
     #[test]
-    fn the_longest_ready_member_is_primary_whatever_its_ordinal() {
-        let (r1, r2, r3) = (p("mesh1.rpc.1"), p("mesh1.rpc.2"), p("mesh1.rpc.3"));
-        // rpc.1 is a recreated path (a later birth): rpc.2 stays primary.
-        assert_eq!(elect(&[c(&r1, Some(300)), c(&r2, Some(100)), c(&r3, Some(200))]), Some(1));
-        // The incumbent leaves: the next oldest succeeds, exactly one.
-        assert_eq!(elect(&[c(&r1, Some(300)), c(&r3, Some(200))]), Some(1));
+    fn lexical_order_of_canonical_node_ids_is_crockford_numeric_order() {
+        // Boundaries: 0 < 9 < a < z, at the first and the last place.
+        let ordered = ["000000000000", "000000000009", "00000000000a", "00000000000z", "000000000010", "900000000000", "a00000000000", "zzzzzzzzzzzz"];
+        for w in ordered.windows(2) {
+            assert!(id(w[0]) < id(w[1]), "{} < {}", w[0], w[1]);
+            let (a, b) = (rafka_mesh_entity::ids::decode_crockford60(w[0]).unwrap(), rafka_mesh_entity::ids::decode_crockford60(w[1]).unwrap());
+            assert!(a < b, "numeric {} < {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn the_lowest_ready_node_id_wins_and_nothing_else_counts() {
+        let (lo, hi) = (id("1aaaaaaaaaaa"), id("1aaaaaaaaaab"));
+        assert_eq!(elect(&[Candidate { node_id: &hi, ready: true }, Candidate { node_id: &lo, ready: true }]), Some(1));
+        assert_eq!(elect(&[Candidate { node_id: &hi, ready: true }, Candidate { node_id: &lo, ready: false }]), Some(0), "only ready candidates");
+        assert_eq!(elect(&[Candidate { node_id: &lo, ready: false }]), None);
         assert_eq!(elect(&[]), None);
     }
 
     #[test]
-    fn ties_go_to_the_lowest_ordinal_and_a_member_without_a_claim_ranks_last() {
-        let (r1, r2) = (p("mesh1.rpc.1"), p("mesh1.rpc.2"));
-        assert_eq!(elect(&[c(&r2, Some(100)), c(&r1, Some(100))]), Some(1));
-        assert_eq!(elect(&[c(&r1, None), c(&r2, Some(u64::MAX - 1))]), Some(1));
-        assert_eq!(elect(&[c(&r2, None), c(&r1, None)]), Some(1), "no claims at all: lowest ordinal");
+    fn ordinal_and_mesh_name_never_decide_a_seat() {
+        // rpc.3 and the highest-named mesh hold the lowest ids.
+        let mut nodes = vec![
+            node("mesh1.admin.1", "z00000000001", true),
+            node("mesh1.rpc.1", "z00000000002", true),
+            node("mesh1.rpc.3", "100000000000", true),
+            node("mesh3.admin.2", "000000000005", true),
+            node("mesh3.admin.1", "000000000006", true),
+            node("mesh2.admin.1", "500000000000", true),
+            node("mesh2.rpc.1", "000000000001", false),
+            node("mesh2.rpc.2", "600000000000", true),
+        ];
+        resolve(&mut nodes);
+        let mut p = primaries(&nodes);
+        p.sort();
+        assert_eq!(p, ["mesh1.admin.1", "mesh1.rpc.3", "mesh2.admin.1", "mesh2.rpc.2", "mesh3.admin.2"]);
+        assert_eq!(fabric(&nodes), ["mesh3.admin.2"], "the lowest mesh-primary NodeId holds the fabric");
+    }
+
+    #[test]
+    fn losing_a_winner_moves_each_seat_to_the_next_lowest() {
+        let mut nodes = vec![
+            node("mesh1.admin.1", "300000000000", true),
+            node("mesh1.admin.2", "100000000000", true),
+            node("mesh1.admin.3", "200000000000", true),
+            node("mesh2.admin.1", "150000000000", true),
+        ];
+        resolve(&mut nodes);
+        assert_eq!(fabric(&nodes), ["mesh1.admin.2"]);
+        nodes[1].status = NodeStatus::Dead;
+        resolve(&mut nodes);
+        assert_eq!(primaries(&nodes), ["mesh1.admin.3", "mesh2.admin.1"]);
+        assert_eq!(fabric(&nodes), ["mesh2.admin.1"], "the fabric candidates are the mesh primaries only");
+        // The same node back under its NodeId retakes both seats once ready.
+        nodes[1].status = NodeStatus::ReadyForTraffic;
+        resolve(&mut nodes);
+        assert_eq!(fabric(&nodes), ["mesh1.admin.2"]);
+    }
+
+    #[test]
+    fn one_admin_holds_every_seat_on_day_0() {
+        let mut nodes = vec![node("mesh1.admin.1", "k00000000000", true)];
+        resolve(&mut nodes);
+        assert!(nodes[0].is_primary && nodes[0].is_fabric_primary);
+    }
+
+    #[test]
+    fn every_observer_of_the_same_facts_resolves_the_same_winners() {
+        let base = vec![
+            node("mesh1.admin.1", "300000000000", true),
+            node("mesh1.admin.2", "100000000000", true),
+            node("mesh2.admin.1", "200000000000", true),
+            node("mesh2.rpc.1", "400000000000", true),
+            node("mesh2.rpc.2", "050000000000", true),
+        ];
+        let mut a = base.clone();
+        let mut b: Vec<Node> = base.into_iter().rev().collect();
+        resolve(&mut a);
+        resolve(&mut b);
+        let (mut pa, mut pb) = (primaries(&a), primaries(&b));
+        pa.sort();
+        pb.sort();
+        assert_eq!(pa, pb);
+        assert_eq!(fabric(&a), fabric(&b));
     }
 }

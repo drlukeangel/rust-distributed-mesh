@@ -5,10 +5,12 @@
 //! - MM: mesh1 and mesh2 grow and shrink independently.
 //!
 //! After every step, from public surfaces only:
-//! - the Build completes and the view settles on exactly the desired nodes,
-//!   all `ready-for-traffic`;
-//! - the incumbent primaries never change (shrink retires non-primaries,
-//!   highest ordinal first; grow only adds);
+//! - the Build completes and the view settles on exactly the desired count of
+//!   each cohort, all `ready-for-traffic` (which ordinals remain depends on
+//!   where the seats are: shrink retires non-primaries);
+//! - every seat is the one the election computes from the view's NodeIds
+//!   (one primary per cohort, the lowest ready NodeId; one fabric primary);
+//!   shrink retires non-primaries, highest ordinal first;
 //! - no two nodes advertise the same endpoint (no port collision);
 //! - a mesh the step did not resize keeps every node's birth (incarnation).
 //!
@@ -16,6 +18,7 @@
 //! `rafka.node_admin.node.delete.via-build` span that descends from the
 //! request that accepted its Build, with a retire pipeline under it.
 
+use rafka_test_scenario::elections::seats_as_expected;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,17 +41,8 @@ struct Step {
     retired: Vec<String>,
 }
 
-fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for (m, a, r) in meshes {
-        out.extend((1..=*a).map(|i| format!("{m}.admin.{i}")));
-        out.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
-    }
-    out
-}
-
 /// Submit `meshes` as the fabric's desired shape and check the step settled.
-async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], incumbents: &[&str], before: &[Value]) -> (Step, Vec<Value>) {
+async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], before: &[Value]) -> (Step, Vec<Value>) {
     let desired = json!({
         "fabric": "fabric1",
         "meshes": meshes.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(),
@@ -58,18 +52,11 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], incum
     let build_id = accepted["build_id"].as_str().unwrap().to_string();
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     // Exactly the desired nodes, all ready.
-    let nodes = estate.settled(&names(meshes), Duration::from_secs(15)).await;
-    // One primary per cohort, and it is the incumbent.
-    let mut primaries: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-    for n in nodes.iter().filter(|n| n["is_primary"] == true) {
-        primaries.entry((n["mesh"].as_str().unwrap().into(), n["kind"].as_str().unwrap().into())).or_default().push(n["name"].as_str().unwrap().into());
+    let nodes = estate.settled_shape(meshes, Duration::from_secs(15)).await;
+    // Every seat is the computed one.
+    if let Err(e) = seats_as_expected(&nodes) {
+        panic!("{label}: {e}: {nodes:#?}");
     }
-    let mut held: Vec<String> = primaries.values().flatten().cloned().collect();
-    held.sort();
-    let mut want: Vec<String> = incumbents.iter().map(|s| s.to_string()).collect();
-    want.sort();
-    assert_eq!(held, want, "{label}: the incumbents stay primary, one per cohort");
-    assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "{label}: one fabric primary");
     // No port collision: every advertised endpoint is unique.
     let mut seen = BTreeSet::new();
     for n in &nodes {
@@ -119,13 +106,12 @@ fn retirements_are_causal(estate: &Estate, steps: &[Step]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mn_resizes_live_and_back_to_floor_without_flap_or_collision() {
     let mut estate = Estate::bootstrap(owner("mn_resizes_live_and_back_to_floor"), "fabric1", "mesh1").await;
-    let incumbents = ["mesh1.admin.1", "mesh1.rpc.1"];
     let mut steps = Vec::new();
     let mut nodes = Vec::new();
     for (label, admins, rpcs) in
         [("MN", 2, 3), ("rpc 5", 2, 5), ("rpc 4", 2, 4), ("rpc 7", 2, 7), ("rpc 3", 2, 3), ("admin 3", 3, 3), ("admin 2", 2, 3)]
     {
-        let (step, now) = resize(&estate, label, &[("mesh1", admins, rpcs)], &incumbents, &nodes).await;
+        let (step, now) = resize(&estate, label, &[("mesh1", admins, rpcs)], &nodes).await;
         steps.push(step);
         nodes = now;
     }
@@ -137,7 +123,6 @@ async fn mn_resizes_live_and_back_to_floor_without_flap_or_collision() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mm_meshes_grow_and_shrink_independently() {
     let mut estate = Estate::bootstrap(owner("mm_meshes_grow_and_shrink_independently"), "fabric1", "mesh1").await;
-    let incumbents = ["mesh1.admin.1", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"];
     let mut steps = Vec::new();
     let mut nodes = Vec::new();
     for (label, a, b) in [
@@ -147,7 +132,7 @@ async fn mm_meshes_grow_and_shrink_independently() {
         ("mesh1 back to floor", (2, 3), (2, 2)),
         ("mesh2 back to floor", (2, 3), (2, 3)),
     ] {
-        let (step, now) = resize(&estate, label, &[("mesh1", a.0, a.1), ("mesh2", b.0, b.1)], &incumbents, &nodes).await;
+        let (step, now) = resize(&estate, label, &[("mesh1", a.0, a.1), ("mesh2", b.0, b.1)], &nodes).await;
         steps.push(step);
         nodes = now;
     }

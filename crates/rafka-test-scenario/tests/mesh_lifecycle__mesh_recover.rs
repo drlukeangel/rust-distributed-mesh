@@ -11,8 +11,8 @@
 //!   endpoint tokens;
 //! - mesh2 was never touched (every mesh2 node keeps its incarnation).
 //!
-//! Evidence: a reconcile of B by a mesh2 admin names `mesh1.admin.1` as the
-//! previous executor and descends from B's accepting request.
+//! Evidence: a reconcile of B by a mesh2 admin names mesh1's admin primary
+//! as the previous executor and descends from B's accepting request.
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -73,6 +73,8 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     let before = estate.settled(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
     let (_, mesh1) = estate.get("/api/meshes/mesh1").await;
     let mesh1_id = s(&mesh1["id"]);
+    // mesh1's members are grown by mesh1's admin primary (the lowest NodeId of its admins).
+    let mesh1_primary = before.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
     let (_, fabric) = estate.get("/api/fabric").await;
     let advertised: Vec<String> = fabric["meshes"].as_array().unwrap().iter().map(|m| s(&m["admin_api_base"])).collect();
 
@@ -86,14 +88,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     let mesh2_base = advertised.iter().find(|b| **b != estate.admin).cloned().unwrap();
     wait_for("mesh2's admin sees B's first attempt held by mesh1's admin", Duration::from_secs(30), || async {
         let v = get(&mesh2_base, &format!("/api/builds?id={b}")).await?;
-        (v["attempt"].as_u64() == Some(1) && v["state"] == "running" && v["executor"] == "mesh1.admin.1").then_some(())
+        (v["attempt"].as_u64() == Some(1) && v["state"] == "running" && v["executor"] == mesh1_primary.as_str()).then_some(())
     })
     .await;
-    for n in before.iter().filter(|n| n["mesh"] == "mesh1" && n["name"] != "mesh1.admin.1") {
-        let d: Value = serde_json::from_slice(&std::fs::read(format!("{}/deployment.json", s(&n["data_dir"]))).unwrap()).unwrap();
-        let _ = Command::new("kill").args(["-9", &d["pid"].to_string()]).status();
-    }
-    // The runtimes B's first attempt may have launched for mesh1 go too.
+    // Every mesh1 runtime, those B's first attempt launched included.
     for (dir, pid) in estate.live_runtimes() {
         if dir.file_name().unwrap().to_string_lossy().starts_with("mesh1.") {
             let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
@@ -149,7 +147,7 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         .into_iter()
         .find(|r| {
             let a = &r["attributes"];
-            a["build_id"] == b.as_str() && a["previous_executor"] == "mesh1.admin.1" && a["executor"].as_str().is_some_and(|e| e.starts_with("mesh2."))
+            a["build_id"] == b.as_str() && a["previous_executor"] == mesh1_primary.as_str() && a["executor"].as_str().is_some_and(|e| e.starts_with("mesh2."))
         })
         .unwrap_or_else(|| panic!("no takeover of {b} by a mesh2 admin"))
         .clone();

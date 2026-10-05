@@ -10,9 +10,8 @@
 //! Every admin holds the same two projections over iroh-gossip: fabric
 //! membership (each member's digest) and the fabric's Build facts. From
 //! membership it derives the observed topology it publishes on its views,
-//! with each cohort's primary elected by `election` (the member ready for
-//! traffic longest), and the admin primary of the lowest-named mesh as
-//! fabric primary. Admins execute Builds (`executor`): the fabric primary
+//! with every seat resolved by `election` (the lowest ready NodeId of each
+//! cohort; the lowest-NodeId mesh primary holds the fabric). Admins execute Builds (`executor`): the fabric primary
 //! and each mesh's admin primary claim the attempts whose next operation is
 //! theirs and run what is left through the deployment pipeline (create, restart,
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
@@ -26,7 +25,7 @@ use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publ
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy, TerminationMode};
 use crate::executor::{BuildExecutor, OperationRunner};
-use crate::election::{elect, Candidate, ElectionLog};
+use crate::election::ElectionLog;
 use crate::fabric_builds::FabricBuildStateAdapter;
 use crate::http::{router, ControlPlane};
 use crate::lifecycle::{
@@ -179,14 +178,16 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     let removed = records.removed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
+    // Every birth membership has spoken for, whatever became of it.
+    let mut heard: HashSet<IncarnationId> = HashSet::new();
     // Each birth's election claim, by incarnation.
-    let mut claims: HashMap<IncarnationId, u64> = HashMap::new();
     let mut mesh_ids: BTreeMap<String, MeshId> = records.meshes.lock().unwrap().clone();
     for d in book.all() {
         if &d.fabric_id != fabric_id {
             continue;
         }
         let Some((_, age)) = book.get(d.node.node_id.as_str()) else { continue };
+        heard.insert(d.node.incarnation.clone());
         let name = d.node.name.clone();
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
@@ -207,9 +208,6 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         n.admin_api_base = d.admin_api_base.clone();
         n.endpoints = d.node.endpoints.0.clone();
         n.data_dir = d.data_dir.clone();
-        if let Some(since) = d.ready_since() {
-            claims.insert(d.node.incarnation.clone(), since);
-        }
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
             n.deployment_id = r.deployment_id.clone();
             n.data_dir = r.data_dir.clone();
@@ -222,8 +220,13 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
             }
         }
     }
-    // Births this admin started that have not reported yet.
+    // Births this admin started that have not reported yet. A launch record
+    // stands in for a birth only until membership speaks for it: once heard,
+    // it never revives the birth (another admin may have retired it since).
     for (name, r) in recorded {
+        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) {
+            continue;
+        }
         nodes.entry(name).or_insert(r);
     }
     let mut topology = Topology {
@@ -232,31 +235,9 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         nodes: nodes.into_values().collect(),
     };
     let mesh_names: BTreeSet<String> = mesh_ids.keys().cloned().chain(topology.nodes.iter().map(|n| n.mesh.clone())).collect();
-    // Each cohort's primary: the member ready for traffic longest.
-    let mut cohorts: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
-    for (i, n) in topology.nodes.iter().enumerate() {
-        if n.status == NodeStatus::ReadyForTraffic {
-            cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
-        }
-    }
-    for members in cohorts.values() {
-        let candidates: Vec<Candidate<'_>> = members
-            .iter()
-            .map(|&i| {
-                let n = &topology.nodes[i];
-                Candidate { name: &n.name, ready_since: n.incarnation_id.as_ref().and_then(|i| claims.get(i).copied()) }
-            })
-            .collect();
-        if let Some(k) = elect(&candidates) {
-            let i = members[k];
-            topology.nodes[i].is_primary = true;
-        }
-    }
-    let fabric_primary = mesh_names.iter().find_map(|m| {
-        topology.nodes.iter().position(|n| n.mesh == *m && n.kind == NodeKind::NodeAdmin && n.is_primary)
-    });
-    if let Some(i) = fabric_primary {
-        topology.nodes[i].is_fabric_primary = true;
+    // Every seat, by the one election function (`election`).
+    crate::election::resolve(&mut topology.nodes);
+    if topology.fabric_primary().is_some() {
         topology.fabric.status = ScopeStatus::ReadyForTraffic;
     }
     for m in mesh_names {
@@ -708,6 +689,7 @@ impl OperationRunner for AdminRunner {
         self.refresh_view().await;
         r
     }
+
 }
 
 impl AdminRunner {
@@ -1019,8 +1001,6 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // Own digest, published on the membership cadence.
     let mut extra = BTreeMap::new();
     extra.insert(MESH_ID.to_string(), mesh_id.to_string());
-    // Ready for traffic from birth: the election claim is this instant.
-    extra.insert(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string());
     let digest = Arc::new(Mutex::new(MeshDigest {
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
@@ -1170,7 +1150,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The projection, refreshed into the control plane's topology.
     {
         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
-        let elections = ElectionLog::new(name.to_string());
+        let elections = ElectionLog::new(name.clone());
         tasks.push(tokio::spawn(async move {
             loop {
                 let t = project(&fabric, &fabric_id, provider, &book, &records);
@@ -1271,36 +1251,47 @@ mod tests {
         project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default())
     }
 
+    fn with_id(mut d: MeshDigest, id: &str) -> MeshDigest {
+        d.node.node_id = NodeId::parse(id).unwrap();
+        d
+    }
+
     #[test]
-    fn without_claims_the_lowest_ready_ordinal_is_primary_and_the_lowest_mesh_holds_the_fabric() {
+    fn the_projection_elects_the_lowest_ready_node_id_per_cohort_and_across_mesh_primaries() {
         use MemberStatus::*;
         let t = view(&[
-            digest("mesh2.admin.1", ReadyForTraffic),
-            digest("mesh2.rpc.2", ReadyForTraffic),
-            digest("mesh2.rpc.1", Pending),
-            digest("mesh1.admin.2", ReadyForTraffic),
-            digest("mesh1.admin.1", ReadyForTraffic),
-            digest("mesh1.rpc.3", ReadyForTraffic),
+            with_id(digest("mesh2.admin.1", ReadyForTraffic), "200000000000"),
+            with_id(digest("mesh2.rpc.2", ReadyForTraffic), "700000000000"),
+            with_id(digest("mesh2.rpc.1", Pending), "000000000001"),
+            with_id(digest("mesh1.admin.2", ReadyForTraffic), "300000000000"),
+            with_id(digest("mesh1.admin.1", ReadyForTraffic), "400000000000"),
+            with_id(digest("mesh1.rpc.3", ReadyForTraffic), "500000000000"),
         ]);
-        let primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
-        assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.3", "mesh2.admin.1", "mesh2.rpc.2"], "a pending member is never primary");
-        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
+        let mut primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
+        primaries.sort();
+        assert_eq!(primaries, ["mesh1.admin.2", "mesh1.rpc.3", "mesh2.admin.1", "mesh2.rpc.2"], "a pending member is never primary");
+        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh2.admin.1"), "not the lowest-named mesh");
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
         assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic);
     }
 
     #[test]
-    fn the_member_ready_longest_is_primary_and_a_recreated_path_does_not_take_over() {
-        let claim = |name: &str, since: u64| {
-            let mut d = digest(name, MemberStatus::ReadyForTraffic);
-            d.extra.insert(rafka_mesh_entity::READY_SINCE.into(), since.to_string());
+    fn ready_since_and_ordinal_never_change_a_winner() {
+        let at = |name: &str, id: &str, since: u64| {
+            let mut d = with_id(digest(name, MemberStatus::ReadyForTraffic), id);
+            // A digest still carrying the retired readiness claim: a fact nothing reads.
+            d.extra.insert("ready_since_ms".into(), since.to_string());
             d
         };
-        // rpc.1 was killed and recreated: its new birth claims a later instant.
-        let t = view(&[claim("mesh1.admin.1", 10), claim("mesh1.rpc.1", 900), claim("mesh1.rpc.2", 200), claim("mesh1.rpc.3", 300)]);
-        let primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
-        assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.2"]);
+        // rpc.3 has the highest ordinal and the latest ready claim, and the lowest id.
+        let a = view(&[at("mesh1.admin.1", "100000000000", 10), at("mesh1.rpc.1", "900000000000", 1), at("mesh1.rpc.2", "800000000000", 2), at("mesh1.rpc.3", "200000000000", 900)]);
+        let b = view(&[at("mesh1.admin.1", "100000000000", 999), at("mesh1.rpc.1", "900000000000", 900), at("mesh1.rpc.2", "800000000000", 800), at("mesh1.rpc.3", "200000000000", 1)]);
+        for t in [a, b] {
+            let mut primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
+            primaries.sort();
+            assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.3"]);
+        }
     }
 
     #[test]
@@ -1349,6 +1340,31 @@ mod tests {
         let empty = view(&[]);
         assert!(empty.fabric_primary().is_none());
         assert_eq!(empty.fabric.status, ScopeStatus::Pending);
+    }
+
+    #[test]
+    fn a_launch_record_never_revives_a_birth_that_another_admin_retired() {
+        // This admin launched mesh1.rpc.1; another admin (the primary) retired
+        // it: its last word is Leaving, then silence. This admin's own launch
+        // record must not bring it back as ready.
+        let book = DigestBook::default();
+        let left = digest("mesh1.rpc.1", MemberStatus::Leaving);
+        book.record(left.clone());
+        let records = Records::default();
+        let mut n = Node::allocated(left.node.name.clone());
+        n.incarnation_id = Some(left.node.incarnation.clone());
+        n.status = NodeStatus::ReadyForTraffic;
+        records.publish(n.clone());
+        std::thread::sleep(SILENT_AFTER + Duration::from_millis(200));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert!(t.node(&left.node.name).is_none(), "{:?}", t.node(&left.node.name));
+        // A birth it launched that membership has not spoken for yet is shown.
+        let fresh = Records::default();
+        let mut pending = Node::allocated("mesh1.rpc.2".parse().unwrap());
+        pending.incarnation_id = Some(IncarnationId::mint());
+        fresh.publish(pending.clone());
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &fresh);
+        assert!(t.node(&pending.name).is_some());
     }
 
     #[test]
