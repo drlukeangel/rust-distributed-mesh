@@ -123,6 +123,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.backbone.update.via-forwarder` (the mesh primary starts or stops forwarding peer meshes from the backbone onto its mesh channel) | `node`, `mesh`, `role` (`start` / `stop`) |
 | `rafka.mesh.fabric.update.via-status-publisher` (the fabric primary starts or stops publishing fabric status on the backbone) | `node`, `fabric`, `role` (`start` / `stop`) |
 | `rafka.mesh.connection.update.via-backbone-peers-joined` (an admin joined the other meshes' admins on the backbone) | `node`, `peers` |
+| `rafka.mesh.connection.update.via-refeed` (a channel, or the fabric Build topic, had no neighbour for `SILENT_AFTER`: every peer it knows is handed to it again through `join_peers`, once per window while that holds; `gossip.md` §6) | `channel` (`mesh:<mesh>` / `backbone` / `builds`), `node` (membership channels) or `fabric` (Build topic), `peers`, `joined` |
 | `rafka.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held) | `node`, `incarnation_id`, `meshes` |
 | `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
 | `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message, 4096 bytes) | `fabric`, `detail` |

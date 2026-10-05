@@ -104,10 +104,20 @@ fn now_ms() -> u64 {
 /// (`Lagged`) and expects it to be re-opened; a subscription can also end.
 /// Either way it is re-subscribed through its seeds and every peer it was
 /// asked to join, so it never silently stops hearing the topic.
+///
+/// Membership through iroh-gossip's own API (`gossip.md` §6): a peer that
+/// leaves the live list it is asked to join and returns is joined again, and
+/// a channel with no neighbour for [`SILENT_AFTER`] is handed every peer it
+/// knows again, once per window while that holds. A node whose neighbours all
+/// dropped (a partition longer than the connections' idle timeout) is
+/// otherwise never dialed again. Nothing is sent.
 #[derive(Clone)]
 struct Channel {
     sender: Arc<tokio::sync::RwLock<GossipSender>>,
+    /// Every peer this channel was seeded with or asked to join.
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
+    /// The peers asked while they stayed on the live list.
+    joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     lookup: MemoryLookup,
 }
 
@@ -132,22 +142,35 @@ impl Channel {
         tracing::info_span!("rafka.mesh.membership.update.via-subscribe", node, channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, mut receiver) = sub.split();
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), lookup };
+        let joined = Arc::new(Mutex::new(peers.clone()));
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup };
+        let neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>> = Arc::default();
+        me.refeed(node.to_string(), channel.to_string(), neighbors.clone());
         let (shared, known, gossip, fabric, channel) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string());
         tokio::spawn(async move {
             loop {
                 let reason = loop {
                     let ev = receiver.next().await;
-                    if let Some(Ok(Event::Received(m))) = &ev {
-                        if let Some(f) = Frame::decode(&m.content) {
-                            on_frame(f);
+                    match &ev {
+                        Some(Ok(Event::Received(m))) => {
+                            if let Some(f) = Frame::decode(&m.content) {
+                                on_frame(f);
+                            }
+                            continue;
                         }
-                        continue;
+                        Some(Ok(Event::NeighborUp(p))) => {
+                            neighbors.lock().unwrap().insert(*p);
+                        }
+                        Some(Ok(Event::NeighborDown(p))) => {
+                            neighbors.lock().unwrap().remove(p);
+                        }
+                        _ => {}
                     }
                     if let Some(r) = ended(ev) {
                         break r;
                     }
                 };
+                neighbors.lock().unwrap().clear();
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rafka.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
@@ -179,14 +202,51 @@ impl Channel {
         self.peers.lock().unwrap().insert(peer.id)
     }
 
-    /// Join the peers not yet asked.
+    /// Join the peers of the live list `peers` not asked while live: a peer
+    /// that left the list and returns is asked again.
     async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
-        let fresh: Vec<iroh::EndpointId> = peers.iter().filter(|p| self.learn(p)).map(|p| p.id).collect();
+        for p in &peers {
+            self.learn(p);
+        }
+        let fresh: Vec<iroh::EndpointId> = {
+            let mut joined = self.joined.lock().unwrap();
+            joined.retain(|id| peers.iter().any(|p| p.id == *id));
+            peers.iter().map(|p| p.id).filter(|id| joined.insert(*id)).collect()
+        };
         if !fresh.is_empty() {
             let sender = self.sender.read().await.clone();
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
+    }
+
+    /// While the channel has had no neighbour for a whole window, hand it
+    /// every peer it knows again, once per window.
+    fn refeed(&self, node: String, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut alone_since: Option<Instant> = None;
+            loop {
+                tokio::time::sleep(PUBLISH_EVERY).await;
+                if !neighbors.lock().unwrap().is_empty() {
+                    alone_since = None;
+                    continue;
+                }
+                let since = *alone_since.get_or_insert_with(Instant::now);
+                if since.elapsed() < SILENT_AFTER {
+                    continue;
+                }
+                let peers: Vec<iroh::EndpointId> = me.peers.lock().unwrap().iter().copied().collect();
+                if peers.is_empty() {
+                    continue;
+                }
+                let sender = me.sender.read().await.clone();
+                let joined = sender.join_peers(peers.clone()).await.is_ok();
+                tracing::info_span!("rafka.mesh.connection.update.via-refeed", node = %node, channel = %channel, peers = peers.len(), joined)
+                    .in_scope(|| tracing::info!("no neighbour for a window: every known peer handed to the channel again"));
+                alone_since = Some(Instant::now());
+            }
+        });
     }
 }
 

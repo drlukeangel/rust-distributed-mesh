@@ -89,6 +89,44 @@ async fn active_facts(local: &MemoryBuildStateAdapter) -> Vec<BuildFact> {
     local.facts().await.unwrap_or_default().into_iter().filter(|f| active.contains(f.build_id())).collect()
 }
 
+/// While the Build topic has had no neighbour for a whole window, hand it
+/// every peer it has known again, once per window (`gossip.md` §6): an admin
+/// whose neighbours all dropped is otherwise never dialed again, and a Build
+/// it accepted in the meantime never reaches the fabric. Nothing is sent.
+fn refeed(
+    fabric: String,
+    sender: Arc<tokio::sync::RwLock<GossipSender>>,
+    known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
+    neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>>,
+) {
+    use rafka_mesh_transport::membership::{PUBLISH_EVERY, SILENT_AFTER};
+    tokio::spawn(async move {
+        let mut alone_since: Option<std::time::Instant> = None;
+        loop {
+            tokio::time::sleep(PUBLISH_EVERY).await;
+            if !neighbors.lock().unwrap().is_empty() {
+                alone_since = None;
+                continue;
+            }
+            let since = *alone_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() < SILENT_AFTER {
+                continue;
+            }
+            let mut peers = known.lock().unwrap().clone();
+            peers.sort();
+            peers.dedup();
+            if peers.is_empty() {
+                continue;
+            }
+            let s = sender.read().await.clone();
+            let joined = s.join_peers(peers.clone()).await.is_ok();
+            tracing::info_span!("rafka.mesh.connection.update.via-refeed", channel = "builds", fabric = %fabric, peers = peers.len(), joined)
+                .in_scope(|| tracing::info!("no neighbour for a window: every known peer handed to the Build topic again"));
+            alone_since = Some(std::time::Instant::now());
+        }
+    });
+}
+
 /// The fabric's Build topic.
 pub fn build_topic(fabric: &str) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-builds:{fabric}").as_bytes()).as_bytes())
@@ -124,8 +162,10 @@ impl FabricBuildStateAdapter {
         let (absorb, shared) = (local.clone(), sender.clone());
         let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
         let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
+        let known_peers: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>> = Arc::new(std::sync::Mutex::new(seed_ids.clone()));
+        let neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>> = Arc::default();
+        refeed(fabric.to_string(), shared.clone(), known_peers.clone(), neighbors.clone());
         tokio::spawn(async move {
-            let mut known: Vec<iroh::EndpointId> = seed_ids.clone();
             loop {
                 // Receive until the subscription lags or ends; iroh-gossip
                 // closes a lagging subscriber and expects it to be re-opened.
@@ -137,7 +177,8 @@ impl FabricBuildStateAdapter {
                                 .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
                         },
                         Some(Ok(Event::NeighborUp(peer))) => {
-                            known.push(peer);
+                            known_peers.lock().unwrap().push(peer);
+                            neighbors.lock().unwrap().insert(peer);
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
                             tokio::spawn(async move {
@@ -159,14 +200,21 @@ impl FabricBuildStateAdapter {
                                 }
                             });
                         }
+                        Some(Ok(Event::NeighborDown(peer))) => {
+                            neighbors.lock().unwrap().remove(&peer);
+                        }
                         Some(Ok(Event::Lagged)) => break "lagged: events were dropped".to_string(),
-                        Some(Ok(_)) => {}
                         Some(Err(e)) => break format!("subscription error: {e}"),
                         None => break "subscription ended".to_string(),
                     }
                 };
-                known.sort();
-                known.dedup();
+                neighbors.lock().unwrap().clear();
+                let known = {
+                    let mut k = known_peers.lock().unwrap();
+                    k.sort();
+                    k.dedup();
+                    k.clone()
+                };
                 let span = tracing::info_span!("rafka.node_admin.build.update.via-resubscribe", fabric = %fabric_name, reason = %reason, peers = known.len());
                 // A refused subscribe means the gossip actor itself has stopped.
                 let reopened = match gossip.subscribe(topic_id, known.clone()).await {
