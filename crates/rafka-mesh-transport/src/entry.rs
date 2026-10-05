@@ -40,6 +40,11 @@ pub struct EntryAnswer {
     pub topology: serde_json::Value,
     /// The membership digests of every member the admin hears.
     pub members: Vec<MeshDigest>,
+    /// The admin's current fabric control state (its desired topology), as
+    /// the admin serialises it; this crate does not interpret it. Null from
+    /// an admin that holds none.
+    #[serde(default)]
+    pub control: serde_json::Value,
 }
 
 type Answer = dyn Fn(&EntryRequest) -> EntryAnswer + Send + Sync;

@@ -30,7 +30,8 @@ fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateA
         nodes: vec![admin],
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    (router(Arc::new(ControlPlane::new(builds.clone(), topology)), axum::Router::new()), builds)
+    let desired = std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(topology.fabric.id.clone(), &topology.fabric.name, "mesh1")));
+    (router(Arc::new(ControlPlane::new(builds.clone(), desired, topology)), axum::Router::new()), builds)
 }
 
 async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {

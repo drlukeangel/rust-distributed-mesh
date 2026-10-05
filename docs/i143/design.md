@@ -225,6 +225,14 @@ completed Build A + later proven runtime drift
 
 A failed RPC/dial/partition/provider-domain mismatch is not proven drift requiring replacement.
 
+In RDM (`rafka-node-admin-core`: `desired`, `drift`):
+
+- `DesiredTopology { fabric_id, revision, desired: FabricDesired, source_build_id, lineage }`, at most 16 lineage marks: bounded, and kept by each admin's `DesiredStore`, apart from Build facts. Day 0 roots revision 1 (the bootstrap mesh, one node-admin).
+- A request compiles against the current revision (`desired::apply`): `ReconcileFabric` replaces the shape, `ReconcileMesh`/`CreateMesh` set one mesh, `RemoveMesh` drops one, `AddNode`/`RemoveNode` move one count, `RestartNode`/`ReplaceNode` change nothing. A change proposes `revision + 1` with the Build as its source; every Build fact names the revision it proposed or reconciles toward, and its reason (`requested-change` / `proven-drift`). An admin that holds no desired topology answers `503 desired-topology-unavailable`.
+- A record taken by a store: one that descends from the held one is taken; one the held one descends from is stale. Two from one base fork: the branch whose first revision has the lower `source_build_id` holds on every admin, whichever it heard first; no branch wins by being longer. A Build's revision is judged against the held lineage (`Standing`): current or an ancestor runs, newer waits, at or below the held revision outside its lineage lost a fork and is refused (`via-desired-revision-conflict`) whether or not this admin saw the fork.
+- Transport: the entry answer's `control.desired` (hydration before Ready); on the fabric control topic a record of its own, sent when proposed and to every new neighbour before its active Build facts. Completed Build receipts are never shipped for it, and `DELETE /api/builds?id=` never touches it. `GET /api/fabric` shows the held record as `desired`.
+- Drift (`drift::shortfall`): the fabric primary, while its view authorizes, counts each desired cohort's births; a birth the view no longer hears stays counted unless the provider inspected its exact published runtime and found it exited. A cohort short with at least one proven exit, and no active Build on the current revision, starts a new `ReconcileFabric` Build against that revision (`rafka.node_admin.build.create.via-proven-drift`), once per revision and set of exited births. A fabric shutdown stops reconciling before it stops the fabric's runtimes.
+
 ### 2.3 Canonical elections and authority-capable Ready
 
 A cohort is one kind's members in one mesh.

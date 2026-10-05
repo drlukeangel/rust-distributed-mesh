@@ -121,6 +121,9 @@ struct Admin {
     endpoint: Endpoint,
     router: Router,
     builds: Arc<FabricBuildStateAdapter>,
+    /// The admin's desired topology: what its Build topic feeds and its
+    /// executor judges a Build's revision by. Day 0's root, as on every admin.
+    desired: Arc<rafka_node_admin_core::desired::DesiredStore>,
 }
 
 async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
@@ -135,8 +138,9 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers).await.unwrap());
-    Admin { endpoint, router, builds }
+    let desired = Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(fabric1(), "fabric1", "mesh1")));
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, desired.clone(), "test-admin".into()).await.unwrap());
+    Admin { endpoint, router, builds, desired }
 }
 
 fn addr(a: &Admin) -> iroh::EndpointAddr {
@@ -169,7 +173,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // B returns from joining once connected to A on the fabric Build topic.
 
     // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
-    let mut cp = ControlPlane::new(a.builds.clone(), observed());
+    let mut cp = ControlPlane::new(a.builds.clone(), a.desired.clone(), observed());
     cp.topology = topology.clone();
     let build_id = cp
         .submit("POST /api/build", BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 3 } })
@@ -179,7 +183,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // A executes: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());
     let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
-    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone() };
+    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone(), desired: a.desired.clone() };
     let view = a.builds.read_build(&build_id).await.unwrap();
     let mut a_executing = Box::pin(a_exec.reconcile(&view));
     tokio::select! {
@@ -203,7 +207,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // B takes over: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone() };
+    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone(), desired: b.desired.clone() };
     let done = b_exec.reconcile_active().await;
     let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
     assert_eq!(

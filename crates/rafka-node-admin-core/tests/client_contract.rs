@@ -40,7 +40,8 @@ fn mn() -> Topology {
 }
 
 async fn serve() -> (NodeAdminClient, Arc<ControlPlane>) {
-    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), mn()));
+    let t = mn();
+    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(t.fabric.id.clone(), &t.fabric.name, "mesh1"))), t));
     let app = router(cp.clone(), axum::Router::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

@@ -26,6 +26,8 @@ use tokio::sync::{Notify, RwLock};
 /// runtime.
 pub struct ControlPlane {
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// This admin's current desired topology (`crate::desired`).
+    pub desired: Arc<crate::desired::DesiredStore>,
     pub topology: Arc<RwLock<Topology>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
@@ -34,9 +36,10 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
-    pub fn new(builds: Arc<dyn BuildStateAdapter>, topology: Topology) -> Self {
+    pub fn new(builds: Arc<dyn BuildStateAdapter>, desired: Arc<crate::desired::DesiredStore>, topology: Topology) -> Self {
         Self {
             builds,
+            desired,
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
@@ -44,7 +47,9 @@ impl ControlPlane {
     }
 
     /// Validate `intent` against observed state, pin what it means there, and
-    /// publish it as a Build.
+    /// publish it as a Build. A topology-changing intent first proposes the
+    /// next desired-topology revision over the current one; a restart or a
+    /// replacement references the current one.
     pub async fn submit(&self, route: &'static str, intent: BuildIntent) -> Result<BuildId, Refusal> {
         let span = tracing::info_span!(
             "rafka.node_admin.build.create.via-rest",
@@ -65,12 +70,37 @@ impl ControlPlane {
         let build_id = BuildId::mint();
         span.record("build_id", build_id.0.as_str());
         span.record("intent", serde_json::to_string(&intent).unwrap_or_default().as_str());
+        // Compiled against the current desired revision, never invented here.
+        let current = self.desired.current().ok_or_else(|| {
+            Refusal::Unavailable("this admin holds no current desired topology yet (it is not hydrated); submit through a Ready node-admin".into())
+        })?;
+        let next = crate::desired::apply(&intent, &current.desired, &observed).map(|d| current.next(d, &build_id));
+        if let Some(next) = &next {
+            match self.desired.offer(next.clone()) {
+                crate::desired::Offer::Taken => {}
+                other => return Err(Refusal::Conflict(format!("the desired topology moved from {} while this request compiled ({other:?}); resubmit", current.mark()))),
+            }
+        }
         let fact = BuildIntentFact {
             build_id: build_id.clone(),
             intent,
             traceparent: rafka_telemetry::current_traceparent(),
             submitted_at_ms: now_ms(),
+            desired: Some(next.as_ref().map_or_else(|| current.mark(), |n| n.mark())),
+            reason: Some(crate::build_state::BuildReason::RequestedChange),
         };
+        if let Some(next) = &next {
+            tracing::info_span!(
+                "rafka.node_admin.desired_topology.update.via-build",
+                fabric_id = %next.fabric_id,
+                desired_revision = next.revision,
+                previous_revision = current.revision,
+                source_build_id = %build_id,
+                reason = "requested-change",
+            )
+            .in_scope(|| tracing::info!("desired topology proposed"));
+            self.builds.publish_desired(next).await.map_err(Refusal::State)?;
+        }
         self.builds.publish_intent(&fact).await.map_err(Refusal::State)?;
         tracing::info!(build_id = %build_id, "build accepted");
         self.build_submitted.notify_waiters();
@@ -116,6 +146,8 @@ pub enum Refusal {
     BadRequest(String),
     NotFound(String),
     Conflict(String),
+    /// The admin cannot decide the request yet (not hydrated).
+    Unavailable(String),
     State(BuildStateError),
 }
 
@@ -129,6 +161,7 @@ impl IntoResponse for Refusal {
             Refusal::BadRequest(d) => (StatusCode::BAD_REQUEST, "invalid-request".into(), d.clone()),
             Refusal::NotFound(d) => (StatusCode::NOT_FOUND, "not-found".into(), d.clone()),
             Refusal::Conflict(d) => (StatusCode::CONFLICT, "conflict".into(), d.clone()),
+            Refusal::Unavailable(d) => (StatusCode::SERVICE_UNAVAILABLE, "desired-topology-unavailable".into(), d.clone()),
             Refusal::State(e) => (StatusCode::SERVICE_UNAVAILABLE, "build-state-unavailable".into(), e.to_string()),
         };
         (status, Json(json!({ "error": error, "detail": detail }))).into_response()
@@ -219,7 +252,12 @@ async fn get_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result<Re
 }
 
 async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
-    Json(serde_json::to_value(cp.topology.read().await.fabric_view()).unwrap_or(Value::Null))
+    let mut v = serde_json::to_value(cp.topology.read().await.fabric_view()).unwrap_or(Value::Null);
+    // The shape the fabric should have, as this admin holds it.
+    if let Some(o) = v.as_object_mut() {
+        o.insert("desired".into(), serde_json::to_value(cp.desired.current()).unwrap_or(Value::Null));
+    }
+    Json(v)
 }
 
 async fn create_mesh(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {

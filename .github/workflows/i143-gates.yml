@@ -58,6 +58,8 @@ jobs:
         run: cargo test -p rafka-test-scenario --test mesh_identity__canonical_ids
       - name: a successor manages births it never launched (process E2E)
         run: cargo test -p rafka-test-scenario --test mesh_runtime__successor_adoption
+      - name: the desired topology outlives its Builds and drives recovery (process E2E)
+        run: cargo test -p rafka-test-scenario --test mesh_desired__desired_topology
       - name: hierarchical membership, mesh channels and the admin backbone (process E2E, partition through iptables)
         env:
           RAFKA_REQUIRE_NETFAULT: "1"

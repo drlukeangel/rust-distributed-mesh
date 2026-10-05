@@ -54,6 +54,7 @@ async fn main() {
     let span = tracing::info_span!("rafka.mesh.node.delete.via-signal", fabric_shutdown);
     let _g = span.enter();
     if fabric_shutdown {
+        running.stop_reconciling();
         running.runner.stop_all().await;
     }
     running.leave().await;

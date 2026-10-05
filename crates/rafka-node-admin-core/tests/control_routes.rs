@@ -84,7 +84,8 @@ fn harness(runtime_routes: Router) -> Harness {
     let spans = SpanNames::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let cp = Arc::new(ControlPlane::new(builds.clone(), mn()));
+    let t = mn();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(t.fabric.id.clone(), &t.fabric.name, "mesh1"))), t));
     let app = router(cp.clone(), runtime_routes);
     Harness { cp, builds, app, spans, _guard: guard }
 }
