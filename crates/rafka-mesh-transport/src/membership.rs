@@ -31,6 +31,34 @@ pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()
     Ok(())
 }
 
+/// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
+/// announcing `Leaving` before it closes. Every node kind takes the same one.
+pub fn leave_linger_from_env() -> Duration {
+    Duration::from_millis(std::env::var("RAFKA_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
+}
+
+/// How often a leaving node repeats its `Leaving` during the linger.
+pub const LEAVE_EVERY: Duration = Duration::from_millis(200);
+
+/// Announce a departure: `say` the `Leaving` digest now and again every
+/// `every` until `linger` has passed, then return. Bounded by `linger`: a
+/// `say` that does not finish in time is abandoned. Returns how many
+/// announcements finished.
+///
+/// iroh-gossip acknowledges nothing and closing drops what is unsent, so one
+/// announcement can be lost; repeating it for the linger is the node's own
+/// shutdown, not a delivery layer (nothing is retried after the node leaves).
+pub async fn announce_leaving<F, Fut>(linger: Duration, every: Duration, mut say: F) -> u32
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let _ = every;
+    let _ = tokio::time::timeout(linger, say()).await;
+    tokio::time::sleep(linger).await;
+    1
+}
+
 /// The latest digest heard per logical node.
 #[derive(Debug, Default, Clone)]
 pub struct DigestBook {
@@ -221,5 +249,47 @@ mod tests {
         assert!(book.record(digest(&id, &second, Some(first.clone()), MemberStatus::ReadyForTraffic, 100)), "a new birth, whatever its clock");
         assert!(!book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 900)), "the superseded birth's late digest");
         assert_eq!(book.get(&id.0).unwrap().0.node.incarnation, second);
+    }
+
+    /// The first `Leaving` is lost; one of the later announcements in the
+    /// linger still reaches the fabric.
+    #[tokio::test]
+    async fn a_lost_first_leaving_is_followed_by_one_that_arrives() {
+        let said = Arc::new(Mutex::new(0u32));
+        let heard = Arc::new(Mutex::new(0u32));
+        let (s, h) = (said.clone(), heard.clone());
+        announce_leaving(Duration::from_millis(300), Duration::from_millis(50), move || {
+            let (s, h) = (s.clone(), h.clone());
+            async move {
+                let n = {
+                    let mut s = s.lock().unwrap();
+                    *s += 1;
+                    *s
+                };
+                if n > 1 {
+                    *h.lock().unwrap() += 1;
+                }
+            }
+        })
+        .await;
+        assert!(*heard.lock().unwrap() >= 1, "only the lost first Leaving was said ({} said)", said.lock().unwrap());
+    }
+
+    /// Announcing never keeps the node past its linger, even when an
+    /// announcement never finishes.
+    #[tokio::test]
+    async fn announcing_never_outlives_the_linger() {
+        let linger = Duration::from_millis(300);
+        let start = Instant::now();
+        let n = announce_leaving(linger, Duration::from_millis(50), || std::future::pending::<()>()).await;
+        let took = start.elapsed();
+        assert!(took < linger + Duration::from_millis(150), "a stuck announcement held the node {took:?}");
+        assert_eq!(n, 0, "no announcement finished");
+
+        let start = Instant::now();
+        let n = announce_leaving(linger, Duration::from_millis(50), || async {}).await;
+        let took = start.elapsed();
+        assert!(took < linger + Duration::from_millis(150), "repeating held the node {took:?}");
+        assert!((2..=8).contains(&n), "{n} announcements in a 300 ms linger at 50 ms");
     }
 }
