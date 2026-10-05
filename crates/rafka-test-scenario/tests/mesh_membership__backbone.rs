@@ -215,19 +215,16 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let mut dead = dead;
     dead.insert(fp_name.clone());
     estate.admin = survivors[0].clone();
-    let next = wait_for("a new fabric primary", Duration::from_secs(40), || async {
+    // The winner is read with the publisher, in one poll: until the lost
+    // primary's mesh is heard again through its successor's aggregate, a
+    // peer mesh's admin may briefly name itself in its own view (and, gated,
+    // publishes nothing). The converged view names the one publisher.
+    wait_for("a new fabric primary alone publishes the fabric's status", Duration::from_secs(40), || async {
         let n = estate.nodes().await;
-        n.iter().find(|x| x["is_fabric_primary"] == true && x["name"] != fp_name.as_str()).map(|x| s(&x["name"]))
-    })
-    .await;
-    wait_for("the new fabric primary alone publishes the fabric's status", Duration::from_secs(20), || {
-        let spans = estate.spans();
-        let (next, dead, fabric_id) = (next.clone(), dead.clone(), s(&fabric["id"]));
-        async move {
-            // Status publication is keyed by the Fabric's id, the backbone's key.
-            let ev = roles(&spans, "rafka.mesh.fabric.update.via-status-publisher", "fabric");
-            (holders(&ev, &fabric_id, &dead) == [next].into_iter().collect()).then_some(())
-        }
+        let next = n.iter().find(|x| x["is_fabric_primary"] == true && x["name"] != fp_name.as_str()).map(|x| s(&x["name"]))?;
+        // Status publication is keyed by the Fabric's id, the backbone's key.
+        let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
+        (holders(&ev, &s(&fabric["id"]), &dead) == [next].into_iter().collect()).then_some(())
     })
     .await;
     let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
