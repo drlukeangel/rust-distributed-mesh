@@ -76,9 +76,11 @@ under the mesh's known id. Each re-created node is a new birth: a new incarnatio
 allocator hands out now. A create step's receipt is reused only while the runtime it names still
 runs, and a run that failed a step hands nothing on. Before a new birth takes a path, the previous
 birth is fenced, unless it answers directly (Node RPC `Echo` for an rpc node, the control API for an
-admin): a member gossip has not heard yet is not a dead one. A launched admin executes no Build
-before it has heard every member its join admin held live (bounded at 30 s), so it never plans from
-a view that is missing live members.
+admin): a member gossip has not heard yet is not a dead one. Every launched node makes an entry pull to the admin that launched it,
+over QUIC (`rafka_mesh_transport::entry`, ALPN `rafka-mesh-entry/1`): the answer is the fabric's policy
+and the membership digests that admin hears, which the node records as heard before it is ready. A
+launched admin's first view is therefore its launcher's, and it never plans from a view that is
+missing live members. No node calls an admin's HTTP API; that API is for tests and people.
 
 Control moves with the fabric primary. An admin that must retire, restart or stop a node another admin
 launched adopts its runtime from the Build facts: the birth's `AllocateIdentity` receipt (incarnation,
@@ -100,7 +102,6 @@ measured for MM losing mesh1).
 | `RAFKA_MESH` | `rafka-node-admin` | the mesh this admin belongs to, default `mesh1` |
 | `RAFKA_DATA_DIR` | every binary | node data dir: identity, journal, proof store |
 | `RAFKA_NODE_ADMIN_API_BIND` | `rafka-node-admin` | HTTP bind, default `127.0.0.1:0` |
-| `RAFKA_NODE_ADMIN_JOIN` | spawned `rafka-node-admin` | control API base of an admin already in the fabric |
 | `RAFKA_BIN_DIR` | `rafka-node-admin` | where `rafka-node-admin` / `rafka-rpc-node` live; default: beside the running exe |
 | `RAFKA_EVIDENCE_DIR` | every binary | when set, every process writes its spans as JSONL here and passes the var to its children |
 | `TRACEPARENT` | every spawned binary | W3C parent of the process's boot span: the deployment step that launched it |

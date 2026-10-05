@@ -163,6 +163,9 @@ impl NodeObserver for LiveMesh {
     }
 }
 
+/// The id of the one mesh these functional fabrics hold (`mesh1`).
+pub const TEST_MESH_ID: &str = "mesh1-test";
+
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
 /// the nodes' membership seed, and the observer over it.
 pub struct AdminSide {
@@ -175,7 +178,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &str) -> AdminSide {
     let admin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), SocketAddr::new(ip, 0)).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let membership = Membership::join(&gossip, &admin_ep, fabric, vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", TEST_MESH_ID, "mesh1.admin.1", vec![]).await.unwrap();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
@@ -191,7 +194,7 @@ pub fn template(fabric: &str, seed: (String, SocketAddr)) -> LaunchTemplate {
         fabric: fabric.into(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![seed],
-        env: BTreeMap::new(),
+        env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())].into_iter().collect(),
         data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
     }
 }
