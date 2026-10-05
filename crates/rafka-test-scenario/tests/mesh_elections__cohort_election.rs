@@ -240,8 +240,13 @@ async fn a_second_meshs_admin_cohort_elects_without_moving_the_fabric() {
     let hold = Duration::from_secs(4);
 
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
-    let nodes = estate.nodes().await;
-    assert!(settled(&nodes), "settled MM: {nodes:#?}");
+    // A peer mesh's members reach this admin through its primary's backbone
+    // publication: the view settles within a publication round or two.
+    let nodes = wait_for("the MM view settles with four cohort primaries", Duration::from_secs(15), || async {
+        let nodes = estate.nodes().await;
+        (settled(&nodes) && primaries(&nodes).len() == 4).then_some(nodes)
+    })
+    .await;
     let fp = fabric_primary(&nodes).unwrap();
     let p = primary_of(&nodes, &admin2).unwrap();
     let mut cohorts: BTreeSet<Cohort> = BTreeSet::new();

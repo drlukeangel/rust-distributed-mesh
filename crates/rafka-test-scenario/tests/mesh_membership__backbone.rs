@@ -48,10 +48,13 @@ fn owner(test: &str) -> Owner {
     }
 }
 
+/// One estate at a time: two MM fabrics on one host halve each one's CPU.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// MM with two admins and two rpc nodes per mesh, settled.
-async fn mm(estate: &Estate) -> Vec<Value> {
+async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
     let (_, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
+        .post("/api/build", &json!({"fabric": fabric, "meshes": [
             {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
             {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
         ]}))
@@ -121,8 +124,9 @@ fn primary(nodes: &[Value], mesh: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn membership_rides_mesh_channels_and_the_admin_backbone() {
+    let _one = SERIAL.lock().await;
     let mut estate = Estate::bootstrap(owner("membership_rides_mesh_channels_and_the_admin_backbone"), "fabric1", "mesh1").await;
-    let nodes = mm(&estate).await;
+    let nodes = mm(&estate, "fabric1").await;
     let rpcs: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
 
@@ -237,8 +241,9 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
-    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_isolation_authorizes_nothing"), "fabric1", "mesh1").await;
-    let nodes = mm(&estate).await;
+    let _one = SERIAL.lock().await;
+    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_isolation_authorizes_nothing"), "fabric2", "mesh1").await;
+    let nodes = mm(&estate, "fabric2").await;
     let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
         let spans = estate.spans();
@@ -304,7 +309,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     .await;
     let main_admin = estate.admin.clone();
     estate.admin = s(&lone["admin_api_base"]);
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric2", "meshes": [
         {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
         {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
     ]})).await;
