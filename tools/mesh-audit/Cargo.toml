@@ -18,3 +18,7 @@ path = "src/bin/parity_scan.rs"
 [[bin]]
 name = "dep-rules"
 path = "src/bin/dep_rules.rs"
+
+[[bin]]
+name = "address-lookup"
+path = "src/bin/address_lookup.rs"

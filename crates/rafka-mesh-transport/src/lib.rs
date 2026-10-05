@@ -25,6 +25,11 @@ impl IrohMeshTransport {
     /// Create an iroh endpoint with local-network mDNS address lookup on
     /// the caller's tokio runtime.
     ///
+    /// `presets::Minimal`, relay off: no n0 DNS/Pkarr address publication or
+    /// resolution (i143.e4.s13). Peers are reached by the addresses they are
+    /// given (seeds, node-admin assignment) or, with `mdns_enable`, found on
+    /// the local network; mDNS is address discovery only.
+    ///
     /// iroh 0.98 API: the builder takes a `presets::Preset` value;
     /// address lookup services are added AFTER `bind()` rather than
     /// during construction.
@@ -35,7 +40,7 @@ impl IrohMeshTransport {
             .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()))
             .build();
 
-        let endpoint = Endpoint::builder(presets::N0DisableRelay)
+        let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
             .alpns(vec![ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
             .relay_mode(RelayMode::Disabled)

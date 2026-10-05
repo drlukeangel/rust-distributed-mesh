@@ -43,6 +43,17 @@ An `rpc_node` has two Node RPC endpoint slots:
 A restart therefore always moves exactly one slot. That makes the per-slot supersession rules (PRD §1.19,
 §14) observable on every restart.
 
+### 2.0 Address authority (e4.s13)
+
+Every Iroh endpoint is built from `presets::Minimal` with relay off. The addresses a node dials come from
+exactly two places: node-admin's slot assignment (`RAFKA_ENDPOINTS`, the topology projection, the entry
+pull) and the explicit seeds that bootstrap gossip (`RAFKA_SEEDS`); each channel registers them in a
+`MemoryLookup`. No n0 DNS/Pkarr publication or resolution is configured anywhere (`presets::N0DisableRelay`
+applies `N0`, n0 DNS/Pkarr included, before it disables relay). Local mDNS exists only on the legacy
+`IrohMeshTransport` plane, as address discovery; no canonical i143 crate uses it, and nothing marks a node
+dead from it. The `address-lookup` gate (`tools/mesh-audit`) enforces both, and the multi-mesh E2E runs in
+a network namespace with loopback only (`scripts/netless.sh`).
+
 ### 2.1 Cohort election (PRD §11)
 
 A cohort is one kind's members in one mesh. Every birth publishes, once, the instant it became ready

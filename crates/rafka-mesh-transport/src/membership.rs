@@ -374,7 +374,7 @@ pub struct Membership {
     mesh: Channel,
     view: View,
     fabric: String,
-    cut_off: Arc<AtomicBool>,
+    cut_off: Arc<Mutex<CutOff>>,
     pub book: DigestBook,
 }
 
@@ -413,8 +413,8 @@ impl Membership {
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
                 heard_others |= others > 0;
                 let off = heard_others && others == 0;
-                if cut_off.swap(off, Ordering::Relaxed) != off {
-                    tracing::info_span!("rafka.mesh.membership.update.via-cut-off", node = %node, role = if off { "start" } else { "stop" })
+                if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
+                    tracing::info_span!("rafka.mesh.membership.update.via-cut-off", node = %node, role)
                         .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
                 }
                 let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
@@ -452,7 +452,13 @@ impl Membership {
     /// holds then authorizes nothing (an admin executes no Build, publishes
     /// nothing as a primary).
     pub fn is_cut_off(&self) -> bool {
-        self.cut_off.load(Ordering::Relaxed)
+        self.cut_off.lock().unwrap().is_off()
+    }
+
+    /// May this node's view authorize anything now: not cut off, and not
+    /// within one silence window of healing ([`CutOff::authorizes`]).
+    pub fn authorizes(&self) -> bool {
+        self.cut_off.lock().unwrap().authorizes(Instant::now())
     }
 
     /// How many meshes this node holds a live member of.
@@ -615,6 +621,41 @@ impl Backbone {
 /// aggregate stays heard: one primary succession. The successor hears the
 /// loss after `SILENT_AFTER` and publishes on its next round.
 pub const SUCCESSION: Duration = Duration::from_millis(SILENT_AFTER.as_millis() as u64 + PUBLISH_EVERY.as_millis() as u64);
+
+/// Whether a node's view may authorize anything. Cut off: it heard other
+/// members and now hears none. Healed: it hears one again, but the rest of
+/// its view still holds every member it lost as silent until each publishes
+/// again, which every live member does within [`SILENT_AFTER`]. A view
+/// authorizes nothing while cut off, nor for `SILENT_AFTER` after it healed.
+#[derive(Debug, Default)]
+pub struct CutOff {
+    off: bool,
+    healed_at: Option<Instant>,
+}
+
+impl CutOff {
+    /// Record whether the node is cut off at `now`; the change, if any
+    /// (`"start"` / `"stop"`).
+    pub fn observe(&mut self, off: bool, now: Instant) -> Option<&'static str> {
+        if self.off == off {
+            return None;
+        }
+        self.off = off;
+        if !off {
+            self.healed_at = Some(now);
+        }
+        Some(if off { "start" } else { "stop" })
+    }
+
+    pub fn is_off(&self) -> bool {
+        self.off
+    }
+
+    /// May the view authorize anything at `now`?
+    pub fn authorizes(&self, now: Instant) -> bool {
+        !self.off && self.healed_at.is_none_or(|t| now.saturating_duration_since(t) >= SILENT_AFTER)
+    }
+}
 
 /// The latest digest heard per logical node: when it was taken, and whether
 /// it came forwarded by its mesh's primary.
@@ -827,5 +868,20 @@ mod tests {
         assert!(rejoin(&joined, &[a, b]).is_empty(), "a live peer is joined once");
         assert!(rejoin(&joined, &[b]).is_empty(), "a leaves the live list");
         assert_eq!(rejoin(&joined, &[a, b]), vec![a], "a returns and is joined again");
+    }
+
+    #[test]
+    fn a_healed_view_authorizes_nothing_until_every_member_could_be_heard_again() {
+        let t0 = Instant::now();
+        let mut c = CutOff::default();
+        assert!(c.authorizes(t0), "never cut off");
+        assert_eq!(c.observe(true, t0), Some("start"));
+        assert!(!c.authorizes(t0), "cut off");
+        let healed = t0 + Duration::from_secs(10);
+        assert_eq!(c.observe(false, healed), Some("stop"));
+        assert!(!c.authorizes(healed + Duration::from_millis(250)), "healed, but the view still holds lost members as silent");
+        assert!(!c.authorizes(healed + SILENT_AFTER - Duration::from_millis(1)));
+        assert!(c.authorizes(healed + SILENT_AFTER), "every live member has published again");
+        assert_eq!(c.observe(false, healed + SILENT_AFTER), None);
     }
 }

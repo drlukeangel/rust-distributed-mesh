@@ -34,7 +34,6 @@ use crate::lifecycle::{
 };
 use crate::model::*;
 use crate::topology::Topology;
-use iroh::endpoint::presets;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
@@ -701,14 +700,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         .keep_alive_interval(Duration::from_secs(1))
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(key.clone())
-        .alpns(vec![iroh_gossip::ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Disabled)
-        .transport_config(transport)
-        .bind_addr(mesh_addr)
-        .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?
-        .bind()
+    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, vec![iroh_gossip::ALPN.to_vec()], transport)
         .await
         .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?;
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);
@@ -902,8 +894,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         hierarchy = tokio::spawn(async move {
             loop {
                 let t = topology.read().await.clone();
-                // Cut off, its view authorizes nothing: it publishes as no primary.
-                let live = !membership.is_cut_off();
+                // Cut off, or within one silence window of healing, its view
+                // authorizes nothing: it publishes as no primary.
+                let live = membership.authorizes();
                 backbone.set_mesh_primary(live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me));
                 backbone.set_fabric_primary(live && t.fabric_primary().is_some_and(|n| n.name == me));
                 let heard = membership.book.current(SILENT_AFTER);
@@ -947,8 +940,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 let now = project(&fabric, provider, &book, &records);
                 *topology.write().await = now;
                 // Every Build whose next operation this admin executes; none
-                // while it is cut off (its view then authorizes nothing).
-                if !cut_off_view.is_cut_off() {
+                // while it is cut off or within one silence window of healing
+                // (its view then authorizes nothing).
+                if cut_off_view.authorizes() {
                     exec.reconcile_active().await;
                 }
                 tokio::select! {

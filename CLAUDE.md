@@ -118,7 +118,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.entry.reject.via-membership-pull-failed` (no answer after the retries; an rpc node continues, an admin refuses to start) | `node`, `reason`, `attempts` |
 | `rafka.mesh.membership.update.via-subscribe` (a membership channel was joined: the node's mesh channel `mesh_topic(fabric, mesh_id)`, or the admin-only `backbone_topic(fabric)`) | `node`, `channel` (`mesh:<mesh>` / `backbone`), `fabric`, `peers` |
 | `rafka.mesh.membership.update.via-mesh-learned` / `via-mesh-silent` (a mesh's members became heard, or none of them is heard for `SILENT_AFTER`) | `node`, `mesh`, `via` (learned only: `mesh-channel` / `forwarded` / `backbone`) |
-| `rafka.mesh.membership.update.via-cut-off` (a node that heard others now hears none; while cut off an admin executes no Build and publishes as no primary) | `node`, `role` (`start` / `stop`) |
+| `rafka.mesh.membership.update.via-cut-off` (a node that heard others now hears none; while cut off, and for `SILENT_AFTER` after it heals, an admin executes no Build and publishes as no primary) | `node`, `role` (`start` / `stop`) |
 | `rafka.mesh.backbone.update.via-aggregate-publisher` (the mesh primary starts or stops publishing its mesh's packed members on the backbone) | `node`, `mesh`, `role` (`start` / `stop`) |
 | `rafka.mesh.backbone.update.via-forwarder` (the mesh primary starts or stops forwarding peer meshes from the backbone onto its mesh channel) | `node`, `mesh`, `role` (`start` / `stop`) |
 | `rafka.mesh.fabric.update.via-status-publisher` (the fabric primary starts or stops publishing fabric status on the backbone) | `node`, `fabric`, `role` (`start` / `stop`) |
