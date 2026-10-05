@@ -505,10 +505,26 @@ impl Backbone {
     }
 }
 
-/// The latest digest heard per logical node.
+/// How much longer a member heard only through its mesh primary's forwarded
+/// aggregate stays heard: one primary succession. The successor hears the
+/// loss after `SILENT_AFTER` and publishes on its next round.
+pub const SUCCESSION: Duration = Duration::from_millis(SILENT_AFTER.as_millis() as u64 + PUBLISH_EVERY.as_millis() as u64);
+
+/// The latest digest heard per logical node: when it was taken, and whether
+/// it came forwarded by its mesh's primary.
 #[derive(Debug, Default, Clone)]
 pub struct DigestBook {
-    inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
+    inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, bool)>>>,
+}
+
+/// How long `d` has been silent: since it was taken, or, for a forwarded
+/// copy, since one primary succession after that.
+fn silence(at: &Instant, forwarded: bool) -> Duration {
+    if forwarded {
+        at.elapsed().saturating_sub(SUCCESSION)
+    } else {
+        at.elapsed()
+    }
 }
 
 impl DigestBook {
@@ -519,7 +535,7 @@ impl DigestBook {
     /// its status. `false` when `d` was not taken.
     pub fn record(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if let Some((held, _)) = inner.get(&d.node.node_id.0) {
+        if let Some((held, _, _)) = inner.get(&d.node.node_id.0) {
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms <= held.emitted_unix_ms
             } else {
@@ -529,7 +545,7 @@ impl DigestBook {
                 return false;
             }
         }
-        inner.insert(d.node.node_id.0.clone(), (d, Instant::now()));
+        inner.insert(d.node.node_id.0.clone(), (d, Instant::now(), false));
         true
     }
 
@@ -539,7 +555,7 @@ impl DigestBook {
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
     pub fn record_forwarded(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if let Some((held, _)) = inner.get(&d.node.node_id.0) {
+        if let Some((held, _, _)) = inner.get(&d.node.node_id.0) {
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms < held.emitted_unix_ms
             } else {
@@ -549,20 +565,21 @@ impl DigestBook {
                 return false;
             }
         }
-        inner.insert(d.node.node_id.0.clone(), (d, Instant::now()));
+        inner.insert(d.node.node_id.0.clone(), (d, Instant::now(), true));
         true
     }
 
     pub fn current(&self, fresh: Duration) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().filter(|(_, at)| at.elapsed() <= fresh).map(|(d, _)| d.clone()).collect()
+        self.inner.lock().unwrap().values().filter(|(_, at, fw)| silence(at, *fw) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
+    /// The member's latest digest and how long it has been silent.
     pub fn get(&self, node_id: &str) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at)| (d.clone(), at.elapsed()))
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), silence(at, *fw)))
     }
 
     pub fn all(&self) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().map(|(d, _)| d.clone()).collect()
+        self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect()
     }
 }
 
