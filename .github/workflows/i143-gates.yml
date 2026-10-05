@@ -66,3 +66,17 @@ jobs:
           cargo test -p rafka-test-scenario --test mesh_shapes__live_resize --test mesh_membership__backbone --no-run
           scripts/netless.sh cargo test --offline -p rafka-test-scenario --test mesh_shapes__live_resize mm_
           scripts/netless.sh cargo test --offline -p rafka-test-scenario --test mesh_membership__backbone
+      # The E2E evidence: every node's spans and stderr, when a step fails.
+      - name: E2E evidence on failure
+        if: failure()
+        run: |
+          mkdir -p e2e-evidence
+          cp -r crates/rafka-test-scenario/tests/artifacts e2e-evidence/ 2>/dev/null || true
+          for d in /tmp/i143-*; do [ -d "$d" ] && sudo cp -r "$d" e2e-evidence/ 2>/dev/null || true; done
+          sudo chown -R "$(id -u)" e2e-evidence || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-evidence
+          path: e2e-evidence
+          retention-days: 7
