@@ -11,6 +11,7 @@
 use crate::endpoint::EndpointSet;
 use crate::ids::{FreshnessToken, IncarnationId, NodeId, TransportId};
 use crate::path::PathName;
+use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -25,6 +26,9 @@ pub struct MeshNode {
     /// The incarnation this birth replaces; `None` for the first birth.
     pub supersedes: Option<IncarnationId>,
     pub endpoints: EndpointSet,
+    /// This birth's exact runtime (`runtime`): immutable for the incarnation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +50,9 @@ pub enum MembershipRefusal {
     Departed { node_id: NodeId },
     /// A restart keeps the transport identity; a different one is a different node.
     TransportIdChanged { node_id: NodeId },
+    /// One birth has one runtime: the same incarnation offered another
+    /// locator or provider control domain.
+    RuntimeChanged { node_id: NodeId, incarnation: IncarnationId },
     /// A live node already holds this path.
     PathHeld { path: PathName, holder: NodeId },
     /// A fact re-offered a token this slot already superseded.
@@ -66,6 +73,9 @@ impl fmt::Display for MembershipRefusal {
             ),
             Self::Departed { node_id } => write!(f, "node {node_id} departed and never returns"),
             Self::TransportIdChanged { node_id } => write!(f, "node {node_id}: transport identity changed"),
+            Self::RuntimeChanged { node_id, incarnation } => {
+                write!(f, "node {node_id}: incarnation {incarnation} offered another runtime locator or provider control domain")
+            }
             Self::PathHeld { path, holder } => write!(f, "path {path} is held by live node {holder}"),
             Self::TokenReused { node_id, slot } => write!(f, "node {node_id}: slot {slot} re-offered a superseded token"),
             Self::NotCurrent { node_id, incarnation } => write!(f, "node {node_id}: incarnation {incarnation} is not current"),
@@ -132,7 +142,10 @@ impl Membership {
                     return Err(MembershipRefusal::TransportIdChanged { node_id: id });
                 }
                 if cur.incarnation == fact.incarnation {
-                    if cur.endpoints == fact.endpoints {
+                    if cur.runtime.is_some() && fact.runtime.is_some() && cur.runtime != fact.runtime {
+                        return Err(MembershipRefusal::RuntimeChanged { node_id: id, incarnation: fact.incarnation });
+                    }
+                    if cur.endpoints == fact.endpoints && (fact.runtime.is_none() || cur.runtime == fact.runtime) {
                         return Ok(Vec::new());
                     }
                 } else if fact.supersedes.as_ref() == Some(&cur.incarnation) {
@@ -241,6 +254,7 @@ mod tests {
             incarnation: IncarnationId::mint(),
             supersedes: None,
             endpoints: EndpointSet(vec![EndpointSlot::assign("rpc-0", addr(41001)), EndpointSlot::assign("rpc-1", addr(41002))]),
+            runtime: None,
         }
     }
 
@@ -363,6 +377,29 @@ mod tests {
         m.apply(a.clone()).unwrap();
         let stale = IncarnationId::mint();
         assert_eq!(m.depart(&a.node_id, &stale), Err(MembershipRefusal::NotCurrent { node_id: a.node_id.clone(), incarnation: stale }));
+    }
+
+    #[test]
+    fn one_birth_has_one_runtime_and_a_restart_brings_its_own() {
+        use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        let fact = |pid: u32| RuntimeFact {
+            deployment_id: "dep".into(),
+            provider: RuntimeProvider::Process,
+            control_domain: "process:host:1".into(),
+            locator: RuntimeLocator::Process { pid, start: 99 },
+        };
+        let mut m = Membership::default();
+        let mut a = first_birth("mesh1.rpc.1");
+        a.runtime = Some(fact(10));
+        m.apply(a.clone()).unwrap();
+        let mut moved = a.clone();
+        moved.runtime = Some(fact(11));
+        assert_eq!(m.apply(moved), Err(MembershipRefusal::RuntimeChanged { node_id: a.node_id.clone(), incarnation: a.incarnation.clone() }));
+        let mut r = restart(&a, 41500);
+        r.runtime = Some(fact(12));
+        m.apply(r.clone()).unwrap();
+        assert!(matches!(m.apply(a), Err(MembershipRefusal::StaleIncarnation { .. })), "the old birth and its runtime never return");
+        assert_eq!(m.nodes().next().unwrap().runtime, Some(fact(12)));
     }
 
     #[test]

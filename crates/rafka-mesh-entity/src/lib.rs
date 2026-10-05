@@ -11,9 +11,11 @@ pub mod launch;
 pub mod ids;
 pub mod membership;
 pub mod path;
+pub mod runtime;
 
 pub use digest::{MemberStatus, MeshDigest, READY_SINCE};
 pub use endpoint::{EndpointSet, EndpointSlot, SlotPolicy};
 pub use ids::{FabricId, FreshnessToken, IdError, IncarnationId, MeshId, NodeId, TransportId, ID_FORMAT};
 pub use membership::{Change, Freshness, MeshNode, Membership, MembershipRefusal, Resolution};
 pub use path::{NodeKind, PathName, PathNameError};
+pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};

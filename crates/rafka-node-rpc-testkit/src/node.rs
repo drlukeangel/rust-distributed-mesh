@@ -122,6 +122,13 @@ fn now_ms() -> u64 {
 /// Bring the node up exactly as `launch` says.
 pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
+    // This birth's exact runtime, as its provider recorded it: published with
+    // the birth so any admin can manage it, whoever launched it.
+    let dir = launch.data_dir.clone();
+    let runtime = tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
+        .await
+        .map_err(|e| anyhow!("reading the runtime record: {e}"))?
+        .map_err(|e| anyhow!("{e}"))?;
     let server = register(core_protocols(ServerBuilder::new()))
         .seal(launch.endpoints.first().map(|e| e.slot.clone()).unwrap_or_default())
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
@@ -196,12 +203,14 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
             endpoints: EndpointSet(launch.endpoints.clone()),
+            runtime: Some(runtime.clone()),
         },
         status: MemberStatus::ReadyForTraffic,
         admin_api_base: None,
         emitted_unix_ms: now_ms(),
         // Ready for traffic from birth: the election claim is this instant.
         extra: [(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string())].into_iter().collect(),
+        data_dir: Some(launch.data_dir.display().to_string()),
     };
     // Born full: this node is published only now, its entry taken.
     tracing::info_span!(
@@ -212,7 +221,13 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         node_id = %launch.node_id,
         mesh_id = %mesh_id,
         fabric_id = %launch.fabric_id,
-        id_format = rafka_mesh_entity::ID_FORMAT
+        id_format = rafka_mesh_entity::ID_FORMAT,
+        deployment_id = %runtime.deployment_id,
+        provider = runtime.provider.as_str(),
+        provider_control_domain_fingerprint = %runtime.domain_fingerprint(),
+        runtime_locator_kind = runtime.locator.kind(),
+        runtime_locator_fingerprint = %runtime.locator_fingerprint(),
+        source = "self-published-membership"
     )
         .in_scope(|| tracing::info!("ready for traffic"));
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));

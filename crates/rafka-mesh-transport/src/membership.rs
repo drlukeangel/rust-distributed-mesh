@@ -674,6 +674,28 @@ fn silence(at: &Instant, forwarded: bool) -> Duration {
     }
 }
 
+/// One birth has one runtime: a digest of the held incarnation that names
+/// another runtime locator or control domain is refused by name, and the
+/// held one stays.
+fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
+    let changed = held.node.incarnation == d.node.incarnation
+        && held.node.runtime.is_some()
+        && d.node.runtime.is_some()
+        && held.node.runtime != d.node.runtime;
+    if changed {
+        tracing::info_span!(
+            "rafka.mesh.runtime.reject.via-locator-changed",
+            node = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            held_locator_fingerprint = %held.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
+            offered_locator_fingerprint = %d.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
+        )
+        .in_scope(|| tracing::info!("a birth offered another runtime"));
+    }
+    changed
+}
+
 impl DigestBook {
     /// Hold `d` as its member's latest word, unless it is older than what is
     /// held: a digest of the same birth emitted no later than the held one,
@@ -683,6 +705,9 @@ impl DigestBook {
     pub fn record(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
+            if runtime_changed(held, &d) {
+                return false;
+            }
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms <= held.emitted_unix_ms
             } else {
@@ -703,6 +728,9 @@ impl DigestBook {
     pub fn record_forwarded(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
+            if runtime_changed(held, &d) {
+                return false;
+            }
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms < held.emitted_unix_ms
             } else {
@@ -745,12 +773,45 @@ mod tests {
                 incarnation: incarnation.clone(),
                 supersedes,
                 endpoints: EndpointSet(vec![]),
+                runtime: None,
             },
             status,
             admin_api_base: None,
             emitted_unix_ms: at,
             extra: Default::default(),
+            data_dir: None,
         }
+    }
+
+    #[test]
+    fn a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one() {
+        use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        let fact = |pid: u32, domain: &str| RuntimeFact {
+            deployment_id: "dep".into(),
+            provider: RuntimeProvider::Process,
+            control_domain: domain.into(),
+            locator: RuntimeLocator::Process { pid, start: 7 },
+        };
+        let book = DigestBook::default();
+        let (id, birth) = (NodeId::mint(), IncarnationId::mint());
+        let mut first = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100);
+        first.node.runtime = Some(fact(11, "process:a:1"));
+        assert!(book.record(first.clone()));
+        // Same birth, another locator or another control domain: refused, the held one stays.
+        for other in [fact(12, "process:a:1"), fact(11, "process:b:1")] {
+            let mut moved = digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200);
+            moved.node.runtime = Some(other.clone());
+            assert!(!book.record(moved.clone()), "{other:?}");
+            assert!(!book.record_forwarded(moved));
+        }
+        assert_eq!(book.get(id.as_str()).unwrap().0.node.runtime, Some(fact(11, "process:a:1")));
+        // A restart: a new birth with a new runtime is current; the old birth's fact never returns.
+        let next = IncarnationId::mint();
+        let mut restarted = digest(&id, &next, Some(birth.clone()), MemberStatus::ReadyForTraffic, 300);
+        restarted.node.runtime = Some(fact(13, "process:a:1"));
+        assert!(book.record(restarted));
+        assert!(!book.record(first), "the superseded birth and its runtime are refused");
+        assert_eq!(book.get(id.as_str()).unwrap().0.node.runtime, Some(fact(13, "process:a:1")));
     }
 
     #[test]
@@ -774,6 +835,36 @@ mod tests {
         let runs = pack(ds.clone(), frame);
         assert!(runs.len() > 1, "forty digests do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels");
+        for r in &runs {
+            assert!(frame(r.clone()).encode().len() <= MAX_FRAME, "a run fits one message");
+        }
+    }
+
+    #[test]
+    fn digests_carrying_the_largest_runtime_fact_still_pack_within_one_message() {
+        use rafka_mesh_entity::runtime::MAX_FACT_BYTES;
+        use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        // The largest fact a birth may publish: a container id in a long domain.
+        let mut fact = RuntimeFact {
+            deployment_id: "d".repeat(64),
+            provider: RuntimeProvider::Container,
+            control_domain: String::new(),
+            locator: RuntimeLocator::Container { id: "f".repeat(64) },
+        };
+        let base = serde_json::to_vec(&fact).unwrap().len();
+        fact.control_domain = "c".repeat(MAX_FACT_BYTES - base);
+        assert_eq!(fact.validate(), Ok(()), "exactly at the bound");
+        let ds: Vec<MeshDigest> = (0..40)
+            .map(|i| {
+                let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i);
+                d.node.runtime = Some(fact.clone());
+                d.data_dir = Some(format!("/var/lib/rafka/{}", "x".repeat(64)));
+                d
+            })
+            .collect();
+        let frame = |digests| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), sent_unix_ms: 1, digests };
+        let runs = pack(ds, frame);
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels with its runtime");
         for r in &runs {
             assert!(frame(r.clone()).encode().len() <= MAX_FRAME, "a run fits one message");
         }

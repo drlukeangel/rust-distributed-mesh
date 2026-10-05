@@ -44,6 +44,9 @@ impl DeploymentProvider for Killable {
     fn kind(&self) -> ProviderKind {
         self.inner.kind()
     }
+    fn control_domain(&self) -> String {
+        self.inner.control_domain()
+    }
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
         let h = self.inner.spawn(spec).await?;
         self.spawned.lock().unwrap().push(h.pid.unwrap());

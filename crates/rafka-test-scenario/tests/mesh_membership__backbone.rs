@@ -335,6 +335,11 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     let mut want: BTreeSet<String> = before.keys().cloned().collect();
     want.insert("mesh1.rpc.3".into());
     let after = estate.settled(&want, Duration::from_secs(30)).await;
+    // Relearned with membership after the heal: every birth's current
+    // runtime metadata (i143.e4.s16), no Build history replayed.
+    for n in &after {
+        assert!(n["data_dir"].as_str().is_some_and(|d| !d.is_empty()), "{} carries its data dir after the heal: {n}", n["name"]);
+    }
     for n in &after {
         if let Some(inc) = before.get(&s(&n["name"])) {
             assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);

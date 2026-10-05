@@ -56,6 +56,8 @@ jobs:
         run: cargo test -p rafka-test-scenario --test mesh_lifecycle__mesh_recover
       - name: canonical Crockford60 product ids (process E2E)
         run: cargo test -p rafka-test-scenario --test mesh_identity__canonical_ids
+      - name: a successor manages births it never launched (process E2E)
+        run: cargo test -p rafka-test-scenario --test mesh_runtime__successor_adoption
       - name: hierarchical membership, mesh channels and the admin backbone (process E2E, partition through iptables)
         env:
           RAFKA_REQUIRE_NETFAULT: "1"

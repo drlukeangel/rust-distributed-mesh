@@ -3476,6 +3476,7 @@ dependencies = [
 name = "rafka-mesh-entity"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "hex",
  "rand 0.8.6",
  "serde",

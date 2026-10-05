@@ -54,8 +54,12 @@ pub struct ContainerDeploymentProvider {
     /// Exit codes of containers this provider removed, so `inspect` still
     /// answers for them.
     exited: Mutex<HashMap<String, Option<i32>>>,
-    /// Each live container's data dir, where its logs are kept on removal.
-    data_dirs: Mutex<HashMap<String, std::path::PathBuf>>,
+    /// Each live container (by immutable id): its data dir, where its logs
+    /// are kept on removal, and its deployment.
+    data_dirs: Mutex<HashMap<String, (std::path::PathBuf, crate::model::DeploymentId)>>,
+    /// The Docker daemon this provider drives: the control domain a
+    /// container id means something in.
+    domain: String,
 }
 
 async fn docker(args: &[&str]) -> Result<String, String> {
@@ -203,7 +207,15 @@ impl ContainerDeploymentProvider {
             })
             .next()
             .ok_or_else(|| unsupported(format!("network {name} has no IPv4 subnet ({ipam})")))?;
-        Ok(Self { fabric: fabric.into(), network, exited: Mutex::new(HashMap::new()), data_dirs: Mutex::new(HashMap::new()) })
+        let daemon = docker(&["info", "--format", "{{.ID}}"]).await.map_err(unsupported)?;
+        let daemon = if daemon.trim().is_empty() { docker(&["info", "--format", "{{.Name}}"]).await.map_err(unsupported)? } else { daemon };
+        Ok(Self {
+            fabric: fabric.into(),
+            network,
+            exited: Mutex::new(HashMap::new()),
+            data_dirs: Mutex::new(HashMap::new()),
+            domain: format!("container:{}", daemon.trim()),
+        })
     }
 
     pub fn network(&self) -> &FabricNetwork {
@@ -227,11 +239,16 @@ impl ContainerDeploymentProvider {
         Ok(())
     }
 
+    /// The handle's immutable container id.
     fn container_of<'a>(&self, handle: &'a DeploymentHandle) -> Result<&'a str, DeployError> {
         handle.container.as_deref().ok_or_else(|| DeployError::Terminate {
             deployment: handle.deployment_id.0.clone(),
             reason: "the handle names no container".into(),
         })
+    }
+
+    fn handle(&self, deployment_id: crate::model::DeploymentId, id: String, pid: Option<u32>) -> DeploymentHandle {
+        DeploymentHandle { deployment_id, provider: ProviderKind::Container, pid, start: None, container: Some(id), domain: Some(self.domain.clone()) }
     }
 }
 
@@ -239,6 +256,10 @@ impl ContainerDeploymentProvider {
 impl DeploymentProvider for ContainerDeploymentProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Container
+    }
+
+    fn control_domain(&self) -> String {
+        self.domain.clone()
     }
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
@@ -280,10 +301,18 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         args.push(exe_in.display().to_string());
         args.extend(spec.args.iter().cloned());
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        docker(&argv).await.map_err(err)?;
-        self.data_dirs.lock().unwrap().insert(name.clone(), spec.data_dir.clone());
-        let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &name]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
-        Ok(DeploymentHandle { deployment_id: spec.deployment_id.clone(), provider: ProviderKind::Container, pid, container: Some(name) })
+        // A record left by an earlier birth in this data dir is not this one's.
+        let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
+        // `docker run -d` answers the immutable id: the runtime's identity,
+        // not the (reusable) name.
+        let id = docker(&argv).await.map_err(err)?.trim().to_string();
+        self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
+        let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
+        let handle = self.handle(spec.deployment_id.clone(), id.clone(), pid);
+        // The runtime publishes its exact runtime from this record.
+        let fact = handle.fact().ok_or_else(|| err(format!("container {name} answered no immutable id ({id})")))?;
+        fact.write_record(&spec.data_dir).map_err(err)?;
+        Ok(handle)
     }
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
@@ -296,7 +325,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         docker(&["stop", "-t", &grace.to_string(), name]).await.map_err(err)?;
         let code = docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok());
         // Keep the logs beside the node's data, then remove the container.
-        let data_dir = self.data_dirs.lock().unwrap().remove(name);
+        let data_dir = self.data_dirs.lock().unwrap().remove(name).map(|(d, _)| d);
         if let (Some(dir), Ok(logs)) = (data_dir, Command::new("docker").args(["logs", name]).output().await) {
             let _ = std::fs::write(dir.join("container.log"), [&logs.stdout[..], &logs.stderr[..]].concat());
         }
@@ -333,32 +362,18 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
         let name = container_name(spec);
-        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}}", &name]).await.ok()?;
-        let (status, pid) = state.split_once(' ')?;
+        let state = docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await.ok()?;
+        let mut parts = state.split_whitespace();
+        let (status, pid, id) = (parts.next()?, parts.next()?, parts.next()?.to_string());
         if status != "running" {
             return None;
         }
-        self.data_dirs.lock().unwrap().insert(name.clone(), spec.data_dir.clone());
-        Some(DeploymentHandle {
-            deployment_id: spec.deployment_id.clone(),
-            provider: ProviderKind::Container,
-            pid: pid.parse().ok().filter(|p| *p > 0),
-            container: Some(name),
-        })
+        self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
+        Some(self.handle(spec.deployment_id.clone(), id, pid.parse().ok().filter(|p| *p > 0)))
     }
 
     fn launched(&self) -> Vec<DeploymentHandle> {
-        self.data_dirs
-            .lock()
-            .unwrap()
-            .keys()
-            .map(|name| DeploymentHandle {
-                deployment_id: crate::model::DeploymentId(name.clone()),
-                provider: ProviderKind::Container,
-                pid: None,
-                container: Some(name.clone()),
-            })
-            .collect()
+        self.data_dirs.lock().unwrap().iter().map(|(id, (_, dep))| self.handle(dep.clone(), id.clone(), None)).collect()
     }
 
     async fn holds(&self, handle: &DeploymentHandle, addr: SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
