@@ -100,7 +100,8 @@ impl DeploymentProvider for ProcessDeploymentProvider {
                 .map(Stdio::from)
                 .map_err(|e| err(format!("{name}: {e}")))
         };
-        // A record left by an earlier birth in this data dir is not this one's.
+        // A record left by an earlier birth in this data dir is not this one's:
+        // the birth waits for the one the pipeline makes available.
         let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
         let mut cmd = std::process::Command::new(&spec.executable);
         cmd.args(&spec.args).envs(&spec.env).stdin(Stdio::null()).stdout(log("stdout.log")?).stderr(log("stderr.log")?);
@@ -127,11 +128,9 @@ impl DeploymentProvider for ProcessDeploymentProvider {
                 }
             })
             .map_err(|e| err(format!("watching pid {pid}: {e}")))?;
-        let handle = self.handle(spec.deployment_id.clone(), pid, start);
-        // The runtime publishes its exact runtime from this record.
-        let fact = handle.fact().ok_or_else(|| err(format!("pid {pid} has no start token: its runtime cannot be named exactly")))?;
-        fact.write_record(&spec.data_dir).map_err(err)?;
-        Ok(handle)
+        // The pipeline registers this exact handle and makes its runtime fact
+        // available to the birth (`MakeRuntimeFactAvailableToBirth`).
+        Ok(self.handle(spec.deployment_id.clone(), pid, start))
     }
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
@@ -278,9 +277,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rafka-process-adopt-{}", std::process::id()));
         let launcher = ProcessDeploymentProvider::new();
         let h = launcher.spawn(&launch(&dir)).await.unwrap();
-        // The provider recorded exactly the runtime it started.
+        // The handle names exactly the runtime it started; making its fact
+        // available to the birth is the pipeline's step, not the provider's.
         let fact = h.fact().expect("an exact handle");
-        assert_eq!(rafka_mesh_entity::RuntimeFact::read_record(&dir).unwrap().unwrap(), fact);
+        assert!(rafka_mesh_entity::RuntimeFact::read_record(&dir).is_none());
         let successor = ProcessDeploymentProvider::new();
         // The same pid under another start token is another process: never ours to signal.
         let mut forged = fact.clone();

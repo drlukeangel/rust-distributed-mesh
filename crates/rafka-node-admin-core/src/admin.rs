@@ -20,7 +20,7 @@
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
 use crate::deployment::endpoint::{slots_for, EndpointAllocator};
-use crate::deployment::pipeline::{
+use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy, TerminationMode};
@@ -37,7 +37,7 @@ use crate::topology::Topology;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode, RuntimeFact};
+use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
 use rafka_mesh_transport::membership::{announce_leaving, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY, SILENT_AFTER};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -294,8 +294,11 @@ impl MembershipObserver {
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.book.get(node_id.as_str()).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
+        self.book
+            .get(node_id.as_str())
+            .filter(|(d, _)| &d.node.incarnation == incarnation)
+            .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
@@ -881,8 +884,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     });
 
     // This birth's exact runtime. A launched admin takes the record its
-    // provider wrote; the bootstrap admin, which nobody launched, adopts its
-    // own process. Either way it is published with the birth.
+    // launcher's pipeline made available; the bootstrap admin, which nobody
+    // launched, adopts its own process (Day 0, one receipt per step). Either
+    // way it is published with the birth.
+    let mut adoption = None;
     let runtime = match &cfg.launch {
         Some(_) => {
             let dir = cfg.data_dir.clone();
@@ -890,7 +895,12 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 .await
                 .map_err(|e| format!("reading the runtime record: {e}"))??
         }
-        None => RuntimeFact::of_this_process(&crate::model::DeploymentId::mint().0).map_err(|e| format!("adopting this runtime: {e}"))?,
+        None => {
+            let a = CurrentRuntimeAdoption::begin(&name, &cfg.data_dir, &crate::model::DeploymentId::mint()).map_err(|e| e.to_string())?;
+            let f = a.fact().clone();
+            adoption = Some(a);
+            f
+        }
     };
     // Own digest, published on the membership cadence.
     let mut extra = BTreeMap::new();
@@ -913,15 +923,24 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     freshness: FreshnessToken::mint(),
                 },
             ]),
-            runtime: Some(runtime.clone()),
+            // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
+            runtime: adoption.is_none().then(|| runtime.clone()),
         },
         // Pending until it can take authority at once (the Ready gate below).
         status: MemberStatus::Pending,
         admin_api_base: Some(api_base.clone()),
         emitted_unix_ms: now_ms(),
         extra,
-        data_dir: Some(cfg.data_dir.display().to_string()),
+        data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
     }));
+    if let Some(a) = adoption {
+        a.publish(|f, dir| {
+            let mut d = digest.lock().unwrap();
+            d.node.runtime = Some(f.clone());
+            d.data_dir = Some(dir);
+        })
+        .map_err(|e| e.to_string())?;
+    }
     let _ = entry.set(EntryState {
         name: name.clone(),
         fabric: cfg.fabric.clone(),
@@ -939,9 +958,12 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
     // becomes eligible for every seat) only once it can manage every birth it
     // holds: each live member publishes a runtime fact this admin's provider
-    // adopts in its own control domain. Until then it publishes Pending.
+    // adopts in its own control domain, and the Day-0 admin holds a Complete
+    // receipt for every step of its own adoption. Until then it publishes
+    // Pending.
     {
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), prepared.provider.clone(), name.clone(), membership.clone());
+        let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
         tasks.push(tokio::spawn(async move {
@@ -952,7 +974,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     .into_iter()
                     .filter(|d| d.node.name != me && d.status != MemberStatus::Leaving)
                     .collect();
-                let blocked = authority_blockers(&held, &*provider);
+                let mut blocked = authority_blockers(&held, &*provider);
+                if let Some(dir) = &day0 {
+                    blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
+                }
                 if blocked.is_empty() {
                     let mut d = digest.lock().unwrap();
                     if d.status != MemberStatus::Pending {
@@ -1159,7 +1184,7 @@ mod tests {
         let p = ProcessDeploymentProvider::new();
         let with = |name: &str, domain: Option<String>| {
             let mut d = digest(name, MemberStatus::ReadyForTraffic);
-            d.node.runtime = domain.map(|control_domain| RuntimeFact {
+            d.node.runtime = domain.map(|control_domain| rafka_mesh_entity::RuntimeFact {
                 deployment_id: "dep".into(),
                 provider: RuntimeProvider::Process,
                 control_domain,

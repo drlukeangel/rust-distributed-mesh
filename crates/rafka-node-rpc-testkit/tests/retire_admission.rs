@@ -34,7 +34,7 @@ struct DeparturesLost<'a> {
 
 #[async_trait::async_trait]
 impl NodeObserver for DeparturesLost<'_> {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
         self.live.joined(node_id, incarnation).await
     }
     async fn ready(&self, node: &Node) -> Result<(), String> {

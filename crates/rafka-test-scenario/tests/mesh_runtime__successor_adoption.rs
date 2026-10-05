@@ -16,6 +16,15 @@
 //! recorded; the successor's `rafka.node_admin.runtime.update.via-adopt`
 //! names the same locator fingerprint, `source = self-published-membership`,
 //! and the successor as adopter and executor.
+//!
+//! And each prerequisite is its own committed step before Ready (PRD §5.3):
+//! the Day-0 admin's `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`,
+//! `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`
+//! all complete, in order, before its ready span; every launched birth's
+//! `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`,
+//! `MakeRuntimeFactAvailableToBirth`,
+//! `PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata` complete, in
+//! order, before its `WaitForNodeReady` step begins.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -96,6 +105,37 @@ async fn a_successor_manages_births_it_never_launched() {
     let boot = named(&spans, "rafka.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
     assert_eq!(boot["attributes"]["runtime_locator_kind"], "process-pid-start");
     assert_eq!(boot["attributes"]["source"], "self-published-membership");
+    let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
+    let steps_of = |node: &str, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
+        let mut v: Vec<Value> = named(&spans, "rafka.node_admin.deployment.update.via-step")
+            .into_iter()
+            .filter(|sp| sp["attributes"]["node"] == node && pipeline_step(sp))
+            .cloned()
+            .collect();
+        v.sort_by_key(|sp| ns(sp, "start_unix_nano"));
+        v
+    };
+    // Day 0: the adoption, step by step, before Ready.
+    let day0 = steps_of("mesh1.admin.1", &|sp| sp["attributes"]["build_id"] == "");
+    let names: Vec<&str> = day0.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).collect();
+    assert_eq!(names, ["AdoptCurrentRuntime", "RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "PublishRuntimeFactAndCurrentRuntimeMetadata"]);
+    for sp in &day0 {
+        assert_eq!(sp["attributes"]["outcome"], "complete", "{sp}");
+        assert!(ns(sp, "end_unix_nano") <= ns(&boot, "start_unix_nano"), "{} committed before the bootstrap admin's Ready", sp["attributes"]["step"]);
+    }
+    // Every launched birth: the four prerequisites, in order, before
+    // WaitForNodeReady begins.
+    const PREREQUISITES: [&str; 4] =
+        ["RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "MakeRuntimeFactAvailableToBirth", "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata"];
+    let launched: Vec<&Value> = named(&spans, "rafka.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "WaitForNodeReady").collect();
+    assert_eq!(launched.len(), 5, "mesh1.rpc.1-3, mesh1.admin.2 and mesh1.rpc.2's restart each waited for Ready");
+    for wait in launched {
+        let (node, build) = (wait["attributes"]["node"].as_str().unwrap(), wait["attributes"]["build_id"].clone());
+        let before: Vec<Value> = steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"));
+        let names: Vec<&str> = before.iter().map(|sp| sp["attributes"]["step"].as_str().unwrap()).filter(|s| PREREQUISITES.contains(s)).collect();
+        assert_eq!(names, PREREQUISITES, "{node}: every prerequisite committed, in order, before WaitForNodeReady");
+        assert!(before.iter().filter(|sp| PREREQUISITES.contains(&sp["attributes"]["step"].as_str().unwrap())).all(|sp| sp["attributes"]["outcome"] == "complete"));
+    }
     for birth in [&restarted, &retired] {
         let name = s(&birth["name"]);
         let ready = named(&spans, "rafka.mesh.node.update.via-ready")

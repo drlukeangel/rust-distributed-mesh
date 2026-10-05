@@ -3,7 +3,9 @@
 //!
 //! ```text
 //! create: AllocateIdentity -> AllocateEndpoints -> PrepareStorage -> PrepareNetwork
-//!   -> DeployRuntime -> WaitForBind -> PublishTopology -> WaitForMeshJoin
+//!   -> DeployRuntime -> RegisterExactRuntimeHandle -> ResolveProviderControlDomain
+//!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
+//!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
 //! retire: MarkDraining -> WaitForDrain -> PublishLeaving -> CloseRpcAdmission
 //!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (if permanent)
@@ -15,6 +17,17 @@
 //! step appends a receipt to the Build's state and runs under one child span
 //! of the pipeline's parent span. Optional steps (DNS, load balancer,
 //! firewall) have no realisation on these providers and are not run.
+//!
+//! The runtime steps after `DeployRuntime` call no provider: each commits,
+//! as its own receipt, one prerequisite of a managed birth (PRD §5.3) over
+//! what `DeployRuntime` obtained: the handle names its runtime exactly; the
+//! runtime lives in this provider's control domain; the normalized
+//! `RuntimeFact` is in the birth's data dir, where the birth waits for it
+//! before it publishes anything; the birth's projection (topology, fact,
+//! data dir) is published. `WaitForNodeReady` does not begin until the
+//! Build's state holds a `Complete` receipt for each of them
+//! ([`READY_PREREQUISITES`]), and `WaitForMeshJoin` takes only the birth's
+//! own digest carrying exactly that fact and data dir.
 //!
 //! Re-runs reconcile forward. A step whose receipt in an earlier attempt of
 //! the same Build is `Complete` is reused from the decision that receipt
@@ -29,6 +42,7 @@ use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointSlot, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
+use rafka_mesh_entity::RuntimeFact;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -44,22 +58,42 @@ pub enum CreateStep {
     PrepareStorage,
     PrepareNetwork,
     DeployRuntime,
+    /// The provider's handle names its runtime exactly (a pid with its
+    /// start token, an immutable container id).
+    RegisterExactRuntimeHandle,
+    /// The runtime lives in this provider's control domain.
+    ResolveProviderControlDomain,
+    /// The normalized `RuntimeFact` is in the birth's data dir.
+    MakeRuntimeFactAvailableToBirth,
     WaitForBind,
-    PublishTopology,
+    /// The birth's projection: its node record and data dir, and the fact it
+    /// publishes with its own membership digest.
+    PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
     WaitForMeshJoin,
     WaitForNodeReady,
     Complete,
 }
 
+/// What `WaitForNodeReady` requires a `Complete` receipt for before it begins.
+pub const READY_PREREQUISITES: [CreateStep; 4] = [
+    CreateStep::RegisterExactRuntimeHandle,
+    CreateStep::ResolveProviderControlDomain,
+    CreateStep::MakeRuntimeFactAvailableToBirth,
+    CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
+];
+
 impl CreateStep {
-    pub const ORDER: [CreateStep; 10] = [
+    pub const ORDER: [CreateStep; 13] = [
         Self::AllocateIdentity,
         Self::AllocateEndpoints,
         Self::PrepareStorage,
         Self::PrepareNetwork,
         Self::DeployRuntime,
+        Self::RegisterExactRuntimeHandle,
+        Self::ResolveProviderControlDomain,
+        Self::MakeRuntimeFactAvailableToBirth,
         Self::WaitForBind,
-        Self::PublishTopology,
+        Self::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
         Self::WaitForMeshJoin,
         Self::WaitForNodeReady,
         Self::Complete,
@@ -72,8 +106,11 @@ impl CreateStep {
             Self::PrepareStorage => "PrepareStorage",
             Self::PrepareNetwork => "PrepareNetwork",
             Self::DeployRuntime => "DeployRuntime",
+            Self::RegisterExactRuntimeHandle => "RegisterExactRuntimeHandle",
+            Self::ResolveProviderControlDomain => "ResolveProviderControlDomain",
+            Self::MakeRuntimeFactAvailableToBirth => "MakeRuntimeFactAvailableToBirth",
             Self::WaitForBind => "WaitForBind",
-            Self::PublishTopology => "PublishTopology",
+            Self::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata => "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata",
             Self::WaitForMeshJoin => "WaitForMeshJoin",
             Self::WaitForNodeReady => "WaitForNodeReady",
             Self::Complete => "Complete",
@@ -123,11 +160,144 @@ impl RetireStep {
     }
 }
 
+/// Day 0: the externally started admin adopts its own runtime (PRD §5.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptStep {
+    AdoptCurrentRuntime,
+    RegisterExactRuntimeHandle,
+    ResolveProviderControlDomain,
+    PublishRuntimeFactAndCurrentRuntimeMetadata,
+}
+
+impl AdoptStep {
+    pub const ORDER: [AdoptStep; 4] =
+        [Self::AdoptCurrentRuntime, Self::RegisterExactRuntimeHandle, Self::ResolveProviderControlDomain, Self::PublishRuntimeFactAndCurrentRuntimeMetadata];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::AdoptCurrentRuntime => "AdoptCurrentRuntime",
+            Self::RegisterExactRuntimeHandle => "RegisterExactRuntimeHandle",
+            Self::ResolveProviderControlDomain => "ResolveProviderControlDomain",
+            Self::PublishRuntimeFactAndCurrentRuntimeMetadata => "PublishRuntimeFactAndCurrentRuntimeMetadata",
+        }
+    }
+}
+
+/// Where the Day-0 admin keeps its adoption receipts, in its data dir.
+pub const ADOPTION_RECEIPTS: &str = "runtime-adoption.json";
+
+/// One Day-0 adoption step's receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptionReceipt {
+    pub step: String,
+    pub outcome: StepOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+}
+
+/// The Day-0 adoption of this process, one receipt and span per step.
+pub struct CurrentRuntimeAdoption {
+    node: PathName,
+    data_dir: PathBuf,
+    span: tracing::Span,
+    receipts: Vec<AdoptionReceipt>,
+    /// Set by `AdoptCurrentRuntime`; `begin` returns only once it is.
+    fact: Option<RuntimeFact>,
+}
+
+impl CurrentRuntimeAdoption {
+    /// `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle` and
+    /// `ResolveProviderControlDomain` for this process, under a new
+    /// deployment id. The receipts so far are in `data_dir`.
+    pub fn begin(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId) -> Result<Self, PipelineError> {
+        let span = tracing::info_span!(
+            "rafka.node_admin.deployment.update.via-pipeline",
+            pipeline = "adopt-current",
+            build_id = "",
+            provider = ?crate::model::ProviderKind::Process,
+            node = %node,
+            attempt = 1u32,
+            restart = false,
+        );
+        let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
+        a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
+            RuntimeFact::of_this_process(&deployment_id.0).map(|f| (Some(f.clone()), RuntimeEvidence::of(&f))).map_err(|e| format!("{n}: {e}"))
+        })?;
+        let f = a.fact().clone();
+        a.step(AdoptStep::RegisterExactRuntimeHandle, |n| {
+            f.validate().map_err(|e| format!("{n}: {e}"))?;
+            f.verify_is_this_runtime().map_err(|e| format!("{n}: {e}"))?;
+            Ok((None, RuntimeEvidence::of(&f)))
+        })?;
+        a.step(AdoptStep::ResolveProviderControlDomain, |n| {
+            let domain = rafka_mesh_entity::runtime::process_control_domain()?;
+            if f.control_domain != domain {
+                return Err(format!("{n}: its runtime is in control domain {}, not this host's process domain {}", f.domain_fingerprint(), rafka_mesh_entity::runtime::fingerprint(&domain)));
+            }
+            Ok((None, RuntimeEvidence::of(&f)))
+        })?;
+        Ok(a)
+    }
+
+    pub fn fact(&self) -> &RuntimeFact {
+        self.fact.as_ref().expect("AdoptCurrentRuntime set the fact")
+    }
+
+    /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: `publish` puts the fact
+    /// and this data dir into the projection membership publishes.
+    pub fn publish(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
+        let (f, dir) = (self.fact().clone(), self.data_dir.display().to_string());
+        self.step(AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata, |_| {
+            publish(&f, dir.clone());
+            Ok((None, RuntimeEvidence { data_dir: Some(dir.clone()), ..RuntimeEvidence::of(&f) }))
+        })?;
+        Ok(f)
+    }
+
+    fn step(&mut self, step: AdoptStep, work: impl FnOnce(&PathName) -> Result<(Option<RuntimeFact>, RuntimeEvidence), String>) -> Result<Option<RuntimeFact>, PipelineError> {
+        let span = tracing::info_span!(
+            parent: &self.span,
+            "rafka.node_admin.deployment.update.via-step",
+            step = step.name(),
+            build_id = "",
+            provider = ?crate::model::ProviderKind::Process,
+            node = %self.node,
+            attempt = 1u32,
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+        let started = Instant::now();
+        let r = span.in_scope(|| work(&self.node));
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
+        self.receipts.push(match &r {
+            Ok((_, ev)) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::Complete, output: serde_json::to_value(ev).ok() },
+            Err(reason) => AdoptionReceipt { step: step.name().into(), outcome: StepOutcome::Failed { reason: reason.clone() }, output: None },
+        });
+        // Written after every step; the Ready gate reads them back.
+        if let Err(e) = serde_json::to_vec_pretty(&self.receipts).map_err(|e| e.to_string()).and_then(|b| std::fs::write(self.data_dir.join(ADOPTION_RECEIPTS), b).map_err(|e| e.to_string())) {
+            tracing::warn!(node = %self.node, error = %e, "the Day-0 adoption receipts cannot be written");
+        }
+        r.map(|(f, _)| f).map_err(|reason| PipelineError { step: step.name(), reason })
+    }
+}
+
+/// The Day-0 adoption steps `data_dir` holds no `Complete` receipt for.
+pub fn adoption_missing(data_dir: &std::path::Path) -> Vec<&'static str> {
+    let receipts: Vec<AdoptionReceipt> = std::fs::read(data_dir.join(ADOPTION_RECEIPTS)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    AdoptStep::ORDER
+        .iter()
+        .map(|s| s.name())
+        .filter(|s| !receipts.iter().any(|r| r.step == *s && r.outcome == StepOutcome::Complete))
+        .collect()
+}
+
 /// What the pipeline asks of the live mesh (gossip membership and Node RPC).
 #[async_trait::async_trait]
 pub trait NodeObserver: Send + Sync {
-    /// Has this exact birth (`node_id`, `incarnation`) joined fabric membership?
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool;
+    /// What this exact birth (`node_id`, `incarnation`) publishes with its
+    /// own membership digest; `None` until it has joined fabric membership.
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving on every advertised slot?
     async fn ready(&self, node: &Node) -> Result<(), String>;
     /// After the stop signal: has this birth finished its in-flight work
@@ -136,6 +306,52 @@ pub trait NodeObserver: Send + Sync {
     /// Does the node refuse new Node RPC work on every slot (a typed
     /// `Draining`, or nothing admits the call at all)?
     async fn admission_closed(&self, node: &Node) -> Result<(), String>;
+}
+
+/// The runtime part of a birth's own membership digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Publication {
+    pub runtime: Option<RuntimeFact>,
+    pub data_dir: Option<String>,
+}
+
+/// What a runtime step commits to its receipt: the runtime by fingerprint
+/// (no pid, container id or domain in evidence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RuntimeEvidence {
+    deployment_id: String,
+    provider: String,
+    provider_control_domain_fingerprint: String,
+    runtime_locator_kind: String,
+    runtime_locator_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_dir: Option<String>,
+}
+
+impl RuntimeEvidence {
+    fn of(f: &RuntimeFact) -> Self {
+        Self {
+            deployment_id: f.deployment_id.clone(),
+            provider: f.provider.as_str().into(),
+            provider_control_domain_fingerprint: f.domain_fingerprint(),
+            runtime_locator_kind: f.locator.kind().into(),
+            runtime_locator_fingerprint: f.locator_fingerprint(),
+            data_dir: None,
+        }
+    }
+}
+
+/// The prerequisites of [`READY_PREREQUISITES`] that `receipts` holds no
+/// `Complete` receipt for: of `operation`, from the latest run after its
+/// last failed attempt, up to and including `attempt`.
+pub fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &str, attempt: u32) -> Vec<&'static str> {
+    let ours: Vec<&BuildStepReceipt> = receipts.iter().filter(|r| r.operation == operation && r.attempt <= attempt).collect();
+    let last_failed = ours.iter().filter(|r| matches!(r.outcome, StepOutcome::Failed { .. }) && r.attempt < attempt).map(|r| r.attempt).max().unwrap_or(0);
+    READY_PREREQUISITES
+        .iter()
+        .map(|s| s.name())
+        .filter(|s| !ours.iter().any(|r| r.attempt > last_failed && r.step == *s && r.outcome == StepOutcome::Complete))
+        .collect()
 }
 
 /// Where node records are published (the fabric control projection).
@@ -387,6 +603,7 @@ impl DeploymentPipeline<'_> {
     async fn create_steps(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
         let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" };
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("{op}:{}", req.node)).await;
+        let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
         // lost with it) is a lost birth: everything is decided afresh, a new
@@ -474,6 +691,51 @@ impl DeploymentPipeline<'_> {
                 self.provider.spawn(&spec).await.map_err(|e| e.to_string())
             })
             .await?;
+        // What DeployRuntime obtained, committed one prerequisite at a time.
+        let fact = handle.fact();
+        let exact = || {
+            fact.clone().ok_or_else(|| {
+                format!(
+                    "{} (deployment {}): the provider's handle names no exact runtime (a pid needs its start token, a container its immutable id)",
+                    req.node, id.deployment_id
+                )
+            })
+        };
+        self.step(&mut run, CreateStep::RegisterExactRuntimeHandle.name(), async {
+            let f = exact()?;
+            if f.deployment_id != id.deployment_id.0 {
+                return Err(format!("{}: the handle realises deployment {}, not {}", req.node, f.deployment_id, id.deployment_id));
+            }
+            f.validate().map_err(|e| format!("{}: {e}", req.node))?;
+            Ok(RuntimeEvidence::of(&f))
+        })
+        .await?;
+        self.step(&mut run, CreateStep::ResolveProviderControlDomain.name(), async {
+            let f = exact()?;
+            let domain = self.provider.control_domain();
+            if f.control_domain != domain {
+                return Err(format!(
+                    "{}: its runtime is in control domain {} (fingerprint), not this provider's {}",
+                    req.node,
+                    f.domain_fingerprint(),
+                    rafka_mesh_entity::runtime::fingerprint(&domain)
+                ));
+            }
+            Ok(RuntimeEvidence::of(&f))
+        })
+        .await?;
+        self.step(&mut run, CreateStep::MakeRuntimeFactAvailableToBirth.name(), async {
+            let f = exact()?;
+            f.write_record(&data_dir).map_err(|e| format!("{}: {e}", req.node))?;
+            match RuntimeFact::read_record(&data_dir) {
+                Some(Ok(back)) if back == f => Ok(RuntimeEvidence::of(&f)),
+                Some(Ok(_)) => Err(format!("{}: {} reads back another runtime", req.node, data_dir.display())),
+                Some(Err(e)) => Err(format!("{}: {e}", req.node)),
+                None => Err(format!("{}: {} holds no runtime record after it was written", req.node, data_dir.display())),
+            }
+        })
+        .await?;
+        let fact = exact().map_err(|reason| PipelineError { step: CreateStep::MakeRuntimeFactAvailableToBirth.name(), reason })?;
         self.step(&mut run, CreateStep::WaitForBind.name(), async {
             let until = Instant::now() + self.timeouts.bind;
             loop {
@@ -508,20 +770,50 @@ impl DeploymentPipeline<'_> {
         if let Some(p) = &prior {
             node.is_primary = p.is_primary;
         }
-        self.step(&mut run, CreateStep::PublishTopology.name(), async {
+        // One coherent birth projection: the node record (topology and data
+        // dir) here; the fact itself the birth publishes with its own digest,
+        // which WaitForMeshJoin holds to exactly this fact and data dir.
+        self.step(&mut run, CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name(), async {
             self.sink.publish(node.clone());
-            Ok(())
+            Ok(RuntimeEvidence { data_dir: node.data_dir.clone(), ..RuntimeEvidence::of(&fact) })
         })
         .await?;
+        let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step(&mut run, CreateStep::WaitForMeshJoin.name(), async {
-            if poll(self.timeouts.join, || self.observer.joined(&id.node_id, &id.incarnation)).await {
-                Ok(())
-            } else {
-                Err(format!("no membership digest from {} incarnation {} within {:?}", req.node, id.incarnation, self.timeouts.join))
+            let until = Instant::now() + self.timeouts.join;
+            let (joined, last) = loop {
+                let last = self.observer.joined(&id.node_id, &id.incarnation).await;
+                if last.as_ref() == Some(&published) {
+                    break (true, last);
+                }
+                if Instant::now() >= until {
+                    break (false, last);
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            };
+            match last {
+                _ if joined => Ok(()),
+                None => Err(format!("no membership digest from {} incarnation {} within {:?}", req.node, id.incarnation, self.timeouts.join)),
+                Some(p) => Err(format!(
+                    "{} incarnation {} publishes runtime {} with data dir {:?}, not the runtime {} made available with data dir {:?}",
+                    req.node,
+                    id.incarnation,
+                    p.runtime.as_ref().map_or_else(|| "none".to_string(), |f| f.locator_fingerprint()),
+                    p.data_dir,
+                    fact.locator_fingerprint(),
+                    published.data_dir
+                )),
             }
         })
         .await?;
         self.step(&mut run, CreateStep::WaitForNodeReady.name(), async {
+            // Ready only over committed prerequisites: each has a Complete
+            // receipt in the Build's state, not merely a step that ran.
+            let receipts = self.builds.read_build(run_build).await.map_err(|e| format!("reading {run_build}'s receipts before Ready: {e}"))?.steps;
+            let missing = ready_prerequisites_missing(&receipts, &run_operation, run_attempt);
+            if !missing.is_empty() {
+                return Err(format!("{} cannot be Ready: no Complete receipt for {}", req.node, missing.join(", ")));
+            }
             let until = Instant::now() + self.timeouts.ready;
             loop {
                 match self.observer.ready(&node).await {
@@ -628,5 +920,64 @@ impl DeploymentPipeline<'_> {
         .await?;
         self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
+        BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None }
+    }
+
+    #[test]
+    fn ready_requires_a_complete_receipt_for_each_runtime_prerequisite_of_this_run() {
+        let op = "create-node:mesh1.rpc.1";
+        let all: Vec<BuildStepReceipt> = READY_PREREQUISITES.iter().map(|s| receipt(1, s.name(), StepOutcome::Complete)).collect();
+        assert!(ready_prerequisites_missing(&all, op, 1).is_empty());
+        // One lost receipt is named.
+        let lost: Vec<_> = all.iter().filter(|r| r.step != "MakeRuntimeFactAvailableToBirth").cloned().collect();
+        assert_eq!(ready_prerequisites_missing(&lost, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
+        // Another operation's receipts are not this run's.
+        let other: Vec<_> = all.iter().cloned().map(|mut r| {
+            r.operation = "create-node:mesh1.rpc.2".into();
+            r
+        }).collect();
+        assert_eq!(ready_prerequisites_missing(&other, op, 1).len(), 4);
+        // A failed attempt voids what came before it: attempt 3 after a failed
+        // attempt 2 cannot stand on attempt 1's receipts.
+        let mut failed = all.clone();
+        failed.push(receipt(2, "WaitForBind", StepOutcome::Failed { reason: "exited".into() }));
+        assert_eq!(ready_prerequisites_missing(&failed, op, 3).len(), 4);
+        // An attempt cut short (no failure) hands its receipts on.
+        assert!(ready_prerequisites_missing(&all, op, 2).is_empty());
+        // A Failed receipt is no Complete one.
+        let mut half = lost.clone();
+        half.push(receipt(1, "MakeRuntimeFactAvailableToBirth", StepOutcome::Failed { reason: "disk".into() }));
+        assert_eq!(ready_prerequisites_missing(&half, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
+    }
+
+    #[test]
+    fn day_zero_adopts_this_process_with_one_receipt_per_step() {
+        let dir = std::env::temp_dir().join(format!("rafka-adopt-current-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let node: PathName = "mesh1.admin.1".parse().unwrap();
+        let a = CurrentRuntimeAdoption::begin(&node, &dir, &DeploymentId::mint()).unwrap();
+        assert_eq!(adoption_missing(&dir), vec!["PublishRuntimeFactAndCurrentRuntimeMetadata"], "Ready waits for publication");
+        let mut published = None;
+        let fact = a.publish(|f, d| published = Some((f.clone(), d))).unwrap();
+        assert_eq!(published, Some((fact.clone(), dir.display().to_string())));
+        assert!(adoption_missing(&dir).is_empty());
+        fact.verify_is_this_runtime().unwrap();
+        let receipts: Vec<AdoptionReceipt> = serde_json::from_slice(&std::fs::read(dir.join(ADOPTION_RECEIPTS)).unwrap()).unwrap();
+        assert_eq!(receipts.iter().map(|r| r.step.as_str()).collect::<Vec<_>>(), AdoptStep::ORDER.iter().map(|s| s.name()).collect::<Vec<_>>());
+        // Evidence by fingerprint: no pid in a receipt.
+        let text = std::fs::read_to_string(dir.join(ADOPTION_RECEIPTS)).unwrap();
+        assert!(!text.contains("\"pid\""), "{text}");
+        // No receipts: nothing is adopted.
+        std::fs::remove_file(dir.join(ADOPTION_RECEIPTS)).unwrap();
+        assert_eq!(adoption_missing(&dir).len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

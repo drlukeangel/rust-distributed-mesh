@@ -10,7 +10,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::{BuildId, BuildIntent};
 use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
-use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
 use std::collections::BTreeMap;
@@ -39,8 +39,8 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
     struct Never;
     #[async_trait::async_trait]
     impl NodeObserver for Never {
-        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> bool {
-            false
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+            None
         }
         async fn ready(&self, _: &Node) -> Result<(), String> {
             Err("never".into())
@@ -85,6 +85,9 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
     let last = view.steps.last().unwrap();
     assert_eq!(last.step, "WaitForBind");
     assert!(matches!(&last.outcome, StepOutcome::Failed { reason } if reason.contains("runtime exited")));
-    assert!(!view.steps.iter().any(|r| r.step == "PublishTopology"), "nothing after a failed step runs");
+    let ran: Vec<&str> = view.steps.iter().map(|r| r.step.as_str()).collect();
+    let upto = CreateStep::ORDER.iter().position(|s| *s == CreateStep::WaitForBind).unwrap();
+    let want: Vec<&str> = CreateStep::ORDER[..=upto].iter().map(|s| s.name()).collect();
+    assert_eq!(ran, want, "nothing after a failed step runs");
     let _ = std::fs::remove_dir_all(&data_root);
 }

@@ -301,18 +301,17 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         args.push(exe_in.display().to_string());
         args.extend(spec.args.iter().cloned());
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        // A record left by an earlier birth in this data dir is not this one's.
+        // A record left by an earlier birth in this data dir is not this one's:
+        // the birth waits for the one the pipeline makes available.
         let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
         let id = docker(&argv).await.map_err(err)?.trim().to_string();
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
         let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
-        let handle = self.handle(spec.deployment_id.clone(), id.clone(), pid);
-        // The runtime publishes its exact runtime from this record.
-        let fact = handle.fact().ok_or_else(|| err(format!("container {name} answered no immutable id ({id})")))?;
-        fact.write_record(&spec.data_dir).map_err(err)?;
-        Ok(handle)
+        // The pipeline registers this exact handle and makes its runtime fact
+        // available to the birth (`MakeRuntimeFactAvailableToBirth`).
+        Ok(self.handle(spec.deployment_id.clone(), id, pid))
     }
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
