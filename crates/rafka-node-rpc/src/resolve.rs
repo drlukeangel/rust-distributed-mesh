@@ -21,7 +21,7 @@ pub struct ResolvedNode {
     pub node_id: NodeId,
     pub name: PathName,
     /// The node's Iroh public key.
-    pub fabric_id: iroh::PublicKey,
+    pub transport_id: iroh::PublicKey,
     pub incarnation: IncarnationId,
     pub endpoints: Vec<EndpointSlot>,
 }

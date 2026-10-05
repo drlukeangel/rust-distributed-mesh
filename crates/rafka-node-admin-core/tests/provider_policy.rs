@@ -25,8 +25,8 @@ fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateA
     admin.is_fabric_primary = true;
     admin.admin_api_base = Some("http://127.0.0.1:18001".into());
     let topology = Topology {
-        fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::Pending, provider: policy.provider },
-        meshes: vec![Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::Pending }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: policy.provider },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::Pending }],
         nodes: vec![admin],
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());

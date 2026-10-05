@@ -390,8 +390,8 @@ mod tests {
 
     fn fabric(nodes: Vec<Node>, meshes: &[&str]) -> Topology {
         Topology {
-            fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: meshes.iter().map(|m| Mesh { id: MeshId::mint(), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
             nodes,
         }
     }
@@ -546,7 +546,7 @@ mod tests {
         let c = plan(&BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1 } }, &t).unwrap();
         assert_eq!(c.operations, vec![BuildOperation::CreateMesh { mesh: "mesh2".into() }, create("mesh2.admin.1"), create("mesh2.rpc.1")]);
         let mut two = mn();
-        two.meshes.push(Mesh { id: MeshId::mint(), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+        two.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
         let d = plan(&BuildIntent::RemoveMesh { mesh: "mesh2".into() }, &two).unwrap();
         assert_eq!(d.operations, vec![BuildOperation::RetireMesh { mesh: "mesh2".into() }]);
         // replacement: {mesh1, mesh2} -> {mesh2, mesh3}

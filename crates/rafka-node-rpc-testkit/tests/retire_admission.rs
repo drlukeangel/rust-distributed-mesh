@@ -10,7 +10,7 @@
 mod common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildIntent;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
@@ -102,7 +102,7 @@ async fn exited(provider: &ProcessDeploymentProvider, h: &DeploymentHandle) -> b
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
-    let fabric = format!("fab-{}", NodeId::mint());
+    let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
@@ -168,7 +168,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
-    let fabric = format!("fab-{}", NodeId::mint());
+    let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();

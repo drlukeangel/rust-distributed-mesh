@@ -116,7 +116,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.entry.serve.via-pull` (node-admin answered an entry pull over QUIC, ALPN `rafka-mesh-entry/1`: fabric policy and the membership digests it hears) | `node`, `served_by`, `members` |
 | `rafka.mesh.entry.update.via-membership-pulled` (a launched node recorded its admin's membership as heard, before ready) | `node`, `served_by`, `members`, `attempt` |
 | `rafka.mesh.entry.reject.via-membership-pull-failed` (no answer after the retries; an rpc node continues, an admin refuses to start) | `node`, `reason`, `attempts` |
-| `rafka.mesh.membership.update.via-subscribe` (a membership channel was joined: the node's mesh channel `mesh_topic(fabric, mesh_id)`, or the admin-only `backbone_topic(fabric)`) | `node`, `channel` (`mesh:<mesh>` / `backbone`), `fabric`, `peers` |
+| `rafka.mesh.membership.update.via-subscribe` (a membership channel was joined: the node's mesh channel `mesh_topic(fabric_id, mesh_id)`, or the admin-only `backbone_topic(fabric_id)`) | `node`, `channel` (`mesh:<mesh>` / `backbone`), `fabric`, `peers` |
 | `rafka.mesh.membership.update.via-mesh-learned` / `via-mesh-silent` (a mesh's members became heard, or none of them is heard for `SILENT_AFTER`) | `node`, `mesh`, `via` (learned only: `mesh-channel` / `forwarded` / `backbone`) |
 | `rafka.mesh.membership.update.via-cut-off` (a node that heard others now hears none; while cut off, and for `SILENT_AFTER` after it heals, an admin executes no Build and publishes as no primary) | `node`, `role` (`start` / `stop`) |
 | `rafka.mesh.backbone.update.via-aggregate-publisher` (the mesh primary starts or stops publishing its mesh's packed members on the backbone) | `node`, `mesh`, `role` (`start` / `stop`) |
@@ -124,7 +124,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.fabric.update.via-status-publisher` (the fabric primary starts or stops publishing fabric status on the backbone) | `node`, `fabric`, `role` (`start` / `stop`) |
 | `rafka.mesh.connection.update.via-backbone-peers-joined` (an admin joined the other meshes' admins on the backbone) | `node`, `peers` |
 | `rafka.mesh.connection.update.via-refeed` (a channel, or the fabric Build topic, had no neighbour for `SILENT_AFTER`: every peer it knows is handed to it again through `join_peers`, once per window while that holds; `gossip.md` §6) | `channel` (`mesh:<mesh>` / `backbone` / `builds`), `node` (membership channels) or `fabric` (Build topic), `peers`, `joined` |
-| `rafka.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held) | `node`, `incarnation_id`, `meshes` |
+| `rafka.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held; the birth's identity evidence) | `node`, `incarnation_id`, `meshes`, `node_id`, `mesh_id`, `fabric_id`, `id_format` (`crockford60`) |
 | `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
 | `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
 | `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
@@ -148,6 +148,8 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
 | `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` (the pool dropped a connection or dial whose exact slot target, or process birth, the resolver no longer names; `crates/rafka-node-rpc/src/pool.rs`) | `peer`, `slot`, `outcome` (`cancelled` / `late-connect-dropped` / `evicted`), `elapsed_ms` |
 | `rafka.node_rpc.connection.evict.via-timeout-strikes` (two consecutive reply deadlines evicted a pooled connection; never reachability) | `peer`, `slot`, `strikes` |
+
+On the membership, backbone and Build-topic spans above (`via-subscribe`, `via-resubscribe`, `via-status-publisher`, `via-refeed`, the Build-topic `fabric` rows), `fabric` is the Fabric's id (`RAFKA_FABRIC_ID`), the key of those topics; on the election spans it is the Fabric's name.
 
 **`op_kind` enum (locked):** `"produce"`, `"fetch"`, `"replication"`, `"schema_lookup"`, `"ping"`, `"pong"`, `"control"`. Future op classes append; never reuse a string for a different meaning.
 
@@ -362,13 +364,14 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_REQUIRE_CONTAINER` | _(unset)_ | Tests only. `1` turns the container smoke's named skip on an unsupported host into a failure (set in CI). |
 | `RAFKA_REQUIRE_NETFAULT` | _(unset)_ | Tests only. `1` turns the election E2E's named skip of its partition case (no `iptables`, as root or through `sudo -n`) into a failure (set in CI). |
 | `RAFKA_EVIDENCE_DIR` | _(unset = no JSONL)_ | When set, every i143 binary writes its spans as JSONL to `<dir>/<service>.<pid>.spans.jsonl` (the blackbox evidence). OTLP export stays on `OTEL_EXPORTER_OTLP_ENDPOINT`. |
-| `RAFKA_FABRIC` | `fabric1` (bootstrap admin); required for a launched node | The fabric a node joins; names its gossip membership and Build topics. The first `rafka-node-admin` reads it to name the fabric it bootstraps; for every node a pipeline launches, node-admin writes it. An empty value is refused. |
-| `RAFKA_NODE_NAME` / `RAFKA_NODE_ID` / `RAFKA_INCARNATION_ID` | _(required for a launched node)_ | The node's `path.name` (`mesh1.rpc.2`, `mesh1.admin.2`), minted node id and this birth's incarnation id, assigned by node-admin. A `rafka-node-admin` without them is the bootstrap admin of its fabric. |
+| `RAFKA_FABRIC` | `fabric1` (bootstrap admin); required for a launched node | The name (label) of the fabric a node joins. The first `rafka-node-admin` reads it to name the fabric it bootstraps; for every node a pipeline launches, node-admin writes it. An empty value is refused. |
+| `RAFKA_FABRIC_ID` | _(minted by the bootstrap admin)_; required for a launched node | The Fabric's identity (canonical Crockford60: 12 lowercase Crockford characters); its gossip membership, backbone and Build topics are keyed by it. The bootstrap admin mints it unless given; for every node a pipeline launches, node-admin writes it. A non-canonical value is refused by name. |
+| `RAFKA_NODE_NAME` / `RAFKA_NODE_ID` / `RAFKA_INCARNATION_ID` | _(required for a launched node)_ | The node's `path.name` (`mesh1.rpc.2`, `mesh1.admin.2`), minted node id (canonical Crockford60, refused by name otherwise) and this birth's incarnation id, assigned by node-admin. A `rafka-node-admin` without them is the bootstrap admin of its fabric. |
 | `RAFKA_SUPERSEDES` | _(unset = first birth)_ | The incarnation a restart replaces. |
 | `RAFKA_ENDPOINTS` | _(required, rpc node)_ | Comma-separated `slot=addr=freshness` the node must bind exactly; a provider never invents a port. |
 | `RAFKA_SEEDS` | _(empty)_ | Comma-separated `<public key>@<addr>` gossip members to join membership through. |
 | `RAFKA_MESH` | `mesh1` | `rafka-node-admin` (bootstrap): the mesh it belongs to; it becomes `<mesh>.admin.1`. |
-| `RAFKA_MESH_ID` | _(minted)_ | `rafka-node-admin`: the mesh's id, written by the launching admin so every admin of a mesh advertises the same one. |
+| `RAFKA_MESH_ID` | _(minted)_ | The mesh's id (canonical Crockford60, refused by name otherwise), written by the launching admin for every node it launches so every node of a mesh carries the same one. |
 | `RAFKA_NODE_ADMIN_API_BIND` | `127.0.0.1:0` | `rafka-node-admin` (bootstrap): the control API's HTTP bind. A launched admin binds the `control` slot node-admin assigned. It prints `RAFKA_NODE_ADMIN_API_BASE=<url>` once serving. |
 | `RAFKA_BIN_DIR` | _(beside the running exe)_ | `rafka-node-admin`: where `rafka-node-admin` and `rafka-rpc-node` live. |
 | `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |

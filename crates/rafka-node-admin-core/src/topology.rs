@@ -61,7 +61,7 @@ impl fmt::Display for TopologyViolation {
 /// `MeshView` (`docs/i143/design.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshView {
-    pub id: String,
+    pub id: Option<crate::model::MeshId>,
     pub name: String,
     pub status: crate::model::ScopeStatus,
     pub primary_admin: Option<PathName>,
@@ -72,6 +72,7 @@ pub struct MeshView {
 /// `FabricView` (`docs/i143/design.md` §4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricView {
+    pub id: crate::model::FabricId,
     pub name: String,
     pub status: crate::model::ScopeStatus,
     pub provider: crate::model::ProviderKind,
@@ -177,11 +178,11 @@ impl Topology {
     }
 
     pub fn mesh_view(&self, id_or_name: &str) -> Option<MeshView> {
-        let m = self.meshes.iter().find(|m| m.name == id_or_name || m.id.0 == id_or_name)?;
+        let m = self.meshes.iter().find(|m| m.name == id_or_name || m.id.as_ref().is_some_and(|i| i.as_str() == id_or_name))?;
         let mut nodes: Vec<PathName> = self.nodes.iter().filter(|n| n.mesh == m.name).map(|n| n.name.clone()).collect();
         nodes.sort();
         Some(MeshView {
-            id: m.id.0.clone(),
+            id: m.id.clone(),
             name: m.name.clone(),
             status: m.status,
             primary_admin: self.cohort_primary(&m.name, NodeKind::NodeAdmin).map(|n| n.name.clone()),
@@ -192,6 +193,7 @@ impl Topology {
 
     pub fn fabric_view(&self) -> FabricView {
         FabricView {
+            id: self.fabric.id.clone(),
             name: self.fabric.name.clone(),
             status: self.fabric.status,
             provider: self.fabric.provider,
@@ -221,8 +223,8 @@ mod tests {
     fn mn() -> Topology {
         use NodeStatus::ReadyForTraffic as R;
         Topology {
-            fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
             nodes: vec![
                 node("mesh1.admin.1", R, true, true),
                 node("mesh1.admin.2", R, false, false),
@@ -296,7 +298,7 @@ mod tests {
         assert_eq!(f.meshes.len(), 1);
         assert_eq!(f.meshes[0].admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
         assert_eq!(f.meshes[0].nodes.len(), 5);
-        let id = t.meshes[0].id.0.clone();
+        let id = t.meshes[0].id.clone().unwrap().to_string();
         assert_eq!(t.mesh_view(&id), t.mesh_view("mesh1"));
         // Control moves with the primary, never to a hidden map.
         let mut t = mn();

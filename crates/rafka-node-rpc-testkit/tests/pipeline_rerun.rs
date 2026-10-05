@@ -8,7 +8,7 @@
 mod common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
@@ -96,7 +96,7 @@ impl NodeObserver for Pausing<'_> {
 
 /// Live processes whose environment names `node_id`.
 fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
-    let needle = format!("RAFKA_NODE_ID={}", node_id.0);
+    let needle = format!("RAFKA_NODE_ID={}", node_id.as_str());
     std::fs::read_dir("/proc")
         .unwrap()
         .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
@@ -108,7 +108,7 @@ fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
 }
 
 async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
-    let fabric = format!("fab-{}", NodeId::mint());
+    let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();

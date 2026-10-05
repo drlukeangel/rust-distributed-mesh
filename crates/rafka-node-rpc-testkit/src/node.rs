@@ -157,8 +157,9 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
             let id = answer.topology["meshes"]
                 .as_array()
                 .and_then(|ms| ms.iter().find(|m| m["name"] == launch.name.mesh.as_str()))
-                .and_then(|m| m["id"].as_str().map(String::from))
-                .ok_or_else(|| anyhow!("the entry answer names no id for mesh {}", launch.name.mesh))?;
+                .and_then(|m| m["id"].as_str())
+                .ok_or_else(|| anyhow!("the entry answer names no id for mesh {}", launch.name.mesh))
+                .and_then(|v| rafka_mesh_entity::MeshId::parse(v).map_err(|e| anyhow!("the entry answer's mesh id: {e}")))?;
             pulled = Some(answer);
             id
         }
@@ -166,7 +167,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
     };
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
-    let membership = Membership::join(&g, &ep0, &launch.fabric, &launch.name.mesh, &mesh_id, &name, seeds).await?;
+    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, seeds).await?;
     // Entry: take the launching admin's membership before marking ready. An
     // admin that cannot answer does not hold the node: its view fills from
     // gossip instead (the pull is named either way).
@@ -177,7 +178,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         };
         if let Ok(answer) = answer {
             let mut mesh_peers = Vec::new();
-            for d in answer.members.into_iter().filter(|d| d.fabric == launch.fabric && d.node.name != launch.name) {
+            for d in answer.members.into_iter().filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name) {
                 if d.node.name.mesh == launch.name.mesh {
                     mesh_peers.extend(rafka_mesh_transport::membership::gossip_addr(&d));
                 }
@@ -187,11 +188,11 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         }
     }
     let digest = MeshDigest {
-        fabric: launch.fabric.clone(),
+        fabric_id: launch.fabric_id.clone(),
         node: MeshNode {
             node_id: launch.node_id.clone(),
             name: launch.name.clone(),
-            fabric_id: rafka_mesh_entity::FabricId(key.public().to_string()),
+            transport_id: rafka_mesh_entity::TransportId(key.public().to_string()),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
             endpoints: EndpointSet(launch.endpoints.clone()),
@@ -203,7 +204,16 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         extra: [(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string())].into_iter().collect(),
     };
     // Born full: this node is published only now, its entry taken.
-    tracing::info_span!("rafka.mesh.node.update.via-ready", node = %name, incarnation_id = %launch.incarnation.0, meshes = membership.meshes_held())
+    tracing::info_span!(
+        "rafka.mesh.node.update.via-ready",
+        node = %name,
+        incarnation_id = %launch.incarnation.0,
+        meshes = membership.meshes_held(),
+        node_id = %launch.node_id,
+        mesh_id = %mesh_id,
+        fabric_id = %launch.fabric_id,
+        id_format = rafka_mesh_entity::ID_FORMAT
+    )
         .in_scope(|| tracing::info!("ready for traffic"));
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());

@@ -53,9 +53,11 @@ pub const MESH_ID: &str = "mesh_id";
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
+    /// The Fabric's name (its label) and its identity.
     pub fabric: String,
+    pub fabric_id: FabricId,
     pub mesh: String,
-    pub mesh_id: Option<String>,
+    pub mesh_id: Option<MeshId>,
     pub data_dir: PathBuf,
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
@@ -72,6 +74,15 @@ impl AdminConfig {
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RAFKA_FABRIC")).unwrap_or_else(|| "fabric1".into());
+        // A launched node is handed its Fabric's id; the bootstrap admin takes
+        // `RAFKA_FABRIC_ID` when given, else its Fabric is new and it mints one.
+        let fabric_id = match &launch {
+            Some(l) => l.fabric_id.clone(),
+            None => match get(rafka_mesh_entity::launch::ENV_FABRIC_ID).filter(|v| !v.trim().is_empty()) {
+                Some(v) => FabricId::parse(&v).map_err(|e| format!("{}: {e}", rafka_mesh_entity::launch::ENV_FABRIC_ID))?,
+                None => FabricId::mint(),
+            },
+        };
         let mesh = launch.as_ref().map(|l| l.name.mesh.clone()).or_else(|| get("RAFKA_MESH")).unwrap_or_else(|| "mesh1".into());
         if !is_valid_mesh_name(&mesh) {
             return Err(format!("RAFKA_MESH `{mesh}` is not a valid mesh name"));
@@ -94,8 +105,14 @@ impl AdminConfig {
             .collect();
         Ok(Self {
             fabric,
+            fabric_id,
             mesh,
-            mesh_id: get("RAFKA_MESH_ID"),
+            mesh_id: launch
+                .as_ref()
+                .and_then(|l| l.mesh_id.clone())
+                .map(Ok)
+                .or_else(|| get("RAFKA_MESH_ID").filter(|v| !v.trim().is_empty()).map(|v| MeshId::parse(&v).map_err(|e| format!("RAFKA_MESH_ID: {e}"))))
+                .transpose()?,
             data_dir,
             bin_dir,
             spawn_type: get(crate::deployment::provider::SPAWN_TYPE_ENV),
@@ -157,7 +174,7 @@ impl TopologySink for Records {
 
 /// The observed topology from membership digests and this admin's records,
 /// with the settled primary rule (module docs).
-pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records: &Records) -> Topology {
+pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records) -> Topology {
     let removed = records.removed.lock().unwrap().clone();
     let recorded = records.nodes.lock().unwrap().clone();
     let mut nodes: BTreeMap<PathName, Node> = BTreeMap::new();
@@ -165,10 +182,10 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
     let mut claims: HashMap<IncarnationId, u64> = HashMap::new();
     let mut mesh_ids: BTreeMap<String, MeshId> = records.meshes.lock().unwrap().clone();
     for d in book.all() {
-        if d.fabric != fabric {
+        if &d.fabric_id != fabric_id {
             continue;
         }
-        let Some((_, age)) = book.get(&d.node.node_id.0) else { continue };
+        let Some((_, age)) = book.get(d.node.node_id.as_str()) else { continue };
         let name = d.node.name.clone();
         if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
@@ -177,12 +194,12 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
         if silent && d.status == MemberStatus::Leaving {
             continue;
         }
-        if let Some(id) = d.extra.get(MESH_ID) {
-            mesh_ids.entry(name.mesh.clone()).or_insert_with(|| MeshId(id.clone()));
+        if let Some(id) = d.extra.get(MESH_ID).and_then(|v| MeshId::parse(v).ok()) {
+            mesh_ids.entry(name.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone());
         n.node_id = d.node.node_id.clone();
-        n.fabric_id = Some(d.node.fabric_id.clone());
+        n.transport_id = Some(d.node.transport_id.clone());
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
         n.status = if silent { NodeStatus::Dead } else { node_status(d.status) };
@@ -208,7 +225,7 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
         nodes.entry(name).or_insert(r);
     }
     let mut topology = Topology {
-        fabric: Fabric { name: fabric.into(), status: ScopeStatus::Pending, provider },
+        fabric: Fabric { id: fabric_id.clone(), name: fabric.into(), status: ScopeStatus::Pending, provider },
         meshes: Vec::new(),
         nodes: nodes.into_values().collect(),
     };
@@ -242,7 +259,7 @@ pub fn project(fabric: &str, provider: ProviderKind, book: &DigestBook, records:
     }
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
-        let id = mesh_ids.get(&m).cloned().unwrap_or_else(|| MeshId(format!("unknown-{m}")));
+        let id = mesh_ids.get(&m).cloned();
         topology.meshes.push(Mesh { id, name: m, status: if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending } });
     }
     topology
@@ -257,14 +274,14 @@ pub struct MembershipObserver {
 
 impl MembershipObserver {
     fn digest_of(&self, node: &Node) -> Option<MeshDigest> {
-        self.book.get(&node.node_id.0).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref())
+        self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref())
     }
 }
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.book.get(&node_id.0).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
+        self.book.get(node_id.as_str()).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
@@ -300,6 +317,7 @@ impl NodeObserver for MembershipObserver {
 struct EntryState {
     name: PathName,
     fabric: String,
+    fabric_id: FabricId,
     provider: ProviderKind,
     records: Arc<Records>,
     book: DigestBook,
@@ -330,6 +348,7 @@ pub struct AdminRunner {
     pub topology: Arc<RwLock<Topology>>,
     /// What the views are projected from.
     pub fabric: String,
+    pub fabric_id: FabricId,
     pub fabric_provider: ProviderKind,
     pub book: DigestBook,
     /// This admin's own path.
@@ -342,7 +361,7 @@ impl AdminRunner {
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     async fn refresh_view(&self) {
-        let t = project(&self.fabric, self.fabric_provider, &self.book, &self.records);
+        let t = project(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records);
         *self.topology.write().await = t;
     }
 
@@ -353,7 +372,7 @@ impl AdminRunner {
 
 
     async fn template_for(&self, kind: NodeKind, mesh: &str) -> LaunchTemplate {
-        let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh && !m.id.0.starts_with("unknown-")).map(|m| m.id.clone());
+        let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
         let mut t = self.template.clone();
         match kind {
             NodeKind::RpcNode => t.executable = self.bin_dir.join(format!("rafka-rpc-node{}", std::env::consts::EXE_SUFFIX)),
@@ -364,7 +383,7 @@ impl AdminRunner {
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
-            t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.0);
+            t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
         }
         t
     }
@@ -420,7 +439,7 @@ impl AdminRunner {
         let mut record = node.clone();
         record.deployment_id = Some(handle.deployment_id.clone());
         if record.data_dir.is_none() {
-            let node_id = identity.get("node_id").and_then(|v| v.as_str()).unwrap_or(&node.node_id.0).to_string();
+            let node_id = identity.get("node_id").and_then(|v| v.as_str()).unwrap_or(node.node_id.as_str()).to_string();
             record.data_dir = Some(self.template.data_root.join(format!("{}-{}", node.name, node_id)).display().to_string());
         }
         tracing::info!(node = %node.name, deployment_id = %handle.deployment_id, "adopted a runtime another admin launched");
@@ -471,20 +490,20 @@ impl AdminRunner {
         const WITHIN: Duration = Duration::from_secs(2);
         match node.kind {
             NodeKind::NodeAdmin => {
-                let (Some(ep), Some(fabric_id)) = (&self.endpoint, &node.fabric_id) else { return false };
-                let Ok(peer) = fabric_id.0.parse::<iroh::PublicKey>() else { return false };
+                let (Some(ep), Some(transport_id)) = (&self.endpoint, &node.transport_id) else { return false };
+                let Ok(peer) = transport_id.0.parse::<iroh::PublicKey>() else { return false };
                 let Some(mesh) = node.endpoints.iter().find(|e| e.slot == "mesh") else { return false };
                 let anchor = EndpointAddr::new(peer).with_ip_addr(mesh.addr);
                 rafka_mesh_transport::entry::pull_once(ep, anchor, &self.me.to_string(), WITHIN).await.is_ok()
             }
             NodeKind::RpcNode => {
-                let (Some(ep), Some(fabric_id), Some(incarnation)) = (&self.endpoint, &node.fabric_id, &node.incarnation_id) else { return false };
-                let Ok(peer) = fabric_id.0.parse::<iroh::PublicKey>() else { return false };
+                let (Some(ep), Some(transport_id), Some(incarnation)) = (&self.endpoint, &node.transport_id, &node.incarnation_id) else { return false };
+                let Ok(peer) = transport_id.0.parse::<iroh::PublicKey>() else { return false };
                 let resolver = Arc::new(rafka_node_rpc::StaticResolver::new());
                 resolver.insert(rafka_node_rpc::ResolvedNode {
                     node_id: node.node_id.clone(),
                     name: node.name.clone(),
-                    fabric_id: peer,
+                    transport_id: peer,
                     incarnation: incarnation.clone(),
                     endpoints: node.endpoints.clone(),
                 });
@@ -714,7 +733,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         Some(e) => {
             let mut members = e.book.current(SILENT_AFTER);
             members.push(e.digest.lock().unwrap().clone());
-            let topology = project(&e.fabric, e.provider, &e.book, &e.records);
+            let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
             EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members }
         }
     });
@@ -730,15 +749,15 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let launched_anchor = cfg.launch.as_ref().and(seed_addrs.first().cloned());
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
-        (Some(id), _) => MeshId(id.clone()),
+        (Some(id), _) => id.clone(),
         (None, Some(anchor)) => {
             let answer = rafka_mesh_transport::entry::pull(&endpoint, anchor.clone(), &name.to_string(), 5)
                 .await
                 .map_err(|e| format!("entry pull from the launching admin failed: {e}"))?;
             let known = serde_json::from_value::<Topology>(answer.topology.clone())
                 .ok()
-                .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh && !m.id.0.starts_with("unknown-")))
-                .map(|m| m.id);
+                .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh))
+                .and_then(|m| m.id);
             pulled = Some(answer);
             known.unwrap_or_else(MeshId::mint)
         }
@@ -746,13 +765,13 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     };
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
-    let membership = Membership::join(&gossip, &endpoint, &cfg.fabric, &cfg.mesh, &mesh_id.0, &name.to_string(), seed_addrs.clone())
+    let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric, seed_addrs.clone()).await.map_err(|e| e.to_string())?);
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone()).await.map_err(|e| e.to_string())?);
 
     // Fabric policy and the first view. The bootstrap admin takes its policy
     // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
@@ -773,7 +792,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the entry answer from {} holds no topology: {e}", answer.served_by))?;
             let mut mesh_peers = Vec::new();
             let mut admins = Vec::new();
-            for d in answer.members.into_iter().filter(|d| d.fabric == cfg.fabric && d.node.name != name) {
+            for d in answer.members.into_iter().filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
                 if let Some(a) = rafka_mesh_transport::membership::gossip_addr(&d) {
                     if d.node.name.mesh == cfg.mesh {
                         mesh_peers.push(a.clone());
@@ -799,7 +818,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let records = Arc::new(Records::default());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    let control = Arc::new(ControlPlane::new(builds.clone(), project(&cfg.fabric, policy.provider, &book, &records)));
+    let control = Arc::new(ControlPlane::new(builds.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
 
     // The deployment hand (used while this admin is fabric primary).
     let prepared = crate::deployment::prepare(policy, &cfg.fabric).await.map_err(|e| e.to_string())?;
@@ -808,6 +827,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
     let template = LaunchTemplate {
         fabric: cfg.fabric.clone(),
+        fabric_id: cfg.fabric_id.clone(),
         executable: PathBuf::new(),
         seeds: vec![(key.public().to_string(), SocketAddr::new(prepared.admin_ip, mesh_addr.port()))],
         env: cfg.passthrough.clone(),
@@ -827,6 +847,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         handles: Mutex::new(HashMap::new()),
         topology: control.topology.clone(),
         fabric: cfg.fabric.clone(),
+        fabric_id: cfg.fabric_id.clone(),
         fabric_provider: policy.provider,
         book: book.clone(),
         me: name.clone(),
@@ -835,15 +856,15 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 
     // Own digest, published on the membership cadence.
     let mut extra = BTreeMap::new();
-    extra.insert(MESH_ID.to_string(), mesh_id.0.clone());
+    extra.insert(MESH_ID.to_string(), mesh_id.to_string());
     // Ready for traffic from birth: the election claim is this instant.
     extra.insert(rafka_mesh_entity::READY_SINCE.to_string(), now_ms().to_string());
     let digest = Arc::new(Mutex::new(MeshDigest {
-        fabric: cfg.fabric.clone(),
+        fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
             node_id: node_id.clone(),
             name: name.clone(),
-            fabric_id: FabricId(key.public().to_string()),
+            transport_id: TransportId(key.public().to_string()),
             incarnation: incarnation.clone(),
             supersedes,
             endpoints: EndpointSet(vec![
@@ -863,6 +884,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let _ = entry.set(EntryState {
         name: name.clone(),
         fabric: cfg.fabric.clone(),
+        fabric_id: cfg.fabric_id.clone(),
         provider: policy.provider,
         records: records.clone(),
         book: book.clone(),
@@ -874,7 +896,16 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     }
     let mut tasks = Vec::new();
     // Born full: this admin is published only now, its entry taken.
-    tracing::info_span!("rafka.mesh.node.update.via-ready", node = %name, incarnation_id = %incarnation.0, meshes = membership.meshes_held())
+    tracing::info_span!(
+        "rafka.mesh.node.update.via-ready",
+        node = %name,
+        incarnation_id = %incarnation.0,
+        meshes = membership.meshes_held(),
+        node_id = %node_id,
+        mesh_id = %mesh_id,
+        fabric_id = %cfg.fabric_id,
+        id_format = rafka_mesh_entity::ID_FORMAT
+    )
         .in_scope(|| tracing::info!("ready for traffic"));
     let d = digest.clone();
     let publisher = membership.publish_every(Duration::from_millis(500), move || {
@@ -914,11 +945,11 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     }
     // The projection, refreshed into the control plane's topology.
     {
-        let (topology, fabric, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), policy.provider, book.clone(), records.clone());
+        let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
         let elections = ElectionLog::new(name.to_string());
         tasks.push(tokio::spawn(async move {
             loop {
-                let t = project(&fabric, provider, &book, &records);
+                let t = project(&fabric, &fabric_id, provider, &book, &records);
                 elections.observe(&t);
                 *topology.write().await = t;
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -932,12 +963,12 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
-        let (book, records, fabric, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), policy.provider, membership.clone());
+        let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         executor = tokio::spawn(async move {
             loop {
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
-                let now = project(&fabric, provider, &book, &records);
+                let now = project(&fabric, &fabric_id, provider, &book, &records);
                 *topology.write().await = now;
                 // Every Build whose next operation this admin executes; none
                 // while it is cut off or within one silence window of healing
@@ -966,16 +997,25 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 mod tests {
     use super::*;
 
+    fn fabric1() -> FabricId {
+        FabricId::parse("fab000000001").unwrap()
+    }
+
+    /// A fixed canonical id per test mesh (`mesh2` -> `meshid000002`).
+    fn mesh_id(mesh: &str) -> MeshId {
+        MeshId::parse(&format!("meshd{:0>7}", mesh.trim_start_matches("mesh"))).unwrap()
+    }
+
     fn digest(name: &str, status: MemberStatus) -> MeshDigest {
         let name: PathName = name.parse().unwrap();
         let mut extra = BTreeMap::new();
-        extra.insert(MESH_ID.to_string(), format!("id-{}", name.mesh));
+        extra.insert(MESH_ID.to_string(), mesh_id(&name.mesh).to_string());
         MeshDigest {
-            fabric: "fabric1".into(),
+            fabric_id: fabric1(),
             node: MeshNode {
                 node_id: NodeId::mint(),
                 name: name.clone(),
-                fabric_id: FabricId(format!("key-{name}")),
+                transport_id: TransportId(format!("key-{name}")),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
                 endpoints: EndpointSet(vec![]),
@@ -992,7 +1032,7 @@ mod tests {
         for d in digests {
             book.record(d.clone());
         }
-        project("fabric1", ProviderKind::Process, &book, &Records::default())
+        project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default())
     }
 
     #[test]
@@ -1010,7 +1050,7 @@ mod tests {
         assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.3", "mesh2.admin.1", "mesh2.rpc.2"], "a pending member is never primary");
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
         assert!(t.violations().is_empty(), "{:?}", t.violations());
-        assert_eq!(t.mesh_view("mesh2").unwrap().id, "id-mesh2");
+        assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
         assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic);
     }
 
@@ -1048,12 +1088,12 @@ mod tests {
         n.incarnation_id = Some(old.node.incarnation.clone());
         records.publish(n);
         records.remove(&old.node.name);
-        let t = project("fabric1", ProviderKind::Process, &book, &records);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert!(t.node(&old.node.name).is_none(), "the removed birth is gone");
         let mut newer = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         newer.node.node_id = NodeId::mint();
         book.record(newer.clone());
-        let t = project("fabric1", ProviderKind::Process, &book, &records);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.node(&old.node.name).unwrap().incarnation_id.as_ref(), Some(&newer.node.incarnation));
     }
 }

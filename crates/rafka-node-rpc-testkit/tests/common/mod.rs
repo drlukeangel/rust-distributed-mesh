@@ -15,7 +15,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_admin_core::build::{BuildId, BuildIntent};
 use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
@@ -98,11 +98,11 @@ pub struct LiveMesh {
 
 impl LiveMesh {
     fn echo_target(&self, node: &Node) -> Result<NodeTarget, String> {
-        let fabric_id = node.fabric_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
+        let transport_id = node.transport_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
         self.resolver.insert(ResolvedNode {
             node_id: node.node_id.clone(),
             name: node.name.clone(),
-            fabric_id,
+            transport_id,
             incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
             endpoints: node.endpoints.clone(),
         });
@@ -125,7 +125,7 @@ impl LiveMesh {
 #[async_trait::async_trait]
 impl NodeObserver for LiveMesh {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.membership.book.get(&node_id.0).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
+        self.membership.book.get(node_id.as_str()).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
@@ -141,7 +141,7 @@ impl NodeObserver for LiveMesh {
 
     async fn drained(&self, node: &Node) -> bool {
         use rafka_mesh_entity::MemberStatus;
-        self.membership.book.get(&node.node_id.0).is_some_and(|(d, _)| {
+        self.membership.book.get(node.node_id.as_str()).is_some_and(|(d, _)| {
             Some(&d.node.incarnation) == node.incarnation_id.as_ref()
                 && (d.status == MemberStatus::Leaving
                     || (d.status == MemberStatus::Draining && d.extra.get("in_flight").map(String::as_str) == Some("0")))
@@ -164,7 +164,7 @@ impl NodeObserver for LiveMesh {
 }
 
 /// The id of the one mesh these functional fabrics hold (`mesh1`).
-pub const TEST_MESH_ID: &str = "mesh1-test";
+pub const TEST_MESH_ID: &str = "meshd0000001";
 
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
 /// the nodes' membership seed, and the observer over it.
@@ -174,11 +174,11 @@ pub struct AdminSide {
     _router: Router,
 }
 
-pub async fn admin_side(ip: std::net::IpAddr, fabric: &str) -> AdminSide {
+pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     let admin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), SocketAddr::new(ip, 0)).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", TEST_MESH_ID, "mesh1.admin.1", vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", vec![]).await.unwrap();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
@@ -189,9 +189,10 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &str) -> AdminSide {
 }
 
 /// A launch template for `rafka-rpc-node` with a fresh data root.
-pub fn template(fabric: &str, seed: (String, SocketAddr)) -> LaunchTemplate {
+pub fn template(fabric: &FabricId, seed: (String, SocketAddr)) -> LaunchTemplate {
     LaunchTemplate {
-        fabric: fabric.into(),
+        fabric: "fabric1".into(),
+        fabric_id: fabric.clone(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![seed],
         env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())].into_iter().collect(),
@@ -227,7 +228,8 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
 
-    let fabric = format!("fab-{}", NodeId::mint());
+    let fabric_id = FabricId::mint();
+    let fabric = format!("fab-{fabric_id}");
     let policy = FabricPolicy::bootstrap(Some(spawn_type)).expect("a known MESH_SPAWN_TYPE");
     let prepared = match rafka_node_admin_core::deployment::prepare(policy, &fabric).await {
         Ok(p) => p,
@@ -238,9 +240,9 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let expected_provider = format!("{:?}", provider.kind());
 
     // The admin side, on the address the provider's runtimes can reach.
-    let admin = admin_side(prepared.admin_ip, &fabric).await;
+    let admin = admin_side(prepared.admin_ip, &fabric_id).await;
     let observer = &admin.observer;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric_id, admin.seed.clone());
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;

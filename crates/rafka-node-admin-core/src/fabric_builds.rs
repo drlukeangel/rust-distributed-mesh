@@ -134,7 +134,7 @@ fn refeed(
 }
 
 /// The fabric's Build topic.
-pub fn build_topic(fabric: &str) -> TopicId {
+pub fn build_topic(fabric: &rafka_mesh_entity::FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-builds:{fabric}").as_bytes()).as_bytes())
 }
 
@@ -152,7 +152,7 @@ impl FabricBuildStateAdapter {
     /// Join `fabric`'s Build topic through `peers` (the other node-admins).
     /// With peers, it returns once connected to at least one of them, so the
     /// facts they append from then on reach this admin.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &str, peers: Vec<EndpointAddr>) -> Result<Self, BuildStateError> {
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &rafka_mesh_entity::FabricId, peers: Vec<EndpointAddr>) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
         let lookup = MemoryLookup::new();
         for p in &peers {

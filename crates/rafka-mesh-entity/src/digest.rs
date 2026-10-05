@@ -1,5 +1,6 @@
 //! What a node publishes about itself on the fabric's membership topic.
 
+use crate::ids::FabricId;
 use crate::membership::MeshNode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,7 +18,8 @@ pub enum MemberStatus {
 /// One membership digest: the node's current birth plus its status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshDigest {
-    pub fabric: String,
+    /// The logical Fabric this member belongs to.
+    pub fabric_id: FabricId,
     pub node: MeshNode,
     pub status: MemberStatus,
     /// The control API a node-admin serves; `None` for other kinds.

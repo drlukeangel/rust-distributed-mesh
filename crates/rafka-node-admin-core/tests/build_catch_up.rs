@@ -12,6 +12,7 @@ use rafka_node_admin_core::build_state::{
     AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildIntentFact, BuildState, BuildStateAdapter,
 };
 use rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter;
+use rafka_node_admin_core::model::FabricId;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,7 +28,7 @@ async fn admin(peers: Vec<EndpointAddr>) -> (Endpoint, Router, Arc<FabricBuildSt
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, "fabric1", peers).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers).await.unwrap());
     (endpoint, router, builds)
 }
 
@@ -182,4 +183,9 @@ async fn a_catch_up_at_the_wire_limit_arrives_and_keeps_the_connection() {
     assert!(heard, "C stopped hearing A after the catch-up");
     a_router.shutdown().await.unwrap();
     c_router.shutdown().await.unwrap();
+}
+
+/// The test fabric's canonical id.
+fn fabric1() -> FabricId {
+    FabricId::parse("fab000000001").unwrap()
 }

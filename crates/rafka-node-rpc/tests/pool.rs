@@ -81,7 +81,7 @@ async fn rig(fabric: &SecretKey, slots: Vec<EndpointSlot>) -> Rig {
     let record = ResolvedNode {
         node_id: node_id.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),
-        fabric_id: fabric.public(),
+        transport_id: fabric.public(),
         incarnation: IncarnationId::mint(),
         endpoints: slots,
     };

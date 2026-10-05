@@ -27,7 +27,7 @@ use super::endpoint::{verify_bound_with, EndpointAllocator, SlotSpec};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
-use crate::model::{DeploymentId, EndpointSlot, FabricId, IncarnationId, Node, NodeId, NodeStatus, PathName};
+use crate::model::{DeploymentId, EndpointSlot, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -147,7 +147,9 @@ pub trait TopologySink: Send + Sync {
 /// The fabric-wide facts every launch carries.
 #[derive(Debug, Clone)]
 pub struct LaunchTemplate {
+    /// The Fabric's name (its label) and its identity.
     pub fabric: String,
+    pub fabric_id: rafka_mesh_entity::FabricId,
     pub executable: PathBuf,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
@@ -243,7 +245,7 @@ struct Identity {
 
 /// Write (if absent) and read back the node's transport key in its data dir;
 /// a restart reuses it, a fresh data dir gets a new one.
-fn ensure_transport_key(data_dir: &std::path::Path) -> Result<FabricId, String> {
+fn ensure_transport_key(data_dir: &std::path::Path) -> Result<TransportId, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     let path = data_dir.join("node-key");
     let key = match std::fs::read_to_string(&path) {
@@ -260,7 +262,7 @@ fn ensure_transport_key(data_dir: &std::path::Path) -> Result<FabricId, String> 
             k
         }
     };
-    Ok(FabricId(key.public().to_string()))
+    Ok(TransportId(key.public().to_string()))
 }
 
 async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
@@ -428,12 +430,13 @@ impl DeploymentPipeline<'_> {
             Some(d) => PathBuf::from(d),
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
-        let fabric_id: FabricId = self.step(&mut run, CreateStep::PrepareStorage.name(), async { ensure_transport_key(&data_dir) }).await?;
+        let transport_id: TransportId = self.step(&mut run, CreateStep::PrepareStorage.name(), async { ensure_transport_key(&data_dir) }).await?;
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(&mut run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
         let launch = Launch {
             fabric: self.template.fabric.clone(),
+            fabric_id: self.template.fabric_id.clone(),
             name: req.node.clone(),
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
@@ -441,7 +444,7 @@ impl DeploymentPipeline<'_> {
             endpoints: endpoints.clone(),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
-            mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).cloned(),
+            mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.
@@ -495,7 +498,7 @@ impl DeploymentPipeline<'_> {
         .await?;
         let mut node = Node::allocated(req.node.clone());
         node.node_id = id.node_id.clone();
-        node.fabric_id = Some(fabric_id);
+        node.transport_id = Some(transport_id);
         node.incarnation_id = Some(id.incarnation.clone());
         node.deployment_id = Some(id.deployment_id.clone());
         node.provider = Some(self.provider.kind());

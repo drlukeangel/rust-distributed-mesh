@@ -77,8 +77,8 @@ mod tests {
 
     fn observed(meshes: &[(&str, NodeStatus)]) -> Topology {
         Topology {
-            fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
-            meshes: meshes.iter().map(|(m, _)| Mesh { id: MeshId::mint(), name: (*m).into(), status: ScopeStatus::Pending }).collect(),
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
+            meshes: meshes.iter().map(|(m, _)| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::Pending }).collect(),
             nodes: meshes.iter().flat_map(|(m, s)| mesh_nodes(m, *s)).collect(),
         }
     }

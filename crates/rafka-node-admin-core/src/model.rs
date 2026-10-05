@@ -23,21 +23,10 @@ impl fmt::Display for DeploymentId {
     }
 }
 
-/// A mesh's minted identity. Recovery keeps it; replacement mints a new one.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MeshId(pub String);
-
-impl MeshId {
-    pub fn mint() -> Self {
-        Self(hex::encode(rand::random::<[u8; 16]>()))
-    }
-}
-
 // Identity, path and endpoint-slot types are the Mesh EF's (rafka-mesh-entity);
 // node-admin uses them, it does not redefine them.
 pub use rafka_mesh_entity::path::is_valid_mesh_name;
-pub use rafka_mesh_entity::{EndpointSlot, FabricId, FreshnessToken, IncarnationId, NodeId, NodeKind, PathName, PathNameError, SlotPolicy};
+pub use rafka_mesh_entity::{EndpointSlot, FabricId, FreshnessToken, IncarnationId, MeshId, NodeId, TransportId, NodeKind, PathName, PathNameError, SlotPolicy};
 
 /// Node lifecycle status as published on views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,7 +71,7 @@ pub struct Node {
     pub kind: NodeKind,
     pub mesh: String,
     pub node_id: NodeId,
-    pub fabric_id: Option<FabricId>,
+    pub transport_id: Option<TransportId>,
     pub incarnation_id: Option<IncarnationId>,
     pub deployment_id: Option<DeploymentId>,
     pub provider: Option<ProviderKind>,
@@ -103,7 +92,7 @@ impl Node {
             mesh: name.mesh.clone(),
             name,
             node_id: NodeId::mint(),
-            fabric_id: None,
+            transport_id: None,
             incarnation_id: None,
             deployment_id: None,
             provider: None,
@@ -119,13 +108,16 @@ impl Node {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mesh {
-    pub id: MeshId,
+    /// `None` until a member of the mesh has said which id it carries.
+    pub id: Option<MeshId>,
     pub name: String,
     pub status: ScopeStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fabric {
+    /// The logical Fabric's identity, kept for its lifetime; the name is its label.
+    pub id: FabricId,
     pub name: String,
     pub status: ScopeStatus,
     pub provider: ProviderKind,

@@ -27,10 +27,20 @@ proof-shape nodes (`docs/i143/e0-workspace-audit.md`).
 | fact | form | survives restart | survives replacement |
 |---|---|---|---|
 | `path.name` | `<mesh>.<kind>.<ordinal>`, kind `admin` or `rpc`: `mesh1.rpc.2`, `mesh1.admin.1` | yes | yes (points at the replacement) |
-| `node_id` | logical node identity minted at `AllocateIdentity`, opaque | yes | no |
-| `fabric_id` | the node's Iroh key, kept in its data dir | yes | no |
+| `node_id` | logical node identity minted at `AllocateIdentity`, canonical Crockford60 | yes | no |
+| `mesh_id` | the mesh's identity, canonical Crockford60; carried by every node of the mesh | yes | recovery keeps it; a mesh created again gets a new one |
+| `fabric_id` | the logical Fabric's identity, canonical Crockford60, minted by the bootstrap admin | yes | kept for the Fabric's lifetime |
+| `transport_id` | the node's Iroh `EndpointId` (public key), kept in its data dir; transport only, never a product id | yes | no |
 | `incarnation_id` | minted by node-admin for every process birth, opaque | no | no |
 | endpoint slot | `{slot, addr, freshness}`; freshness is an opaque token minted with each slot assignment | per slot policy | no |
+
+Product identities (`node_id`, `mesh_id`, `fabric_id`) are canonical Crockford60: 60 random bits as 12
+lowercase Crockford base32 characters (`0123456789abcdefghjkmnpqrstvwxyz`), the bare form downstream
+Rafka mints; they carry no time, age, ordinal or topology. One primitive mints, parses and validates
+all three (`rafka_mesh_entity::ids`), and a non-canonical value is refused by name wherever one is read
+(launch environment, digests, views). Only `node_id` is ordered: lexical order of two canonical NodeIds
+is the order of their values. `mesh_id` and `fabric_id` are compared by equality only. Membership,
+Build and backbone topics are keyed by `fabric_id`, never by the Fabric's name.
 
 Freshness and incarnation tokens are compared by equality/supersession only, never ordered.
 
@@ -110,6 +120,7 @@ measured for MM losing mesh1).
 |---|---|---|
 | `MESH_SPAWN_TYPE` | first `rafka-node-admin` | `process` or `container`; any other value refuses startup |
 | `RAFKA_FABRIC` | `rafka-node-admin` (bootstrap) | fabric name, default `fabric1` |
+| `RAFKA_FABRIC_ID` | `rafka-node-admin` (bootstrap), every launched node | the Fabric's id; the bootstrap admin mints it when unset, node-admin writes it for every node it launches |
 | `RAFKA_MESH` | `rafka-node-admin` | the mesh this admin belongs to, default `mesh1` |
 | `RAFKA_DATA_DIR` | every binary | node data dir: identity, journal, proof store |
 | `RAFKA_NODE_ADMIN_API_BIND` | `rafka-node-admin` | HTTP bind, default `127.0.0.1:0` |
@@ -144,7 +155,7 @@ POST   /api/shutdown              runtime administration, not Build
 ```json
 {
   "name": "mesh1.rpc.2", "kind": "rpc_node", "mesh": "mesh1",
-  "node_id": "...", "fabric_id": "...", "incarnation_id": "...",
+  "node_id": "<crockford60>", "transport_id": "...", "incarnation_id": "...",
   "deployment_id": "...", "provider": "process", "data_dir": "...",
   "status": "pending|ready-for-traffic|draining|leaving|dead",
   "is_primary": false, "is_fabric_primary": false,
@@ -153,7 +164,8 @@ POST   /api/shutdown              runtime administration, not Build
 }
 ```
 
-`FabricView` and `MeshView` carry the live owning node-admin `admin_api_base` (PRD §1.16). Callers switch
+`FabricView` carries the Fabric's `id`; `MeshView` its mesh's `id` (`null` until a member of the mesh
+has said which id it carries). Both carry the live owning node-admin `admin_api_base` (PRD §1.16). Callers switch
 control endpoints only from these views.
 
 ## 5. Probe (`rafka-rpc-probe`)

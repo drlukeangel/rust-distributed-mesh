@@ -23,7 +23,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::MeshDigest;
+use rafka_mesh_entity::{FabricId, MeshDigest, MeshId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,12 +39,12 @@ pub const PUBLISH_EVERY: Duration = Duration::from_millis(1000);
 const MAX_FRAME: usize = 3800;
 
 /// A mesh's membership channel.
-pub fn mesh_topic(fabric: &str, mesh_id: &str) -> TopicId {
+pub fn mesh_topic(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-mesh-membership:{fabric}:{mesh_id}").as_bytes()).as_bytes())
 }
 
 /// The fabric's backbone: node-admins only.
-pub fn backbone_topic(fabric: &str) -> TopicId {
+pub fn backbone_topic(fabric: &FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-backbone:{fabric}").as_bytes()).as_bytes())
 }
 
@@ -60,7 +60,7 @@ pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()
 
 /// A member's gossip address: its key at its first endpoint slot.
 pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
-    let key = d.node.fabric_id.0.parse::<iroh::PublicKey>().ok()?;
+    let key = d.node.transport_id.0.parse::<iroh::PublicKey>().ok()?;
     let slot = d.node.endpoints.0.first()?;
     Some(EndpointAddr::new(key).with_ip_addr(slot.addr))
 }
@@ -117,7 +117,7 @@ pub enum Frame {
     /// `sent_unix_ms` makes each publication distinct.
     Members { mesh: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64, digests: Vec<MeshDigest> },
     /// The fabric's status, published by the fabric primary alone.
-    FabricStatus { fabric: String, status: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64 },
+    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64 },
 }
 
 impl Frame {
@@ -338,16 +338,16 @@ struct View {
 
 impl View {
     /// Hold what `f` carries; the digests it carries (for their addresses).
-    fn take(&self, f: &Frame, fabric: &str, via: &'static str) -> Vec<MeshDigest> {
+    fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         match f {
-            Frame::Digest { digest } if digest.fabric == fabric => {
+            Frame::Digest { digest } if &digest.fabric_id == fabric => {
                 if self.book.record(digest.clone()) {
                     self.note(digest, via);
                 }
                 vec![digest.clone()]
             }
             Frame::Members { digests, .. } => {
-                let mine: Vec<MeshDigest> = digests.iter().filter(|d| d.fabric == fabric).cloned().collect();
+                let mine: Vec<MeshDigest> = digests.iter().filter(|d| &d.fabric_id == fabric).cloned().collect();
                 for d in &mine {
                     if self.book.record_forwarded(d.clone()) {
                         self.note(d, via);
@@ -373,17 +373,17 @@ impl View {
 pub struct Membership {
     mesh: Channel,
     view: View,
-    fabric: String,
+    fabric: FabricId,
     cut_off: Arc<Mutex<CutOff>>,
     pub book: DigestBook,
 }
 
 impl Membership {
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &str, mesh: &str, mesh_id: &str, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::default();
         let lookup_slot: Arc<Mutex<Option<MemoryLookup>>> = Arc::default();
-        let (v, f, ls) = (view.clone(), fabric.to_string(), lookup_slot.clone());
+        let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             let via = if matches!(frame, Frame::Members { .. }) { "forwarded" } else { "mesh-channel" };
             let carried = v.take(&frame, &f, via);
@@ -393,9 +393,9 @@ impl Membership {
                 }
             }
         });
-        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric, node, &format!("mesh:{mesh}"), seeds, on_frame).await?;
+        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame).await?;
         *lookup_slot.lock().unwrap() = Some(channel.lookup.clone());
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.to_string(), cut_off: Arc::default() };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -437,7 +437,7 @@ impl Membership {
     /// Hold `d` as heard (an entry pull, or a frame another channel carried),
     /// and register where it is.
     pub fn learn(&self, d: MeshDigest, via: &'static str) {
-        if d.fabric != self.fabric {
+        if d.fabric_id != self.fabric {
             return;
         }
         if let Some(a) = gossip_addr(&d) {
@@ -511,7 +511,7 @@ pub struct Backbone {
     channel: Channel,
     node: String,
     mesh: String,
-    fabric: String,
+    fabric: FabricId,
     forwarding: Arc<AtomicBool>,
     publishing: Arc<AtomicBool>,
     status_publishing: Arc<AtomicBool>,
@@ -544,7 +544,7 @@ impl Backbone {
                 });
             }
         });
-        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), &membership.fabric, node, "backbone", seeds, on_frame).await?;
+        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame).await?;
         Ok(Self {
             channel,
             node: node.to_string(),
@@ -682,7 +682,7 @@ impl DigestBook {
     /// its status. `false` when `d` was not taken.
     pub fn record(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if let Some((held, _, _)) = inner.get(&d.node.node_id.0) {
+        if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms <= held.emitted_unix_ms
             } else {
@@ -692,7 +692,7 @@ impl DigestBook {
                 return false;
             }
         }
-        inner.insert(d.node.node_id.0.clone(), (d, Instant::now(), false));
+        inner.insert(d.node.node_id.to_string(), (d, Instant::now(), false));
         true
     }
 
@@ -702,7 +702,7 @@ impl DigestBook {
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
     pub fn record_forwarded(&self, d: MeshDigest) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if let Some((held, _, _)) = inner.get(&d.node.node_id.0) {
+        if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             let older = if held.node.incarnation == d.node.incarnation {
                 d.emitted_unix_ms < held.emitted_unix_ms
             } else {
@@ -712,7 +712,7 @@ impl DigestBook {
                 return false;
             }
         }
-        inner.insert(d.node.node_id.0.clone(), (d, Instant::now(), true));
+        inner.insert(d.node.node_id.to_string(), (d, Instant::now(), true));
         true
     }
 
@@ -733,15 +733,15 @@ impl DigestBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{EndpointSet, FabricId, IncarnationId, MemberStatus, MeshNode, NodeId};
+    use rafka_mesh_entity::{EndpointSet, TransportId, IncarnationId, MemberStatus, MeshNode, NodeId};
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest {
-            fabric: "fabric1".into(),
+            fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode {
                 node_id: node_id.clone(),
                 name: "mesh1.rpc.1".parse().unwrap(),
-                fabric_id: FabricId("key".into()),
+                transport_id: TransportId("key".into()),
                 incarnation: incarnation.clone(),
                 supersedes,
                 endpoints: EndpointSet(vec![]),
@@ -761,7 +761,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)), "an older digest of the same birth");
         assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "a duplicate");
-        let (held, age) = book.get(&id.0).unwrap();
+        let (held, age) = book.get(id.as_str()).unwrap();
         assert_eq!(held.status, MemberStatus::Leaving, "the status is not reverted");
         assert!(age >= Duration::from_millis(30), "the member's silence is not reset");
         assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 300)), "a newer digest is taken");
@@ -786,7 +786,7 @@ mod tests {
         assert!(book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)));
         std::thread::sleep(Duration::from_millis(30));
         assert!(book.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "an equal forwarded copy");
-        assert!(book.get(&id.0).unwrap().1 < Duration::from_millis(30), "keeps the member heard");
+        assert!(book.get(id.as_str()).unwrap().1 < Duration::from_millis(30), "keeps the member heard");
         assert!(!book.record_forwarded(digest(&id, &birth, None, MemberStatus::Pending, 100)), "an older copy is not taken");
     }
 
@@ -797,7 +797,7 @@ mod tests {
         assert!(book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 500)));
         assert!(book.record(digest(&id, &second, Some(first.clone()), MemberStatus::ReadyForTraffic, 100)), "a new birth, whatever its clock");
         assert!(!book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 900)), "the superseded birth's late digest");
-        assert_eq!(book.get(&id.0).unwrap().0.node.incarnation, second);
+        assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, second);
     }
 
     /// A peer mesh's members are heard through its primary's forwarded
@@ -812,10 +812,10 @@ mod tests {
         assert!(book.record(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
         assert!(book.record_forwarded(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
         std::thread::sleep(SILENT_AFTER + Duration::from_millis(500));
-        let heard: Vec<String> = book.current(SILENT_AFTER).into_iter().map(|d| d.node.node_id.0).collect();
-        assert!(!heard.contains(&direct.0), "a member heard directly is silent after SILENT_AFTER");
-        assert!(heard.contains(&forwarded.0), "a forwarded member is still heard while its mesh's primary is succeeded");
-        assert!(book.get(&forwarded.0).unwrap().1 <= SILENT_AFTER, "its silence has not begun");
+        let heard: Vec<String> = book.current(SILENT_AFTER).into_iter().map(|d| d.node.node_id.to_string()).collect();
+        assert!(!heard.contains(&direct.to_string()), "a member heard directly is silent after SILENT_AFTER");
+        assert!(heard.contains(&forwarded.to_string()), "a forwarded member is still heard while its mesh's primary is succeeded");
+        assert!(book.get(forwarded.as_str()).unwrap().1 <= SILENT_AFTER, "its silence has not begun");
     }
 
     /// The first `Leaving` is lost; one of the later announcements in the

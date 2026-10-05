@@ -57,7 +57,7 @@ pub struct NodeView {
     pub kind: NodeKind,
     pub mesh: String,
     pub node_id: NodeId,
-    pub fabric_id: Option<String>,
+    pub transport_id: Option<String>,
     pub incarnation_id: Option<IncarnationId>,
     pub deployment_id: Option<String>,
     pub provider: Option<ProviderKind>,

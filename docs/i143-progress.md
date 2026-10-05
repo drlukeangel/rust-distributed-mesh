@@ -44,11 +44,14 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e4.s7 | #2760 | `8bc21c5e99` | mesh recovery contract: E2E `mesh_lifecycle__mesh_recover`; fresh birth for a dead launch, mesh id kept, direct-answer fence, join-view gate |
 | e4.s12 | #2811 | `ac045b1a11` | iroh-gossip pinned to `drlukeangel/iroh-gossip` `fcf426396d` (nonblocking active-peer send, RED-first regressions); iroh 1; vendor-divergence row (rafka-v2 #2820 `5795c7ae79`). Found by its soak: admin departure linger + exact-handle `Exited` admission (`541d51ddb0`), Build facts within gossip's frame limit (`d9c03a87a5`) |
 
+| e4.s9 | #2801 | `2070e3ba79` | hierarchical membership: per-mesh channels, admin backbone, forwarded aggregates, fabric status publisher, `SUCCESSION`, refeed; E2E `mesh_membership__backbone` (run on s13's configuration) |
+| e4.s13 | #2816 | `acea859e31` | address-lookup boundary: `presets::Minimal` everywhere, `address-lookup` gate, exact-socket bind, network-less E2E, `CutOff` |
+
 ## In progress
 
-- e4.s13 drlukeangel/rafka-v2#2816 — address-lookup boundary: every endpoint `presets::Minimal`, the `address-lookup` gate, the multi-mesh E2E with no route off the host (branch `i143-e4-s13`).
-- e4.s9 drlukeangel/rafka-v2#2801 — code landed `2070e3ba79` (drlukeangel/rust-distributed-mesh#35); acceptance is final once its E2E runs on s13's configuration.
-- Order after s13 (#2753): e4.s10 (#2803) → e6.s7 (#2804) / e4.s11 (#2805) → revalidate s4–s7 → resume e4.s8 (#2761, branch `i143-e4-s8`).
+- e4.s15 drlukeangel/rafka-v2#2842 — canonical Crockford60 `NodeId` / `MeshId` / logical `FabricId`; transport identity is `TransportId` (branch `i143-e4-s15`).
+- e4.s10 drlukeangel/rafka-v2#2803 — parked on branch `i143-e4-s10` (RED E2E `mesh_lifecycle__admin_cohort_loss`, entry carries unheard members). Resumes after s11 with the rulings now in #2803: day-0 admin self-registers its runtime handle; refeed to held-but-unheard members; authority ≠ executor; no incumbency.
+- Order (canonical PRD `docs/plans/i143-node-rpc-pos-on-RDM.md` in rafka-v2): e4.s15 (#2842) → e4.s14 (#2840) → e6.s7 (#2804) / e4.s11 (#2805) → e4.s10 (#2803) → e4.s8 (#2761, branch `i143-e4-s8`).
 
 ## Blockers
 
