@@ -40,7 +40,7 @@ use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
-use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SILENT_AFTER};
+use rafka_mesh_transport::membership::{announce_leaving, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY, SILENT_AFTER};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -629,18 +629,42 @@ pub struct Running {
     pub membership: Membership,
     pub digest: Arc<Mutex<MeshDigest>>,
     router: IrohRouter,
+    /// The digest cadence, the Build executor and the hierarchy publication:
+    /// stopped first on leave.
+    publisher: tokio::task::JoinHandle<()>,
+    executor: tokio::task::JoinHandle<()>,
+    hierarchy: tokio::task::JoinHandle<()>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Running {
-    /// Say `Leaving`, stop serving and close the endpoint.
+    /// Leave the fabric the way every node does (node-rpc §35): stop taking
+    /// Build work and say `Draining`, then keep saying `Leaving` for the
+    /// leave linger (`RAFKA_LEAVE_LINGER_MS`), then close. iroh-gossip
+    /// acknowledges nothing and closing drops what is unsent, so one
+    /// announcement can be lost; an attempt the executor was running is
+    /// continued by the Build's next attempt.
     pub async fn leave(self) {
-        let mut d = self.digest.lock().unwrap().clone();
-        d.status = MemberStatus::Leaving;
-        d.emitted_unix_ms = now_ms();
-        *self.digest.lock().unwrap() = d.clone();
-        let _ = self.membership.publish(&d).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        self.executor.abort();
+        self.hierarchy.abort();
+        self.publisher.abort();
+        let say = |status: MemberStatus| {
+            let mut d = self.digest.lock().unwrap().clone();
+            d.status = status;
+            d.emitted_unix_ms = now_ms();
+            *self.digest.lock().unwrap() = d.clone();
+            d
+        };
+        let _ = self.membership.publish(&say(MemberStatus::Draining)).await;
+        let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
+            let d = say(MemberStatus::Leaving);
+            let m = self.membership.clone();
+            async move {
+                let _ = m.publish(&d).await;
+            }
+        })
+        .await;
+        tracing::info!(announcements = said, "said Leaving for the linger");
         for t in self.tasks {
             t.abort();
         }
@@ -861,12 +885,13 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     tracing::info_span!("rafka.mesh.node.update.via-ready", node = %name, incarnation_id = %incarnation.0, meshes = membership.meshes_held())
         .in_scope(|| tracing::info!("ready for traffic"));
     let d = digest.clone();
-    tasks.push(membership.publish_every(Duration::from_millis(500), move || {
+    let publisher = membership.publish_every(Duration::from_millis(500), move || {
         let mut d = d.lock().unwrap().clone();
         d.emitted_unix_ms = now_ms();
         d
-    }));
+    });
 
+    let hierarchy;
     // The hierarchy: while this admin is its mesh's primary it publishes the
     // mesh's members on the backbone and forwards the other meshes onto its
     // mesh channel; while it is the fabric primary it publishes the fabric's
@@ -874,7 +899,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // channel through every member of its mesh it knows.
     {
         let (backbone, membership, topology, me, mesh) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
-        tasks.push(tokio::spawn(async move {
+        hierarchy = tokio::spawn(async move {
             loop {
                 let t = topology.read().await.clone();
                 // Cut off, its view authorizes nothing: it publishes as no primary.
@@ -891,7 +916,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
                 tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
             }
-        }));
+        });
     }
     // The projection, refreshed into the control plane's topology.
     {
@@ -906,6 +931,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             }
         }));
     }
+    let executor;
     // The executor: continues every Build whose next operation this admin
     // executes (`executor::executor_for`). A launched admin starts it only
     // after its entry pull, so its first view is its launcher's.
@@ -913,7 +939,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), policy.provider, membership.clone());
-        tasks.push(tokio::spawn(async move {
+        executor = tokio::spawn(async move {
             loop {
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
@@ -929,7 +955,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     _ = tokio::time::sleep(Duration::from_millis(300)) => {}
                 }
             }
-        }));
+        });
     }
     let app = router(control.clone(), axum::Router::new());
     tasks.push(tokio::spawn(async move {
@@ -938,7 +964,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, router: iroh_router, tasks })
+    Ok(Running { api_base, control, runner, membership, digest, router: iroh_router, publisher, executor, hierarchy, tasks })
 }
 
 #[cfg(test)]

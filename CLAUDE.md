@@ -126,7 +126,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.mesh.connection.update.via-refeed` (a channel, or the fabric Build topic, had no neighbour for `SILENT_AFTER`: every peer it knows is handed to it again through `join_peers`, once per window while that holds; `gossip.md` §6) | `channel` (`mesh:<mesh>` / `backbone` / `builds`), `node` (membership channels) or `fabric` (Build topic), `peers`, `joined` |
 | `rafka.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held) | `node`, `incarnation_id`, `meshes` |
 | `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
-| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message, 4096 bytes) | `fabric`, `detail` |
+| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
 | `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
 | `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
@@ -373,7 +373,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_BIN_DIR` | _(beside the running exe)_ | `rafka-node-admin`: where `rafka-node-admin` and `rafka-rpc-node` live. |
 | `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |
 | `RAFKA_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
-| `RAFKA_LEAVE_LINGER_MS` | `1000` | rpc node: how long a stopping node keeps announcing `Leaving` on membership before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
+| `RAFKA_LEAVE_LINGER_MS` | `1000` | Every node (rpc node and node-admin): how long a stopping node keeps announcing `Leaving` on membership (every 200 ms) before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
 
