@@ -690,18 +690,6 @@ impl OperationRunner for AdminRunner {
         r
     }
 
-    /// The birth's own published runtime, else the handle this admin holds
-    /// for a birth it launched, inspected in this provider's control domain.
-    async fn proven_exited(&self, node: &Node) -> bool {
-        let handle = match self.observer.digest_of(node).and_then(|d| d.node.runtime) {
-            Some(fact) => crate::deployment::provider::adopt(&*self.provider, &fact).ok(),
-            None => self.handles.lock().unwrap().get(&node.name).filter(|(n, _)| n.incarnation_id == node.incarnation_id).map(|(_, h)| h.clone()),
-        };
-        match handle {
-            Some(h) => matches!(self.provider.inspect(&h).await, crate::deployment::provider::DeploymentStatus::Exited { .. }),
-            None => false,
-        }
-    }
 }
 
 impl AdminRunner {

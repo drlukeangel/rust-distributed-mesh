@@ -94,15 +94,19 @@ async fn the_desired_topology_outlives_its_builds_and_drives_recovery() {
     })
     .await;
 
-    // 5. An admin that misses a revision catches up when it is back.
-    let stopped = estate.pid_of("mesh1.admin.3").await;
+    // 5. An admin that misses a revision catches up when it is back. It
+    // holds no seat: pausing a seat holder moves the seat first, and a Build
+    // planned after that replaces the unheard birth (the path fence).
+    let quiet = estate.nodes().await.into_iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
+    let (quiet_name, quiet_base) = (quiet["name"].as_str().unwrap().to_string(), quiet["admin_api_base"].as_str().unwrap().to_string());
+    let stopped = estate.pid_of(&quiet_name).await;
     signal(stopped, "-STOP");
     let r4 = build(&estate, "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 4}]})).await;
     assert_eq!(desired(&estate).await["revision"], 4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
-    wait_for("mesh1.admin.3 holds revision 4", Duration::from_secs(30), || async {
-        (estate.http_get(&late_base, "/api/fabric").await.1["desired"]["revision"] == 4).then_some(())
+    wait_for("the paused admin holds revision 4", Duration::from_secs(30), || async {
+        (estate.http_get(&quiet_base, "/api/fabric").await.1["desired"]["revision"] == 4).then_some(())
     })
     .await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
@@ -149,7 +153,7 @@ async fn the_desired_topology_outlives_its_builds_and_drives_recovery() {
     );
     assert_ne!(back["node_id"], lost["node_id"], "a lost birth's path gets a new logical node");
     let _ = fabric_primary;
-    // 3 and 5: the late admin hydrated before Ready, and caught up later.
+    // 3: the late admin hydrated before Ready. 5: the paused admin caught up.
     let ready = named(&spans, "rafka.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.3").cloned().expect("mesh1.admin.3 is ready");
     let hydrated = named(&spans, "rafka.node_admin.desired_topology.update.via-hydration")
         .into_iter()
@@ -158,5 +162,10 @@ async fn the_desired_topology_outlives_its_builds_and_drives_recovery() {
         .map(|sp| (at(sp), sp["attributes"]["desired_revision"].clone()))
         .collect::<Vec<_>>();
     assert!(hydrated.iter().any(|(t, r)| *t < at(&ready) && *r == "3"), "revision 3 before Ready: {hydrated:?}");
-    assert!(hydrated.iter().any(|(t, r)| *t > resumed_at && *r == "4"), "revision 4 caught up after it resumed: {hydrated:?}");
+    let caught_up = named(&spans, "rafka.node_admin.desired_topology.update.via-catch-up")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == quiet_name.as_str())
+        .map(|sp| (at(sp), sp["attributes"]["desired_revision"].clone()))
+        .collect::<Vec<_>>();
+    assert!(caught_up.iter().any(|(t, r)| *t > resumed_at && *r == "4"), "{quiet_name} caught up revision 4 after it resumed: {caught_up:?}");
 }

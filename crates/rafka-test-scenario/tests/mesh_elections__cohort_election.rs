@@ -83,7 +83,7 @@ async fn accepted_build(estate: &Estate, (status, v): (u16, Value)) {
 
 /// Every node is ready and every seat is the computed one.
 fn settled(nodes: &[Value]) -> bool {
-    nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(nodes).is_ok()
+    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(nodes).is_ok()
 }
 
 /// Wait until `base`'s view is settled; return it.
