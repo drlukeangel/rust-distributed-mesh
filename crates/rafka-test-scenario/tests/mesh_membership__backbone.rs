@@ -263,7 +263,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         .find(|sp| attr(sp, "incarnation_id") == reborn)
         .unwrap_or_else(|| panic!("the reborn mesh2.rpc.1 reports ready"))
         .clone();
-    assert_eq!(ready["attributes"]["meshes"].as_u64(), Some(2), "ready holding both meshes: {ready}");
+    assert_eq!(attr(&ready, "meshes"), "2", "ready holding both meshes: {ready}");
     let pulled = named(&spans, "rafka.mesh.entry.update.via-membership-pulled")
         .into_iter()
         .filter(|sp| attr(sp, "node") == "mesh2.rpc.1")

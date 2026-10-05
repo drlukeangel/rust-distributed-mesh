@@ -635,4 +635,22 @@ mod tests {
         assert!(!book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 900)), "the superseded birth's late digest");
         assert_eq!(book.get(&id.0).unwrap().0.node.incarnation, second);
     }
+
+    /// A peer mesh's members are heard through its primary's forwarded
+    /// aggregate. When that primary is lost its successor takes over only
+    /// after it hears the loss (`SILENT_AFTER`) and publishes on its next
+    /// round: a forwarded member stays heard through one succession, while a
+    /// member heard directly falls silent at `SILENT_AFTER`.
+    #[test]
+    fn a_forwarded_member_stays_heard_through_one_primary_succession() {
+        let book = DigestBook::default();
+        let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
+        assert!(book.record(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(book.record_forwarded(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
+        std::thread::sleep(SILENT_AFTER + Duration::from_millis(500));
+        let heard: Vec<String> = book.current(SILENT_AFTER).into_iter().map(|d| d.node.node_id.0).collect();
+        assert!(!heard.contains(&direct.0), "a member heard directly is silent after SILENT_AFTER");
+        assert!(heard.contains(&forwarded.0), "a forwarded member is still heard while its mesh's primary is succeeded");
+        assert!(book.get(&forwarded.0).unwrap().1 <= SILENT_AFTER, "its silence has not begun");
+    }
 }
