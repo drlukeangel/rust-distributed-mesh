@@ -72,6 +72,9 @@ pub struct BuildExecutor {
     pub builds: Arc<dyn BuildStateAdapter>,
     pub topology: Arc<RwLock<Topology>>,
     pub runner: Arc<dyn OperationRunner>,
+    /// This admin's desired topology: a Build whose desired revision lost a
+    /// fork is refused, never executed.
+    pub desired: Arc<crate::desired::DesiredStore>,
 }
 
 impl BuildExecutor {
@@ -87,6 +90,10 @@ impl BuildExecutor {
         };
         let mut out = Vec::new();
         for b in active {
+            // A Build waits for the desired revision it names to be heard.
+            if b.desired.as_ref().is_some_and(|m| matches!(self.desired.standing(m), crate::desired::Standing::Ahead | crate::desired::Standing::Unhydrated)) {
+                continue;
+            }
             if !self.leads(&b).await {
                 continue;
             }
@@ -130,6 +137,8 @@ impl BuildExecutor {
             attempt,
             executor = %self.executor,
             previous_executor = build.executor.as_deref().unwrap_or(""),
+            desired_revision = build.desired.as_ref().map(|m| m.revision).unwrap_or(0),
+            reason = build.reason.map(|r| r.as_str()).unwrap_or(""),
             operations = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -161,6 +170,12 @@ impl BuildExecutor {
             Ok(ClaimOutcome::Won) => {}
             Ok(ClaimOutcome::Lost { holder }) => return Reconciled::Lost { attempt, holder },
             Err(e) => return Reconciled::Failed { attempt, reason: format!("claiming attempt {attempt}: {e}") },
+        }
+        if let Some(mark) = build.desired.as_ref().filter(|m| self.desired.standing(m) == crate::desired::Standing::Lost) {
+            let reason = format!("desired-revision-conflict: {mark} lost to a concurrent update from the same base; resubmit against the current revision");
+            tracing::info_span!("rafka.node_admin.build.reject.via-desired-revision-conflict", build_id = %build.build_id, desired_revision = mark.revision, detail = %reason)
+                .in_scope(|| tracing::info!("Build refused: its desired revision lost"));
+            return self.finish(build, attempt, Err(reason)).await;
         }
         // Desired is the pinned intent; observed is read now, never remembered.
         let observed = self.topology.read().await.clone();
@@ -273,6 +288,8 @@ mod tests {
                 intent: crate::build::BuildIntent::RemoveMesh { mesh: "mesh2".into() },
                 traceparent: None,
                 submitted_at_ms: 0,
+                desired: None,
+                reason: None,
             }),
             BuildFact::Claim(BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),
             BuildFact::Attempt(BuildAttemptReceipt { build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }),

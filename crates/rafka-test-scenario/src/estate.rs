@@ -153,6 +153,13 @@ impl Estate {
         (status, r.json().await.unwrap_or(Value::Null))
     }
 
+    /// `GET path` on another admin's control API (`base`).
+    pub async fn http_get(&self, base: &str, path: &str) -> (u16, Value) {
+        let r = self.http.get(format!("{base}{path}")).send().await.expect("control API reachable");
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
     pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
         let r = self.http.post(format!("{}{path}", self.admin)).json(body).send().await.expect("control API reachable");
         let status = r.status().as_u16();
@@ -308,11 +315,16 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route of
-    /// `self.admin` (the bootstrap admin, or whichever admin the test switched
-    /// control to) and wait until every runtime of the estate has exited.
-    /// Every process flushes its evidence on exit, so read `spans()` after this.
+    /// Stop the whole estate through the runtime-administration route of the
+    /// admin that holds the fabric now (as `self.admin` sees it: drift
+    /// recovery can move the fabric back to a recovered mesh) and wait until
+    /// every runtime of the estate has exited. Every process flushes its
+    /// evidence on exit, so read `spans()` after this.
     pub async fn stop(&mut self) {
+        let (_, fabric) = self.get("/api/fabric").await;
+        if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
+            self.admin = holder.to_string();
+        }
         let _ = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
         if let Some(mut c) = self.bootstrap.take() {
             let _ = tokio::task::spawn_blocking(move || c.wait()).await;

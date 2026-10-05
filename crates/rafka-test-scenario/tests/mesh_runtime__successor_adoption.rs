@@ -65,6 +65,7 @@ async fn a_successor_manages_births_it_never_launched() {
     build(&estate, 2, 3).await;
     let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     let successor = nodes.iter().find(|n| n["name"] == "mesh1.admin.2").cloned().unwrap();
+    let launcher = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
     let base = s(&successor["admin_api_base"]);
     let rpc = |name: &str| a_births.iter().find(|n| n["name"] == name).cloned().unwrap();
     let (restarted, retired) = (rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
@@ -76,7 +77,9 @@ async fn a_successor_manages_births_it_never_launched() {
     let view = wait_for("the successor holds the mesh and the fabric", Duration::from_secs(40), || async {
         let v = estate.nodes().await;
         let me = v.iter().find(|n| n["name"] == "mesh1.admin.2")?;
-        let gone = v.iter().any(|n| n["name"] == "mesh1.admin.1" && n["status"] == "dead");
+        // The killed birth is gone: dead, or already replaced by the drift
+        // recovery the fabric authority starts for it (rafka-v2#2851).
+        let gone = v.iter().any(|n| n["name"] == "mesh1.admin.1" && (n["status"] == "dead" || n["incarnation_id"] != launcher["incarnation_id"]));
         (gone && me["is_primary"] == true && me["is_fabric_primary"] == true).then_some(v)
     })
     .await;
@@ -128,7 +131,16 @@ async fn a_successor_manages_births_it_never_launched() {
     const PREREQUISITES: [&str; 4] =
         ["RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "MakeRuntimeFactAvailableToBirth", "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata"];
     let launched: Vec<&Value> = named(&spans, "rafka.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "WaitForNodeReady").collect();
-    assert_eq!(launched.len(), 5, "mesh1.rpc.1-3, mesh1.admin.2 and mesh1.rpc.2's restart each waited for Ready");
+    // The killed bootstrap admin is desired (2 node-admins): once its exact
+    // runtime is proven exited, the successor may recreate it under a new
+    // proven-drift Build before the test stops.
+    let recoveries = named(&spans, "rafka.node_admin.build.create.via-proven-drift");
+    assert!(recoveries.len() <= 1, "one recovery at most for one exited birth");
+    for r in &recoveries {
+        assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
+    }
+    let by_request = launched.iter().filter(|w| w["attributes"]["node"] != "mesh1.admin.1").count();
+    assert_eq!(by_request, 5, "mesh1.rpc.1-3, mesh1.admin.2 and mesh1.rpc.2's restart each waited for Ready");
     for wait in launched {
         let (node, build) = (wait["attributes"]["node"].as_str().unwrap(), wait["attributes"]["build_id"].clone());
         let before: Vec<Value> = steps_of(node, &|sp| sp["attributes"]["build_id"] == build && ns(sp, "end_unix_nano") <= ns(wait, "start_unix_nano"));

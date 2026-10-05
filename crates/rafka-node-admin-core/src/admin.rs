@@ -20,6 +20,7 @@
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
 use crate::deployment::endpoint::{slots_for, EndpointAllocator};
+use crate::desired::{DesiredStore, DesiredTopology, Via};
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
 };
@@ -40,7 +41,7 @@ use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
 use rafka_mesh_transport::membership::{announce_leaving, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY, SILENT_AFTER};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -266,6 +267,90 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     topology
 }
 
+/// The fabric authority's drift check (`crate::drift`): when this admin is
+/// the fabric primary and a desired cohort has fewer births than the current
+/// revision wants, at least one of them with its exact runtime inspected and
+/// found exited, and no active Build references that revision, it starts a
+/// new reconciliation Build against the unchanged revision. `started` holds
+/// the (revision, exited births) it already started one for, so a recovery
+/// that fails is not started again and again.
+pub async fn reconcile_drift(
+    me: &PathName,
+    t: &Topology,
+    desired: &DesiredStore,
+    book: &DigestBook,
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    builds: &dyn BuildStateAdapter,
+    started: &mut HashSet<(u64, Vec<String>)>,
+) -> Option<crate::build::BuildId> {
+    let authority = t.fabric_primary().filter(|n| &n.name == me)?;
+    let d = desired.current()?;
+    let mut exited = HashSet::new();
+    for n in crate::drift::unheard(t) {
+        let Some(fact) = book.get(n.node_id.as_str()).map(|(dg, _)| dg).filter(|dg| Some(&dg.node.incarnation) == n.incarnation_id.as_ref()).and_then(|dg| dg.node.runtime) else {
+            continue;
+        };
+        // Proof is the exact runtime's own terminal status, in this
+        // provider's control domain; anything else proves nothing.
+        let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
+        if matches!(provider.inspect(&handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
+            exited.insert(n.incarnation_id.clone().expect("filtered on it"));
+        }
+    }
+    let short = crate::drift::shortfall(&d, t, &exited);
+    if short.is_empty() {
+        return None;
+    }
+    let active = builds.list_active().await.ok()?;
+    if active.iter().any(|b| b.desired.as_ref().is_some_and(|m| m.revision == d.revision)) {
+        return None;
+    }
+    let mut key: Vec<String> = short.iter().flat_map(|s| s.exited.iter().cloned()).collect();
+    key.sort();
+    if !started.insert((d.revision, key)) {
+        return None;
+    }
+    let build_id = crate::build::BuildId::mint();
+    let scope = short.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+    let span = tracing::info_span!(
+        "rafka.node_admin.build.create.via-proven-drift",
+        fabric_id = %d.fabric_id,
+        desired_revision = d.revision,
+        source_build_id = %d.source_build_id.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
+        reconcile_build_id = %build_id,
+        scope = %scope,
+        authority = %authority.name,
+        authority_node_id = %authority.node_id,
+        reason = "proven-drift",
+    );
+    let fact = crate::build_state::BuildIntentFact {
+        build_id: build_id.clone(),
+        intent: crate::build::BuildIntent::ReconcileFabric { desired: d.desired.clone() },
+        traceparent: span.in_scope(rafka_telemetry::current_traceparent),
+        submitted_at_ms: now_ms(),
+        desired: Some(d.mark()),
+        reason: Some(crate::build_state::BuildReason::ProvenDrift),
+    };
+    match builds.publish_intent(&fact).await {
+        Ok(()) => {
+            span.in_scope(|| tracing::info!("observed topology below the current desired revision: reconciliation Build started"));
+            Some(build_id)
+        }
+        Err(e) => {
+            span.in_scope(|| tracing::info!(error = %e, "the reconciliation Build could not be published"));
+            None
+        }
+    }
+}
+
+/// Never Ready around missing control hydration: an admin that holds no
+/// current desired topology names itself blocked. Only Day 0 roots the
+/// desired topology itself; every other admin hydrates it from an existing
+/// authority (its entry pull, or the fabric control topic).
+pub fn hydration_blocker(me: &PathName, desired: &DesiredStore) -> Option<String> {
+    desired.current().is_none().then(|| format!("{me}: holds no current desired topology (not hydrated from an existing authority)"))
+}
+
 /// Why this admin cannot yet take authority over `held` (every live birth it
 /// hears but itself): each birth that publishes no runtime fact, or one this
 /// admin's provider cannot adopt in its own control domain. Empty: it is
@@ -339,6 +424,7 @@ struct EntryState {
     records: Arc<Records>,
     book: DigestBook,
     digest: Arc<Mutex<MeshDigest>>,
+    desired: Arc<DesiredStore>,
 }
 
 /// What fencing a path's previous birth found.
@@ -690,6 +776,13 @@ impl Running {
     /// acknowledges nothing and closing drops what is unsent, so one
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
+    /// Stop executing and reconciling: no Build attempt and no drift
+    /// recovery starts after this. A fabric shutdown does this first, so the
+    /// runtimes it stops are not recovered as proven drift.
+    pub fn stop_reconciling(&self) {
+        self.executor.abort();
+    }
+
     pub async fn leave(self) {
         self.executor.abort();
         self.hierarchy.abort();
@@ -762,7 +855,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             let mut members = e.book.current(SILENT_AFTER);
             members.push(e.digest.lock().unwrap().clone());
             let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
-            EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members }
+            // The fabric control state a new admin hydrates before it may be Ready.
+            let control = serde_json::json!({ "desired": e.desired.current() });
+            EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control }
         }
     });
     let iroh_router =
@@ -799,7 +894,12 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone()).await.map_err(|e| e.to_string())?);
+    // The current desired topology: Day 0's root, or hydrated from the entry
+    // pull and kept current over the fabric's control topic.
+    let desired = Arc::new(DesiredStore::default());
+    let builds = Arc::new(
+        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), desired.clone(), name.to_string()).await.map_err(|e| e.to_string())?,
+    );
 
     // Fabric policy and the first view. The bootstrap admin takes its policy
     // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
@@ -833,11 +933,25 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             }
             let _ = membership.join_peers(mesh_peers).await;
             backbone.join_admins(admins).await;
+            // Hydrate the current desired topology from the launching admin;
+            // without it this admin stays Pending (the Ready gate below).
+            match answer.control.get("desired").cloned().map(serde_json::from_value::<DesiredTopology>) {
+                Some(Ok(d)) => {
+                    crate::desired::take(&desired, d, Via::Hydration, &name.to_string(), &answer.served_by);
+                }
+                Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's desired topology does not decode"),
+                None => {}
+            }
             tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
             FabricPolicy { provider: topology.fabric.provider }
         }
-        None => FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?,
+        None => {
+            // Day 0: no Fabric authority exists before this admin; it roots
+            // the desired topology with its own mesh.
+            crate::desired::take(&desired, DesiredTopology::root(cfg.fabric_id.clone(), &cfg.fabric, &cfg.mesh), Via::Day0, &name.to_string(), &name.to_string());
+            FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
+        }
     };
 
     // The control API.
@@ -846,7 +960,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let records = Arc::new(Records::default());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    let control = Arc::new(ControlPlane::new(builds.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
+    let control = Arc::new(ControlPlane::new(builds.clone(), desired.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
 
     // The deployment hand (used while this admin is fabric primary).
     let prepared = crate::deployment::prepare(policy, &cfg.fabric).await.map_err(|e| e.to_string())?;
@@ -949,6 +1063,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         records: records.clone(),
         book: book.clone(),
         digest: digest.clone(),
+        desired: desired.clone(),
     });
     if let Some(l) = &cfg.launch {
         // The pipeline's assignment, not a re-minted one.
@@ -964,6 +1079,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     {
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), prepared.provider.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
+        let hydrated = desired.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
         tasks.push(tokio::spawn(async move {
@@ -978,6 +1094,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 if let Some(dir) = &day0 {
                     blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
                 }
+                blocked.extend(hydration_blocker(&me, &hydrated));
                 if blocked.is_empty() {
                     let mut d = digest.lock().unwrap();
                     if d.status != MemberStatus::Pending {
@@ -1068,19 +1185,29 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // executes (`executor::executor_for`). A launched admin starts it only
     // after its entry pull, so its first view is its launcher's.
     {
-        let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
+        let exec = BuildExecutor {
+            executor: name.to_string(),
+            builds: builds.clone(),
+            topology: control.topology.clone(),
+            runner: runner.clone(),
+            desired: desired.clone(),
+        };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
+        let (me, deployer, desired, drift_builds) = (name.clone(), runner.provider.clone(), desired.clone(), builds.clone());
         executor = tokio::spawn(async move {
+            let mut started = HashSet::new();
             loop {
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
                 let now = project(&fabric, &fabric_id, provider, &book, &records);
-                *topology.write().await = now;
+                *topology.write().await = now.clone();
                 // Every Build whose next operation this admin executes; none
                 // while it is cut off or within one silence window of healing
-                // (its view then authorizes nothing).
+                // (its view then authorizes nothing). The fabric authority first
+                // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
+                    reconcile_drift(&me, &now, &desired, &book, &*deployer, &*drift_builds, &mut started).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
@@ -1201,6 +1328,16 @@ mod tests {
         assert_eq!(blocked.len(), 2, "{blocked:?}");
         assert!(blocked[0].starts_with("mesh1.rpc.2: publishes no runtime fact"), "{blocked:?}");
         assert!(blocked[1].starts_with("mesh1.rpc.3:") && blocked[1].contains("control domain"), "{blocked:?}");
+    }
+
+    #[test]
+    fn an_admin_without_a_hydrated_desired_topology_is_never_authority_capable() {
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let store = DesiredStore::default();
+        let blocked = hydration_blocker(&me, &store).expect("blocked while unhydrated");
+        assert!(blocked.starts_with("mesh1.admin.2: holds no current desired topology"), "{blocked}");
+        store.offer(DesiredTopology::root(fabric1(), "fabric1", "mesh1"));
+        assert_eq!(hydration_blocker(&me, &store), None);
     }
 
     #[test]

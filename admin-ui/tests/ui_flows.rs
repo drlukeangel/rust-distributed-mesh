@@ -40,7 +40,12 @@ async fn node_admin() -> (NodeAdminClient, Arc<ControlPlane>) {
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", true), node("mesh1.rpc.2", false)],
     };
-    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), topology));
+    let desired = Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(
+        topology.fabric.id.clone(),
+        &topology.fabric.name,
+        "mesh1",
+    )));
+    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), desired, topology));
     let app = rafka_node_admin_core::http::router(cp.clone(), axum::Router::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

@@ -28,7 +28,7 @@ async fn admin(peers: Vec<EndpointAddr>) -> (Endpoint, Router, Arc<FabricBuildSt
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Default::default(), "test-admin".into()).await.unwrap());
     (endpoint, router, builds)
 }
 
@@ -42,6 +42,8 @@ fn intent(id: &BuildId) -> BuildIntentFact {
         intent: BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 3 } },
         traceparent: None,
         submitted_at_ms: 0,
+        desired: None,
+        reason: None,
     }
 }
 

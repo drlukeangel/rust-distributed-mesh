@@ -30,6 +30,33 @@ pub struct BuildIntentFact {
     /// W3C traceparent of the accepting span, so execution parents to it.
     pub traceparent: Option<String>,
     pub submitted_at_ms: u64,
+    /// The desired-topology revision this Build proposed (a topology-changing
+    /// request) or reconciles toward (a restart, a drift recovery). Absent
+    /// on facts from before desired topology existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired: Option<crate::desired::DesiredMark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<BuildReason>,
+}
+
+/// Why a Build exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BuildReason {
+    /// A control request (REST, UI, client).
+    RequestedChange,
+    /// The fabric authority proved observed topology below the current
+    /// desired revision (an exact runtime exited).
+    ProvenDrift,
+}
+
+impl BuildReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestedChange => "requested-change",
+            Self::ProvenDrift => "proven-drift",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +154,10 @@ pub struct BuildProjection {
     pub executor: Option<String>,
     pub steps: Vec<BuildStepReceipt>,
     pub last_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desired: Option<crate::desired::DesiredMark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<BuildReason>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +206,8 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     executor: None,
                     steps: Vec::new(),
                     last_failure: None,
+                    desired: i.desired.clone(),
+                    reason: i.reason,
                 });
             }
             BuildFact::Claim(c) => {
@@ -238,6 +271,11 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
+    /// Send a new desired-topology revision to the fabric's other admins
+    /// (this admin's store already holds it). Local-only adapters send nothing.
+    async fn publish_desired(&self, _desired: &crate::desired::DesiredTopology) -> Result<(), BuildStateError> {
+        Ok(())
+    }
 }
 
 /// The shared append-and-fold core of both RDM adapters.
@@ -477,6 +515,8 @@ mod tests {
             intent: BuildIntent::RestartNode { node: "mesh1.rpc.2".parse().unwrap(), from_incarnation: None },
             traceparent: None,
             submitted_at_ms: 1,
+            desired: None,
+            reason: None,
         }
     }
 

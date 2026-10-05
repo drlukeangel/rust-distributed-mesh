@@ -208,7 +208,7 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr)) -> LaunchTemplate
 pub async fn publish_build(builds: &MemoryBuildStateAdapter, intent: BuildIntent) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_intent(&BuildIntentFact { build_id: build_id.clone(), intent, traceparent: None, submitted_at_ms: 0 })
+        .publish_intent(&BuildIntentFact { build_id: build_id.clone(), intent, traceparent: None, submitted_at_ms: 0, desired: None, reason: None })
         .await
         .unwrap();
     build_id

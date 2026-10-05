@@ -60,6 +60,8 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
             intent: BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode, target: None },
             traceparent: None,
             submitted_at_ms: 0,
+            desired: None,
+            reason: None,
         })
         .await
         .unwrap();
