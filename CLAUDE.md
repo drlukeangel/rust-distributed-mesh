@@ -137,7 +137,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.ui.build.create.via-node-admin` (the Admin UI submitted a Build) | `what`, `build_id` |
 | `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
 | `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
-| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire`), `build_id`, `provider`, `node`, `attempt`, `restart` |
+| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire` / `adopt-current`: the Day-0 admin adopting its own runtime, `build_id` empty), `build_id`, `provider`, `node`, `attempt`, `restart` |
 | `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome` (`complete` / `failed` / `reused`: decided by an earlier attempt's receipt), `elapsed_ms` |
 | `rafka.mesh.election.resolve.via-recompute` (a cohort's primary changed in one admin's view; `docs/i143/design.md` §2.1) | `observer`, `mesh`, `kind`, `primary`, `previous` (empty = none), `members`, `ready` |
 | `rafka.mesh.election.resolve.via-fabric-recompute` (the fabric primary changed in one admin's view) | `observer`, `fabric`, `primary`, `previous` (empty = none), `meshes` |

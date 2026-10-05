@@ -153,9 +153,25 @@ A changed locator or provider control domain for the same incarnation is a named
 
 In RDM:
 
-The seam is a record in the birth's data dir: right after it realises the runtime, the provider writes the fact to `<data_dir>/runtime.json` (after removing any record an earlier birth left). The runtime waits for that record, refuses one that does not describe itself (a process: its own pid, start token and domain; a container: an id its hostname begins), and publishes it with its birth. The provider produces the locator; the runtime publishes the fact; no launcher gossips a competing one.
+The seam is a record in the birth's data dir, `<data_dir>/runtime.json`. The provider clears any record an earlier birth left and realises the runtime; the pipeline then commits each prerequisite as its own step, receipt and span, over what `DeployRuntime` obtained (no further provider call):
 
-Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registers the same exact runtime identity and publishes RuntimeFact before authority-bearing Ready. Here: `RuntimeFact::of_this_process` under a minted deployment id.
+```text
+DeployRuntime                          provider launches (or finds) the runtime
+RegisterExactRuntimeHandle             the handle names it exactly (pid + start token / immutable id)
+ResolveProviderControlDomain           it lives in this provider's control domain
+MakeRuntimeFactAvailableToBirth        the normalized fact is written to runtime.json and read back
+WaitForBind
+PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata
+                                       the node record and data dir are published; the fact
+                                       rides the birth's own digest
+WaitForMeshJoin                        the birth's own digest carries exactly that fact and data dir
+WaitForNodeReady                       begins only when the Build state holds a Complete receipt
+                                       for each of the four steps above (READY_PREREQUISITES)
+```
+
+The runtime waits for the record, refuses one that does not describe itself (a process: its own pid, start token and domain; a container: an id its hostname begins), and publishes it with its birth. The provider produces the locator; the runtime publishes the fact; no launcher gossips a competing one. Receipts carry fingerprints, never a raw pid, container id or domain.
+
+Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registers the same exact runtime identity and publishes RuntimeFact before authority-bearing Ready. Here: `CurrentRuntimeAdoption` runs `AdoptCurrentRuntime` (`RuntimeFact::of_this_process` under a minted deployment id), `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain` and `PublishRuntimeFactAndCurrentRuntimeMetadata` (the fact and data dir into its own digest), each under a `via-step` span of a `via-pipeline` span with `pipeline = adopt-current`, and keeps their receipts in `<data_dir>/runtime-adoption.json`. Its Ready gate holds it Pending until that file holds a Complete receipt for each.
 
 A successor adopts a birth it did not launch from that birth's current digest (`AdminRunner::handle_for`); the `handles` map caches the result. No completed Build's `AllocateIdentity`/`DeployRuntime` receipt is read, and the Build topic still hands a new neighbour active Builds only.
 

@@ -79,7 +79,7 @@ struct Pausing<'a> {
 
 #[async_trait::async_trait]
 impl NodeObserver for Pausing<'_> {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
         if self.pause {
             self.reached.notify_one();
             std::future::pending::<()>().await;

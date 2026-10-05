@@ -124,8 +124,12 @@ impl LiveMesh {
 
 #[async_trait::async_trait]
 impl NodeObserver for LiveMesh {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.membership.book.get(node_id.as_str()).is_some_and(|(d, _)| &d.node.incarnation == incarnation)
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+        self.membership
+            .book
+            .get(node_id.as_str())
+            .filter(|(d, _)| &d.node.incarnation == incarnation)
+            .map(|(d, _)| rafka_node_admin_core::deployment::pipeline::Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
