@@ -32,6 +32,28 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
+/// The fabric primary `observer` had resolved when `at` (a span) started: its own latest
+/// `via-fabric-recompute` before that moment. The seat moves as meshes grow (the lowest ready
+/// NodeId fabric-wide wins), so "the fabric primary" is a fact at a time, never one name for the
+/// whole test.
+fn fabric_primary_seen_by(spans: &[Value], observer: &str, at: &Value) -> String {
+    let t = at["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    named(spans, "rafka.mesh.election.resolve.via-fabric-recompute")
+        .into_iter()
+        .filter(|r| r["attributes"]["observer"] == observer && r["start_unix_nano"].as_u64().is_some_and(|s| s <= t))
+        .max_by_key(|r| r["start_unix_nano"].as_u64())
+        .map(|r| s(&r["attributes"]["primary"]))
+        .unwrap_or_else(|| panic!("{observer} resolved no fabric primary before {}", at["name"]))
+}
+
+/// The span of `span_name` for `node` under `build_id`.
+fn operation<'a>(spans: &'a [Value], span_name: &str, node: &str, build_id: &str) -> &'a Value {
+    named(spans, span_name)
+        .into_iter()
+        .find(|s| s["attributes"]["node"] == node && s["attributes"]["build_id"] == build_id)
+        .unwrap_or_else(|| panic!("no {span_name} for {node} under {build_id}"))
+}
+
 /// The admin whose reconcile ran `span_name` for `node` under `build_id`.
 fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> String {
     let op = named(spans, span_name)
@@ -63,7 +85,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
         .flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=3).map(move |i| format!("{m}.rpc.{i}"))))
         .collect();
     let nodes = estate.settled(&want, Duration::from_secs(15)).await;
-    let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap();
+    assert_eq!(nodes.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1, "one fabric primary once the view settles");
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
     assert_eq!(build["executor"], mesh2_primary.as_str(), "the Build's last attempt ran on mesh2's own primary: {build:#}");
 
@@ -94,8 +116,14 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.admin = fabric_base;
     estate.stop().await;
     let spans = estate.spans();
+    // The admin cohort is created by whoever held the fabric seat when the create ran: the
+    // executor's own view at that moment. Day 0's fabric primary may hand the seat to a lower
+    // NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the test is
+    // not the creator's seat.
     for a in ["mesh2.admin.1", "mesh2.admin.2"] {
-        assert_eq!(executed_by(&spans, "rafka.node_admin.node.create.via-build", a, &create), fabric_primary, "{a}: the fabric primary creates mesh2's admin cohort");
+        let op = operation(&spans, "rafka.node_admin.node.create.via-build", a, &create);
+        let creator = executed_by(&spans, "rafka.node_admin.node.create.via-build", a, &create);
+        assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "{a}: created by the admin holding the fabric seat when it ran");
     }
     for r in ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"] {
         assert_eq!(executed_by(&spans, "rafka.node_admin.node.create.via-build", r, &create), mesh2_primary, "{r}: mesh2's primary creates its members");
