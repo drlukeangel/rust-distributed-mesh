@@ -40,16 +40,22 @@ struct Wire {
     facts: Vec<BuildFact>,
 }
 
-/// iroh-gossip's message limit (`DEFAULT_MAX_MESSAGE_SIZE`): a larger frame
-/// is refused by the receiving connection, which drops it, and with it every
-/// topic sharing that connection.
-pub const MAX_MESSAGE_BYTES: usize = 4096;
+/// iroh-gossip's frame limit (`DEFAULT_MAX_MESSAGE_SIZE`): a frame of this
+/// many bytes or more is refused at write, which closes the connection, and
+/// with it every topic sharing that connection.
+pub const GOSSIP_FRAME_LIMIT: usize = 4096;
+
+/// The largest Build message payload. The frame is the payload plus the
+/// message envelope (two enum tags, the 32-byte message id, the payload's
+/// length prefix, the delivery scope and round: about 40 bytes); 64 bytes
+/// are kept for it.
+pub const MAX_MESSAGE_BYTES: usize = GOSSIP_FRAME_LIMIT - 64;
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
     let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts }).map_err(|e| BuildStateError::Io(e.to_string()))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!(
-            "a Build message of {} bytes exceeds the gossip limit of {MAX_MESSAGE_BYTES}",
+            "a Build message of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
             bytes.len()
         )));
     }

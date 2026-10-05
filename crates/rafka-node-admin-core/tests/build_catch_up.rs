@@ -135,3 +135,51 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
     a_router.shutdown().await.unwrap();
     c_router.shutdown().await.unwrap();
 }
+
+/// iroh-gossip refuses a frame of 4096 bytes or more, and the frame is the
+/// payload plus the message envelope (enum tags, the 32-byte message id, the
+/// length prefix, the scope). A catch-up message packed to 4096 bytes of
+/// payload is refused at write, which closes the connection and drops the
+/// peer from every topic it shares. Here two active Builds together pack to
+/// between the wire limit and 4096 bytes of payload: they must arrive in
+/// messages that fit, and the connection must carry later facts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_catch_up_at_the_wire_limit_arrives_and_keeps_the_connection() {
+    use rafka_node_admin_core::build_state::BuildFact;
+    let (a_ep, a_router, a) = admin(vec![]).await;
+    let (one, two) = (BuildId::mint(), BuildId::mint());
+    let padded = |id: &BuildId, pad: usize| BuildIntentFact { traceparent: Some("x".repeat(pad)), ..intent(id) };
+    // Two intents whose facts encode to 4053 bytes of JSON: with the wire
+    // object and a nonce of 1 to 20 digits, 4073 to 4092 bytes of payload.
+    let facts_len = |pad: usize| serde_json::to_vec(&vec![BuildFact::Intent(padded(&one, pad)), BuildFact::Intent(padded(&two, pad))]).unwrap().len();
+    let pad = (4053 - facts_len(0)) / 2;
+    let pad = if facts_len(pad) < 4053 { pad + 1 } else { pad };
+    assert!((4052..=4054).contains(&facts_len(pad)), "{}", facts_len(pad));
+    a.publish_intent(&padded(&one, pad)).await.unwrap();
+    a.publish_intent(&padded(&two, pad)).await.unwrap();
+
+    let (_c_ep, c_router, c) = admin(vec![addr(&a_ep)]).await;
+    let mut both = false;
+    for _ in 0..200 {
+        if c.read_build(&one).await.is_ok() && c.read_build(&two).await.is_ok() {
+            both = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(both, "C never received the two Builds: the catch-up message exceeded the gossip wire limit");
+
+    // The connection survived: C hears a fact appended afterwards.
+    a.claim_attempt(&BuildAttemptClaim { build_id: one.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    let mut heard = false;
+    for _ in 0..200 {
+        if c.read_build(&one).await.is_ok_and(|v| v.attempt == 1) {
+            heard = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(heard, "C stopped hearing A after the catch-up");
+    a_router.shutdown().await.unwrap();
+    c_router.shutdown().await.unwrap();
+}
