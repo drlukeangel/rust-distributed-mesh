@@ -29,22 +29,12 @@ pub struct MeshDigest {
     /// successor needs to manage it; not part of its runtime identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
-    /// Kind-specific facts (e.g. election claims), string-keyed.
+    /// Kind-specific facts (e.g. the mesh id), string-keyed.
     #[serde(default)]
     pub extra: BTreeMap<String, String>,
 }
 
-/// The `extra` key carrying a member's election claim: the unix ms at which
-/// this birth became ready for traffic. Set once per birth, never moved.
-pub const READY_SINCE: &str = "ready_since_ms";
-
 impl MeshDigest {
-    /// This birth's election claim (`READY_SINCE`); `None` when it makes none
-    /// or the value is not a number.
-    pub fn ready_since(&self) -> Option<u64> {
-        self.extra.get(READY_SINCE).and_then(|v| v.parse().ok())
-    }
-
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("digest serializes")
     }

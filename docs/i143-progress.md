@@ -47,13 +47,14 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e4.s9 | #2801 | `2070e3ba79` | hierarchical membership: per-mesh channels, admin backbone, forwarded aggregates, fabric status publisher, `SUCCESSION`, refeed; E2E `mesh_membership__backbone` (run on s13's configuration) |
 | e4.s13 | #2816 | `acea859e31` | address-lookup boundary: `presets::Minimal` everywhere, `address-lookup` gate, exact-socket bind, network-less E2E, `CutOff` |
 | e4.s15 | #2842 | `6dc7dfc569` | canonical Crockford60 `NodeId` / `MeshId` / logical `FabricId`; transport identity is `TransportId`; E2E `mesh_identity__canonical_ids` |
+| e1.s7 | #2851 | `5d20559` | current `DesiredTopology` (bounded, revisioned, fork-fenced) hydrated at entry and on the fabric control topic, kept across Build forget; proven-drift reconciliation Builds; E2E `mesh_desired__desired_topology` |
 | e4.s16 | #2850 | `ae12e9c`, `951a471` | exact `RuntimeFact` published with each birth, successor adoption from membership; runtime prerequisites as named pipeline steps, Ready gated on their receipts; E2E `mesh_runtime__successor_adoption` |
 
 ## In progress
 
-- e1.s7 drlukeangel/rafka-v2#2851 — current `DesiredTopology` (bounded, revisioned, fork-fenced), hydrated at entry and caught up on the fabric control topic, kept across Build forget; proven-drift reconciliation Builds (branch `i143-e1-s7`).
-- e4.s14 drlukeangel/rafka-v2#2840 — parked at `243ff4a` (branch `i143-e4-s14`): rebases after #2851, `docs/i143/design.md` redone against the current canonical copy.
-- Order (canonical PRD `docs/plans/i143-node-rpc-pos-on-RDM.md` in rafka-v2): e1.s7 (#2851) → e4.s14 (#2840) → e6.s7 (#2804) / e4.s11 (#2805) → e4.s10 (#2803) → e4.s8 (#2761).
+- e4.s14 drlukeangel/rafka-v2#2840 — canonical election: lowest ready NodeId per cohort; mesh primary = node-admin cohort winner; fabric primary = lowest-NodeId mesh primary (branch `i143-e4-s14`, on #2850 + #2851).
+- e4.s10 drlukeangel/rafka-v2#2803 — parked on branch `i143-e4-s10` (RED E2E `mesh_lifecycle__admin_cohort_loss`, entry carries unheard members). Resumes after s11 with the rulings now in #2803: day-0 admin self-registers its runtime handle; refeed to held-but-unheard members; authority ≠ executor; no incumbency.
+- Order (canonical PRD `docs/plans/i143-node-rpc-pos-on-RDM.md` in rafka-v2): e4.s14 (#2840) → e6.s7 (#2804) / e4.s11 (#2805) → e4.s10 (#2803) → e4.s8 (#2761, branch `i143-e4-s8`).
 
 ## Blockers
 

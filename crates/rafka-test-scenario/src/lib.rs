@@ -6,6 +6,7 @@
 //! binary (§5) and the evidence files (§6). Nothing here calls a handler
 //! in-process.
 
+pub mod elections;
 pub mod estate;
 pub mod netfault;
 pub mod runner;

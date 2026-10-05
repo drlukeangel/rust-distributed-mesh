@@ -27,6 +27,26 @@ use tokio::sync::RwLock;
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
     async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String>;
+
+    /// Whether `node`'s exact runtime was inspected and found exited. A
+    /// birth membership no longer hears is only missing once this proves it:
+    /// silence alone (a paused or cut-off process) never plans a replacement.
+    async fn proven_exited(&self, _node: &crate::model::Node) -> bool {
+        true
+    }
+}
+
+/// The view a plan is made against: a birth membership no longer hears whose
+/// runtime is not proven exited is still held (`docs/i143/design.md` §2.4,
+/// "preserve held current births, retire only proven dead").
+pub async fn planning_view(t: &Topology, runner: &dyn OperationRunner) -> Topology {
+    let mut v = t.clone();
+    for n in v.nodes.iter_mut().filter(|n| n.status == crate::model::NodeStatus::Dead) {
+        if !runner.proven_exited(n).await {
+            n.status = crate::model::NodeStatus::Pending;
+        }
+    }
+    v
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
@@ -123,7 +143,7 @@ impl BuildExecutor {
             }
             BuildState::Pending | BuildState::Failed => {}
         }
-        let ops = plan(&build.intent, &t).map(|p| p.operations).unwrap_or_default();
+        let ops = plan(&build.intent, &planning_view(&t, &*self.runner).await).map(|p| p.operations).unwrap_or_default();
         lead_for(&ops, &t).is_some_and(|l| l.to_string() == self.executor)
     }
 
@@ -178,7 +198,7 @@ impl BuildExecutor {
             return self.finish(build, attempt, Err(reason)).await;
         }
         // Desired is the pinned intent; observed is read now, never remembered.
-        let observed = self.topology.read().await.clone();
+        let observed = planning_view(&*self.topology.read().await, &*self.runner).await;
         let operations = match plan(&build.intent, &observed) {
             Ok(p) => p.operations,
             Err(reject) => return self.finish(build, attempt, Err(format!("re-plan refused: {reject}"))).await,

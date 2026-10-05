@@ -34,7 +34,6 @@ use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -79,10 +78,6 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-fn kill(node: &Value) {
-    let d: Value = serde_json::from_slice(&std::fs::read(format!("{}/deployment.json", s(&node["data_dir"]))).unwrap()).unwrap();
-    let _ = Command::new("kill").args(["-9", &d["pid"].to_string()]).status();
-}
 
 fn attr(sp: &Value, k: &str) -> String {
     s(&sp["attributes"][k])
@@ -173,7 +168,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // forwards mesh1, and mesh2's rpc nodes hold mesh1 again.
     let old = primary(&nodes, "mesh2");
     let old_name = s(&old["name"]);
-    kill(&old);
+    estate.kill_node(&old_name).await;
     let dead: BTreeSet<String> = [old_name.clone()].into_iter().collect();
     let successor = wait_for("mesh2 elects a successor", Duration::from_secs(30), || async {
         let p = s(&primary(&estate.nodes().await, "mesh2")["name"]);
@@ -210,7 +205,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     if fp_name == "mesh1.admin.1" {
         estate.kill_bootstrap();
     } else {
-        kill(&fp);
+        estate.kill_node(&fp_name).await;
     }
     let mut dead = dead;
     dead.insert(fp_name.clone());

@@ -121,8 +121,9 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids["mesh1.rpc.2"].clone();
-    build(&estate, &shape(&["mesh1", "mesh2"], 1)).await;
-    estate.settled(&names(&["mesh1", "mesh2"], 1), Duration::from_secs(30)).await;
+    let (status, a) = estate.delete("/api/nodes/mesh1.rpc.2").await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let regrown = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
     let new_id = canonical("node id", &regrown.iter().find(|n| n["name"] == "mesh1.rpc.2").unwrap()["node_id"]);
