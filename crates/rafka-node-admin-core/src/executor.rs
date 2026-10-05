@@ -211,7 +211,7 @@ impl BuildExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Fabric, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
+    use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
 
     fn node(name: &str, primary: bool, fabric: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
@@ -227,10 +227,10 @@ mod tests {
             nodes.push(node("mesh2.admin.1", true, false));
         }
         Topology {
-            fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
             meshes: vec![
-                Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
-                Mesh { id: MeshId::mint(), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
             ],
             nodes,
         }

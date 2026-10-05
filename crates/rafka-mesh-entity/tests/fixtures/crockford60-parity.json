@@ -1,0 +1,18 @@
+{
+  "generator": "rafka_iam_types::identity::encode_crockford_60bit",
+  "ids": [
+    {"value": 0, "id": "000000000000"},
+    {"value": 1, "id": "000000000001"},
+    {"value": 31, "id": "00000000000z"},
+    {"value": 32, "id": "000000000010"},
+    {"value": 1023, "id": "0000000000zz"},
+    {"value": 1024, "id": "000000000100"},
+    {"value": 81985529216486895, "id": "28t5cy4tqkff"},
+    {"value": 1147797409030816545, "id": "zvebn63pags1"},
+    {"value": 768614336404564650, "id": "nananananana"},
+    {"value": 384307168202282325, "id": "anananananan"},
+    {"value": 576460752303423488, "id": "g00000000000"},
+    {"value": 1152921504606846974, "id": "zzzzzzzzzzzy"},
+    {"value": 1152921504606846975, "id": "zzzzzzzzzzzz"}
+  ]
+}

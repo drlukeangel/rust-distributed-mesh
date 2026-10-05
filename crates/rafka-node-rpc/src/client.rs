@@ -182,7 +182,7 @@ impl NodeRpcClient {
         };
         let key = PoolKey {
             scope: opts.scope.clone(),
-            peer: node.fabric_id,
+            peer: node.transport_id,
             incarnation: node.incarnation.clone(),
             slot: slot.slot.clone(),
             freshness: slot.freshness.clone(),

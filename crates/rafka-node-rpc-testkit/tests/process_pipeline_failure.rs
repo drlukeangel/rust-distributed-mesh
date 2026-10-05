@@ -6,7 +6,7 @@
 //! subscriber, and tracing's process-wide callsite interest cache must not be
 //! shared with a test that runs the same callsites without one.
 
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::{BuildId, BuildIntent};
 use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
@@ -30,6 +30,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
     // No seeds and no fabric: the node refuses to start (exit 2) before binding.
     let template = LaunchTemplate {
         fabric: String::new(),
+        fabric_id: FabricId::mint(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![],
         env: BTreeMap::new(),

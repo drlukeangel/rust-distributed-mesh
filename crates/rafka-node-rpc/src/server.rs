@@ -26,7 +26,7 @@ use tracing::Instrument;
 /// Who is calling, as the transport proved it.
 #[derive(Debug, Clone)]
 pub struct PeerContext {
-    pub fabric_id: iroh::PublicKey,
+    pub transport_id: iroh::PublicKey,
     /// The local endpoint slot the call arrived on.
     pub slot: String,
 }
@@ -86,7 +86,7 @@ where
                 "rafka.node_rpc.request.serve.via-direct",
                 protocol = P::NAME,
                 tag = P::TAG,
-                peer = %peer.fabric_id,
+                peer = %peer.transport_id,
                 slot = %peer.slot,
             );
             if let Some(tp) = P::traceparent(&req) {
@@ -317,7 +317,7 @@ impl NodeRpcServer {
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
-                let ctx = PeerContext { fabric_id: peer, slot: self.slot.clone() };
+                let ctx = PeerContext { transport_id: peer, slot: self.slot.clone() };
                 // Supervised: a panic is caught at this boundary.
                 let handler = h.call(ctx, payload);
                 let counted = InFlight::enter(&stats);

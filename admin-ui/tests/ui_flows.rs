@@ -36,8 +36,8 @@ fn node(name: &str, primary: bool) -> Node {
 /// Node-admin's real control API on a loopback port.
 async fn node_admin() -> (NodeAdminClient, Arc<ControlPlane>) {
     let topology = Topology {
-        fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", true), node("mesh1.rpc.2", false)],
     };
     let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), topology));

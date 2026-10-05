@@ -222,10 +222,11 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     .await;
     wait_for("the new fabric primary alone publishes the fabric's status", Duration::from_secs(20), || {
         let spans = estate.spans();
-        let (next, dead) = (next.clone(), dead.clone());
+        let (next, dead, fabric_id) = (next.clone(), dead.clone(), s(&fabric["id"]));
         async move {
+            // Status publication is keyed by the Fabric's id, the backbone's key.
             let ev = roles(&spans, "rafka.mesh.fabric.update.via-status-publisher", "fabric");
-            (holders(&ev, "fabric1", &dead) == [next].into_iter().collect()).then_some(())
+            (holders(&ev, &fabric_id, &dead) == [next].into_iter().collect()).then_some(())
         }
     })
     .await;

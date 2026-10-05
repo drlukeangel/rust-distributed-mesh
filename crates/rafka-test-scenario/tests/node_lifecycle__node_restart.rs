@@ -113,7 +113,7 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
 
     // 5. Same logical node identity returns.
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
-    assert_eq!(after["fabric_id"], before["fabric_id"], "same transport identity (data dir kept)");
+    assert_eq!(after["transport_id"], before["transport_id"], "same transport identity (data dir kept)");
     assert_eq!(after["name"], before["name"]);
     assert_ne!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "a new runtime deployment");
 

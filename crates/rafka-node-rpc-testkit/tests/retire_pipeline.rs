@@ -11,7 +11,7 @@
 mod common;
 
 use common::{add_node, admin_side, publish_build, template, Published, Spans};
-use rafka_mesh_entity::{MemberStatus, NodeId};
+use rafka_mesh_entity::{FabricId, MemberStatus};
 use rafka_node_admin_core::build::BuildIntent;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
@@ -28,7 +28,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
 
-    let fabric = format!("fab-{}", NodeId::mint());
+    let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
@@ -67,7 +67,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     // What each step did, from outside.
     let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
     assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
-    let (digest, _) = admin.observer.membership.book.get(&first.node.node_id.0).expect("the node's digest");
+    let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
     assert_eq!(digest.status, MemberStatus::Leaving, "the node said Leaving on the fabric before it went");
     assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
     assert!(ports.iter().all(|a| UdpSocket::bind(a).is_ok()), "the runtime released its ports");

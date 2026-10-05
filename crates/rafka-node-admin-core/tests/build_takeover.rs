@@ -65,8 +65,8 @@ fn node(name: &str, primary: bool) -> Node {
 /// The observed fabric: mesh1 with two admins and one rpc node.
 fn observed() -> Topology {
     Topology {
-        fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: MeshId::mint(), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![
             Node { is_fabric_primary: true, ..node("mesh1.admin.1", true) },
             node("mesh1.admin.2", false),
@@ -135,7 +135,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, "fabric1", peers).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers).await.unwrap());
     Admin { endpoint, router, builds }
 }
 
@@ -254,4 +254,9 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(takeover.get("operations").map(String::as_str), Some("create-node:mesh1.admin.1,create-node:mesh1.rpc.3"));
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     b.router.shutdown().await.unwrap();
+}
+
+/// The test fabric's canonical id.
+fn fabric1() -> FabricId {
+    FabricId::parse("fab000000001").unwrap()
 }

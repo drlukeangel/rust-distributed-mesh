@@ -53,7 +53,7 @@ impl PoolKey {
     /// Does `node` (the resolver's answer now) still name this exact target?
     pub fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
         node.is_some_and(|n| {
-            n.fabric_id == self.peer
+            n.transport_id == self.peer
                 && n.incarnation == self.incarnation
                 && n.endpoints.iter().any(|e| e.slot == self.slot && e.freshness == self.freshness)
         })
@@ -62,7 +62,7 @@ impl PoolKey {
     /// Which part of the target moved: the process birth or the slot.
     fn superseded_by(&self, node: Option<&ResolvedNode>) -> &'static str {
         match node {
-            Some(n) if n.fabric_id == self.peer && n.incarnation != self.incarnation => "via-incarnation-superseded",
+            Some(n) if n.transport_id == self.peer && n.incarnation != self.incarnation => "via-incarnation-superseded",
             _ => "via-slot-superseded",
         }
     }
@@ -145,7 +145,7 @@ impl Pool {
     /// Evict every pooled connection and cancel every dial of `node`'s peer
     /// whose target `node` no longer names.
     pub fn purge_stale(&self, node: &ResolvedNode) {
-        let stale = |k: &PoolKey| k.peer == node.fabric_id && !k.is_current(Some(node));
+        let stale = |k: &PoolKey| k.peer == node.transport_id && !k.is_current(Some(node));
         let gone: Vec<PoolKey> = {
             let mut conns = self.inner.conns.lock().unwrap();
             let gone: Vec<PoolKey> = conns.keys().filter(|k| stale(k)).cloned().collect();

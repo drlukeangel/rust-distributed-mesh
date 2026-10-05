@@ -43,8 +43,8 @@ fn ready_topology(meshes: &[&str]) -> Topology {
         }
     }
     Topology {
-        fabric: Fabric { name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
-        meshes: meshes.iter().map(|m| Mesh { id: MeshId::mint(), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::Pending, provider: ProviderKind::Process },
+        meshes: meshes.iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
         nodes,
     }
 }

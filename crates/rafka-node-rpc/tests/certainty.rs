@@ -62,7 +62,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     resolver.insert(ResolvedNode {
         node_id: node_id.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),
-        fabric_id: key.public(),
+        transport_id: key.public(),
         incarnation: IncarnationId::mint(),
         endpoints: vec![EndpointSlot::assign("rpc-0", addr)],
     });

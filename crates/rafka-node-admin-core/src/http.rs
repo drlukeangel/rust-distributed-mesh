@@ -230,7 +230,7 @@ async fn create_mesh(State(cp): State<Shared>, raw: String) -> Result<Response, 
 async fn delete_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result<Response, Refusal> {
     let mesh = {
         let t = cp.topology.read().await;
-        t.meshes.iter().find(|m| m.name == id || m.id.0 == id).map(|m| m.name.clone())
+        t.meshes.iter().find(|m| m.name == id || m.id.as_ref().is_some_and(|i| i.as_str() == id)).map(|m| m.name.clone())
     }
     .ok_or_else(|| Refusal::NotFound(format!("no mesh {id}")))?;
     Ok(accepted(cp.submit("DELETE /api/meshes/{id}", BuildIntent::RemoveMesh { mesh }).await?))

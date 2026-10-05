@@ -9,7 +9,7 @@
 //! forever — its path may be taken over by a replacement with a new node id.
 
 use crate::endpoint::EndpointSet;
-use crate::ids::{FabricId, FreshnessToken, IncarnationId, NodeId};
+use crate::ids::{FreshnessToken, IncarnationId, NodeId, TransportId};
 use crate::path::PathName;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -20,7 +20,7 @@ use std::fmt;
 pub struct MeshNode {
     pub node_id: NodeId,
     pub name: PathName,
-    pub fabric_id: FabricId,
+    pub transport_id: TransportId,
     pub incarnation: IncarnationId,
     /// The incarnation this birth replaces; `None` for the first birth.
     pub supersedes: Option<IncarnationId>,
@@ -45,7 +45,7 @@ pub enum MembershipRefusal {
     /// A departed logical node never returns; a replacement gets a new id.
     Departed { node_id: NodeId },
     /// A restart keeps the transport identity; a different one is a different node.
-    FabricIdChanged { node_id: NodeId },
+    TransportIdChanged { node_id: NodeId },
     /// A live node already holds this path.
     PathHeld { path: PathName, holder: NodeId },
     /// A fact re-offered a token this slot already superseded.
@@ -65,7 +65,7 @@ impl fmt::Display for MembershipRefusal {
                 "node {node_id}: incarnation {offered} (supersedes {supersedes:?}) does not descend from current {current}"
             ),
             Self::Departed { node_id } => write!(f, "node {node_id} departed and never returns"),
-            Self::FabricIdChanged { node_id } => write!(f, "node {node_id}: transport identity changed"),
+            Self::TransportIdChanged { node_id } => write!(f, "node {node_id}: transport identity changed"),
             Self::PathHeld { path, holder } => write!(f, "path {path} is held by live node {holder}"),
             Self::TokenReused { node_id, slot } => write!(f, "node {node_id}: slot {slot} re-offered a superseded token"),
             Self::NotCurrent { node_id, incarnation } => write!(f, "node {node_id}: incarnation {incarnation} is not current"),
@@ -128,8 +128,8 @@ impl Membership {
                 changes.push(Change::Joined { node_id: id.clone(), incarnation: fact.incarnation.clone() });
             }
             Some(cur) => {
-                if cur.fabric_id != fact.fabric_id {
-                    return Err(MembershipRefusal::FabricIdChanged { node_id: id });
+                if cur.transport_id != fact.transport_id {
+                    return Err(MembershipRefusal::TransportIdChanged { node_id: id });
                 }
                 if cur.incarnation == fact.incarnation {
                     if cur.endpoints == fact.endpoints {
@@ -237,7 +237,7 @@ mod tests {
         MeshNode {
             node_id: NodeId::mint(),
             name: path.parse().unwrap(),
-            fabric_id: FabricId::mint(),
+            transport_id: TransportId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
             endpoints: EndpointSet(vec![EndpointSlot::assign("rpc-0", addr(41001)), EndpointSlot::assign("rpc-1", addr(41002))]),
@@ -319,8 +319,8 @@ mod tests {
         stray.supersedes = Some(IncarnationId::mint());
         assert!(matches!(m.apply(stray), Err(MembershipRefusal::UnknownLineage { .. })));
         let mut moved = restart(&a, 41401);
-        moved.fabric_id = FabricId::mint();
-        assert_eq!(m.apply(moved), Err(MembershipRefusal::FabricIdChanged { node_id: a.node_id.clone() }));
+        moved.transport_id = TransportId::mint();
+        assert_eq!(m.apply(moved), Err(MembershipRefusal::TransportIdChanged { node_id: a.node_id.clone() }));
     }
 
     #[test]
