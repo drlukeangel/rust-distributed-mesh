@@ -16,22 +16,60 @@
 //!    ordinary nodes hold the peer mesh once more;
 //! 4. losing the fabric primary moves fabric-status publication to the new
 //!    one, with never two publishers live at once.
+//!
+//! And under faults (s9 acceptance 6-8):
+//! 6. a lost backbone push (the two primaries cut from each other) is
+//!    repaired by gossip through the other admins: the peer mesh is never
+//!    lost by the mesh's ordinary nodes, and nothing beside gossip resends;
+//! 7. an admin isolated past the silence window is cut off and authorizes
+//!    nothing: a Build submitted to it is not executed by it, and after the
+//!    heal its rightful executor runs it without re-creating a live node;
+//! 8. a restarted node is ready only once it holds every mesh.
+//!
+//! The faults drop UDP on loopback (`iptables`, as root or `sudo -n`); where
+//! the host cannot, cells 6-7 are a named skip, a failure under
+//! `RAFKA_REQUIRE_NETFAULT=1` (CI).
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 use std::time::Duration;
 
-fn owner() -> Owner {
+fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-membership".into(),
         subfeature: "backbone".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "membership_rides_mesh_channels_and_the_admin_backbone".into(),
+        test: test.into(),
     }
+}
+
+/// MM with two admins and two rpc nodes per mesh, settled.
+async fn mm(estate: &Estate) -> Vec<Value> {
+    let (_, a) = estate
+        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
+            {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
+            {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
+        ]}))
+        .await;
+    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    let want: BTreeSet<String> = ["mesh1", "mesh2"]
+        .iter()
+        .flat_map(|m| (1..=2).flat_map(move |i| [format!("{m}.admin.{i}"), format!("{m}.rpc.{i}")]))
+        .collect();
+    estate.settled(&want, Duration::from_secs(30)).await
+}
+
+fn netfault(why: String) -> Option<()> {
+    if std::env::var("RAFKA_REQUIRE_NETFAULT").as_deref() == Ok("1") {
+        panic!("RAFKA_REQUIRE_NETFAULT=1 but this host cannot drop traffic: {why}");
+    }
+    eprintln!("SKIP fault cells: {why}");
+    None
 }
 
 fn s(v: &Value) -> String {
@@ -83,19 +121,8 @@ fn primary(nodes: &[Value], mesh: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn membership_rides_mesh_channels_and_the_admin_backbone() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (_, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
-            {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-            {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-        ]}))
-        .await;
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let want: BTreeSet<String> = ["mesh1", "mesh2"]
-        .iter()
-        .flat_map(|m| (1..=2).flat_map(move |i| [format!("{m}.admin.{i}"), format!("{m}.rpc.{i}")]))
-        .collect();
-    let nodes = estate.settled(&want, Duration::from_secs(30)).await;
+    let mut estate = Estate::bootstrap(owner("membership_rides_mesh_channels_and_the_admin_backbone"), "fabric1", "mesh1").await;
+    let nodes = mm(&estate).await;
     let rpcs: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
     let admins: Vec<String> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
 
@@ -203,6 +230,112 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     assert_eq!(starts.len(), 2, "one publisher before the loss, one after: {ev:?}");
 
     // Stop through whoever holds the fabric now.
+    let (_, fabric) = estate.get("/api/fabric").await;
+    estate.admin = s(&fabric["admin_api_base"]);
+    estate.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
+    let mut estate = Estate::bootstrap(owner("gossip_repairs_a_lost_push_and_isolation_authorizes_nothing"), "fabric1", "mesh1").await;
+    let nodes = mm(&estate).await;
+    let rpcs2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
+    wait_for("mesh2's rpc nodes hold mesh1", Duration::from_secs(30), || {
+        let spans = estate.spans();
+        let rpcs2 = rpcs2.clone();
+        async move { rpcs2.iter().all(|n| verdicts(&spans, n, "mesh1").as_deref() == Some("learned")).then_some(()) }
+    })
+    .await;
+
+    // 8. Restart mesh2.rpc.1: its new birth is ready holding both meshes.
+    let (status, a) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(60)).await;
+    let reborn = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+    let spans = estate.spans();
+    let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+        .into_iter()
+        .find(|sp| attr(sp, "incarnation_id") == reborn)
+        .unwrap_or_else(|| panic!("the reborn mesh2.rpc.1 reports ready"))
+        .clone();
+    assert_eq!(ready["attributes"]["meshes"].as_u64(), Some(2), "ready holding both meshes: {ready}");
+    let pulled = named(&spans, "rafka.mesh.entry.update.via-membership-pulled")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == "mesh2.rpc.1")
+        .map(start)
+        .max()
+        .expect("the reborn node pulled its entry");
+    assert!(start(&ready) >= pulled, "ready only after the entry pull");
+
+    // 6. Cut the two mesh primaries from each other: gossip repairs through
+    // the other admins, and mesh2's ordinary nodes never lose mesh1.
+    let nodes = estate.nodes().await;
+    let (p1, p2) = (s(&primary(&nodes, "mesh1")["name"]), s(&primary(&nodes, "mesh2")["name"]));
+    let cut_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let Some(cut) = Partition::start(&udp_ports(&nodes, &[p1.clone()]), &udp_ports(&nodes, &[p2.clone()])).map_err(netfault).ok() else {
+        return estate.stop().await;
+    };
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    drop(cut);
+    let spans = estate.spans();
+    let lost: Vec<String> = named(&spans, "rafka.mesh.membership.update.via-mesh-silent")
+        .into_iter()
+        .filter(|sp| start(sp) > cut_at && attr(sp, "mesh") == "mesh1" && rpcs2.contains(&attr(sp, "node")))
+        .map(|sp| attr(sp, "node"))
+        .collect();
+    assert!(lost.is_empty(), "with {p1} and {p2} cut apart, mesh2's rpc nodes kept mesh1: {lost:?}");
+
+    // 7. Isolate mesh1's non-primary admin past the silence window and ask it
+    // for a Build: cut off, it executes nothing; healed, the rightful
+    // executor runs it and no live node is created again.
+    let nodes = estate.nodes().await;
+    let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
+    let lone_name = s(&lone["name"]);
+    let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
+    let before: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
+    let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
+    wait_for(&format!("{lone_name} is cut off"), Duration::from_secs(20), || {
+        let spans = estate.spans();
+        let lone_name = lone_name.clone();
+        async move {
+            named(&spans, "rafka.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "start").then_some(())
+        }
+    })
+    .await;
+    let main_admin = estate.admin.clone();
+    estate.admin = s(&lone["admin_api_base"]);
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
+    ]})).await;
+    assert_eq!(status, 202, "{a}");
+    let b = s(&a["build_id"]);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let by_lone: Vec<String> = named(&estate.spans(), "rafka.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .filter(|sp| attr(sp, "build_id") == b && attr(sp, "executor") == lone_name)
+        .map(|sp| attr(sp, "operations"))
+        .collect();
+    assert!(by_lone.is_empty(), "the cut-off {lone_name} executed nothing: {by_lone:?}");
+    drop(isolation);
+    estate.admin = main_admin;
+    estate.await_build(&b, Duration::from_secs(90)).await;
+    let mut want: BTreeSet<String> = before.keys().cloned().collect();
+    want.insert("mesh1.rpc.3".into());
+    let after = estate.settled(&want, Duration::from_secs(30)).await;
+    for n in &after {
+        if let Some(inc) = before.get(&s(&n["name"])) {
+            assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
+        }
+    }
+    wait_for(&format!("{lone_name} hears the fabric again"), Duration::from_secs(20), || {
+        let spans = estate.spans();
+        let lone_name = lone_name.clone();
+        async move {
+            named(&spans, "rafka.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "stop").then_some(())
+        }
+    })
+    .await;
     let (_, fabric) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric["admin_api_base"]);
     estate.stop().await;
