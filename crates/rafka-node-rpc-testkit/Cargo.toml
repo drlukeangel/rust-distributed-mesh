@@ -12,7 +12,7 @@ rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-telemetry = { path = "../rafka-telemetry" }
 iroh = { workspace = true }
-iroh-gossip = "0.100"
+iroh-gossip = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

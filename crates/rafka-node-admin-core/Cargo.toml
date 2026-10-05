@@ -16,7 +16,7 @@ tracing = { workspace = true }
 async-trait = "0.1"
 libc = "0.2"
 iroh = { workspace = true }
-iroh-gossip = "0.100"
+iroh-gossip = { workspace = true }
 blake3 = "1"
 futures-lite = "2"
 futures-util = "0.3"

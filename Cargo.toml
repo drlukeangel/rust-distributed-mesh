@@ -38,11 +38,15 @@ opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
 opentelemetry-semantic-conventions = "0.27"
 
-# iroh 1.0.0-rc.1 + iroh-gossip 0.100 — bumped to pick up the iroh-gossip
-# passive-peer eviction fix (handle_connection_closed now removes dead peers
-# from passive_view + peer_data) that resolves the per-node_id memory leak
-# under churn observed on 0.98. See windows-findings.md / linux-findings.md.
-iroh = { version = "1.0.0-rc.1" }
+# iroh 1 + iroh-gossip from drlukeangel/iroh-gossip, pinned to the exact
+# carrying commit (never a branch). Upstream's net actor awaited a full
+# per-peer send queue, so a peer that stopped draining deafened every topic
+# and two actors flooding each other deadlocked; the fork's try_send drops
+# that one enqueue and Plumtree repairs it. Vendor divergence and its removal
+# condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
+iroh = { version = "1" }
+iroh-base = { version = "1" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "fcf426396d8a7e2555cc07335e4cada9b0473511" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

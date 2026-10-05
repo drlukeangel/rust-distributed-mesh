@@ -16,5 +16,5 @@ async-trait = "0.1.83"
 thiserror = "2.0"
 dhat = "0.3.3"
 iroh.workspace = true
-iroh-gossip = "0.100.0"
+iroh-gossip = { workspace = true }
 tracing-subscriber.workspace = true

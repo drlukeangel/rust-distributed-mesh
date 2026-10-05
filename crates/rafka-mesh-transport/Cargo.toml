@@ -8,8 +8,8 @@ tokio = { workspace = true }
 futures-lite = "2"
 tracing = { workspace = true }
 iroh.workspace = true
-iroh-gossip = "0.100"
-iroh-mdns-address-lookup = "0.3.0"
+iroh-gossip = { workspace = true }
+iroh-mdns-address-lookup = "0.6"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
