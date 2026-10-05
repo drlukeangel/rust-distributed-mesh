@@ -114,7 +114,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.node.create.via-build` / `node.update.via-build` (restart) / `node.delete.via-build` (child of `via-reconcile`; parent of the deployment pipeline and the node's lifecycle transition) | `build_id`, `node`, `attempt` |
 | `rafka.node_admin.fabric.update.via-join` (a launched admin heard the admin it joined and every member that admin held live, or the 30 s bound passed; it may now execute Builds) | `node`, `joined`, `expected` (members the joined admin held live), `unheard` (those still unheard at the bound) |
 | `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
-| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message, 4096 bytes) | `fabric`, `detail` |
+| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
 | `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
 | `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
 | `rafka.node_admin.fabric.update.via-shutdown` | — |
