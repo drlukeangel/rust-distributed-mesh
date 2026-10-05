@@ -34,7 +34,6 @@ use crate::lifecycle::{
 };
 use crate::model::*;
 use crate::topology::Topology;
-use iroh::endpoint::presets;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
@@ -701,14 +700,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         .keep_alive_interval(Duration::from_secs(1))
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
-    let endpoint = Endpoint::builder(presets::Minimal)
-        .secret_key(key.clone())
-        .alpns(vec![iroh_gossip::ALPN.to_vec()])
-        .relay_mode(iroh::RelayMode::Disabled)
-        .transport_config(transport)
-        .bind_addr(mesh_addr)
-        .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?
-        .bind()
+    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, vec![iroh_gossip::ALPN.to_vec()], transport)
         .await
         .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?;
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);
