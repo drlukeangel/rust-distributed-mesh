@@ -433,6 +433,13 @@ impl AdminRunner {
     /// so a path never has two live runtimes.
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
         let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear };
+        // Heard again since the plan (a heal): a ready member needs no birth.
+        if prev.status == NodeStatus::ReadyForTraffic {
+            let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
+            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "heard")
+                .in_scope(|| tracing::info!("the previous birth is heard ready again: it stays"));
+            return FenceOutcome::Alive;
+        }
         if prev.status.is_live() || prev.incarnation_id.is_none() {
             return FenceOutcome::Clear;
         }
@@ -714,8 +721,14 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         Some(e) => {
             let mut members = e.book.current(SILENT_AFTER);
             members.push(e.digest.lock().unwrap().clone());
+            let unheard = e
+                .book
+                .unheard(SILENT_AFTER)
+                .into_iter()
+                .map(|(digest, s)| rafka_mesh_transport::entry::Unheard { digest, silent_ms: s.as_millis() as u64 })
+                .collect();
             let topology = project(&e.fabric, e.provider, &e.book, &e.records);
-            EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members }
+            EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, unheard }
         }
     });
     let iroh_router =
@@ -783,6 +796,16 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     }
                 }
                 membership.learn(d, "entry");
+            }
+            // What the launcher holds but does not hear: a mesh that lost its
+            // admin cohort is unheard by the rest of the fabric (only its
+            // admin primary publishes it on the backbone), and its surviving
+            // members are this admin's channel and its fence's predecessors.
+            for u in answer.unheard.into_iter().filter(|u| u.digest.fabric == cfg.fabric && u.digest.node.name != name) {
+                if u.digest.node.name.mesh == cfg.mesh {
+                    mesh_peers.extend(rafka_mesh_transport::membership::gossip_addr(&u.digest));
+                }
+                membership.learn_unheard(u.digest, Duration::from_millis(u.silent_ms));
             }
             let _ = membership.join_peers(mesh_peers).await;
             backbone.join_admins(admins).await;

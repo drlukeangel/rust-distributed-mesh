@@ -40,6 +40,18 @@ pub struct EntryAnswer {
     pub topology: serde_json::Value,
     /// The membership digests of every member the admin hears.
     pub members: Vec<MeshDigest>,
+    /// Every member the admin holds but has not heard within the silence
+    /// window, with how long it has been silent: a launched node's first view
+    /// is its launcher's, unheard members included (unheard is not dead).
+    #[serde(default)]
+    pub unheard: Vec<Unheard>,
+}
+
+/// A member held but not heard, and for how long.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Unheard {
+    pub digest: MeshDigest,
+    pub silent_ms: u64,
 }
 
 type Answer = dyn Fn(&EntryRequest) -> EntryAnswer + Send + Sync;

@@ -448,6 +448,20 @@ impl Membership {
         }
     }
 
+    /// Hold a member the admin that launched this node holds but has not
+    /// heard for `silent` (the entry answer's `unheard`): never live, so
+    /// nothing replaces it before a fence asks it directly, and its address is
+    /// known so this node can join it on its channel.
+    pub fn learn_unheard(&self, d: MeshDigest, silent: Duration) {
+        if d.fabric != self.fabric {
+            return;
+        }
+        if let Some(a) = gossip_addr(&d) {
+            self.mesh.lookup.add_endpoint_info(a);
+        }
+        self.book.record_unheard(d, silent);
+    }
+
     /// Cut off: this node heard other members and now hears none. What it
     /// holds then authorizes nothing (an admin executes no Build, publishes
     /// nothing as a primary).
@@ -696,7 +710,21 @@ impl DigestBook {
         true
     }
 
-    /// Digests heard within `fresh` of now.
+    /// Hold `d` as a member another node holds but has not heard for
+    /// `silent` (its entry answer): taken as silent that long, never as
+    /// heard, so it is a known predecessor and not a live member. A member
+    /// this book already holds keeps what it holds; the member's own next
+    /// digest replaces this copy as [`Self::record`] does. `false` when not taken.
+    pub fn record_unheard(&self, d: MeshDigest, silent: Duration) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.contains_key(&d.node.node_id.0) {
+            return false;
+        }
+        let Some(at) = Instant::now().checked_sub(silent) else { return false };
+        inner.insert(d.node.node_id.0.clone(), (d, at, false));
+        true
+    }
+
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a
     /// member it hears: an equal copy of the held digest keeps the member
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
@@ -716,8 +744,20 @@ impl DigestBook {
         true
     }
 
+    /// Digests heard within `fresh` of now.
     pub fn current(&self, fresh: Duration) -> Vec<MeshDigest> {
         self.inner.lock().unwrap().values().filter(|(_, at, fw)| silence(at, *fw) <= fresh).map(|(d, _, _)| d.clone()).collect()
+    }
+
+    /// Members held but not heard within `fresh`, each with its silence.
+    pub fn unheard(&self, fresh: Duration) -> Vec<(MeshDigest, Duration)> {
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .map(|(d, at, fw)| (d.clone(), silence(at, *fw)))
+            .filter(|(_, s)| *s > fresh)
+            .collect()
     }
 
     /// The member's latest digest and how long it has been silent.
@@ -788,6 +828,24 @@ mod tests {
         assert!(book.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "an equal forwarded copy");
         assert!(book.get(&id.0).unwrap().1 < Duration::from_millis(30), "keeps the member heard");
         assert!(!book.record_forwarded(digest(&id, &birth, None, MemberStatus::Pending, 100)), "an older copy is not taken");
+    }
+
+    /// A member the launcher holds but does not hear is held unheard, never
+    /// heard: it is a predecessor to ask directly, not a live member. Its own
+    /// next digest makes it heard; a member already held keeps what it holds.
+    #[test]
+    fn an_unheard_member_from_an_entry_is_held_silent_until_it_is_heard() {
+        let book = DigestBook::default();
+        let (id, birth) = (NodeId::mint(), IncarnationId::mint());
+        let silent = SILENT_AFTER + Duration::from_secs(2);
+        assert!(book.record_unheard(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100), silent));
+        assert!(book.get(&id.0).unwrap().1 >= silent, "held as silent as its launcher holds it");
+        assert!(book.current(SILENT_AFTER).is_empty(), "not heard");
+        assert_eq!(book.unheard(SILENT_AFTER).len(), 1, "held unheard");
+        assert!(book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "its own next digest is taken");
+        assert_eq!(book.current(SILENT_AFTER).len(), 1, "now heard");
+        assert!(!book.record_unheard(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 300), silent), "a held member keeps what it holds");
+        assert_eq!(book.current(SILENT_AFTER).len(), 1, "still heard");
     }
 
     #[test]

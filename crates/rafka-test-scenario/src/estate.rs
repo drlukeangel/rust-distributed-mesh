@@ -232,13 +232,19 @@ impl Estate {
         v
     }
 
-    /// Every span every process of this estate wrote.
+    /// Every span every process of this estate wrote. Each span carries
+    /// `_file`: the evidence file (`<service>.<pid>.spans.jsonl`) of the one
+    /// process that wrote it.
     pub fn spans(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&self.evidence).into_iter().flatten().flatten() {
-            if e.path().to_string_lossy().ends_with(".spans.jsonl") {
+            let file = e.file_name().to_string_lossy().to_string();
+            if file.ends_with(".spans.jsonl") {
                 let text = std::fs::read_to_string(e.path()).unwrap_or_default();
-                out.extend(text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+                out.extend(text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).map(|mut v| {
+                    v["_file"] = Value::String(file.clone());
+                    v
+                }));
             }
         }
         out

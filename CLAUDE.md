@@ -137,7 +137,7 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome` (`complete` / `failed` / `reused`: decided by an earlier attempt's receipt), `elapsed_ms` |
 | `rafka.mesh.election.resolve.via-recompute` (a cohort's primary changed in one admin's view; `docs/i143/design.md` §2.1) | `observer`, `mesh`, `kind`, `primary`, `previous` (empty = none), `members`, `ready` |
 | `rafka.mesh.election.resolve.via-fabric-recompute` (the fabric primary changed in one admin's view) | `observer`, `fabric`, `primary`, `previous` (empty = none), `meshes` |
-| `rafka.node_admin.deployment.delete.via-fence` (a new birth at a path stopped the previous birth's runtime, which the view no longer heard) | `node`, `incarnation`, `outcome` (`terminated` / `not-running: …` / `not-found: …` / `terminate-failed: …`) |
+| `rafka.node_admin.deployment.delete.via-fence` (before a new birth at a path, its previous birth is fenced: kept when it is heard ready again or answers directly, else its runtime is stopped) | `node`, `incarnation`, `outcome` (`heard` / `answers`: kept, nothing is born / `terminated` / `not-running: …` / `not-found: …` / `terminate-failed: …`) |
 | `rafka.mesh.node.create.via-deployment` (rpc node boot; parent: launch `TRACEPARENT`) | `node`, `node_id`, `incarnation_id`, `kind` |
 | `rafka.mesh.node.update.via-drain` (SIGTERM: typed `Draining` for new calls, in-flight handlers finish) | `node`, `incarnation_id`, `deadline_ms`, `in_flight_at_deadline` |
 | `rafka.mesh.node.delete.via-signal` | `node`, `incarnation_id` |
