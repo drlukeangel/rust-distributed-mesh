@@ -1,174 +1,306 @@
 # i143 — the generic Mesh product in RDM: working design
 
-Plan: rafka-v2 `docs/plans/i143-node-rpc-pos-on-RDM.md` (the PRD). Architecture:
-rafka-v2 `docs/architecture/{node-rpc-rdm-ownership,mesh-control-plane,node-rpc,connections}.md`.
-This doc states the concrete RDM contracts the stories build to: binaries, the control API,
-the node view, the probe, the evidence files and the span names. Where the PRD is silent this doc
-decides; where they differ the PRD wins and this doc is corrected.
+Plan: rafka-v2 `docs/plans/i143-node-rpc-pos-on-RDM.md`. Architecture of record lives in rafka-v2 `docs/architecture/{node-rpc-rdm-ownership,mesh-control-plane,node-lifecycle-elections,gossip,node-rpc,connections}.md`.
+
+This document states the concrete RDM contracts the stories build to: binaries, control state, membership/runtime facts, the control API, views, probes, evidence and span names. **Where this document differs from the rafka-v2 PRD/architecture, the rafka-v2 design-of-record wins and this file must be corrected in the same story.**
 
 ## 1. Packages and binaries
 
 | package | owns | binary |
 |---|---|---|
 | `rafka-node-rpc-contract` | framing, `RpcOutcome`, reply classes, reserved codes, catalog/seal, certainty rules; no Iroh | — |
-| `rafka-mesh-entity` | Mesh EF: logical node id, runtime incarnation, endpoint slots + freshness tokens, membership; imported connections model | — |
-| `rafka-node-rpc` | runtime over `rafka-mesh-transport`: server dispatch, client commit cut, admission, slot-aware pool, streaming, one-hop carried execution | — |
-| `rafka-node-admin-core` | Fabric/Mesh/Node model, Build, `BuildStateAdapter`, deployment providers/pipelines, lifecycle transitions, elections, HTTP | `rafka-node-admin` |
-| `rafka-node-admin-client` | typed DTOs + HTTP client for the control API | — |
+| `rafka-mesh-entity` | Mesh EF: logical IDs, runtime incarnation, RuntimeFact, endpoint slots/freshness, membership, imported connections model | — |
+| `rafka-mesh-transport` | Iroh endpoint/gossip integration, explicit addresses, membership channels, held-member repair | — |
+| `rafka-node-rpc` | server/client runtime, commit cut, admission, slot-aware pool, streaming, one-hop carried execution | — |
+| `rafka-node-admin-core` | DesiredTopologyProjection, Build/Reconciler, BuildStateAdapter, deployment providers/pipelines, lifecycle transitions, leadership, recovery, HTTP | `rafka-node-admin` |
+| `rafka-node-admin-client` | typed DTOs + HTTP client for control API | — |
 | `rafka-node-rpc-testkit` | Echo + stateful proof protocol/store, probes | `rafka-rpc-node`, `rafka-rpc-probe` |
-| `rafka-test-scenario` | scenario runner, evidence/replay manifests, the e2e canaries | `rafka-scenario` |
-| `rafka-chaos` | hostile layers: generator/shrinker, failpoints, simulated network/time, real fault backends | — |
+| `rafka-test-scenario` | scenario runner, evidence/replay manifests, e2e canaries | `rafka-scenario` |
+| `rafka-chaos` | generator/shrinker, failpoints, simulated network/time, real fault backends | — |
 
-Proof shapes use exactly two node kinds: `node_admin` and `rpc_node`. Legacy role binaries are never
-proof-shape nodes (`docs/i143/e0-workspace-audit.md`).
+Proof shapes use exactly two node kinds: `node_admin` and `rpc_node`. Legacy role binaries are not proof-shape nodes.
 
 ## 2. Names and identities
 
 | fact | form | survives restart | survives replacement |
 |---|---|---|---|
-| `path.name` | `<mesh>.<kind>.<ordinal>`, kind `admin` or `rpc`: `mesh1.rpc.2`, `mesh1.admin.1` | yes | yes (points at the replacement) |
-| `node_id` | logical node identity minted at `AllocateIdentity`, canonical Crockford60 | yes | no |
-| `mesh_id` | the mesh's identity, canonical Crockford60; carried by every node of the mesh | yes | recovery keeps it; a mesh created again gets a new one |
-| `fabric_id` | the logical Fabric's identity, canonical Crockford60, minted by the bootstrap admin | yes | kept for the Fabric's lifetime |
-| `transport_id` | the node's Iroh `EndpointId` (public key), kept in its data dir; transport only, never a product id | yes | no |
-| `incarnation_id` | minted by node-admin for every process birth, opaque | no | no |
-| endpoint slot | `{slot, addr, freshness}`; freshness is an opaque token minted with each slot assignment | per slot policy | no |
+| `path.name` | `<mesh>.<kind>.<ordinal>` | yes | yes, points at replacement |
+| `node_id` | logical NodeId, canonical Crockford60 | yes | no |
+| `mesh_id` | logical MeshId, canonical Crockford60 | yes | recovery keeps it; intentional new mesh gets new id |
+| `fabric_id` | logical FabricId, canonical Crockford60 | yes | kept for Fabric lifetime |
+| `transport_id` | Iroh EndpointId | yes for same logical restart policy | no |
+| `incarnation_id` | one process birth, opaque | no | no |
+| endpoint slot | `{slot, addr, freshness}` | per slot policy | no |
+| `runtime_fact` | exact provider runtime identity for this NodeId + IncarnationId | no | no |
 
-Product identities (`node_id`, `mesh_id`, `fabric_id`) are canonical Crockford60: 60 random bits as 12
-lowercase Crockford base32 characters (`0123456789abcdefghjkmnpqrstvwxyz`), the bare form downstream
-Rafka mints; they carry no time, age, ordinal or topology. One primitive mints, parses and validates
-all three (`rafka_mesh_entity::ids`), and a non-canonical value is refused by name wherever one is read
-(launch environment, digests, views). Only `node_id` is ordered: lexical order of two canonical NodeIds
-is the order of their values. `mesh_id` and `fabric_id` are compared by equality only. Membership,
-Build and backbone topics are keyed by `fabric_id`, never by the Fabric's name.
-
-Freshness and incarnation tokens are compared by equality/supersession only, never ordered.
-
-An `rpc_node` has two Node RPC endpoint slots:
-
-- `rpc-0`, policy `fresh`: every process birth gets a newly allocated port and a new token;
-- `rpc-1`, policy `stable`: a restart keeps the advertised port and its token, and a replacement gets
-  new ones.
-
-A restart therefore always moves exactly one slot. That makes the per-slot supersession rules (PRD §1.19,
-§14) observable on every restart.
-
-### 2.0 Address authority (e4.s13)
-
-Every Iroh endpoint is built from `presets::Minimal` with relay off. The addresses a node dials come from
-exactly two places: node-admin's slot assignment (`RAFKA_ENDPOINTS`, the topology projection, the entry
-pull) and the explicit seeds that bootstrap gossip (`RAFKA_SEEDS`); each channel registers them in a
-`MemoryLookup`. No n0 DNS/Pkarr publication or resolution is configured anywhere (`presets::N0DisableRelay`
-applies `N0`, n0 DNS/Pkarr included, before it disables relay). Local mDNS exists only on the legacy
-`IrohMeshTransport` plane, as address discovery; no canonical i143 crate uses it, and nothing marks a node
-dead from it. The `address-lookup` gate (`tools/mesh-audit`) enforces both, and the multi-mesh E2E runs in
-a network namespace with loopback only (`scripts/netless.sh`).
-
-### 2.1 Cohort election (PRD §11)
-
-A cohort is one kind's members in one mesh. Every birth publishes, once, the instant it became ready
-for traffic (`ready_since_ms` in its membership digest's `extra`). In each admin's view a cohort's
-primary is its `ReadyForTraffic` member with the earliest claim, ties to the lowest ordinal; a member
-without a claim ranks last. Every observer reads the same claims, so converged views agree:
-
-- grow, restart and a recreated path claim a later instant and never displace the incumbent;
-- when the primary leaves the view (killed, removed, retired), the next oldest succeeds it;
-- a partition lets each side elect from what it hears; on heal the views agree again.
-
-The fabric primary is the admin primary of the lowest-named mesh that has one; when that mesh is lost,
-the next mesh's admin primary holds the fabric, and every admin's fabric and mesh views advertise the
-live owning admin's control API. Each admin reports a change of a cohort's primary in its view as
-`rafka.mesh.election.resolve.via-recompute`, and of the fabric primary as `…via-fabric-recompute`
-(`crates/rafka-node-admin-core/src/election.rs`).
-
-Which admin executes a Build operation (`crates/rafka-node-admin-core/src/executor.rs`,
-`executor_for`; PRD §12.1): a mesh's admin primary runs the operations on that mesh's members; the
-fabric primary runs mesh creation and retirement, every node-admin cohort, and a mesh's members while
-that mesh has no admin primary. An admin claims a Build's next attempt only when it executes the first
-operation left and no live admin holds an open attempt. An attempt that reaches an operation another
-admin executes ends `handed-off`; that admin claims the next attempt of the same Build. A fabric Build
-that creates a mesh therefore runs in two attempts: the fabric primary creates the mesh's admins, the
-new mesh's primary creates its members. A Build can complete on an admin other than the one a client
-asked; the client's admin view settles within gossip delay.
-
-A lost mesh is recovered as itself (PRD §1.15, §12.2). The Build that was active when the mesh was
-lost keeps its id: a surviving admin takes over its next attempt and re-creates the mesh's paths
-under the mesh's known id. Each re-created node is a new birth: a new incarnation and endpoints the
-allocator hands out now. A create step's receipt is reused only while the runtime it names still
-runs, and a run that failed a step hands nothing on. Before a new birth takes a path, the previous
-birth is fenced, unless it answers directly (Node RPC `Echo` for an rpc node, the control API for an
-admin): a member gossip has not heard yet is not a dead one. Every launched node makes an entry pull to the admin that launched it,
-over QUIC (`rafka_mesh_transport::entry`, ALPN `rafka-mesh-entry/1`): the answer is the fabric's policy
-and the membership digests that admin hears, which the node records as heard before it is ready. A
-launched admin's first view is therefore its launcher's, and it never plans from a view that is
-missing live members. No node calls an admin's HTTP API; that API is for tests and people.
-
-Control moves with the fabric primary. An admin that must retire, restart or stop a node another admin
-launched adopts its runtime from the Build facts: the birth's `AllocateIdentity` receipt (incarnation,
-deployment id) and the `DeployRuntime` receipt of that deployment (the handle). The fabric primary's
-shutdown stops every live node of the fabric. A new birth at a path whose previous birth the view no
-longer hears first stops that runtime if it still runs (`deployment.delete.via-fence`), so a path never
-has two live runtimes.
-
-Losing half a fabric costs a failure-detection window: until the dead peers' connections time out
-(iroh's idle timeout), gossip may not deliver some survivors' digests, and they read as dead (~26 s
-measured for MM losing mesh1).
-
-## 3. Process contract (environment only)
-
-| var | read by | meaning |
-|---|---|---|
-| `MESH_SPAWN_TYPE` | first `rafka-node-admin` | `process` or `container`; any other value refuses startup |
-| `RAFKA_FABRIC` | `rafka-node-admin` (bootstrap) | fabric name, default `fabric1` |
-| `RAFKA_FABRIC_ID` | `rafka-node-admin` (bootstrap), every launched node | the Fabric's id; the bootstrap admin mints it when unset, node-admin writes it for every node it launches |
-| `RAFKA_MESH` | `rafka-node-admin` | the mesh this admin belongs to, default `mesh1` |
-| `RAFKA_DATA_DIR` | every binary | node data dir: identity, journal, proof store |
-| `RAFKA_NODE_ADMIN_API_BIND` | `rafka-node-admin` | HTTP bind, default `127.0.0.1:0` |
-| `RAFKA_BIN_DIR` | `rafka-node-admin` | where `rafka-node-admin` / `rafka-rpc-node` live; default: beside the running exe |
-| `RAFKA_EVIDENCE_DIR` | every binary | when set, every process writes its spans as JSONL here and passes the var to its children |
-| `TRACEPARENT` | every spawned binary | W3C parent of the process's boot span: the deployment step that launched it |
-
-A node-admin that is serving prints exactly one stdout line `RAFKA_NODE_ADMIN_API_BASE=<url>` and writes
-`<data_dir>/node-admin.json` with the same `api_base`.
-
-## 4. Control API (PRD §7)
-
-Every topology mutation returns `202 {"build_id": "..."}` and does nothing else on the request path.
+Product identities are 12 lowercase Crockford Base32 chars carrying 60 random bits using:
 
 ```text
-POST   /api/build                 {"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}
-GET    /api/builds?id=<build_id>  {"build_id", "state": "pending|running|complete|failed", "intent", "attempt", "executor", "steps": [...]}
-DELETE /api/builds?id=<build_id>  Build-history administration only
-POST   /api/nodes/spawn           {"mesh": "mesh1", "kind": "rpc_node"}
-DELETE /api/nodes/<path.name>
-POST   /api/nodes/<path.name>/restart
-GET    /api/nodes                 {"nodes": [NodeView]}
-GET    /api/meshes/<id|name>      MeshView
-GET    /api/fabric                FabricView
-POST   /api/meshes                optional thin CreateMesh Build proxy
-DELETE /api/meshes/<id|name>      thin RemoveMesh Build proxy
-POST   /api/shutdown              runtime administration, not Build
+0123456789abcdefghjkmnpqrstvwxyz
 ```
 
-`NodeView`:
+Only `node_id` has ordering semantics, and only for elections. `mesh_id` and `fabric_id` are equality-only. Product IDs carry no age/time/ordinal semantics.
 
-```json
-{
-  "name": "mesh1.rpc.2", "kind": "rpc_node", "mesh": "mesh1",
-  "node_id": "<crockford60>", "transport_id": "...", "incarnation_id": "...",
-  "deployment_id": "...", "provider": "process", "data_dir": "...",
-  "status": "pending|ready-for-traffic|draining|leaving|dead",
-  "is_primary": false, "is_fabric_primary": false,
-  "admin_api_base": null,
-  "endpoints": [{"slot": "rpc-0", "addr": "127.0.0.1:41001", "freshness": "..."}]
+Freshness, incarnation, deployment, transition, Build and provider-runtime identities are not converted to Crockford merely for uniformity.
+
+An `rpc_node` has two proof slots:
+- `rpc-0`, fresh: restart gets new port/token;
+- `rpc-1`, stable: restart keeps port/token, replacement gets new values.
+
+### 2.0 Address authority
+
+Every canonical Iroh endpoint uses explicit product topology/EndpointAddr plus explicit seeds. No N0 DNS/Pkarr product authority exists. Optional mDNS, where retained, is discovery only and never liveness/death truth.
+
+### 2.1 RuntimeFact
+
+Every current birth publishes one typed compact runtime fact with semantics equivalent to:
+
+```text
+RuntimeFact {
+    node_id
+    incarnation_id
+    deployment_id
+    provider
+    locator
 }
 ```
 
-`FabricView` carries the Fabric's `id`; `MeshView` its mesh's `id` (`null` until a member of the mesh
-has said which id it carries). Both carry the live owning node-admin `admin_api_base` (PRD §1.16). Callers switch
-control endpoints only from these views.
+The fact is immutable for one incarnation and sufficient for any eligible node-admin under the established Fabric provider policy to adopt/inspect/terminate that exact runtime.
 
-## 5. Probe (`rafka-rpc-probe`)
+Provider locator requirements:
+
+```text
+process:
+    pid + process-start identity/token
+    PID alone is insufficient
+
+container:
+    immutable container id
+    deterministic container name alone is insufficient
+
+future provider:
+    equivalent non-reusable locator
+```
+
+RuntimeFact is not a credential, transport identity, election key, or proof of Running/Dead. Provider inspection of the adopted exact locator supplies runtime status.
+
+The local admin `handles` map is a cache only. It is not authority because leadership can move to an admin that did not launch the runtime.
+
+A managed process cannot receive its final PID in the original launch env because the PID exists only after spawn. The deployment provider/pipeline therefore owns the bootstrap/adoption seam that obtains/persists the final locator and makes the matching RuntimeFact available to the runtime before Ready.
+
+Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registers the same exact runtime identity and publishes RuntimeFact before authority-bearing Ready.
+
+### 2.2 Desired topology and Build state
+
+Keep three separate facts:
+
+```text
+DesiredTopologyProjection
+    = what Fabric/Mesh shape should exist
+
+membership + RuntimeFacts
+    = what exact current births/runtimes exist
+
+Build facts
+    = how one reconciliation attempt is executing
+```
+
+The current desired projection is bounded Fabric control state with a `desired_revision` (or equivalent fencing token). It survives Build completion and Build-history forget.
+
+Topology-changing control requests update desired state under expected/current revision or equivalent insert-and-fail semantics. Silent conflicting last-write-wins is forbidden.
+
+Build-id rules:
+
+```text
+active Build B + authority/executor movement
+    -> continue B
+    -> same desired revision
+
+completed Build A + later proven runtime drift
+    -> new Build B
+    -> unchanged current desired revision
+```
+
+A failed RPC/dial/partition is not proven drift requiring replacement.
+
+### 2.3 Canonical elections
+
+A cohort is one kind's members in one mesh.
+
+```text
+eligible = committed ReadyForTraffic candidates
+winner   = lowest complete canonical NodeId
+```
+
+Do **not** use:
+
+```text
+ready_since_ms
+ordinal/path
+mesh name
+MeshId/FabricId
+creation time
+incarnation/deployment
+RuntimeFact/provider locator
+EndpointId/freshness
+incumbency
+```
+
+Ownership:
+
+```text
+node-admin observers own (mesh, kind) cohort resolution
+(mesh, node_admin) winner == mesh primary
+only mesh primaries own fabric-primary resolution
+fabric candidates = current eligible mesh-primary nodes
+same lowest-NodeId comparator
+```
+
+Day 0 naturally yields:
+
+```text
+node-admin cohort primary == mesh primary == fabric primary
+```
+
+No special primary assignment exists.
+
+Restart preserves NodeId, so a restarted lower NodeId may retake a seat once Ready. Permanent logical replacement mints a new NodeId and may or may not win.
+
+A node-admin may not commit `ReadyForTraffic` until it has hydrated:
+
+```text
+current membership/topology
+current DesiredTopologyProjection
+current RuntimeFacts for held births it may have to manage
+required lifecycle/status provenance
+```
+
+This hydration is a readiness prerequisite, not an election score.
+
+Election evidence:
+
+```text
+rafka.mesh.election.resolve.via-recompute
+rafka.mesh.election.resolve.via-mesh-primary
+rafka.mesh.election.resolve.via-fabric-recompute
+```
+
+### 2.4 Build execution and recovery
+
+Build authority and local executor are distinct.
+
+Normal mesh creation/recovery:
+
+```text
+fabric authority owns desired update/recovery authority
+  -> birth ONE bootstrap/recovery node-admin with exact FabricId + MeshId
+  -> register/publish RuntimeFact
+  -> hydrate current topology + desired state + RuntimeFacts
+  -> ApplyMeshState(Pending)
+  <- Applied | AlreadyApplied
+  -> run/hand ReconcileMesh for current desired revision
+  -> Pending admin executes only its own mesh
+       preserve held current births
+       adopt them through RuntimeFacts
+       retire only canonically proven dead/superseded births
+       create missing ordinary members
+       create missing sibling admins
+  -> Ready
+  -> canonical mesh election
+  -> canonical fabric election recompute
+```
+
+A Pending bootstrap admin does not become elected primary by executing Build.
+
+If failed mesh held fabric authority, surviving mesh primaries elect current fabric primary **first**.
+
+If an active Build already exists, authority movement keeps the same Build id. If prior Build is complete/forgotten and later exact-runtime drift appears, DesiredTopologyProjection drives a new reconciliation Build.
+
+Runtime death proof:
+
+```text
+provider inspect(adopted exact runtime) -> terminal/Exited
+```
+
+Not death proof:
+
+```text
+RPC failure
+NoActiveRoute
+gossip silence
+failed held-member rejoin
+partition
+```
+
+Partition healing uses held current member + known EndpointId/address + stale coverage -> bounded `join_peers`/refeed. Zero neighbours remains fallback only.
+
+## 3. Process contract
+
+Core bootstrap environment remains provider/input policy, not a runtime-history channel:
+
+| var | read by | meaning |
+|---|---|---|
+| `MESH_SPAWN_TYPE` | first node-admin | `process` or `container`; establishes Fabric provider policy |
+| `RAFKA_FABRIC` | node-admin bootstrap | Fabric display/name input |
+| `RAFKA_FABRIC_ID` | bootstrap/joining nodes | logical FabricId |
+| `RAFKA_MESH` | node-admin | mesh name |
+| `RAFKA_DATA_DIR` | every binary | identity/control/evidence data dir |
+| `RAFKA_NODE_ADMIN_API_BIND` | node-admin | HTTP bind |
+| `RAFKA_BIN_DIR` | node-admin | binary directory |
+| `RAFKA_EVIDENCE_DIR` | every binary | JSONL span output root |
+| `TRACEPARENT` | spawned binary | W3C parent of boot span |
+
+Do not add "final DeploymentHandle" as a required launch env value. The provider obtains the exact post-spawn runtime locator through its own bootstrap/adoption seam.
+
+A serving node-admin prints one `RAFKA_NODE_ADMIN_API_BASE=<url>` line and writes the same value in its data dir.
+
+## 4. Control API
+
+Every topology mutation returns `202 {"build_id":"..."}` and delegates to desired-state + Build control.
+
+```text
+POST   /api/build
+GET    /api/builds?id=<build_id>
+DELETE /api/builds?id=<build_id>   # history only; does not erase desired state
+POST   /api/nodes/spawn
+DELETE /api/nodes/<path.name>
+POST   /api/nodes/<path.name>/restart
+GET    /api/nodes
+GET    /api/meshes/<id|name>
+GET    /api/fabric
+POST   /api/meshes
+DELETE /api/meshes/<id|name>
+POST   /api/shutdown               # runtime administration, not Build
+```
+
+Public views expose logical IDs, current status, owning admin endpoint, incarnation/endpoints and enough runtime-control evidence for blackbox proof without exposing secrets.
+
+Conceptual `NodeView` includes:
+
+```json
+{
+  "name": "mesh1.rpc.2",
+  "kind": "rpc_node",
+  "mesh": "mesh1",
+  "node_id": "<crockford60>",
+  "transport_id": "<iroh-endpoint-id>",
+  "incarnation_id": "...",
+  "deployment_id": "...",
+  "provider": "process",
+  "runtime_locator_kind": "process",
+  "status": "pending|ready-for-traffic|draining|leaving|dead",
+  "is_primary": false,
+  "is_fabric_primary": false,
+  "admin_api_base": null,
+  "endpoints": [{"slot":"rpc-0","addr":"127.0.0.1:41001","freshness":"..."}]
+}
+```
+
+Raw sensitive provider credentials are never exposed. Runtime locator may be represented by a safe fingerprint in public/evidence views if policy forbids raw locator disclosure.
+
+Fabric/Mesh views carry logical IDs, current desired revision/state summary where appropriate, and live owning admin endpoint.
+
+## 5. Probe
 
 ```text
 rafka-rpc-probe --admin <api_base> <op> --target exact:<node_id>|path:<path.name> --key <u64>
@@ -176,53 +308,71 @@ rafka-rpc-probe --admin <api_base> <op> --target exact:<node_id>|path:<path.name
 op = put | get | delete | cas | echo
 ```
 
-It prints one JSON line:
+Output remains one JSON line with `Reply|NotSent|Unserved|Indeterminate`, executing node/mesh, incarnation, slot/freshness and domain result.
 
-```json
-{"outcome": "Reply|NotSent|Unserved|Indeterminate", "reason": "...",
- "reply": {"executing_node": "...", "executing_mesh": "...", "incarnation_id": "...",
-           "slot": "rpc-0", "freshness": "...", "op": "put", "result": {...}}}
-```
-
-`--pin <slot>=<token>` asks the client to dial exactly that slot under that freshness token; a superseded
-token is refused pre-commit (`NotSent`, reason `superseded`). `--cut-before-finish` writes part of the request
-frame and then resets the stream (the 499 cut, PRD §1.18).
+Pinned superseded slot is pre-commit `NotSent`; `--cut-before-finish` proves the 499 pre-commit cut.
 
 ## 6. Evidence
 
-With `RAFKA_EVIDENCE_DIR` set, each process appends finished spans to
-`<dir>/<service>.<pid>.spans.jsonl`, one JSON object per line:
+E2E evidence must be sufficient to prove the new late-authority cases without private maps.
 
-```json
-{"trace_id": "...", "span_id": "...", "parent_span_id": "...", "name": "...",
- "service": "...", "start_unix_nano": 0, "end_unix_nano": 0, "attributes": {"build_id": "..."}}
+Artifacts include at least:
+
+```text
+manifest.json
+DesiredTopologyProjection before/after
+desired revision
+Build request/status/facts for active Build only
+Node/Mesh/Fabric public snapshots
+membership RuntimeFact snapshot/fingerprints
+runtime adopt/inspect/exit ledger
+rpc-ledger.jsonl
+partition/repair ledger
+spans/*.jsonl
+trace-url.txt
 ```
 
-Causality is asserted by `parent_span_id` only, never by timestamp enclosure (PRD §16). The
-`TRACEPARENT` handed to a spawned process makes the process boot span a child of the deployment step that
-launched it.
+Causality is asserted by `parent_span_id`, not timestamp enclosure.
 
-E2E artifacts land under `tests/artifacts/<feature>/<test>/` in the owning crate: `manifest.json`
-(product/feature/subfeature/rung/provider/seed), `build-request.json`, `build-status.json`,
-`nodes-before.json`, `nodes-after.json`, `rpc-ledger.jsonl`, `spans/` and `trace-url.txt`.
+Mandatory late-authority proof:
 
-## 7. Span names (PRD §16)
+```text
+Build A converges
+A history is complete/forgotten
+birth lower-NodeId admin
+admin hydrates desired state + current RuntimeFacts
+admin Ready -> wins
+admin adopts/controls a runtime launched before it existed
+later proven drift -> new Build B against same desired revision
+```
 
-Five segments, `rafka.<component>.<entity>.<action>.<reason>`, whitelist verbs only.
+## 7. Span names
 
-| span | where |
+Five segments, `rafka.<component>.<entity>.<action>.<reason>`.
+
+Existing canonical spans remain, including:
+
+| span | purpose |
 |---|---|
-| `rafka.node_admin.build.create.via-rest` | a control route accepted a Build |
-| `rafka.node_admin.build.reject.via-<reason>` | a Build refused by name (`via-provider-mismatch`, `via-invalid-intent`, ...) |
-| `rafka.node_admin.build.update.via-reconcile` | one executor attempt reconciling desired − observed |
-| `rafka.node_admin.node.create.via-build` / `node.update.via-build` / `node.delete.via-permanent-release` | per-node Build operation |
-| `rafka.node_admin.deployment.update.via-pipeline` | one create/retire pipeline run (attrs `build_id`, `provider`) |
-| `rafka.node_admin.deployment.update.via-step` | one pipeline step (attrs `step`, `build_id`, `provider`, `outcome`, `attempt`, `elapsed_ms`) |
-| `rafka.mesh.node.create.via-deployment` | a spawned process's boot span (parent: the `DeployRuntime` step) |
-| `rafka.mesh.election.resolve.via-recompute` / `via-fabric-recompute` | election outcomes |
-| `rafka.node_rpc.request.serve.via-direct` | a dispatched invocation |
+| `rafka.node_admin.build.create.via-rest` | Build accepted |
+| `rafka.node_admin.build.update.via-reconcile` | desired - observed reconciliation |
+| `rafka.node_admin.deployment.update.via-pipeline` | provider pipeline |
+| `rafka.node_admin.deployment.update.via-step` | pipeline step |
+| `rafka.mesh.node.create.via-deployment` | process boot |
+| `rafka.mesh.election.resolve.via-recompute` | node-type election |
+| `rafka.mesh.election.resolve.via-mesh-primary` | node-admin winner -> mesh-primary projection |
+| `rafka.mesh.election.resolve.via-fabric-recompute` | fabric election |
+| `rafka.node_rpc.request.serve.via-direct` | direct invocation |
 | `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` | refusals |
-| `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` / `via-timeout-strikes` | the pool dropped a dial or connection (`crates/rafka-node-rpc/src/pool.rs`; pool identity `(scope, peer, incarnation, slot, freshness)`) |
+| `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` / `via-timeout-strikes` | pool eviction |
 
-New entities (`build`, `deployment`, `lifecycle_hook`) are recorded in `CLAUDE.md`'s span table in the
-commit that first emits them.
+New implementation should add evidence spans for:
+
+```text
+DesiredTopologyProjection update/conflict/hydration
+RuntimeFact publish/learn/adopt/refuse
+proven-drift reconciliation trigger
+held-member stale-coverage rejoin
+```
+
+Exact names follow repository span grammar, and raw provider credentials must never enter telemetry.
