@@ -97,7 +97,7 @@ async fn the_desired_topology_outlives_its_builds_and_drives_recovery() {
     // 5. An admin that misses a revision catches up when it is back. It
     // holds no seat: pausing a seat holder moves the seat first, and a Build
     // planned after that replaces the unheard birth (the path fence).
-    let quiet = estate.nodes().await.into_iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
+    let quiet = estate.nodes().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
     let (quiet_name, quiet_base) = (quiet["name"].as_str().unwrap().to_string(), quiet["admin_api_base"].as_str().unwrap().to_string());
     let stopped = estate.pid_of(&quiet_name).await;
     signal(stopped, "-STOP");

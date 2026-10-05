@@ -66,6 +66,8 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let (status, accepted) = estate.post("/api/build", &desired).await;
     assert_eq!(status, 202, "{accepted}");
     estate.await_build(accepted["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    // The Build may complete on another admin: this view hears every birth first.
+    estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(30)).await;
 
     // The advertised topology: one fabric primary, every mesh's control API.
     let (_, fabric) = estate.get("/api/fabric").await;
@@ -189,9 +191,12 @@ async fn a_new_birth_fences_an_unheard_predecessor_at_its_path() {
 
     let (_, a) = estate.post("/api/build", &desired).await;
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let now = estate.node("mesh1.rpc.2").await;
-    assert_eq!(now["status"], "ready-for-traffic");
-    assert_ne!(now["incarnation_id"], frozen["incarnation_id"], "a new birth holds the path");
+    // The Build ran on the mesh primary; this admin hears the birth within gossip delay.
+    wait_for("a new birth holds the path", Duration::from_secs(30), || async {
+        let now = estate.node("mesh1.rpc.2").await;
+        (now["status"] == "ready-for-traffic" && now["incarnation_id"] != frozen["incarnation_id"]).then_some(())
+    })
+    .await;
     let at_path: Vec<_> = estate.live_runtimes().into_iter().filter(|(d, _)| d.file_name().unwrap().to_string_lossy().starts_with("mesh1.rpc.2-")).collect();
     assert_eq!(at_path.len(), 1, "one live runtime at the path: {at_path:?}");
     assert_ne!(u64::from(at_path[0].1), pid, "the frozen predecessor was stopped");

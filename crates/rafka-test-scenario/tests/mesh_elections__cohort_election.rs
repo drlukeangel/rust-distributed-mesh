@@ -110,13 +110,15 @@ async fn steady(estate: &Estate, base: &str, label: &str, hold: Duration) {
     }
 }
 
-/// Wait until `base` sees `gone` dead and a primary of `c` other than it;
-/// that primary is the computed one of the same view.
-async fn successor(estate: &Estate, base: &str, c: &Cohort, gone: &str) -> String {
-    let (succ, nodes) = wait_for(&format!("one successor to {gone}"), Duration::from_secs(30), || async {
+/// Wait until `base` no longer hears `gone_id` (a NodeId) and a primary of
+/// `c` other than it holds the seat; that primary is the computed one of the
+/// same view. Tracked by NodeId: drift recovery may already have reborn the
+/// path, under a new NodeId.
+async fn successor(estate: &Estate, base: &str, c: &Cohort, gone_id: &str) -> String {
+    let (succ, nodes) = wait_for(&format!("one successor to {gone_id}"), Duration::from_secs(30), || async {
         let nodes = estate.nodes_at(base).await;
-        let alive_gone = nodes.iter().any(|n| n["name"] == gone && n["status"] != "dead");
-        primary_of(&nodes, c).filter(|p| p != gone && !alive_gone).map(|p| (p, nodes))
+        let alive_gone = nodes.iter().any(|n| n["node_id"] == gone_id && n["status"] != "dead");
+        primary_of(&nodes, c).filter(|p| id_of(&nodes, p) != gone_id && !alive_gone).map(|p| (p, nodes))
     })
     .await;
     assert_eq!(expected_primaries(&nodes).get(c), Some(&succ), "the successor is the next-lowest ready NodeId: {nodes:#?}");
@@ -183,7 +185,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = id_of(&nodes, &killed);
     estate.kill_node(&killed).await;
-    let succ = successor(&estate, &base1, &rpc, &killed).await;
+    let succ = successor(&estate, &base1, &rpc, &killed_id).await;
     let succ_id = id_of(&estate.nodes().await, &succ);
     build(&estate, &[("mesh1", 2, 3)]).await;
     let nodes = settle(&estate, &base1, "the killed primary's path is back").await;
@@ -291,7 +293,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
 
     // kill the mesh2 admin primary -> the next-lowest succeeds; the fabric seat is recomputed
     estate.kill_node(&p).await;
-    let succ = successor(&estate, &base1, &admin2, &p).await;
+    let succ = successor(&estate, &base1, &admin2, &p_id).await;
     let nodes = estate.nodes().await;
     let succ_id = id_of(&nodes, &succ);
     assert_eq!(advertised_fabric(&nodes), expected_fabric_primary(&nodes));
