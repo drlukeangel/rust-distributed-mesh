@@ -83,24 +83,28 @@ fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
 /// `facts` packed, in order, into messages that each fit the gossip limit.
 /// A fact that fits no message on its own is left out and named.
 pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
+    // Each encoding draws a fresh nonce, whose length varies: a batch is sent
+    // as the bytes that were measured to fit, never encoded a second time.
     let (mut out, mut refused, mut batch) = (Vec::new(), Vec::new(), Vec::new());
+    let mut fitted: Option<bytes::Bytes> = None;
     for f in facts {
         batch.push(f);
-        if encode(batch.clone()).is_ok() {
+        if let Ok(b) = encode(batch.clone()) {
+            fitted = Some(b);
             continue;
         }
         let last = batch.pop().expect("just pushed");
-        if !batch.is_empty() {
-            out.push(encode(std::mem::take(&mut batch)).expect("fitted before the last fact"));
-        }
+        batch.clear();
+        out.extend(fitted.take());
         match encode(vec![last.clone()]) {
-            Ok(_) => batch.push(last),
+            Ok(b) => {
+                batch.push(last);
+                fitted = Some(b);
+            }
             Err(e) => refused.push(e),
         }
     }
-    if !batch.is_empty() {
-        out.push(encode(batch).expect("fitted"));
-    }
+    out.extend(fitted);
     (out, refused)
 }
 
@@ -354,5 +358,33 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_desired(&self, desired: &DesiredTopology) -> Result<(), BuildStateError> {
         let sender = self.sender.read().await.clone();
         sender.broadcast(encode_desired(desired)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting desired topology: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build_state::BuildAttemptClaim;
+
+    /// Packing measures each batch once and sends those bytes: a fresh
+    /// nonce of another length can never push a sent message over the limit.
+    #[test]
+    fn every_packed_message_fits_whatever_nonce_it_drew() {
+        for round in 0..200u32 {
+            let facts: Vec<BuildFact> = (0..60u32)
+                .map(|i| {
+                    BuildFact::Claim(BuildAttemptClaim {
+                        build_id: BuildId::mint(),
+                        attempt: i,
+                        executor: format!("mesh{}.admin.{}", round, "x".repeat(((i * 37 + round) % 90) as usize)),
+                    })
+                })
+                .collect();
+            let (messages, refused) = encode_chunks(facts);
+            assert!(refused.is_empty());
+            assert!(messages.iter().all(|m| m.len() <= MAX_MESSAGE_BYTES), "every message fits");
+            let sent: usize = messages.iter().map(|m| serde_json::from_slice::<serde_json::Value>(m).unwrap()["facts"].as_array().unwrap().len()).sum();
+            assert_eq!(sent, 60, "no fact lost");
+        }
     }
 }

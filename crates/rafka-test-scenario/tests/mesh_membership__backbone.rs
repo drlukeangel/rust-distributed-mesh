@@ -202,6 +202,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let fp_name = s(&fp["name"]);
     let (_, fabric) = estate.get("/api/fabric").await;
     let survivors: Vec<String> = fabric["meshes"].as_array().unwrap().iter().map(|m| s(&m["admin_api_base"])).filter(|b| *b != s(&fp["admin_api_base"])).collect();
+    let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     if fp_name == "mesh1.admin.1" {
         estate.kill_bootstrap();
     } else {
@@ -214,17 +215,22 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // primary's mesh is heard again through its successor's aggregate, a
     // peer mesh's admin may briefly name itself in its own view (and, gated,
     // publishes nothing). The converged view names the one publisher.
-    wait_for("a new fabric primary alone publishes the fabric's status", Duration::from_secs(40), || async {
+    let next = wait_for("a new fabric primary alone publishes the fabric's status", Duration::from_secs(40), || async {
         let n = estate.nodes().await;
         let next = n.iter().find(|x| x["is_fabric_primary"] == true && x["name"] != fp_name.as_str()).map(|x| s(&x["name"]))?;
         // Status publication is keyed by the Fabric's id, the backbone's key.
         let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
-        (holders(&ev, &s(&fabric["id"]), &dead) == [next].into_iter().collect()).then_some(())
+        (holders(&ev, &s(&fabric["id"]), &dead) == [next.clone()].into_iter().collect()).then_some(next)
     })
     .await;
+    // The seat moves with the lowest NodeId as meshes grow and lose
+    // primaries; across this loss it moves once: the lost primary was the
+    // last to start publishing, and only its successor starts after it.
     let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
-    let starts: Vec<&(u64, String, String, String)> = ev.iter().filter(|e| e.3 == "start").collect();
-    assert_eq!(starts.len(), 2, "one publisher before the loss, one after: {ev:?}");
+    let before = ev.iter().filter(|e| e.0 < lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
+    let after: Vec<&String> = ev.iter().filter(|e| e.0 >= lost_at && e.3 == "start").map(|e| &e.1).collect();
+    assert_eq!(before.as_deref(), Some(fp_name.as_str()), "the lost primary published before the loss: {ev:?}");
+    assert_eq!(after, vec![&next], "one publisher after the loss: {ev:?}");
 
     // Stop through whoever holds the fabric now.
     let (_, fabric) = estate.get("/api/fabric").await;
