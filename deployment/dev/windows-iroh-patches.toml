@@ -15,9 +15,10 @@
 # Each crate-family is patched from its OWN repo so iroh + iroh-base resolve to one
 # source (else cargo double-sources iroh-base -> two PublicKey types), same for noq*.
 # To publish PRs: push each repo's branch to a fork and swap `path` -> `git`+`branch`.
+# iroh-gossip is not patched here: the workspace depends on the pinned
+# drlukeangel/iroh-gossip commit on every host (Cargo.toml).
 iroh = { path = "E:/iroh/iroh" }
 iroh-base = { path = "E:/iroh/iroh-base" }
-iroh-gossip = { path = "E:/iroh-gossip" }
 noq = { path = "E:/noq/noq" }
 noq-proto = { path = "E:/noq/noq-proto" }
 noq-udp = { path = "E:/noq/noq-udp" }
