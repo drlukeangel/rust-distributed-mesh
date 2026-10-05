@@ -140,6 +140,15 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// The peers of the live list `live` to join now: those not joined while
+/// they stayed live. `joined` forgets a peer that left the list, so one that
+/// returns is joined again (`gossip.md` §6).
+pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::EndpointId]) -> Vec<iroh::EndpointId> {
+    let mut joined = joined.lock().unwrap();
+    joined.retain(|id| live.contains(id));
+    live.iter().copied().filter(|id| joined.insert(*id)).collect()
+}
+
 /// One joined gossip topic. iroh-gossip closes a subscriber that falls behind
 /// (`Lagged`) and expects it to be re-opened; a subscription can also end.
 /// Either way it is re-subscribed through its seeds and every peer it was
@@ -248,11 +257,8 @@ impl Channel {
         for p in &peers {
             self.learn(p);
         }
-        let fresh: Vec<iroh::EndpointId> = {
-            let mut joined = self.joined.lock().unwrap();
-            joined.retain(|id| peers.iter().any(|p| p.id == *id));
-            peers.iter().map(|p| p.id).filter(|id| joined.insert(*id)).collect()
-        };
+        let live: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
+        let fresh = rejoin(&self.joined, &live);
         if !fresh.is_empty() {
             let sender = self.sender.read().await.clone();
             sender.join_peers(fresh.clone()).await?;
@@ -811,5 +817,15 @@ mod tests {
         let took = start.elapsed();
         assert!(took < linger + Duration::from_millis(150), "repeating held the node {took:?}");
         assert!((2..=8).contains(&n), "{n} announcements in a 300 ms linger at 50 ms");
+    }
+
+    #[test]
+    fn a_peer_that_leaves_the_live_list_and_returns_is_joined_again() {
+        let joined = Mutex::new(BTreeSet::new());
+        let (a, b) = (iroh::SecretKey::generate().public(), iroh::SecretKey::generate().public());
+        assert_eq!(rejoin(&joined, &[a, b]), vec![a, b], "both joined");
+        assert!(rejoin(&joined, &[a, b]).is_empty(), "a live peer is joined once");
+        assert!(rejoin(&joined, &[b]).is_empty(), "a leaves the live list");
+        assert_eq!(rejoin(&joined, &[a, b]), vec![a], "a returns and is joined again");
     }
 }

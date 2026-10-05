@@ -898,7 +898,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // status. It joins the backbone through every admin it knows and its mesh
     // channel through every member of its mesh it knows.
     {
-        let (backbone, membership, topology, me, mesh) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
+        let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
         hierarchy = tokio::spawn(async move {
             loop {
                 let t = topology.read().await.clone();
@@ -911,7 +911,8 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 let status = serde_json::to_value(t.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone(), &status).await;
                 let addr = rafka_mesh_transport::membership::gossip_addr;
-                let admins = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
+                let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
+                builds.join_admins(admins.clone()).await;
                 backbone.join_admins(admins).await;
                 let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
                 tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;

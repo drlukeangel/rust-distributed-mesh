@@ -142,6 +142,10 @@ pub fn build_topic(fabric: &str) -> TopicId {
 pub struct FabricBuildStateAdapter {
     local: Arc<MemoryBuildStateAdapter>,
     sender: Arc<tokio::sync::RwLock<GossipSender>>,
+    /// Every peer known on the Build topic (seeds, neighbours, admins heard).
+    known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
+    /// The admins joined while they stayed live.
+    joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
 }
 
 impl FabricBuildStateAdapter {
@@ -171,6 +175,8 @@ impl FabricBuildStateAdapter {
         let known_peers: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>> = Arc::new(std::sync::Mutex::new(seed_ids.clone()));
         let neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>> = Arc::default();
         refeed(fabric.to_string(), shared.clone(), known_peers.clone(), neighbors.clone());
+        let known_peers_handle = known_peers.clone();
+        let seed_ids_set: std::collections::BTreeSet<iroh::EndpointId> = seed_ids.iter().copied().collect();
         tokio::spawn(async move {
             loop {
                 // Receive until the subscription lags or ends; iroh-gossip
@@ -236,7 +242,27 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set) })
+    }
+
+    /// Join the Build topic to every live node-admin `admins` names, as the
+    /// backbone does (`gossip.md` §6): each once while it stays live, again
+    /// when it returns. An admin that accepted a Build while cut off reaches
+    /// every admin directly when it heals, and the NeighborUp catch-up hands
+    /// each one its active Builds; one neighbour alone would leave the rest to
+    /// HyParView's shuffle (a minute per peer). Returns how many were joined.
+    pub async fn join_admins(&self, admins: Vec<EndpointAddr>) -> usize {
+        let live: Vec<iroh::EndpointId> = admins.iter().map(|a| a.id).collect();
+        let fresh = rafka_mesh_transport::membership::rejoin(&self.joined, &live);
+        if fresh.is_empty() {
+            return 0;
+        }
+        self.known.lock().unwrap().extend(fresh.iter().copied());
+        let sender = self.sender.read().await.clone();
+        match sender.join_peers(fresh.clone()).await {
+            Ok(()) => fresh.len(),
+            Err(_) => 0,
+        }
     }
 
     async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {
