@@ -18,6 +18,8 @@ jobs:
         run: cargo test -p rafka-mesh-audit
       - name: dependency rules
         run: cargo run -q -p rafka-mesh-audit --bin dep-rules
+      - name: address-lookup boundary (no n0 DNS/Pkarr; canonical crates off the legacy plane)
+        run: cargo run -q -p rafka-mesh-audit --bin address-lookup
       - name: Node RPC runtime and pool (functional)
         run: cargo test -p rafka-node-rpc-contract -p rafka-node-rpc
 
@@ -56,3 +58,11 @@ jobs:
         env:
           RAFKA_REQUIRE_NETFAULT: "1"
         run: cargo test -p rafka-test-scenario --test mesh_membership__backbone
+      # Last: it runs as root inside its own network namespace.
+      - name: no implicit address lookup, two meshes converge with no route off the host (process E2E)
+        env:
+          RAFKA_REQUIRE_NETFAULT: "1"
+        run: |
+          cargo test -p rafka-test-scenario --test mesh_shapes__live_resize --test mesh_membership__backbone --no-run
+          scripts/netless.sh cargo test --offline -p rafka-test-scenario --test mesh_shapes__live_resize mm_
+          scripts/netless.sh cargo test --offline -p rafka-test-scenario --test mesh_membership__backbone

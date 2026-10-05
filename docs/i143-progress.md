@@ -46,8 +46,9 @@ A fresh session resumes from this file plus the open issues on that milestone.
 
 ## In progress
 
-- e4.s9 drlukeangel/rafka-v2#2801 — hierarchical membership: per-mesh channels and the admin backbone, entry pull over QUIC, succession window for forwarded members, re-join and refeed per `gossip.md` §6, the Build topic joins every live admin; E2E `mesh_membership__backbone` (branch `i143-e4-s9`).
-- Order after s9 (#2753): e4.s10 (#2803) → e6.s7 (#2804) / e4.s11 (#2805) → revalidate s4–s7 → resume e4.s8 (#2761, branch `i143-e4-s8`).
+- e4.s13 drlukeangel/rafka-v2#2816 — address-lookup boundary: every endpoint `presets::Minimal`, the `address-lookup` gate, the multi-mesh E2E with no route off the host (branch `i143-e4-s13`).
+- e4.s9 drlukeangel/rafka-v2#2801 — code landed `2070e3ba79` (drlukeangel/rust-distributed-mesh#35); acceptance is final once its E2E runs on s13's configuration.
+- Order after s13 (#2753): e4.s10 (#2803) → e6.s7 (#2804) / e4.s11 (#2805) → revalidate s4–s7 → resume e4.s8 (#2761, branch `i143-e4-s8`).
 
 ## Blockers
 

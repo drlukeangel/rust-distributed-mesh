@@ -1672,7 +1672,7 @@ mod tests {
     async fn bi_stream_echo_e2e() {
         // Endpoint A (server)
         let secret_a = iroh::SecretKey::generate();
-        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
+        let endpoint_a = Endpoint::builder(presets::Minimal)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
@@ -1698,7 +1698,7 @@ mod tests {
 
         // Endpoint B (client)
         let secret_b = iroh::SecretKey::generate();
-        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
+        let endpoint_b = Endpoint::builder(presets::Minimal)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
@@ -1736,7 +1736,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn backpressure_bi_stream_flood() {
         let secret_a = iroh::SecretKey::generate();
-        let endpoint_a = Endpoint::builder(presets::N0DisableRelay)
+        let endpoint_a = Endpoint::builder(presets::Minimal)
             .secret_key(secret_a)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
@@ -1765,7 +1765,7 @@ mod tests {
         };
 
         let secret_b = iroh::SecretKey::generate();
-        let endpoint_b = Endpoint::builder(presets::N0DisableRelay)
+        let endpoint_b = Endpoint::builder(presets::Minimal)
             .secret_key(secret_b)
             .alpns(vec![ALPN.to_vec()])
             .relay_mode(iroh::RelayMode::Disabled)
