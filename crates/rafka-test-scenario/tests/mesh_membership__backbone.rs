@@ -253,10 +253,16 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     .await;
 
     // 8. Restart mesh2.rpc.1: its new birth is ready holding both meshes.
+    let before = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(60)).await;
-    let reborn = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+    // The Build can complete on another admin: wait for the asked one's view.
+    let reborn = wait_for("the asked admin's view holds the new birth", Duration::from_secs(15), || async {
+        let now = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+        (!now.is_empty() && now != before).then_some(now)
+    })
+    .await;
     let spans = estate.spans();
     let ready = named(&spans, "rafka.mesh.node.update.via-ready")
         .into_iter()
