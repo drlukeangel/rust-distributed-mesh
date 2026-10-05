@@ -53,9 +53,10 @@ Packages absent today: `rafka-node-rpc-contract`, `rafka-mesh-entity`,
 ## Build hygiene found during the audit
 
 The workspace `Cargo.toml` carried a `[patch.crates-io]` block pointing at
-Windows-only paths (`E:/iroh/...`, `E:/iroh-gossip`, `E:/noq/...`). On any
+Windows-only paths (`E:/iroh/...`, `E:/noq/...`). On any
 other host `cargo` refused to load the workspace at all. The block now lives in
 `deployment/dev/windows-iroh-patches.toml`, opted into per host with
 `cargo --config deployment/dev/windows-iroh-patches.toml ...`; the workspace
-builds and tests against crates.io `iroh 1.0.0-rc.1` / `iroh-gossip 0.100.0`
-everywhere else.
+builds and tests against crates.io `iroh 1` and `iroh-gossip` from
+`drlukeangel/iroh-gossip` pinned to one exact commit (i143.e4.s12) everywhere
+else.
