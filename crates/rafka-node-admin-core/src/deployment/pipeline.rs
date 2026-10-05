@@ -441,6 +441,7 @@ impl DeploymentPipeline<'_> {
             endpoints: endpoints.clone(),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
+            mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).cloned(),
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.

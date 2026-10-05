@@ -7,5 +7,6 @@
 //! in-process.
 
 pub mod estate;
+pub mod netfault;
 pub mod runner;
 pub mod scenario;

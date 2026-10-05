@@ -7,10 +7,15 @@ use std::net::SocketAddr;
 
 /// Bind an endpoint for `secret` at exactly `addr` (relay off, no discovery):
 /// the address is node-admin's assignment, never chosen here.
+///
+/// A connection to a peer that died closes within the membership silence
+/// window (a 1 s keep-alive, a 3 s idle timeout). Gossip shares this endpoint,
+/// and the gossip actor waits on a dead peer's full send queue until its
+/// connection closes: a 30 s idle timeout stalled every topic of the node.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
     let transport = iroh::endpoint::QuicTransportConfig::builder()
-        .keep_alive_interval(std::time::Duration::from_secs(15))
-        .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?))
+        .keep_alive_interval(std::time::Duration::from_secs(1))
+        .max_idle_timeout(Some(std::time::Duration::from_secs(3).try_into()?))
         .build();
     let ep = Endpoint::builder(presets::Minimal)
         .secret_key(secret)

@@ -40,7 +40,7 @@ use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
-use rafka_mesh_transport::membership::{DigestBook, Membership};
+use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SILENT_AFTER};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -50,8 +50,6 @@ use tokio::sync::RwLock;
 
 /// The digest key carrying a node-admin's mesh id.
 pub const MESH_ID: &str = "mesh_id";
-/// How long a member stays in the view without a fresh digest.
-const SILENT_AFTER: Duration = Duration::from_secs(3);
 
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
@@ -349,9 +347,12 @@ impl AdminRunner {
         *self.topology.write().await = t;
     }
 
-    /// A launch of `kind` in `mesh`. A node-admin carries its mesh's identity:
-    /// the one this admin created, else the one the fabric knows (a recovered
-    /// mesh is reconstructed as itself, never under a new id).
+    /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
+    /// names the mesh's channel): the one this admin created, else the one the
+    /// fabric knows (a recovered mesh is reconstructed as itself, never anew).
+
+
+
     async fn template_for(&self, kind: NodeKind, mesh: &str) -> LaunchTemplate {
         let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh && !m.id.0.starts_with("unknown-")).map(|m| m.id.clone());
         let mut t = self.template.clone();
@@ -360,11 +361,11 @@ impl AdminRunner {
             NodeKind::NodeAdmin => {
                 t.executable = self.bin_dir.join(format!("rafka-node-admin{}", std::env::consts::EXE_SUFFIX));
                 t.env.extend(self.admin_env.clone());
-                let id = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known);
-                if let Some(id) = id {
-                    t.env.insert("RAFKA_MESH_ID".into(), id.0);
-                }
             }
+        }
+        // Every node of a mesh carries its id: it names the mesh's channel.
+        if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
+            t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.0);
         }
         t
     }
@@ -670,10 +671,17 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     };
 
     // The mesh endpoint: gossip for membership and Build facts.
+    // A dead peer's connection closes within the membership silence window:
+    // the gossip actor waits on a dead peer's full send queue until then.
+    let transport = iroh::endpoint::QuicTransportConfig::builder()
+        .keep_alive_interval(Duration::from_secs(1))
+        .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
+        .build();
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(key.clone())
         .alpns(vec![iroh_gossip::ALPN.to_vec()])
         .relay_mode(iroh::RelayMode::Disabled)
+        .transport_config(transport)
         .bind_addr(mesh_addr)
         .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?
         .bind()
@@ -700,44 +708,79 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
-    let membership = Membership::join(&gossip, &endpoint, &cfg.fabric, seed_addrs.clone()).await.map_err(|e| format!("membership: {e}"))?;
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric, seed_addrs.clone()).await.map_err(|e| e.to_string())?);
-
-    // Fabric policy and the first view. The bootstrap admin takes its policy
-    // from MESH_SPAWN_TYPE. A launched admin pulls its entry from the admin
-    // that launched it (its first seed) over QUIC: that admin's topology
-    // projection and the membership it is projected from, recorded as heard,
-    // so this admin's first view is its launcher's; the fabric record carries
-    // the policy, the mesh records their ids. Without that answer it cannot
-    // know the policy, and it refuses to start by name.
-    let mut pulled_meshes: Vec<Mesh> = Vec::new();
-    let policy = match (&cfg.launch, seed_addrs.first()) {
-        (Some(_), Some(anchor)) => {
+    // The mesh's id names its membership channel: the launch names it (the
+    // launching admin always does), else the entry pull's projection knows
+    // it, else this admin is the mesh's first and mints it.
+    let launched_anchor = cfg.launch.as_ref().and(seed_addrs.first().cloned());
+    let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
+    let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
+        (Some(id), _) => MeshId(id.clone()),
+        (None, Some(anchor)) => {
             let answer = rafka_mesh_transport::entry::pull(&endpoint, anchor.clone(), &name.to_string(), 5)
                 .await
                 .map_err(|e| format!("entry pull from the launching admin failed: {e}"))?;
-            for d in answer.members.iter().filter(|d| d.fabric == cfg.fabric && d.node.name != name) {
-                membership.book.record(d.clone());
-            }
+            let known = serde_json::from_value::<Topology>(answer.topology.clone())
+                .ok()
+                .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh && !m.id.0.starts_with("unknown-")))
+                .map(|m| m.id);
+            pulled = Some(answer);
+            known.unwrap_or_else(MeshId::mint)
+        }
+        (None, None) => MeshId::mint(),
+    };
+    // Subscribe first, pull second: what changes during the pull arrives by
+    // gossip, and the book keeps the newer copy.
+    let membership = Membership::join(&gossip, &endpoint, &cfg.fabric, &cfg.mesh, &mesh_id.0, &name.to_string(), seed_addrs.clone())
+        .await
+        .map_err(|e| format!("membership: {e}"))?;
+    let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), seed_addrs.clone())
+        .await
+        .map_err(|e| format!("backbone: {e}"))?;
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric, seed_addrs.clone()).await.map_err(|e| e.to_string())?);
+
+    // Fabric policy and the first view. The bootstrap admin takes its policy
+    // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
+    // that launched it (its first seed) over QUIC: that admin's topology
+    // projection and the membership it is projected from, recorded as heard,
+    // so this admin's first view is its launcher's; the fabric record carries
+    // the policy. Without that answer it cannot know the policy, and it
+    // refuses to start by name.
+    let policy = match &launched_anchor {
+        Some(anchor) => {
+            let answer = match pulled.take() {
+                Some(a) => a,
+                None => rafka_mesh_transport::entry::pull(&endpoint, anchor.clone(), &name.to_string(), 5)
+                    .await
+                    .map_err(|e| format!("entry pull from the launching admin failed: {e}"))?,
+            };
             let topology: Topology =
                 serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the entry answer from {} holds no topology: {e}", answer.served_by))?;
+            let mut mesh_peers = Vec::new();
+            let mut admins = Vec::new();
+            for d in answer.members.into_iter().filter(|d| d.fabric == cfg.fabric && d.node.name != name) {
+                if let Some(a) = rafka_mesh_transport::membership::gossip_addr(&d) {
+                    if d.node.name.mesh == cfg.mesh {
+                        mesh_peers.push(a.clone());
+                    }
+                    if d.node.name.kind == NodeKind::NodeAdmin {
+                        admins.push(a);
+                    }
+                }
+                membership.learn(d, "entry");
+            }
+            let _ = membership.join_peers(mesh_peers).await;
+            backbone.join_admins(admins).await;
             tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
-            pulled_meshes = topology.meshes.into_iter().filter(|m| !m.id.0.starts_with("unknown-")).collect();
             FabricPolicy { provider: topology.fabric.provider }
         }
-        _ => FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?,
+        None => FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?,
     };
 
     // The control API.
     let listener = tokio::net::TcpListener::bind(control_addr).await.map_err(|e| format!("control slot {control_addr}: {e}"))?;
     let api_base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
     let records = Arc::new(Records::default());
-    // Its own mesh's id: the launch names it, else the pulled projection
-    // knows it, else this admin is the mesh's first and mints it. Only its own
-    // mesh is recorded: another mesh exists here only while its members do.
-    let known = pulled_meshes.into_iter().find(|m| m.name == cfg.mesh).map(|m| m.id);
-    let mesh_id = cfg.mesh_id.clone().map(MeshId).or(known).unwrap_or_else(MeshId::mint);
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
     let control = Arc::new(ControlPlane::new(builds.clone(), project(&cfg.fabric, policy.provider, &book, &records)));
@@ -814,6 +857,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         digest.lock().unwrap().node.endpoints = EndpointSet(l.endpoints.clone());
     }
     let mut tasks = Vec::new();
+    // Born full: this admin is published only now, its entry taken.
+    tracing::info_span!("rafka.mesh.node.update.via-ready", node = %name, incarnation_id = %incarnation.0, meshes = membership.meshes_held())
+        .in_scope(|| tracing::info!("ready for traffic"));
     let d = digest.clone();
     tasks.push(membership.publish_every(Duration::from_millis(500), move || {
         let mut d = d.lock().unwrap().clone();
@@ -821,6 +867,32 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         d
     }));
 
+    // The hierarchy: while this admin is its mesh's primary it publishes the
+    // mesh's members on the backbone and forwards the other meshes onto its
+    // mesh channel; while it is the fabric primary it publishes the fabric's
+    // status. It joins the backbone through every admin it knows and its mesh
+    // channel through every member of its mesh it knows.
+    {
+        let (backbone, membership, topology, me, mesh) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone());
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let t = topology.read().await.clone();
+                // Cut off, its view authorizes nothing: it publishes as no primary.
+                let live = !membership.is_cut_off();
+                backbone.set_mesh_primary(live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me));
+                backbone.set_fabric_primary(live && t.fabric_primary().is_some_and(|n| n.name == me));
+                let heard = membership.book.current(SILENT_AFTER);
+                let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
+                let status = serde_json::to_value(t.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                backbone.publish(&membership, mine.clone(), &status).await;
+                let addr = rafka_mesh_transport::membership::gossip_addr;
+                let admins = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
+                backbone.join_admins(admins).await;
+                let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
+                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+            }
+        }));
+    }
     // The projection, refreshed into the control plane's topology.
     {
         let (topology, fabric, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), policy.provider, book.clone(), records.clone());
@@ -840,15 +912,18 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
-        let (book, records, fabric, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), policy.provider);
+        let (book, records, fabric, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), policy.provider, membership.clone());
         tasks.push(tokio::spawn(async move {
             loop {
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
                 let now = project(&fabric, provider, &book, &records);
                 *topology.write().await = now;
-                // Every Build whose next operation this admin executes.
-                exec.reconcile_active().await;
+                // Every Build whose next operation this admin executes; none
+                // while it is cut off (its view then authorizes nothing).
+                if !cut_off_view.is_cut_off() {
+                    exec.reconcile_active().await;
+                }
                 tokio::select! {
                     _ = submitted.notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(300)) => {}

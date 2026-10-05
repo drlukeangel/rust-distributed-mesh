@@ -15,6 +15,7 @@ pub const ENV_SUPERSEDES: &str = "RAFKA_SUPERSEDES";
 pub const ENV_ENDPOINTS: &str = "RAFKA_ENDPOINTS";
 pub const ENV_SEEDS: &str = "RAFKA_SEEDS";
 pub const ENV_DATA_DIR: &str = "RAFKA_DATA_DIR";
+pub const ENV_MESH_ID: &str = "RAFKA_MESH_ID";
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +29,8 @@ pub struct Launch {
     /// `(public key hex, address)` of members to join gossip through.
     pub seeds: Vec<(String, SocketAddr)>,
     pub data_dir: PathBuf,
+    /// The id of the node's mesh: it names the mesh's membership channel.
+    pub mesh_id: Option<String>,
 }
 
 /// `rpc-0=127.0.0.1:41001=<token>,rpc-1=...`
@@ -72,6 +75,9 @@ impl Launch {
         m.insert(ENV_ENDPOINTS.into(), encode_endpoints(&self.endpoints));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
+        if let Some(id) = &self.mesh_id {
+            m.insert(ENV_MESH_ID.into(), id.clone());
+        }
         m
     }
 
@@ -86,6 +92,7 @@ impl Launch {
             endpoints: decode_endpoints(&req(ENV_ENDPOINTS)?)?,
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
+            mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()),
         })
     }
 }
@@ -105,6 +112,7 @@ mod tests {
             endpoints: vec![EndpointSlot::assign("rpc-0", "127.0.0.1:41001".parse().unwrap())],
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
+            mesh_id: Some("4f14".into()),
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);

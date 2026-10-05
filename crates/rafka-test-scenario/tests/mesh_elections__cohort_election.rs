@@ -23,6 +23,7 @@
 //! partition case is a named skip; `RAFKA_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 
+use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -139,66 +140,6 @@ fn announced(spans: &[Value], c: &Cohort, primary: &str, previous: &str) -> bool
         let a = &s["attributes"];
         a["mesh"] == c.0.as_str() && a["kind"] == c.1.as_str() && a["primary"] == primary && a["previous"] == previous
     })
-}
-
-/// UDP between two sets of loopback ports dropped, until dropped itself.
-struct Partition {
-    chain: String,
-    sudo: bool,
-}
-
-impl Partition {
-    fn iptables(sudo: bool, args: &[&str]) -> Result<(), String> {
-        let mut c = if sudo { Command::new("sudo") } else { Command::new("iptables") };
-        if sudo {
-            c.args(["-n", "iptables"]);
-        }
-        let out = c.arg("-w").args(args).output().map_err(|e| e.to_string())?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-        }
-    }
-
-    /// `Err` names why the host cannot partition (a skip, or a CI failure).
-    fn start(a: &[u16], b: &[u16]) -> Result<Self, String> {
-        let chain = format!("RAFKA-PART-{}", std::process::id());
-        let sudo = Self::iptables(false, &["-L", "INPUT", "-n"]).is_err();
-        Self::iptables(sudo, &["-N", &chain]).map_err(|e| format!("iptables unavailable: {e}"))?;
-        let p = Self { chain, sudo };
-        Self::iptables(sudo, &["-I", "INPUT", "-j", &p.chain]).map_err(|e| format!("iptables: {e}"))?;
-        for x in a {
-            for y in b {
-                for (from, to) in [(x, y), (y, x)] {
-                    let (f, t) = (from.to_string(), to.to_string());
-                    Self::iptables(sudo, &["-A", &p.chain, "-i", "lo", "-p", "udp", "--sport", &f, "--dport", &t, "-j", "DROP"])
-                        .map_err(|e| format!("iptables: {e}"))?;
-                }
-            }
-        }
-        Ok(p)
-    }
-}
-
-impl Drop for Partition {
-    fn drop(&mut self) {
-        let _ = Self::iptables(self.sudo, &["-D", "INPUT", "-j", &self.chain]);
-        let _ = Self::iptables(self.sudo, &["-F", &self.chain]);
-        let _ = Self::iptables(self.sudo, &["-X", &self.chain]);
-    }
-}
-
-fn udp_ports(nodes: &[Value], names: &[String]) -> Vec<u16> {
-    let mut out = Vec::new();
-    for n in nodes.iter().filter(|n| names.contains(&s(&n["name"]))) {
-        for e in n["endpoints"].as_array().unwrap() {
-            if e["slot"] != "control" {
-                out.push(s(&e["addr"]).rsplit(':').next().unwrap().parse().unwrap());
-            }
-        }
-    }
-    out
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
