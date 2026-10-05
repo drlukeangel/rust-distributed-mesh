@@ -578,6 +578,10 @@ impl DeploymentPipeline<'_> {
             loop {
                 match self.observer.admission_closed(&node).await {
                     Ok(()) => return Ok(()),
+                    // This birth's own runtime has exited: it admits nothing,
+                    // whatever the fabric last heard from it. Only `handle`
+                    // (this deployment) counts, never another birth at the path.
+                    Err(_) if matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e),
                     Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
                 }

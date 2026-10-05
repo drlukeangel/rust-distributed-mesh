@@ -53,10 +53,22 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let _ = every;
-    let _ = tokio::time::timeout(linger, say()).await;
-    tokio::time::sleep(linger).await;
-    1
+    let until = tokio::time::Instant::now() + linger;
+    let mut said = 0;
+    loop {
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return said;
+        }
+        if tokio::time::timeout(left, say()).await.is_ok() {
+            said += 1;
+        }
+        let left = until.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return said;
+        }
+        tokio::time::sleep(every.min(left)).await;
+    }
 }
 
 /// The latest digest heard per logical node.

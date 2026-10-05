@@ -54,12 +54,10 @@ pub const IN_FLIGHT: &str = "in_flight";
 
 /// `RAFKA_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
 /// for in-flight handlers. Strictly shorter than node-admin's stop grace.
-/// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
-/// announcing `Leaving` before it closes. Drain deadline plus linger stay
-/// inside node-admin's stop grace.
-pub fn leave_linger_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RAFKA_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
-}
+/// Drain deadline plus the leave linger
+/// ([`rafka_mesh_transport::membership::leave_linger_from_env`]) stay inside
+/// node-admin's stop grace.
+pub use rafka_mesh_transport::membership::leave_linger_from_env;
 
 pub fn drain_deadline_from_env() -> Duration {
     Duration::from_millis(std::env::var("RAFKA_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
@@ -90,19 +88,25 @@ impl RunningNode {
     }
 
     /// Publish `Leaving` and stop serving.
-    /// Phase two: say `Leaving` on the fabric, keep saying it on the digest
-    /// cadence for `linger`, then leave gossip and close every endpoint.
+    /// Phase two: say `Leaving` on the fabric, keep saying it every
+    /// `LEAVE_EVERY` for `linger`, then leave gossip and close every endpoint.
     ///
     /// iroh-gossip queues a broadcast and acknowledges nothing, and closing
     /// the endpoint drops whatever is still unsent; the linger keeps the
     /// node on the fabric long enough for its own `Leaving` to go out.
     pub async fn stop(self, linger: Duration) {
         *self.status.lock().unwrap() = MemberStatus::Leaving;
-        let mut d = self.digest.clone();
-        d.status = MemberStatus::Leaving;
-        d.emitted_unix_ms = now_ms();
-        let _ = self.membership.publish(&d).await;
-        tokio::time::sleep(linger).await;
+        let (digest, membership) = (self.digest.clone(), self.membership.clone());
+        rafka_mesh_transport::membership::announce_leaving(linger, rafka_mesh_transport::membership::LEAVE_EVERY, || {
+            let mut d = digest.clone();
+            d.status = MemberStatus::Leaving;
+            d.emitted_unix_ms = now_ms();
+            let m = membership.clone();
+            async move {
+                let _ = m.publish(&d).await;
+            }
+        })
+        .await;
         self.publisher.abort();
         let _ = self.gossip.shutdown().await;
         for r in self.routers {

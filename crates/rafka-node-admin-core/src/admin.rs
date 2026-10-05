@@ -37,7 +37,7 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
-use rafka_mesh_transport::membership::{DigestBook, Membership};
+use rafka_mesh_transport::membership::{announce_leaving, leave_linger_from_env, DigestBook, Membership, LEAVE_EVERY};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -626,18 +626,39 @@ pub struct Running {
     pub membership: Membership,
     pub digest: Arc<Mutex<MeshDigest>>,
     router: IrohRouter,
+    /// The digest cadence and the Build executor: stopped first on leave.
+    publisher: tokio::task::JoinHandle<()>,
+    executor: tokio::task::JoinHandle<()>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Running {
-    /// Say `Leaving`, stop serving and close the endpoint.
+    /// Leave the fabric the way every node does (node-rpc §35): stop taking
+    /// Build work and say `Draining`, then keep saying `Leaving` for the
+    /// leave linger (`RAFKA_LEAVE_LINGER_MS`), then close. iroh-gossip
+    /// acknowledges nothing and closing drops what is unsent, so one
+    /// announcement can be lost; an attempt the executor was running is
+    /// continued by the Build's next attempt.
     pub async fn leave(self) {
-        let mut d = self.digest.lock().unwrap().clone();
-        d.status = MemberStatus::Leaving;
-        d.emitted_unix_ms = now_ms();
-        *self.digest.lock().unwrap() = d.clone();
-        let _ = self.membership.publish(&d).await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        self.executor.abort();
+        self.publisher.abort();
+        let say = |status: MemberStatus| {
+            let mut d = self.digest.lock().unwrap().clone();
+            d.status = status;
+            d.emitted_unix_ms = now_ms();
+            *self.digest.lock().unwrap() = d.clone();
+            d
+        };
+        let _ = self.membership.publish(&say(MemberStatus::Draining)).await;
+        let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
+            let d = say(MemberStatus::Leaving);
+            let m = self.membership.clone();
+            async move {
+                let _ = m.publish(&d).await;
+            }
+        })
+        .await;
+        tracing::info!(announcements = said, "said Leaving for the linger");
         for t in self.tasks {
             t.abort();
         }
@@ -794,11 +815,11 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     }
     let mut tasks = Vec::new();
     let d = digest.clone();
-    tasks.push(membership.publish_every(Duration::from_millis(500), move || {
+    let publisher = membership.publish_every(Duration::from_millis(500), move || {
         let mut d = d.lock().unwrap().clone();
         d.emitted_unix_ms = now_ms();
         d
-    }));
+    });
 
     // The projection, refreshed into the control plane's topology.
     {
@@ -813,6 +834,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             }
         }));
     }
+    let executor;
     // The executor: continues every Build whose next operation this admin
     // executes (`executor::executor_for`). An admin that joined an existing
     // fabric first waits to hear the admin it joined: until then its view
@@ -821,7 +843,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         let exec = BuildExecutor { executor: name.to_string(), builds: builds.clone(), topology: control.topology.clone(), runner: runner.clone() };
         let (topology, me, submitted) = (control.topology.clone(), name.clone(), control.build_submitted.clone());
         let (join, book, records, fabric, provider) = (cfg.join.clone(), book.clone(), records.clone(), cfg.fabric.clone(), policy.provider);
-        tasks.push(tokio::spawn(async move {
+        executor = tokio::spawn(async move {
             let mut heard_fabric = join.is_none();
             let joined_at = Instant::now();
             loop {
@@ -851,7 +873,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     _ = tokio::time::sleep(Duration::from_millis(300)) => {}
                 }
             }
-        }));
+        });
     }
     let app = router(control.clone(), axum::Router::new());
     tasks.push(tokio::spawn(async move {
@@ -860,7 +882,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, router: iroh_router, tasks })
+    Ok(Running { api_base, control, runner, membership, digest, router: iroh_router, publisher, executor, tasks })
 }
 
 #[cfg(test)]
