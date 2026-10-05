@@ -325,7 +325,30 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
         assert!(f.get("elapsed_ms").is_some_and(|v| v.parse::<u64>().is_ok()), "{}: elapsed_ms {f:?}", step.name());
     }
 
-    provider.terminate(&created.handle, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
+    // The exact runtime: what the provider recorded is what the runtime
+    // read, and any admin of the same control domain controls it from the
+    // published fact alone (i143.e4.s16).
+    use rafka_node_admin_core::deployment::provider::{adopt, AdoptRefusal};
+    let fact = created.handle.fact().expect("the provider's handle names its runtime exactly");
+    assert_eq!(fact.control_domain, provider.control_domain());
+    let data_dir = std::path::PathBuf::from(created.node.data_dir.clone().expect("the node's data dir"));
+    assert_eq!(rafka_mesh_entity::RuntimeFact::read_record(&data_dir).unwrap().unwrap(), fact, "the record the runtime publishes");
+    match &fact.locator {
+        rafka_mesh_entity::RuntimeLocator::Container { id } => {
+            assert_eq!(id.len(), 64, "the immutable container id, not its name: {id}");
+            // A (reusable) container name is no locator.
+            let named = rafka_mesh_entity::RuntimeFact { locator: rafka_mesh_entity::RuntimeLocator::Container { id: format!("rafka-{}", created.node.name) }, ..fact.clone() };
+            assert!(matches!(adopt(&*provider, &named), Err(AdoptRefusal::Invalid { .. })));
+        }
+        rafka_mesh_entity::RuntimeLocator::Process { pid, start } => {
+            assert_eq!(Some(*start), rafka_mesh_entity::runtime::process_start_token(*pid));
+        }
+    }
+    let elsewhere = rafka_mesh_entity::RuntimeFact { control_domain: format!("{}-another", fact.control_domain), ..fact.clone() };
+    assert!(matches!(adopt(&*provider, &elsewhere), Err(AdoptRefusal::ForeignControlDomain { .. })), "a locator of another domain is refused");
+    let adopted = adopt(&*provider, &fact).expect("the same domain adopts the published runtime");
+    assert_eq!(provider.inspect(&adopted).await, DeploymentStatus::Running);
+    provider.terminate(&adopted, TerminationMode::Graceful { grace: Duration::from_secs(5) }).await.unwrap();
     assert!(matches!(provider.inspect(&created.handle).await, DeploymentStatus::Exited { .. }));
     if let Some(c) = &prepared.container {
         c.remove_fabric().await.unwrap();

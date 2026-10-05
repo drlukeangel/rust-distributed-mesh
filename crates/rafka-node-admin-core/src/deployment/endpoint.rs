@@ -419,7 +419,7 @@ mod tests {
 
     fn alloc() -> EndpointAllocator {
         // A range unlikely to collide with the other tests of this binary.
-        EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 52000, 54999)
+        EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 27000, 29999)
     }
 
     #[test]
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn released_ports_return_and_a_restart_without_prior_is_named() {
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 55000, 55003);
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30000, 30003);
         a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
         a.assign(&p("mesh1.rpc.2"), RPC_NODE_SLOTS, false).unwrap();
         assert!(matches!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false), Err(AllocationError::Exhausted { .. })));
@@ -485,10 +485,10 @@ mod tests {
 
     #[test]
     fn a_port_bound_by_another_process_is_never_handed_out() {
-        let squatter = UdpSocket::bind("127.0.0.1:56000").unwrap();
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56000, 56002);
+        let squatter = UdpSocket::bind("127.0.0.1:30100").unwrap();
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30100, 30102);
         let got = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        assert!(got.iter().all(|e| e.addr.port() != 56000));
+        assert!(got.iter().all(|e| e.addr.port() != 30100));
         drop(squatter);
     }
 
@@ -498,8 +498,8 @@ mod tests {
     #[test]
     fn two_allocators_on_one_host_never_hand_out_the_same_port() {
         let (mut a, mut b) = (
-            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56107),
-            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56107),
+            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
+            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
         );
         let x = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
         let y = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
@@ -510,19 +510,19 @@ mod tests {
         // A released port is free to the other allocator again.
         a.release(&p("mesh1.rpc.1"));
         b.release(&p("mesh1.rpc.1"));
-        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56100, 56101);
+        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30201);
         assert!(c.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).is_ok(), "released reservations are gone");
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.
     #[test]
     fn a_reservation_left_by_a_dead_process_is_taken_over() {
-        let addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 56200);
+        let addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30300);
         let path = reservation_path(addr);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         // pid_max on Linux is at most 2^22: this pid cannot be live.
         std::fs::write(&path, "4194305").unwrap();
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 56200, 56200);
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30300, 30300);
         assert!(a.assign(&p("mesh1.admin.2"), &[SlotSpec { slot: "control", policy: SlotPolicy::Fresh, transport: SlotTransport::Tcp }], false).is_ok());
         a.release(&p("mesh1.admin.2"));
         assert!(!path.exists(), "release removes the reservation");

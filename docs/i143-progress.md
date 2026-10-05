@@ -46,12 +46,13 @@ A fresh session resumes from this file plus the open issues on that milestone.
 
 | e4.s9 | #2801 | `2070e3ba79` | hierarchical membership: per-mesh channels, admin backbone, forwarded aggregates, fabric status publisher, `SUCCESSION`, refeed; E2E `mesh_membership__backbone` (run on s13's configuration) |
 | e4.s13 | #2816 | `acea859e31` | address-lookup boundary: `presets::Minimal` everywhere, `address-lookup` gate, exact-socket bind, network-less E2E, `CutOff` |
+| e4.s15 | #2842 | `6dc7dfc569` | canonical Crockford60 `NodeId` / `MeshId` / logical `FabricId`; transport identity is `TransportId`; E2E `mesh_identity__canonical_ids` |
 
 ## In progress
 
-- e4.s15 drlukeangel/rafka-v2#2842 — canonical Crockford60 `NodeId` / `MeshId` / logical `FabricId`; transport identity is `TransportId` (branch `i143-e4-s15`).
-- e4.s10 drlukeangel/rafka-v2#2803 — parked on branch `i143-e4-s10` (RED E2E `mesh_lifecycle__admin_cohort_loss`, entry carries unheard members). Resumes after s11 with the rulings now in #2803: day-0 admin self-registers its runtime handle; refeed to held-but-unheard members; authority ≠ executor; no incumbency.
-- Order (canonical PRD `docs/plans/i143-node-rpc-pos-on-RDM.md` in rafka-v2): e4.s15 (#2842) → e4.s14 (#2840) → e6.s7 (#2804) / e4.s11 (#2805) → e4.s10 (#2803) → e4.s8 (#2761, branch `i143-e4-s8`).
+- e4.s16 drlukeangel/rafka-v2#2850 — `RuntimeFact` (pid + start token / immutable container id, provider control domain) published with each birth; successor adoption from membership; authority-capable Ready, runtime part (branch `i143-e4-s16`).
+- e4.s14 drlukeangel/rafka-v2#2840 — parked at `243ff4a` (branch `i143-e4-s14`): rebases after #2850 and #2851, `docs/i143/design.md` redone against the current canonical copy.
+- Order (canonical PRD `docs/plans/i143-node-rpc-pos-on-RDM.md` in rafka-v2): e4.s16 (#2850) → e1.s7 (#2851) → e4.s14 (#2840) → e6.s7 (#2804) / e4.s11 (#2805) → e4.s10 (#2803) → e4.s8 (#2761).
 
 ## Blockers
 

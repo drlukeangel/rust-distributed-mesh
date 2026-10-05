@@ -69,6 +69,17 @@ RuntimeFact {
 
 The fact is immutable for one incarnation and sufficient to identify **where and how** an eligible node-admin can adopt/inspect/terminate that exact runtime.
 
+In RDM it is `rafka_mesh_entity::RuntimeFact`, carried as `MeshNode::runtime`: the birth's NodeId and IncarnationId are the `MeshNode`'s own, so the fact cannot be detached from its birth. Encoded, it is at most `MAX_FACT_BYTES` (384); a digest carrying the largest one still packs within one backbone frame.
+
+| provider | `provider_control_domain` | `locator` |
+|---|---|---|
+| process | `process:<boot id>:<pid namespace inode>` | `pid` + `start` (field 22 of `/proc/<pid>/stat`) |
+| container | `container:<Docker daemon id>` | the 64-hex immutable container id `docker run -d` answers |
+
+A locator means something only in its control domain. `deployment::provider::adopt` turns a fact into a handle only when its provider and domain are the adopting provider's; otherwise it refuses by name (`other-provider`, `foreign-control-domain`, `invalid-fact`) and nothing is signalled. The process provider never signals a pid whose start token differs (a recycled pid is "exited" for the old birth). Membership refuses a digest of the held incarnation that names another locator or domain (`MembershipRefusal::RuntimeChanged`, `rafka.mesh.runtime.reject.via-locator-changed`); a restart is a new incarnation with a new fact.
+
+The digest also carries the birth's `data_dir`: current operational metadata a successor needs to manage the birth, outside the fact's identity, so every admin's view advertises it.
+
 Provider locator requirements:
 
 ```text
@@ -139,6 +150,16 @@ Required current runtime metadata must converge to every authority-capable admin
 The local admin `handles` and runtime-metadata maps are caches only. They are not authority because leadership can move to an admin that did not launch the runtime.
 
 A changed locator or provider control domain for the same incarnation is a named inconsistency/refusal, never a silent update.
+
+In RDM:
+
+The seam is a record in the birth's data dir: right after it realises the runtime, the provider writes the fact to `<data_dir>/runtime.json` (after removing any record an earlier birth left). The runtime waits for that record, refuses one that does not describe itself (a process: its own pid, start token and domain; a container: an id its hostname begins), and publishes it with its birth. The provider produces the locator; the runtime publishes the fact; no launcher gossips a competing one.
+
+Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registers the same exact runtime identity and publishes RuntimeFact before authority-bearing Ready. Here: `RuntimeFact::of_this_process` under a minted deployment id.
+
+A successor adopts a birth it did not launch from that birth's current digest (`AdminRunner::handle_for`); the `handles` map caches the result. No completed Build's `AllocateIdentity`/`DeployRuntime` receipt is read, and the Build topic still hands a new neighbour active Builds only.
+
+Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The desired-topology part of this gate is #2851's.
 
 ### 2.2 Desired topology and Build state
 
@@ -484,12 +505,23 @@ New implementation should add evidence spans for:
 
 ```text
 DesiredTopologyProjection update/conflict/first-hydration/reconnect-hydration
-RuntimeFact locator-production/publish/learn/adopt/refuse
 current runtime-metadata hydration
 provider-control-domain resolution/delegated execution
 Ready root/refusal where applicable
 proven-drift reconciliation trigger
 held-member stale-coverage rejoin
 ```
+
+RuntimeFact publish/learn/adopt/refuse:
+
+| span | purpose |
+|---|---|
+| `rafka.mesh.node.update.via-ready` | publish: the birth's runtime fact (`deployment_id`, `provider`, `provider_control_domain_fingerprint`, `runtime_locator_kind`, `runtime_locator_fingerprint`, `source = self-published-membership`); a node-admin's also `runtime_facts_held` |
+| `rafka.node_admin.runtime.update.via-adopt` | a successor adopted a runtime it did not launch, from membership |
+| `rafka.node_admin.runtime.reject.via-unpublished` / `via-other-provider` / `via-foreign-control-domain` / `via-invalid-fact` | a fact not adopted, by name |
+| `rafka.node_admin.runtime.reject.via-not-authority-capable` | an admin holds Pending: a held birth's runtime cannot be managed from here |
+| `rafka.mesh.runtime.reject.via-locator-changed` | membership refused a birth offering another runtime |
+
+Fingerprints are the first 12 hex of blake3; pids, container ids and domains are not emitted raw.
 
 Exact names follow repository span grammar, and raw provider credentials must never enter telemetry.

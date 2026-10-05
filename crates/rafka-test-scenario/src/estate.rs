@@ -192,6 +192,64 @@ impl Estate {
         v["nodes"].as_array().cloned().unwrap_or_default()
     }
 
+    /// The view once every cohort holds exactly its desired count of nodes
+    /// (`(mesh, node_admin, rpc_node)`), every one ready for traffic. A
+    /// Build's shape is counts, not paths: shrink retires non-primaries, so
+    /// which ordinals remain depends on where the seats are.
+    pub async fn settled_shape(&self, meshes: &[(&str, u32, u32)], within: Duration) -> Vec<Value> {
+        let want: std::collections::BTreeMap<(String, String), usize> = meshes
+            .iter()
+            .flat_map(|(m, a, r)| [((m.to_string(), "node_admin".to_string()), *a as usize), ((m.to_string(), "rpc_node".to_string()), *r as usize)])
+            .collect();
+        let until = Instant::now() + within;
+        loop {
+            let nodes = self.nodes().await;
+            let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
+            for n in &nodes {
+                *have.entry((n["mesh"].as_str().unwrap_or("").into(), n["kind"].as_str().unwrap_or("").into())).or_default() += 1;
+            }
+            if have == want && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
+                return nodes;
+            }
+            if Instant::now() >= until {
+                panic!("the view never settled on {want:?} within {within:?}; last view: {have:?}: {nodes:#?}");
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// `node`'s data dir. Only the admin that launched a node advertises it,
+    /// and that is whichever admin executed its creation, so every live
+    /// admin's view is asked.
+    pub async fn data_dir_of(&self, node: &str) -> String {
+        let bases: Vec<String> = std::iter::once(self.admin.clone())
+            .chain(self.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)))
+            .collect();
+        for base in bases {
+            let Ok(r) = self.http.get(format!("{base}/api/nodes")).timeout(Duration::from_secs(2)).send().await else { continue };
+            let v: Value = r.json().await.unwrap_or(Value::Null);
+            let dir = v["nodes"].as_array().into_iter().flatten().find(|n| n["name"] == node).and_then(|n| n["data_dir"].as_str().map(String::from));
+            if let Some(dir) = dir {
+                return dir;
+            }
+        }
+        panic!("no live admin advertises {node}'s data dir")
+    }
+
+    /// The pid of `node`'s runtime (process provider: its `deployment.json`).
+    pub async fn pid_of(&self, node: &str) -> u64 {
+        let dir = self.data_dir_of(node).await;
+        let d: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/deployment.json")).unwrap()).unwrap();
+        d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
+    }
+
+    /// SIGKILL `node`'s runtime (a fault: it flushes nothing).
+    pub async fn kill_node(&self, node: &str) {
+        let pid = self.pid_of(node).await;
+        let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
+        assert!(ok, "kill -9 {pid} ({node})");
+    }
+
     /// The view once it holds exactly `names`, every one ready for traffic.
     /// A Build can complete on another admin (a mesh's own primary) before
     /// this admin hears the last member it created: the view converges

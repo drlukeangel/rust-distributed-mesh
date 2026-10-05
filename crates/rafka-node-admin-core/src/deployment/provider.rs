@@ -82,6 +82,7 @@ pub fn build_names_a_provider(body: &serde_json::Value) -> bool {
 // ---------------------------------------------------------------------------
 
 use crate::model::{DeploymentId, EndpointSlot, PathName};
+use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -99,15 +100,101 @@ pub struct ResolvedNodeLaunch {
     pub endpoints: Vec<EndpointSlot>,
 }
 
-/// A realised runtime.
+/// A realised runtime, exactly: a pid only together with its start token, a
+/// container by its immutable id, each within its provider control domain.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeploymentHandle {
     pub deployment_id: DeploymentId,
     pub provider: ProviderKind,
-    /// Process id (process provider).
+    /// Process id (process provider); a container's init pid (container provider).
     pub pid: Option<u32>,
-    /// Container name (container provider).
+    /// The kernel's start time of `pid` (process provider): a recycled pid never matches.
+    #[serde(default)]
+    pub start: Option<u64>,
+    /// The immutable container id (container provider).
     pub container: Option<String>,
+    /// The provider control domain the locator means something in.
+    #[serde(default)]
+    pub domain: Option<String>,
+}
+
+impl DeploymentHandle {
+    /// The published fact of this runtime; `None` when the handle is not exact.
+    pub fn fact(&self) -> Option<RuntimeFact> {
+        let locator = match self.provider {
+            ProviderKind::Process => RuntimeLocator::Process { pid: self.pid?, start: self.start? },
+            ProviderKind::Container => RuntimeLocator::Container { id: self.container.clone()? },
+        };
+        let fact = RuntimeFact {
+            deployment_id: self.deployment_id.0.clone(),
+            provider: match self.provider {
+                ProviderKind::Process => RuntimeProvider::Process,
+                ProviderKind::Container => RuntimeProvider::Container,
+            },
+            control_domain: self.domain.clone()?,
+            locator,
+        };
+        fact.validate().ok()?;
+        Some(fact)
+    }
+}
+
+/// Why a published runtime fact is not adopted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdoptRefusal {
+    /// The fact is malformed or inexact.
+    Invalid { reason: String },
+    /// Another provider realised it.
+    OtherProvider { fact: &'static str, here: ProviderKind },
+    /// Its locator means something only in another control domain.
+    ForeignControlDomain { fact_domain: String, here: String },
+}
+
+impl AdoptRefusal {
+    /// The span reason (`rafka.node_admin.runtime.reject.via-<reason>`).
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Invalid { .. } => "invalid-fact",
+            Self::OtherProvider { .. } => "other-provider",
+            Self::ForeignControlDomain { .. } => "foreign-control-domain",
+        }
+    }
+}
+
+impl fmt::Display for AdoptRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid { reason } => write!(f, "the runtime fact is not exact: {reason}"),
+            Self::OtherProvider { fact, here } => write!(f, "a {fact} runtime cannot be controlled by the {here:?} provider"),
+            Self::ForeignControlDomain { fact_domain, here } => write!(
+                f,
+                "the runtime lives in control domain {} and this provider controls {}; refusing to act on its locator",
+                rafka_mesh_entity::runtime::fingerprint(fact_domain),
+                rafka_mesh_entity::runtime::fingerprint(here)
+            ),
+        }
+    }
+}
+
+/// `fact` as a handle `provider` may act on, or the named reason it may not.
+pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<DeploymentHandle, AdoptRefusal> {
+    fact.validate().map_err(|e| AdoptRefusal::Invalid { reason: e.to_string() })?;
+    let kind = match fact.provider {
+        RuntimeProvider::Process => ProviderKind::Process,
+        RuntimeProvider::Container => ProviderKind::Container,
+    };
+    if kind != provider.kind() {
+        return Err(AdoptRefusal::OtherProvider { fact: fact.provider.as_str(), here: provider.kind() });
+    }
+    let here = provider.control_domain();
+    if fact.control_domain != here {
+        return Err(AdoptRefusal::ForeignControlDomain { fact_domain: fact.control_domain.clone(), here });
+    }
+    let (pid, start, container) = match &fact.locator {
+        RuntimeLocator::Process { pid, start } => (Some(*pid), Some(*start), None),
+        RuntimeLocator::Container { id } => (None, None, Some(id.clone())),
+    };
+    Ok(DeploymentHandle { deployment_id: DeploymentId(fact.deployment_id.clone()), provider: kind, pid, start, container, domain: Some(here) })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +232,8 @@ impl std::fmt::Display for DeployError {
 #[async_trait::async_trait]
 pub trait DeploymentProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
+    /// The provider control domain this provider's locators mean something in.
+    fn control_domain(&self) -> String;
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
@@ -191,6 +280,68 @@ pub fn tail(text: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider whose locators any admin of the same pool can control
+    /// (a remotely controllable provider domain): authority is not bound to
+    /// the host that launched a runtime.
+    struct RemotePool(&'static str);
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for RemotePool {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            format!("remote:{}", self.0)
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "not in this test".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Unknown
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+            None
+        }
+    }
+
+    fn fact(domain: &str) -> RuntimeFact {
+        RuntimeFact {
+            deployment_id: "dep-1".into(),
+            provider: RuntimeProvider::Process,
+            control_domain: domain.into(),
+            locator: RuntimeLocator::Process { pid: 4242, start: 17 },
+        }
+    }
+
+    #[test]
+    fn a_published_runtime_is_adopted_only_within_its_provider_and_control_domain() {
+        let launcher_pool = RemotePool("pool-a");
+        let successor_pool = RemotePool("pool-a");
+        // Published by one admin's provider, adopted by another admin of the same domain.
+        let h = adopt(&successor_pool, &fact(&launcher_pool.control_domain())).unwrap();
+        assert_eq!((h.pid, h.start, h.domain.as_deref()), (Some(4242), Some(17), Some("remote:pool-a")));
+        assert_eq!(h.fact(), Some(fact("remote:pool-a")), "the adopted handle names the same runtime");
+        // Another domain: refused by name, never acted on.
+        let other = adopt(&RemotePool("pool-b"), &fact("remote:pool-a")).unwrap_err();
+        assert!(matches!(other, AdoptRefusal::ForeignControlDomain { .. }), "{other}");
+        assert_eq!(other.reason(), "foreign-control-domain");
+        // Another provider's runtime, or an inexact one.
+        let container = RuntimeFact {
+            provider: RuntimeProvider::Container,
+            locator: RuntimeLocator::Container { id: "a".repeat(64) },
+            ..fact("remote:pool-a")
+        };
+        assert!(matches!(adopt(&successor_pool, &container), Err(AdoptRefusal::OtherProvider { .. })));
+        let pid_only = RuntimeFact { locator: RuntimeLocator::Process { pid: 4242, start: 0 }, ..fact("remote:pool-a") };
+        assert!(matches!(adopt(&successor_pool, &pid_only), Err(AdoptRefusal::Invalid { .. })));
+    }
 
     #[test]
     fn known_values_normalise_and_unset_bootstraps_process() {

@@ -63,6 +63,9 @@ impl DeploymentProvider for Stubborn<'_> {
     fn kind(&self) -> ProviderKind {
         self.inner.kind()
     }
+    fn control_domain(&self) -> String {
+        self.inner.control_domain()
+    }
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
         self.inner.spawn(spec).await
     }

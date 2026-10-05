@@ -37,7 +37,7 @@ use crate::topology::Topology;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
+use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode, RuntimeFact};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
 use rafka_mesh_transport::membership::{announce_leaving, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY, SILENT_AFTER};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -205,6 +205,7 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         n.status = if silent { NodeStatus::Dead } else { node_status(d.status) };
         n.admin_api_base = d.admin_api_base.clone();
         n.endpoints = d.node.endpoints.0.clone();
+        n.data_dir = d.data_dir.clone();
         if let Some(since) = d.ready_since() {
             claims.insert(d.node.incarnation.clone(), since);
         }
@@ -263,6 +264,19 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         topology.meshes.push(Mesh { id, name: m, status: if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending } });
     }
     topology
+}
+
+/// Why this admin cannot yet take authority over `held` (every live birth it
+/// hears but itself): each birth that publishes no runtime fact, or one this
+/// admin's provider cannot adopt in its own control domain. Empty: it is
+/// authority-capable, and may commit Ready.
+pub fn authority_blockers(held: &[MeshDigest], provider: &dyn crate::deployment::provider::DeploymentProvider) -> Vec<String> {
+    held.iter()
+        .filter_map(|d| match &d.node.runtime {
+            None => Some(format!("{}: publishes no runtime fact", d.node.name)),
+            Some(f) => crate::deployment::provider::adopt(provider, f).err().map(|r| format!("{}: {r}", d.node.name)),
+        })
+        .collect()
 }
 
 /// Readiness, drain and admission seen through each member's own digest:
@@ -353,6 +367,8 @@ pub struct AdminRunner {
     pub book: DigestBook,
     /// This admin's own path.
     pub me: PathName,
+    /// This admin's node id (the adopter on every runtime it adopts).
+    pub node_id: NodeId,
     /// This admin's Iroh endpoint: it asks a node directly whether it answers.
     pub endpoint: Option<Endpoint>,
 }
@@ -400,11 +416,12 @@ impl AdminRunner {
         }
     }
 
-    /// The runtime of `node`'s birth: this admin's own handle, or the one the
-    /// Build that launched it recorded (another admin's launch, e.g. a lost
-    /// fabric primary's), adopted. Found through the birth's `AllocateIdentity`
-    /// receipt (its incarnation) and the `DeployRuntime` receipt of the same
-    /// deployment.
+    /// The runtime of `node`'s birth: this admin's own handle, or the exact
+    /// runtime the birth publishes with its membership (`MeshNode::runtime`),
+    /// adopted when its provider and control domain are this admin's. No
+    /// Build history is read: whoever launched it, and however long ago, the
+    /// birth itself says where its runtime is. A fact from another provider
+    /// or control domain is refused by name, never acted on.
     async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
         if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.name).cloned() {
             if node.incarnation_id.is_none() || rec.incarnation_id == node.incarnation_id {
@@ -412,37 +429,45 @@ impl AdminRunner {
             }
         }
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
-        let facts = self.builds.facts().await.map_err(|e| format!("reading Build facts to adopt {}: {e}", node.name))?;
-        let ops = [format!("create-node:{}", node.name), format!("restart-node:{}", node.name)];
-        let identity = facts.iter().find_map(|f| match f {
-            crate::build_state::BuildFact::Step(r)
-                if r.step == "AllocateIdentity" && ops.contains(&r.operation)
-                    && r.output.as_ref().and_then(|o| o.get("incarnation")).and_then(|v| v.as_str()) == Some(incarnation.0.as_str()) =>
-            {
-                r.output.clone()
-            }
-            _ => None,
-        });
-        let identity = identity.ok_or_else(|| format!("no Build recorded the birth {} of {}; it cannot be adopted", incarnation.0, node.name))?;
-        let deployment = identity.get("deployment_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        let handle = facts
-            .iter()
-            .find_map(|f| match f {
-                crate::build_state::BuildFact::Step(r) if r.step == "DeployRuntime" && ops.contains(&r.operation) => r
-                    .output
-                    .clone()
-                    .and_then(|o| serde_json::from_value::<DeploymentHandle>(o).ok())
-                    .filter(|h| h.deployment_id.0 == deployment),
-                _ => None,
-            })
-            .ok_or_else(|| format!("no Build recorded the runtime of {} (deployment {deployment}); it cannot be adopted", node.name))?;
+        let digest = self
+            .book
+            .get(node.node_id.as_str())
+            .map(|(d, _)| d)
+            .filter(|d| d.node.incarnation == incarnation)
+            .ok_or_else(|| format!("{} (birth {}) is not held in this admin's membership; its runtime is unknown", node.name, incarnation.0))?;
+        let refuse = |reason: &str, detail: String| {
+            let span = match reason {
+                "unpublished" => tracing::info_span!("rafka.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                "other-provider" => tracing::info_span!("rafka.node_admin.runtime.reject.via-other-provider", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                "foreign-control-domain" => tracing::info_span!("rafka.node_admin.runtime.reject.via-foreign-control-domain", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                _ => tracing::info_span!("rafka.node_admin.runtime.reject.via-invalid-fact", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+            };
+            span.in_scope(|| tracing::info!("runtime not adopted"));
+            format!("{} (birth {}): {detail}", node.name, incarnation.0)
+        };
+        let fact = digest.node.runtime.clone().ok_or_else(|| refuse("unpublished", "the birth publishes no runtime fact; it cannot be adopted".into()))?;
+        let handle = crate::deployment::provider::adopt(&*self.provider, &fact).map_err(|r| refuse(r.reason(), r.to_string()))?;
         let mut record = node.clone();
         record.deployment_id = Some(handle.deployment_id.clone());
         if record.data_dir.is_none() {
-            let node_id = identity.get("node_id").and_then(|v| v.as_str()).unwrap_or(node.node_id.as_str()).to_string();
-            record.data_dir = Some(self.template.data_root.join(format!("{}-{}", node.name, node_id)).display().to_string());
+            record.data_dir = digest.data_dir.clone();
         }
-        tracing::info!(node = %node.name, deployment_id = %handle.deployment_id, "adopted a runtime another admin launched");
+        tracing::info_span!(
+            "rafka.node_admin.runtime.update.via-adopt",
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation.0,
+            deployment_id = %fact.deployment_id,
+            provider = fact.provider.as_str(),
+            provider_control_domain_fingerprint = %fact.domain_fingerprint(),
+            runtime_locator_kind = fact.locator.kind(),
+            runtime_locator_fingerprint = %fact.locator_fingerprint(),
+            source = "self-published-membership",
+            adopter = %self.me,
+            adopter_node_id = %self.node_id,
+            execution_node_id = %self.node_id,
+        )
+        .in_scope(|| tracing::info!("adopted a runtime this admin did not launch"));
         self.handles.lock().unwrap().insert(node.name.clone(), (record.clone(), handle.clone()));
         Ok((record, handle))
     }
@@ -851,9 +876,22 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         fabric_provider: policy.provider,
         book: book.clone(),
         me: name.clone(),
+        node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
     });
 
+    // This birth's exact runtime. A launched admin takes the record its
+    // provider wrote; the bootstrap admin, which nobody launched, adopts its
+    // own process. Either way it is published with the birth.
+    let runtime = match &cfg.launch {
+        Some(_) => {
+            let dir = cfg.data_dir.clone();
+            tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
+                .await
+                .map_err(|e| format!("reading the runtime record: {e}"))??
+        }
+        None => RuntimeFact::of_this_process(&crate::model::DeploymentId::mint().0).map_err(|e| format!("adopting this runtime: {e}"))?,
+    };
     // Own digest, published on the membership cadence.
     let mut extra = BTreeMap::new();
     extra.insert(MESH_ID.to_string(), mesh_id.to_string());
@@ -875,11 +913,14 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                     freshness: FreshnessToken::mint(),
                 },
             ]),
+            runtime: Some(runtime.clone()),
         },
-        status: MemberStatus::ReadyForTraffic,
+        // Pending until it can take authority at once (the Ready gate below).
+        status: MemberStatus::Pending,
         admin_api_base: Some(api_base.clone()),
         emitted_unix_ms: now_ms(),
         extra,
+        data_dir: Some(cfg.data_dir.display().to_string()),
     }));
     let _ = entry.set(EntryState {
         name: name.clone(),
@@ -895,18 +936,59 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         digest.lock().unwrap().node.endpoints = EndpointSet(l.endpoints.clone());
     }
     let mut tasks = Vec::new();
-    // Born full: this admin is published only now, its entry taken.
-    tracing::info_span!(
-        "rafka.mesh.node.update.via-ready",
-        node = %name,
-        incarnation_id = %incarnation.0,
-        meshes = membership.meshes_held(),
-        node_id = %node_id,
-        mesh_id = %mesh_id,
-        fabric_id = %cfg.fabric_id,
-        id_format = rafka_mesh_entity::ID_FORMAT
-    )
-        .in_scope(|| tracing::info!("ready for traffic"));
+    // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
+    // becomes eligible for every seat) only once it can manage every birth it
+    // holds: each live member publishes a runtime fact this admin's provider
+    // adopts in its own control domain. Until then it publishes Pending.
+    {
+        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), prepared.provider.clone(), name.clone(), membership.clone());
+        let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
+        let runtime = runtime.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut reported = None;
+            loop {
+                let held: Vec<MeshDigest> = book
+                    .current(SILENT_AFTER)
+                    .into_iter()
+                    .filter(|d| d.node.name != me && d.status != MemberStatus::Leaving)
+                    .collect();
+                let blocked = authority_blockers(&held, &*provider);
+                if blocked.is_empty() {
+                    let mut d = digest.lock().unwrap();
+                    if d.status != MemberStatus::Pending {
+                        break;
+                    }
+                    d.status = MemberStatus::ReadyForTraffic;
+                    drop(d);
+                    tracing::info_span!(
+                        "rafka.mesh.node.update.via-ready",
+                        node = %me,
+                        incarnation_id = %incarnation.0,
+                        meshes = membership.meshes_held(),
+                        node_id = %node_id,
+                        mesh_id = %mesh_id,
+                        fabric_id = %fabric_id,
+                        id_format = rafka_mesh_entity::ID_FORMAT,
+                        deployment_id = %runtime.deployment_id,
+                        provider = runtime.provider.as_str(),
+                        provider_control_domain_fingerprint = %runtime.domain_fingerprint(),
+                        runtime_locator_kind = runtime.locator.kind(),
+                        runtime_locator_fingerprint = %runtime.locator_fingerprint(),
+                        source = "self-published-membership",
+                        runtime_facts_held = held.len(),
+                    )
+                    .in_scope(|| tracing::info!("ready for traffic: every held birth's runtime is adoptable"));
+                    break;
+                }
+                if reported.as_ref() != Some(&blocked) {
+                    tracing::info_span!("rafka.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
+                        .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
+                    reported = Some(blocked);
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }));
+    }
     let d = digest.clone();
     let publisher = membership.publish_every(Duration::from_millis(500), move || {
         let mut d = d.lock().unwrap().clone();
@@ -1019,11 +1101,13 @@ mod tests {
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
                 endpoints: EndpointSet(vec![]),
+                runtime: None,
             },
             status,
             admin_api_base: (name.kind == NodeKind::NodeAdmin).then(|| format!("http://admin-{name}")),
             emitted_unix_ms: now_ms(),
             extra,
+            data_dir: None,
         }
     }
 
@@ -1065,6 +1149,33 @@ mod tests {
         let t = view(&[claim("mesh1.admin.1", 10), claim("mesh1.rpc.1", 900), claim("mesh1.rpc.2", 200), claim("mesh1.rpc.3", 300)]);
         let primaries: Vec<String> = t.nodes.iter().filter(|n| n.is_primary).map(|n| n.name.to_string()).collect();
         assert_eq!(primaries, ["mesh1.admin.1", "mesh1.rpc.2"]);
+    }
+
+    #[test]
+    fn an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here() {
+        use crate::deployment::process::ProcessDeploymentProvider;
+        use crate::deployment::provider::DeploymentProvider;
+        use rafka_mesh_entity::{RuntimeLocator, RuntimeProvider};
+        let p = ProcessDeploymentProvider::new();
+        let with = |name: &str, domain: Option<String>| {
+            let mut d = digest(name, MemberStatus::ReadyForTraffic);
+            d.node.runtime = domain.map(|control_domain| RuntimeFact {
+                deployment_id: "dep".into(),
+                provider: RuntimeProvider::Process,
+                control_domain,
+                locator: RuntimeLocator::Process { pid: 4242, start: 17 },
+            });
+            d
+        };
+        let here = p.control_domain();
+        assert!(authority_blockers(&[with("mesh1.rpc.1", Some(here.clone())), with("mesh1.admin.1", Some(here.clone()))], &p).is_empty());
+        let blocked = authority_blockers(
+            &[with("mesh1.rpc.1", Some(here.clone())), with("mesh1.rpc.2", None), with("mesh1.rpc.3", Some("process:another-host:1".into()))],
+            &p,
+        );
+        assert_eq!(blocked.len(), 2, "{blocked:?}");
+        assert!(blocked[0].starts_with("mesh1.rpc.2: publishes no runtime fact"), "{blocked:?}");
+        assert!(blocked[1].starts_with("mesh1.rpc.3:") && blocked[1].contains("control domain"), "{blocked:?}");
     }
 
     #[test]

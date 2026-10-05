@@ -154,5 +154,16 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         .unwrap_or_else(|| panic!("no takeover of {b} by a mesh2 admin"))
         .clone();
     assert!(descends_from(&spans, &takeover, &accepted), "the takeover descends from B's request");
+    // Each recovered admin held every surviving member's runtime before it
+    // committed Ready (i143.e4.s16): mesh2's five births at least.
+    for admin in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin") {
+        let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+            .into_iter()
+            .find(|sp| sp["attributes"]["node"] == admin["name"] && sp["attributes"]["incarnation_id"] == admin["incarnation_id"])
+            .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))
+            .clone();
+        let held = ready["attributes"]["runtime_facts_held"].as_u64().or_else(|| ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0);
+        assert!(held >= 5, "{} held {held} runtime facts before Ready: {ready}", admin["name"]);
+    }
     estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
 }

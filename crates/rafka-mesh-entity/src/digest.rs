@@ -25,6 +25,10 @@ pub struct MeshDigest {
     /// The control API a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
     pub emitted_unix_ms: u64,
+    /// Where the birth keeps its data (current operational metadata a
+    /// successor needs to manage it; not part of its runtime identity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
     /// Kind-specific facts (e.g. election claims), string-keyed.
     #[serde(default)]
     pub extra: BTreeMap<String, String>,

@@ -52,11 +52,13 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
             incarnation: rafka_mesh_entity::IncarnationId::mint(),
             supersedes: None,
             endpoints: rafka_mesh_entity::EndpointSet(vec![]),
+            runtime: None,
         },
         status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
         admin_api_base: None,
         emitted_unix_ms: 1,
         extra: Default::default(),
+        data_dir: None,
     };
     let back = MeshDigest::decode(&d.encode()).unwrap();
     assert_eq!(back, d);
