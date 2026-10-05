@@ -78,7 +78,7 @@ jobs:
           # of every failed backbone run, and each admin's warnings.
           for t in e2e-evidence/artifacts/mesh-membership/*/; do
             echo "=== $t"
-            cat "$t"spans/*.jsonl 2>/dev/null | jq -r 'select(.name|test("cut-off|refeed|resubscribe|mesh-silent|mesh-learned|recompute|status-publisher|aggregate-publisher|backbone-peers|via-ready|via-signal|neighbor-up")) | [(.start_unix_nano/1e6|floor), .name, (.attributes.node // .attributes.observer // .attributes.fabric // ""), (.attributes.role // .attributes.mesh // .attributes.channel // .attributes.primary // .attributes.reason // ""), (.attributes.peers // .attributes.previous // "")] | @tsv' | sort -n | awk -F'\t' 'NR==1{t0=$1}{printf "%7d %-55s %-15s %s %s\n",$1-t0,$2,$3,$4,$5}' | tail -150
+            cat "$t"spans/*.jsonl 2>/dev/null | jq -r 'select(.name|test("reconcile|node.create.via-build|cut-off|refeed|resubscribe|mesh-silent|mesh-learned|recompute|status-publisher|aggregate-publisher|backbone-peers|via-ready|via-signal|neighbor-up")) | [(.start_unix_nano/1e6|floor), .name, (.attributes.node // .attributes.observer // .attributes.fabric // ""), (.attributes.role // .attributes.mesh // .attributes.channel // .attributes.primary // .attributes.reason // ""), (.attributes.peers // .attributes.previous // "")] | @tsv' | sort -n | awk -F'\t' 'NR==1{t0=$1}{printf "%7d %-55s %-15s %s %s\n",$1-t0,$2,$3,$4,$5}' | tail -150
           done
           for d in e2e-evidence/i143-*/*admin*; do echo "=== $d"; grep -hE " WARN | ERROR " "$d"/stderr.log 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | cut -c1-220 | tail -15; done
       - uses: actions/upload-artifact@v4

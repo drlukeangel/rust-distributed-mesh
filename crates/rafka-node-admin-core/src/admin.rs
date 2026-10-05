@@ -894,8 +894,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         hierarchy = tokio::spawn(async move {
             loop {
                 let t = topology.read().await.clone();
-                // Cut off, its view authorizes nothing: it publishes as no primary.
-                let live = !membership.is_cut_off();
+                // Cut off, or within one silence window of healing, its view
+                // authorizes nothing: it publishes as no primary.
+                let live = membership.authorizes();
                 backbone.set_mesh_primary(live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me));
                 backbone.set_fabric_primary(live && t.fabric_primary().is_some_and(|n| n.name == me));
                 let heard = membership.book.current(SILENT_AFTER);
@@ -939,8 +940,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 let now = project(&fabric, provider, &book, &records);
                 *topology.write().await = now;
                 // Every Build whose next operation this admin executes; none
-                // while it is cut off (its view then authorizes nothing).
-                if !cut_off_view.is_cut_off() {
+                // while it is cut off or within one silence window of healing
+                // (its view then authorizes nothing).
+                if cut_off_view.authorizes() {
                     exec.reconcile_active().await;
                 }
                 tokio::select! {

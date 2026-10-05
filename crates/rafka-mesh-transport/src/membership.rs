@@ -374,7 +374,7 @@ pub struct Membership {
     mesh: Channel,
     view: View,
     fabric: String,
-    cut_off: Arc<AtomicBool>,
+    cut_off: Arc<Mutex<CutOff>>,
     pub book: DigestBook,
 }
 
@@ -413,8 +413,8 @@ impl Membership {
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
                 heard_others |= others > 0;
                 let off = heard_others && others == 0;
-                if cut_off.swap(off, Ordering::Relaxed) != off {
-                    tracing::info_span!("rafka.mesh.membership.update.via-cut-off", node = %node, role = if off { "start" } else { "stop" })
+                if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
+                    tracing::info_span!("rafka.mesh.membership.update.via-cut-off", node = %node, role)
                         .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
                 }
                 let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
@@ -452,7 +452,13 @@ impl Membership {
     /// holds then authorizes nothing (an admin executes no Build, publishes
     /// nothing as a primary).
     pub fn is_cut_off(&self) -> bool {
-        self.cut_off.load(Ordering::Relaxed)
+        self.cut_off.lock().unwrap().is_off()
+    }
+
+    /// May this node's view authorize anything now: not cut off, and not
+    /// within one silence window of healing ([`CutOff::authorizes`]).
+    pub fn authorizes(&self) -> bool {
+        self.cut_off.lock().unwrap().authorizes(Instant::now())
     }
 
     /// How many meshes this node holds a live member of.
@@ -647,8 +653,7 @@ impl CutOff {
 
     /// May the view authorize anything at `now`?
     pub fn authorizes(&self, now: Instant) -> bool {
-        let _ = now;
-        !self.off
+        !self.off && self.healed_at.is_none_or(|t| now.saturating_duration_since(t) >= SILENT_AFTER)
     }
 }
 
