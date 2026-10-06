@@ -83,7 +83,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     assert_eq!(status, 202, "{r}");
     estate.await_build(r["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     let restarted = wait_for("the restarted birth is ready", Duration::from_secs(60), || async {
-        let n = estate.node(NODE).await;
+        let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != first["incarnation_id"]).then_some(n)
     })
     .await;
@@ -95,19 +95,34 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     // 3. A replacement does not inherit it.
     estate.kill_node(NODE).await;
     let replacement = wait_for("a new logical node holds the path", Duration::from_secs(120), || async {
-        let n = estate.node(NODE).await;
+        let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
     })
     .await;
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
+    // The admin's view is current-only, so the probe's own resolver can only say the old id is
+    // nothing it knows.
     let old = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
-    // The admin's view holds no record of a departed node, so the probe can
-    // only say the old id resolves to nothing it knows.
     assert_eq!(old, json!({"outcome": "NotSent", "reason": "Resolve(Unknown)"}), "exact:<old> never follows a replacement: {old}");
+    // A node's own live resolver knows more: the replacement published the old birth's
+    // departure, so the other rpc node answers Gone for the old id, the new holder for the
+    // path, and Unknown for an id nobody ever saw.
+    let other = "path:mesh1.rpc.2";
+    let gone = wait_for("mesh1.rpc.2 holds the old birth's departure", Duration::from_secs(30), || async {
+        let r = estate.probe(&["resolve", "--target", other, "--query", &exact_first]);
+        (r["reply"]["resolution"] == "gone").then_some(r)
+    })
+    .await;
+    assert_eq!(gone["outcome"], "Reply", "{gone}");
+    let holder = estate.probe(&["resolve", "--target", other, "--query", &format!("path:{NODE}")]);
+    assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
+    assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
+    let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rafka_mesh_entity::NodeId::mint())]);
+    assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.artifact("nodes-after.json", &json!(estate.nodes().await));
-    estate.artifact("exact-old.json", &old);
+    estate.artifact("exact-old.json", &json!({"probe": old, "node": gone, "holder": holder, "never": never}));
 
     estate.stop().await;
     // Every served call is a span on the executing birth, naming the op and its outcome.

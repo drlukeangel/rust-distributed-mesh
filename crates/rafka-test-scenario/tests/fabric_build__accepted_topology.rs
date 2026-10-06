@@ -104,11 +104,11 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let held_pid = estate.pid_of("mesh1.rpc.3").await;
     let quiet_from = now_ns();
     signal(held_pid, "-STOP");
-    wait_for("mesh1.rpc.3 is silent in the view", Duration::from_secs(15), || async { (estate.node("mesh1.rpc.3").await["status"] == "dead").then_some(()) }).await;
+    wait_for("mesh1.rpc.3 is silent in the view", Duration::from_secs(15), || async { (estate.node_opt("mesh1.rpc.3").await?["status"] == "dead").then_some(()) }).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     signal(held_pid, "-CONT");
     let quiet_until = now_ns();
-    wait_for("mesh1.rpc.3 is heard again", Duration::from_secs(20), || async { (estate.node("mesh1.rpc.3").await["status"] == "ready-for-traffic").then_some(()) }).await;
+    wait_for("mesh1.rpc.3 is heard again", Duration::from_secs(20), || async { (estate.node_opt("mesh1.rpc.3").await?["status"] == "ready-for-traffic").then_some(()) }).await;
 
     // 6. An admin that misses a Build catches up to the pointer when it is back.
     let quiet = estate.nodes().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
@@ -128,7 +128,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let lost = estate.node("mesh1.rpc.2").await;
     estate.kill_node("mesh1.rpc.2").await;
     let back = wait_for("mesh1.rpc.2 is reborn", Duration::from_secs(60), || async {
-        let n = estate.node("mesh1.rpc.2").await;
+        let n = estate.node_opt("mesh1.rpc.2").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
     })
     .await;
@@ -145,7 +145,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!((status, r["build_id"].as_str()), (202, Some(r4.as_str())), "{r}");
     estate.await_build(&r4, Duration::from_secs(120)).await;
     wait_for("mesh1.rpc.1 runs a new incarnation", Duration::from_secs(60), || async {
-        let n = estate.node("mesh1.rpc.1").await;
+        let n = estate.node_opt("mesh1.rpc.1").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
     })
     .await;

@@ -82,6 +82,14 @@ pub struct Node {
     /// The control API base a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
     pub endpoints: Vec<EndpointSlot>,
+    /// May application routing select this node: held, not departed, and under no open
+    /// lifecycle overlay (`NodeDeleting`). The resolver never reads it.
+    #[serde(default = "routable_default")]
+    pub routable: bool,
+}
+
+fn routable_default() -> bool {
+    true
 }
 
 impl Node {
@@ -102,6 +110,7 @@ impl Node {
             is_fabric_primary: false,
             admin_api_base: None,
             endpoints: Vec::new(),
+            routable: true,
         }
     }
 }

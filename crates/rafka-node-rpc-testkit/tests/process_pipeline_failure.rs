@@ -73,6 +73,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         allocator: &allocator,
         observer: &Never,
         sink: &Discard,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },

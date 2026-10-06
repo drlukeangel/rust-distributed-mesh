@@ -111,7 +111,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // and the fabric (one mesh).
     estate.admin = late_base.clone();
     wait_for("the late admin holds the cohort, the mesh and the fabric", Duration::from_secs(30), || async {
-        let n = estate.node(&late_name).await;
+        let n = estate.node_opt(&late_name).await?;
         (n["is_primary"] == true && n["is_fabric_primary"] == true).then_some(())
     })
     .await;
@@ -126,7 +126,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
     build(&estate, "POST", &format!("/api/nodes/{}/restart", s(&restarted["name"])), Value::Null).await;
     let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
-        let n = estate.node(&s(&restarted["name"])).await;
+        let n = estate.node_opt(&s(&restarted["name"])).await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted["incarnation_id"]).then_some(n)
     })
     .await;

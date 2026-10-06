@@ -2,7 +2,7 @@
 //! All configuration is the launch environment (`docs/i143/design.md` §3).
 
 use rafka_node_rpc_testkit::launch::Launch;
-use rafka_node_rpc_testkit::{node, proof_store};
+use rafka_node_rpc_testkit::{node, proof_store, resolve_probe};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -37,7 +37,10 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match node::start(&launch, |b| proof_store::serve(b, store, &launch)).instrument(tracing::Span::none()).await {
+        match node::start(&launch, |b, resolver| resolve_probe::serve(proof_store::serve(b, store, &launch), resolver, &launch))
+            .instrument(tracing::Span::none())
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));

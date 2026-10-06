@@ -268,6 +268,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
         allocator: &allocator,
         observer,
         sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),

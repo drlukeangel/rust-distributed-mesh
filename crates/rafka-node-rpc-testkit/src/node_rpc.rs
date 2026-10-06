@@ -25,7 +25,12 @@ impl ProcessNodeRpc {
     /// One resolver and one client on `endpoint`, fed from `book` for as long
     /// as the returned task runs.
     pub fn start(endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        let resolver = Arc::new(LiveNodeResolver::default());
+        Self::start_with(Arc::new(LiveNodeResolver::default()), endpoint, book, node)
+    }
+
+    /// The same, on a resolver made earlier (a server handler may hold it
+    /// before the endpoint is bound).
+    pub fn start_with(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
         let client = Arc::new(NodeRpcClient::new(endpoint, resolver.clone()));
         let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
         (Self { resolver, client }, feed)
@@ -44,8 +49,14 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
     })
 }
 
-/// Apply every birth `book` holds to `resolver`, naming what changed.
+/// Apply every departure and every birth `book` holds to `resolver`, naming what changed.
 pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
+    for op in book.departed() {
+        if resolver.depart(&op.node_id, &op.incarnation, &op.name) == Applied::Departed {
+            tracing::info_span!("rafka.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
+                .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
+        }
+    }
     for d in book.all() {
         let Some(birth) = resolved(&d) else { continue };
         let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());

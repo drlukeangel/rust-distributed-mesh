@@ -13,6 +13,7 @@ reqwest = { version = "0.13.3", features = ["json"] }
 yaml_serde = "0.10"
 
 [dev-dependencies]
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 
 [[bin]]
 name = "rafka-scenario"

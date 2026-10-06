@@ -128,6 +128,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
         allocator: &allocator,
         observer: &observer,
         sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: timeouts(),
@@ -192,6 +193,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
         allocator: &allocator,
         observer: &observer,
         sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: timeouts(),
@@ -269,7 +271,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn { inner: &process, ignore_stop: false };
     let observer = DeparturesLost { live: &admin.observer };
-    let pipeline = DeploymentPipeline { provider: &provider, allocator: &allocator, observer: &observer, sink: &sink, builds: &builds, template: &template, timeouts: timeouts() };
+    let pipeline = DeploymentPipeline { provider: &provider, allocator: &allocator, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
         .await
@@ -296,7 +298,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58730, 58731));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
-    let pipeline = DeploymentPipeline { provider: &process, allocator: &allocator, observer: &admin.observer, sink: &sink, builds: &builds, template: &template, timeouts: timeouts() };
+    let pipeline = DeploymentPipeline { provider: &process, allocator: &allocator, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
         .await

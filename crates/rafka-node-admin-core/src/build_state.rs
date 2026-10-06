@@ -325,6 +325,29 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
     out
 }
 
+/// The lifecycle operations open in `builds`: every `NodeDeleting` step a retire operation
+/// completed with no `NodeDeleted` step of the same operation after it. Derived from the Build
+/// facts on every round, never stored: a successor primary publishes the same overlays from the
+/// same facts.
+pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> Vec<rafka_mesh_entity::LifecycleOp> {
+    let mut out = Vec::new();
+    for p in builds.values() {
+        for s in &p.steps {
+            if s.step != "NodeDeleting" || s.outcome != StepOutcome::Complete {
+                continue;
+            }
+            let deleted = p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete);
+            if deleted {
+                continue;
+            }
+            if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) {
+                out.push(op);
+            }
+        }
+    }
+    out
+}
+
 #[async_trait]
 pub trait BuildStateAdapter: Send + Sync {
     /// Record an accepted Build. Insert-and-fail on its id.
@@ -720,6 +743,39 @@ mod tests {
         assert_eq!(b1.last_failure.as_deref(), Some("executor lost"));
         let v = fold(&log()[..5]);
         assert_eq!(v[&BuildId("b1".into())].state, BuildState::Running, "a successor's claim resumes the same build id");
+    }
+
+    #[test]
+    fn open_overlays_are_derived_from_the_node_deleting_and_node_deleted_steps() {
+        let op = |node: &str| rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: format!("retire-node:{node}"),
+            node_id: rafka_mesh_entity::NodeId::mint(),
+            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            name: node.parse().unwrap(),
+            event_at_ms: 1,
+        };
+        let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
+        let with = |operation: &str, step: &str, output: &rafka_mesh_entity::LifecycleOp| {
+            BuildFact::Step(BuildStepReceipt {
+                build_id: BuildId("b1".into()),
+                attempt: 1,
+                operation: operation.into(),
+                step: step.into(),
+                outcome: StepOutcome::Complete,
+                output: Some(serde_json::to_value(output).unwrap()),
+            })
+        };
+        let facts = vec![
+            BuildFact::Accepted(intent("b1")),
+            with(&a.operation, "NodeDeleting", &a),
+            with(&a.operation, "NodeDeleted", &a),
+            with(&b.operation, "NodeDeleting", &b),
+            with(&b.operation, "MarkDraining", &b),
+        ];
+        let open = in_flight_ops(&fold(&facts));
+        assert_eq!(open, vec![b], "a retire with its pre-notice and no departure is open; a completed one is not");
     }
 
     #[tokio::test]

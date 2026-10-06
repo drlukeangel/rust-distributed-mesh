@@ -365,7 +365,13 @@ impl Estate {
     }
 
     pub async fn node(&self, name: &str) -> Value {
-        self.nodes().await.into_iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("no node {name}"))
+        self.node_opt(name).await.unwrap_or_else(|| panic!("no node {name}"))
+    }
+
+    /// The node at `name` if the view lists it now. A departed birth leaves the view before its
+    /// replacement's record appears, so a wait on a path uses this, never [`Self::node`].
+    pub async fn node_opt(&self, name: &str) -> Option<Value> {
+        self.nodes().await.into_iter().find(|n| n["name"] == name)
     }
 
     /// Run one probe invocation and record it in the RPC ledger.

@@ -7,3 +7,4 @@ pub use rafka_mesh_entity::launch;
 pub mod node;
 pub mod node_rpc;
 pub mod proof_store;
+pub mod resolve_probe;

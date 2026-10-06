@@ -3660,6 +3660,7 @@ dependencies = [
 name = "rafka-test-scenario"
 version = "0.1.0"
 dependencies = [
+ "rafka-mesh-entity",
  "reqwest",
  "serde",
  "serde_json",

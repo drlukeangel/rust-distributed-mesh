@@ -105,7 +105,7 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
 
     // The node comes back ready under a new process incarnation (observed, not slept on).
     let after = wait_for("rpc.2 ready under a new incarnation", SETTLE, || async {
-        let n = estate.node(NODE).await;
+        let n = estate.node_opt(NODE).await?;
         (ready(&n) && n["incarnation_id"].as_str() != Some(incarnation_before.as_str())).then_some(n)
     })
     .await;

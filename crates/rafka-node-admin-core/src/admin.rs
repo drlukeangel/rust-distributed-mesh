@@ -242,6 +242,7 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         n.incarnation_id = Some(d.node.incarnation.clone());
         n.provider = Some(provider);
         n.status = if silent { NodeStatus::Dead } else { node_status(d.status) };
+        n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
         n.admin_api_base = d.admin_api_base.clone();
         n.endpoints = d.node.endpoints.0.clone();
         n.data_dir = d.data_dir.clone();
@@ -259,9 +260,13 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until membership speaks for it: once heard,
-    // it never revives the birth (another admin may have retired it since).
+    // it never revives the birth (another admin may have retired it since). A
+    // departed birth was heard and has left: its record never stands in either.
+    for op in book.departed() {
+        heard.insert(op.incarnation.clone());
+    }
     for (name, r) in recorded {
-        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) {
+        if r.incarnation_id.as_ref().is_some_and(|i| heard.contains(i)) || book.is_departed(r.node_id.as_str()) {
             continue;
         }
         nodes.entry(name).or_insert(r);
@@ -500,8 +505,11 @@ struct EntryState {
 /// What fencing a path's previous birth found.
 #[derive(Debug, PartialEq, Eq)]
 enum FenceOutcome {
-    /// Nothing runs there any more: a new birth may take the path.
-    Clear,
+    /// Nothing runs there any more: a new birth may take the path. `gone` is the previous
+    /// birth when the provider inspected its exact runtime as not running: that inspection is
+    /// the proof its departure is published from. `None` when there was no birth, or this
+    /// admin holds no runtime for it (no proof, so no departure is published).
+    Clear { gone: Option<Node> },
     /// The previous birth answers directly: it is alive and keeps the path.
     Alive,
     /// The previous birth is unheard and does not answer, but the provider inspects its exact
@@ -536,6 +544,43 @@ pub struct AdminRunner {
     pub endpoint: Option<Endpoint>,
     /// This process's one Node RPC client (and its live resolver).
     pub node_rpc: Option<crate::node_rpc::ProcessNodeRpc>,
+    /// Where the retire pipeline's lifecycle events go: this admin's membership and backbone.
+    pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
+}
+
+/// The lifecycle events of a retirement this admin executes, on its own mesh channel and the
+/// backbone; peer primaries forward them onto their meshes.
+pub struct GossipLifecycle {
+    pub membership: Membership,
+    pub backbone: Backbone,
+}
+
+#[async_trait::async_trait]
+impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
+    async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let f = rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None };
+        let span = tracing::info_span!("rafka.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        let _g = span.enter();
+        if let Err(e) = self.membership.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
+        }
+        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeDeleting not sent on the backbone");
+        }
+        tracing::info!("the node is being removed: every mesh hears it is not routable");
+    }
+    async fn deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
+        let span = tracing::info_span!("rafka.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        let _g = span.enter();
+        if let Err(e) = self.membership.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
+        }
+        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeDeleted not sent on the backbone");
+        }
+        tracing::info!("the exact birth is proven terminal: it has left");
+    }
 }
 
 impl AdminRunner {
@@ -575,6 +620,7 @@ impl AdminRunner {
             allocator: &self.allocator,
             observer: &*self.observer,
             sink: &*self.records,
+            lifecycle: &*self.lifecycle_events,
             builds: &*self.builds,
             template,
             timeouts: Timeouts::default(),
@@ -643,9 +689,9 @@ impl AdminRunner {
     /// frozen process is never turned into a replacement (Luke 2026-10-05, silence never
     /// authorizes replacement).
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
-        let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear };
+        let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear { gone: None } };
         if prev.status.is_live() || prev.incarnation_id.is_none() {
-            return FenceOutcome::Clear;
+            return FenceOutcome::Clear { gone: None };
         }
         let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
         // Unheard is not dead: losing many peers costs gossip a window (the
@@ -656,21 +702,51 @@ impl AdminRunner {
                 .in_scope(|| tracing::info!("the previous birth is unheard but answers directly: it stays"));
             return FenceOutcome::Alive;
         }
-        let outcome = match self.handle_for(&prev).await {
-            Err(e) => format!("not-found: {e}"),
+        let (outcome, proven) = match self.handle_for(&prev).await {
+            Err(e) => (format!("not-found: {e}"), false),
             Ok((_, h)) => match self.provider.inspect(&h).await {
                 crate::deployment::provider::DeploymentStatus::Running => {
                     tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
                         .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
                     return FenceOutcome::Held;
                 }
-                other => format!("not-running: {other:?}"),
+                // Only an inspection that says the runtime exited is proof; `Unknown` fences the
+                // path (nothing answers there) but publishes no departure.
+                other => (format!("not-running: {other:?}"), matches!(other, crate::deployment::provider::DeploymentStatus::Exited { .. })),
             },
         };
         self.handles.lock().unwrap().remove(path);
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome)
+        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
             .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
-        FenceOutcome::Clear
+        FenceOutcome::Clear { gone: proven.then_some(prev) }
+    }
+
+    /// Unplanned loss: the fence above inspected the previous birth's exact runtime as not
+    /// running. That inspection is the proof; the replacement operation publishes the old
+    /// identity's departure from it before the new birth, and records it on the Build.
+    async fn publish_proven_departure(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, prev: &Node) {
+        let Some(incarnation) = prev.incarnation_id.clone() else { return };
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: build_id.to_string(),
+            attempt,
+            operation: format!("create-node:{path}"),
+            node_id: prev.node_id.clone(),
+            incarnation,
+            name: path.clone(),
+            event_at_ms: now_ms(),
+        };
+        self.lifecycle_events.deleted(&op).await;
+        let receipt = crate::build_state::BuildStepReceipt {
+            build_id: build_id.clone(),
+            attempt,
+            operation: op.operation.clone(),
+            step: "NodeDeleted".into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: serde_json::to_value(&op).ok(),
+        };
+        if let Err(e) = self.builds.append_step_receipt(&receipt).await {
+            tracing::info!(node = %path, error = %e, "the proven departure was published but not recorded on the Build");
+        }
     }
 
     /// Does `node`'s runtime answer when asked directly (not through gossip)?
@@ -710,10 +786,14 @@ impl AdminRunner {
     }
 
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>) -> Result<(), String> {
-        if restart_of.is_none() && matches!(self.fence_predecessor(node).await, FenceOutcome::Alive | FenceOutcome::Held) {
-            // The member is alive (it answers) or held (its exact runtime still runs): nothing to
-            // create. Silence never authorizes a replacement.
-            return Ok(());
+        if restart_of.is_none() {
+            match self.fence_predecessor(node).await {
+                // The member is alive (it answers) or held (its exact runtime still runs):
+                // nothing to create. Silence never authorizes a replacement.
+                FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
+                FenceOutcome::Clear { gone: Some(prev) } => self.publish_proven_departure(build_id, attempt, node, &prev).await,
+                FenceOutcome::Clear { gone: None } => {}
+            }
         }
         let template = self.template_for(node.kind, &node.mesh).await;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), slots: slots_for(node.kind), restart_of };
@@ -1225,6 +1305,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
         node_rpc: Some(node_rpc.clone()),
+        lifecycle_events: Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() }),
     });
 
     // This birth's exact runtime. A launched admin takes the record its
@@ -1432,8 +1513,21 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // channel through every member of its mesh it knows.
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
+        let adapter = runner.builds.clone();
+        // Provisional: the architecture measures this default from stripped-full sizes under the
+        // scale and chaos proofs (rafka-v2 #2900); 10 rounds is a placeholder, not the answer.
+        let full_every: u32 = std::env::var("RAFKA_FULL_EVERY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
         hierarchy = tokio::spawn(async move {
+            let mut last_overlays: Option<(Vec<rafka_mesh_entity::LifecycleOp>, Vec<rafka_mesh_entity::LifecycleOp>)> = None;
+            let mut rounds: u32 = 0;
             loop {
+                // The open lifecycle overlays, derived from the Build facts each round: a
+                // successor primary publishes the same ones from the same facts.
+                if let Ok(facts) = adapter.facts().await {
+                    for op in crate::build_state::in_flight_ops(&crate::build_state::fold(&facts)) {
+                        membership.book.deleting(op);
+                    }
+                }
                 let t = topology.read().await.clone();
                 // Cut off, or within one silence window of healing, its view
                 // authorizes nothing: it publishes as no primary.
@@ -1444,6 +1538,16 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
                 let status = serde_json::to_value(t.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone(), &status).await;
+                // The mesh's own members hear the overlays and departures alone on their
+                // channel: on a change, and every `full_every` rounds as anti-entropy.
+                if live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me) {
+                    let now = (membership.book.in_flight(), membership.book.departed());
+                    rounds += 1;
+                    if last_overlays.as_ref() != Some(&now) || rounds % full_every == 0 {
+                        let _ = membership.publish_overlays(&mesh, &me.to_string()).await;
+                        last_overlays = Some(now);
+                    }
+                }
                 let addr = rafka_mesh_transport::membership::gossip_addr;
                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                 builds.join_admins(admins.clone()).await;
@@ -1788,6 +1892,28 @@ mod tests {
         fresh.publish(pending.clone());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &fresh);
         assert!(t.node(&pending.name).is_some());
+        // A birth it launched whose departure another admin proved and published: the book no
+        // longer holds the digest, and the launch record never stands in for it.
+        let gone = digest("mesh1.rpc.3", MemberStatus::ReadyForTraffic);
+        book.record(gone.clone());
+        let launched = Records::default();
+        let mut n = Node::allocated(gone.node.name.clone());
+        n.node_id = gone.node.node_id.clone();
+        n.incarnation_id = Some(gone.node.incarnation.clone());
+        n.status = NodeStatus::ReadyForTraffic;
+        launched.publish(n);
+        assert!(project("fabric1", &fabric1(), ProviderKind::Process, &book, &launched).node(&gone.node.name).is_some());
+        book.depart(rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "retire-node:mesh1.rpc.3".into(),
+            node_id: gone.node.node_id.clone(),
+            incarnation: gone.node.incarnation.clone(),
+            name: gone.node.name.clone(),
+            event_at_ms: 1,
+        });
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &launched);
+        assert!(t.node(&gone.node.name).is_none(), "a departed birth's launch record is not a node: {:?}", t.node(&gone.node.name));
     }
 
     #[test]

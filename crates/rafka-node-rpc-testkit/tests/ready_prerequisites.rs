@@ -106,6 +106,7 @@ async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
         allocator: &allocator,
         observer: &observer,
         sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),

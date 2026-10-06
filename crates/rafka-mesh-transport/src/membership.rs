@@ -23,7 +23,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::{FabricId, MeshDigest, MeshId};
+use rafka_mesh_entity::{FabricId, LifecycleOp, MeshDigest, MeshId, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,8 +114,31 @@ pub enum Frame {
     /// Members of `mesh`, published on the backbone by that mesh's primary
     /// (`publisher`), packed into as few frames as fit one gossip message, and
     /// forwarded onto a peer mesh's channel by its primary (`forwarded_by`).
-    /// `sent_unix_ms` makes each publication distinct.
-    Members { mesh: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64, digests: Vec<MeshDigest> },
+    /// `sent_unix_ms` makes each publication distinct. Every frame of one
+    /// publication carries the mesh's open lifecycle overlays (`in_flight`)
+    /// and its retained proven departures (`departed`), so a node that missed
+    /// the events learns the same state from the next aggregate it hears. A
+    /// mesh primary also publishes the two lists alone (no digests) on its own
+    /// mesh channel, for its own members.
+    Members {
+        mesh: String,
+        publisher: String,
+        forwarded_by: Option<String>,
+        sent_unix_ms: u64,
+        digests: Vec<MeshDigest>,
+        #[serde(default)]
+        in_flight: Vec<LifecycleOp>,
+        #[serde(default)]
+        departed: Vec<LifecycleOp>,
+    },
+    /// The mesh executor holding `op` has started removing its exact birth:
+    /// the node is still found, and application routing stops selecting it.
+    /// Published on the executor's own mesh channel and the backbone; a peer
+    /// mesh primary forwards it onto its own channel (`forwarded_by`).
+    NodeDeleting { op: LifecycleOp, forwarded_by: Option<String> },
+    /// The provider proved `op`'s exact birth terminal: it has left. Same
+    /// channels as `NodeDeleting`; retained afterwards in `Members.departed`.
+    NodeDeleted { op: LifecycleOp, forwarded_by: Option<String> },
     /// The fabric's status, published by the fabric primary alone.
     FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64 },
 }
@@ -296,13 +319,13 @@ impl Channel {
     }
 }
 
-/// Split `digests` into runs whose frame (as `frame` builds it, sized as a
-/// forward would be) encodes within [`MAX_FRAME`]. A digest alone too large
+/// Split `items` into runs whose frame (as `frame` builds it, sized as a
+/// forward would be) encodes within [`MAX_FRAME`]. An item alone too large
 /// travels alone.
-fn pack(digests: Vec<MeshDigest>, frame: impl Fn(Vec<MeshDigest>) -> Frame) -> Vec<Vec<MeshDigest>> {
-    let mut out: Vec<Vec<MeshDigest>> = Vec::new();
-    let mut run: Vec<MeshDigest> = Vec::new();
-    for d in digests {
+fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> Vec<Vec<T>> {
+    let mut out: Vec<Vec<T>> = Vec::new();
+    let mut run: Vec<T> = Vec::new();
+    for d in items {
         run.push(d);
         if run.len() > 1 && frame(run.clone()).encode().len() > MAX_FRAME {
             let last = run.pop().expect("just pushed");
@@ -346,7 +369,14 @@ impl View {
                 }
                 vec![digest.clone()]
             }
-            Frame::Members { digests, .. } => {
+            Frame::Members { digests, in_flight, departed, .. } => {
+                // Departures first: a digest of a departed birth in the same frame is refused.
+                for op in departed {
+                    self.book.depart(op.clone());
+                }
+                for op in in_flight {
+                    self.book.deleting(op.clone());
+                }
                 let mine: Vec<MeshDigest> = digests.iter().filter(|d| &d.fabric_id == fabric).cloned().collect();
                 for d in &mine {
                     if self.book.record_forwarded(d.clone()) {
@@ -354,6 +384,14 @@ impl View {
                     }
                 }
                 mine
+            }
+            Frame::NodeDeleting { op, .. } => {
+                self.book.deleting(op.clone());
+                Vec::new()
+            }
+            Frame::NodeDeleted { op, .. } => {
+                self.book.depart(op.clone());
+                Vec::new()
             }
             Frame::FabricStatus { fabric: f, status, publisher, .. } if f == fabric => {
                 *self.fabric_status.lock().unwrap() = Some((FabricStatus { status: status.clone(), publisher: publisher.clone() }, Instant::now()));
@@ -482,6 +520,38 @@ impl Membership {
         self.mesh.broadcast(f).await
     }
 
+    /// Publish a lifecycle event this node authored on its own mesh channel,
+    /// applying it to its own view first.
+    pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
+        let _ = self.view.take(f, &self.fabric, "mesh-channel");
+        self.mesh.broadcast(f).await
+    }
+
+    /// Publish this mesh's open overlays and retained departures, alone, on
+    /// its own channel: what a member that missed the events, or joined
+    /// after them, resynchronizes from. Each list is packed into as few
+    /// frames as fit.
+    pub async fn publish_overlays(&self, mesh: &str, publisher: &str) -> Result<()> {
+        let sent = now_ms();
+        let (in_flight, departed) = self.book.overlays_of(mesh);
+        let frame = |in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>| Frame::Members {
+            mesh: mesh.to_string(),
+            publisher: publisher.to_string(),
+            forwarded_by: None,
+            sent_unix_ms: sent,
+            digests: Vec::new(),
+            in_flight,
+            departed,
+        };
+        for ops in pack(in_flight, |ops| frame(ops, Vec::new())) {
+            self.mesh.broadcast(&frame(ops, Vec::new())).await?;
+        }
+        for ops in pack(departed, |ops| frame(Vec::new(), ops)) {
+            self.mesh.broadcast(&frame(Vec::new(), ops)).await?;
+        }
+        Ok(())
+    }
+
     /// Re-broadcast `digest()` every `every` until the returned handle is aborted.
     pub fn publish_every<F>(&self, every: Duration, digest: F) -> tokio::task::JoinHandle<()>
     where
@@ -529,9 +599,11 @@ impl Backbone {
                 return;
             }
             let forward = match frame {
-                Frame::Members { mesh, publisher, sent_unix_ms, digests, .. } if mesh != own => {
-                    Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.clone()), sent_unix_ms, digests })
+                Frame::Members { mesh, publisher, sent_unix_ms, digests, in_flight, departed, .. } if mesh != own => {
+                    Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.clone()), sent_unix_ms, digests, in_flight, departed })
                 }
+                Frame::NodeDeleting { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.clone()) }),
+                Frame::NodeDeleted { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.clone()) }),
                 Frame::FabricStatus { fabric, status, publisher, sent_unix_ms, .. } if publisher != me => {
                     Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.clone()), sent_unix_ms })
                 }
@@ -586,16 +658,28 @@ impl Backbone {
     pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>, status: &str) {
         let sent = now_ms();
         if self.publishing.load(Ordering::Relaxed) {
-            for digests in pack(members, |digests| Frame::Members {
+            // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
+            // aggregate. Each list is packed into as few frames as fit, like the digests.
+            let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
+            let frame = |digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>, forwarded_by: Option<String>| Frame::Members {
                 mesh: self.mesh.clone(),
                 publisher: self.node.clone(),
-                // Sized as a peer primary's forward (a node name like this one).
-                forwarded_by: Some(self.node.clone()),
+                forwarded_by,
                 sent_unix_ms: sent,
                 digests,
-            }) {
-                let f = Frame::Members { mesh: self.mesh.clone(), publisher: self.node.clone(), forwarded_by: None, sent_unix_ms: sent, digests };
-                let _ = self.channel.broadcast(&f).await;
+                in_flight,
+                departed,
+            };
+            // Sized as a peer primary's forward (a node name like this one).
+            let sized = Some(self.node.clone());
+            for digests in pack(members, |d| frame(d, Vec::new(), Vec::new(), sized.clone())) {
+                let _ = self.channel.broadcast(&frame(digests, Vec::new(), Vec::new(), None)).await;
+            }
+            for ops in pack(in_flight, |o| frame(Vec::new(), o, Vec::new(), sized.clone())) {
+                let _ = self.channel.broadcast(&frame(Vec::new(), ops, Vec::new(), None)).await;
+            }
+            for ops in pack(departed, |o| frame(Vec::new(), Vec::new(), o, sized.clone())) {
+                let _ = self.channel.broadcast(&frame(Vec::new(), Vec::new(), ops, None)).await;
             }
         }
         if self.status_publishing.load(Ordering::Relaxed) {
@@ -604,6 +688,11 @@ impl Backbone {
             let _ = membership.forward(&f).await;
             let _ = membership.view.take(&f, &self.fabric, "mesh-channel");
         }
+    }
+
+    /// Publish a lifecycle event this admin authored on the backbone.
+    pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
+        self.channel.broadcast(f).await
     }
 
     /// Join the backbone through every node-admin known, once each.
@@ -663,14 +752,33 @@ impl CutOff {
 pub struct DigestBook {
     inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, bool)>>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
-    /// changes; a fresher digest of the same birth does not tick.
+    /// changes, or a departure is accepted; a fresher digest of the same
+    /// birth does not tick.
     births: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Proven departures by NodeId, with when this book accepted each: held
+    /// for `retention` of local age, then forgotten.
+    departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
+    /// Open lifecycle overlays by operation key: the node is held, and not routable.
+    in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
+    retention: Duration,
 }
 
 impl Default for DigestBook {
     fn default() -> Self {
-        Self { inner: Arc::default(), births: Arc::new(tokio::sync::watch::Sender::new(0)) }
+        Self::with_retention(DEPARTED_RETENTION)
     }
+}
+
+/// Why a digest was not taken.
+fn reject_departed(d: &MeshDigest, via: &'static str) {
+    tracing::info_span!(
+        "rafka.mesh.membership.reject.via-departed-birth",
+        node = %d.node.name,
+        node_id = %d.node.node_id,
+        incarnation_id = %d.node.incarnation.0,
+        via,
+    )
+    .in_scope(|| tracing::info!("a digest of a departed node: refused, the departure stands"));
 }
 
 /// How long `d` has been silent: since it was taken, or, for a forwarded
@@ -706,12 +814,122 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 }
 
 impl DigestBook {
+    pub fn with_retention(retention: Duration) -> Self {
+        Self {
+            inner: Arc::default(),
+            births: Arc::new(tokio::sync::watch::Sender::new(0)),
+            departed: Arc::default(),
+            in_flight: Arc::default(),
+            retention,
+        }
+    }
+
+    fn expire_departed(&self) {
+        let now = Instant::now();
+        self.departed.lock().unwrap().retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+    }
+
+    /// Has this node been accepted as departed, within the retention?
+    pub fn is_departed(&self, node_id: &str) -> bool {
+        self.expire_departed();
+        self.departed.lock().unwrap().contains_key(node_id)
+    }
+
+    /// Accept a proven departure: the birth leaves the book, the NodeId is
+    /// held departed for the retention, and every overlay of the operation
+    /// clears. `false` when the departure was already held.
+    pub fn depart(&self, op: LifecycleOp) -> bool {
+        self.expire_departed();
+        let id = op.node_id.to_string();
+        {
+            let mut departed = self.departed.lock().unwrap();
+            if departed.contains_key(&id) {
+                return false;
+            }
+            departed.insert(id.clone(), (op.clone(), Instant::now()));
+        }
+        self.in_flight.lock().unwrap().remove(&op.key());
+        let removed = self.inner.lock().unwrap().remove(&id).is_some();
+        tracing::info_span!(
+            "rafka.mesh.membership.remove.via-node-deleted",
+            node = %op.name,
+            node_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            build_id = %op.build_id,
+            attempt = op.attempt,
+            operation = %op.operation,
+            was_held = removed,
+        )
+        .in_scope(|| tracing::info!("the exact birth has left: removed from the view, held departed"));
+        self.births.send_modify(|v| *v += 1);
+        true
+    }
+
+    /// Accept an open lifecycle overlay: the node stays held and stops being
+    /// routable. `false` when the overlay was already held or the node has
+    /// already departed.
+    pub fn deleting(&self, op: LifecycleOp) -> bool {
+        if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        if new {
+            tracing::info_span!(
+                "rafka.mesh.membership.update.via-node-deleting",
+                node = %op.name,
+                node_id = %op.node_id,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+            )
+            .in_scope(|| tracing::info!("the node is being removed: held, not routable"));
+            self.births.send_modify(|v| *v += 1);
+        }
+        new
+    }
+
+    /// The open overlays this book holds.
+    pub fn in_flight(&self) -> Vec<LifecycleOp> {
+        let mut v: Vec<LifecycleOp> = self.in_flight.lock().unwrap().values().cloned().collect();
+        v.sort_by(|a, b| a.key().cmp(&b.key()));
+        v
+    }
+
+    /// The departures this book holds within the retention.
+    pub fn departed(&self) -> Vec<LifecycleOp> {
+        self.expire_departed();
+        let mut v: Vec<LifecycleOp> = self.departed.lock().unwrap().values().map(|(op, _)| op.clone()).collect();
+        v.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        v
+    }
+
+    /// The open overlays and retained departures of `mesh`'s own nodes: what
+    /// that mesh's primary publishes for it.
+    pub fn overlays_of(&self, mesh: &str) -> (Vec<LifecycleOp>, Vec<LifecycleOp>) {
+        let mine = |ops: Vec<LifecycleOp>| ops.into_iter().filter(|op| op.name.mesh == mesh).collect::<Vec<_>>();
+        (mine(self.in_flight()), mine(self.departed()))
+    }
+
+    /// May application routing select this node: held, not departed, and
+    /// under no open lifecycle overlay. The resolver never reads this.
+    pub fn routable(&self, node_id: &str) -> bool {
+        !self.is_departed(node_id)
+            && self.inner.lock().unwrap().contains_key(node_id)
+            && !self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id)
+    }
+
     /// Hold `d` as its member's latest word, unless it is older than what is
     /// held: a digest of the same birth emitted no later than the held one,
     /// or a digest of the birth the held one supersedes. Gossip can deliver
     /// a digest late; a late one never refreshes a silent member or reverts
-    /// its status. `false` when `d` was not taken.
+    /// its status. A digest of a departed node is refused: the departure
+    /// stands for the retention, whatever incarnation the digest names.
+    /// `false` when `d` was not taken.
     pub fn record(&self, d: MeshDigest) -> bool {
+        if self.is_departed(d.node.node_id.as_str()) {
+            reject_departed(&d, "mesh-channel");
+            return false;
+        }
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {
@@ -740,6 +958,10 @@ impl DigestBook {
     /// member it hears: an equal copy of the held digest keeps the member
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
     pub fn record_forwarded(&self, d: MeshDigest) -> bool {
+        if self.is_departed(d.node.node_id.as_str()) {
+            reject_departed(&d, "forwarded");
+            return false;
+        }
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {
@@ -854,10 +1076,95 @@ mod tests {
         assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 300)), "a newer digest is taken");
     }
 
+    fn op(id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
+        LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: operation.into(),
+            node_id: id.clone(),
+            incarnation: inc.clone(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn a_deleting_overlay_keeps_the_node_held_and_not_routable_and_a_departure_removes_it() {
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(book.routable(id.as_str()));
+        let o = op(&id, &inc, "retire-node:mesh1.rpc.1");
+        assert!(book.deleting(o.clone()));
+        assert!(!book.deleting(o.clone()), "the same overlay twice is applied once");
+        assert!(book.get(id.as_str()).is_some(), "still held");
+        assert!(!book.routable(id.as_str()), "not routable");
+        assert_eq!(book.in_flight(), vec![o.clone()]);
+        assert!(book.depart(o.clone()));
+        assert!(book.get(id.as_str()).is_none(), "removed from the view");
+        assert!(book.in_flight().is_empty(), "the overlay cleared with the departure");
+        assert_eq!(book.departed(), vec![o.clone()]);
+        assert!(!book.depart(o), "a second copy of the departure is a no-op");
+    }
+
+    #[test]
+    fn a_departed_node_id_never_returns_under_any_incarnation_until_the_retention_passes() {
+        let book = DigestBook::with_retention(Duration::from_millis(40));
+        let (id, inc, next) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100));
+        book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1"));
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Leaving, 900)), "the departed birth's late digest");
+        assert!(!book.record_forwarded(digest(&id, &next, Some(inc.clone()), MemberStatus::ReadyForTraffic, 950)), "a later incarnation of the deleted NodeId");
+        assert!(book.is_departed(id.as_str()));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!book.is_departed(id.as_str()), "forgotten after the retention");
+        assert!(book.record(digest(&id, &next, Some(inc), MemberStatus::ReadyForTraffic, 960)), "after the retention the id is unknown, not departed");
+    }
+
+    #[test]
+    fn departures_and_overlays_pack_into_frames_that_fit_and_a_publisher_carries_only_its_mesh() {
+        let book = DigestBook::default();
+        let mut other = op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh2.rpc.1");
+        other.name = "mesh2.rpc.1".parse().unwrap();
+        book.depart(other);
+        for _ in 0..60 {
+            book.depart(op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1"));
+        }
+        let (in_flight, departed) = book.overlays_of("mesh1");
+        assert!(in_flight.is_empty());
+        assert_eq!(departed.len(), 60, "mesh2's departure is not mesh1's to publish");
+        let frame = |departed| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), sent_unix_ms: 1, digests: Vec::new(), in_flight: Vec::new(), departed };
+        let runs = pack(departed, frame);
+        assert!(runs.len() > 1, "sixty departures do not fit one message");
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 60, "every departure travels");
+        for r in &runs {
+            assert!(frame(r.clone()).encode().len() <= MAX_FRAME, "a run fits one message");
+        }
+    }
+
+    #[test]
+    fn a_departure_heard_before_the_birth_still_fences_it() {
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
+        assert!(!book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        assert!(!book.deleting(op(&id, &inc, "retire-node:mesh1.rpc.1")), "no overlay on a departed node");
+    }
+
     #[test]
     fn members_are_packed_into_frames_that_fit_one_gossip_message() {
         let ds: Vec<MeshDigest> = (0..40).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i)).collect();
-        let frame = |digests| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), sent_unix_ms: 1, digests };
+        let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
+        let departed: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
+        let frame = |digests| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: "mesh1.admin.1".into(),
+            forwarded_by: Some("mesh2.admin.1".into()),
+            sent_unix_ms: 1,
+            digests,
+            in_flight: in_flight.clone(),
+            departed: departed.clone(),
+        };
         let runs = pack(ds.clone(), frame);
         assert!(runs.len() > 1, "forty digests do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels");
@@ -888,7 +1195,15 @@ mod tests {
                 d
             })
             .collect();
-        let frame = |digests| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), sent_unix_ms: 1, digests };
+        let frame = |digests| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: "mesh1.admin.1".into(),
+            forwarded_by: Some("mesh2.admin.1".into()),
+            sent_unix_ms: 1,
+            digests,
+            in_flight: Vec::new(),
+            departed: Vec::new(),
+        };
         let runs = pack(ds, frame);
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels with its runtime");
         for r in &runs {

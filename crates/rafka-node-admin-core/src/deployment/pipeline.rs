@@ -42,7 +42,7 @@ use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointSlot, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::RuntimeFact;
+use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -120,11 +120,17 @@ impl CreateStep {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireStep {
+    /// The pre-notice (a permanent retire only): the executor holds the operation; the node is
+    /// found and not routable.
+    NodeDeleting,
     MarkDraining,
     WaitForDrain,
     PublishLeaving,
     CloseRpcAdmission,
     TerminateRuntime,
+    /// The departure (a permanent retire only): the provider proved the runtime terminal; the
+    /// node has left.
+    NodeDeleted,
     ReleaseEndpoints,
     /// Only when the retirement is permanent.
     ReleaseStorage,
@@ -137,12 +143,14 @@ pub enum RetireStep {
 }
 
 impl RetireStep {
-    pub const ORDER: [RetireStep; 9] = [
+    pub const ORDER: [RetireStep; 11] = [
+        Self::NodeDeleting,
         Self::MarkDraining,
         Self::WaitForDrain,
         Self::PublishLeaving,
         Self::CloseRpcAdmission,
         Self::TerminateRuntime,
+        Self::NodeDeleted,
         Self::ReleaseEndpoints,
         Self::ReleaseStorage,
         Self::RemoveTopologyMembership,
@@ -151,6 +159,8 @@ impl RetireStep {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::NodeDeleting => "NodeDeleting",
+            Self::NodeDeleted => "NodeDeleted",
             Self::MarkDraining => "MarkDraining",
             Self::WaitForDrain => "WaitForDrain",
             Self::PublishLeaving => "PublishLeaving",
@@ -366,6 +376,28 @@ pub fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &st
 }
 
 /// Where node records are published (the fabric control projection).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
+/// own journal holds the step that records it, the departure once the provider proved the
+/// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
+#[async_trait::async_trait]
+pub trait LifecycleEvents: Send + Sync {
+    async fn deleting(&self, op: &LifecycleOp);
+    async fn deleted(&self, op: &LifecycleOp);
+}
+
+/// No events: a pipeline under test with no membership.
+pub struct NoLifecycleEvents;
+
+#[async_trait::async_trait]
+impl LifecycleEvents for NoLifecycleEvents {
+    async fn deleting(&self, _op: &LifecycleOp) {}
+    async fn deleted(&self, _op: &LifecycleOp) {}
+}
+
 pub trait TopologySink: Send + Sync {
     fn publish(&self, node: Node);
     fn remove(&self, name: &PathName);
@@ -452,6 +484,7 @@ pub struct DeploymentPipeline<'a> {
     pub allocator: &'a Mutex<EndpointAllocator>,
     pub observer: &'a dyn NodeObserver,
     pub sink: &'a dyn TopologySink,
+    pub lifecycle: &'a dyn LifecycleEvents,
     pub builds: &'a dyn BuildStateAdapter,
     pub template: &'a LaunchTemplate,
     pub timeouts: Timeouts,
@@ -859,6 +892,29 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
         let mut node = req.node.clone();
         let handle = &req.handle;
+        // The pre-notice, for a departure only: this executor's journal holds its Claim for the
+        // attempt (it runs nothing before that) and now records this operation; every node hears
+        // the node is being removed and stops routing to it, while it stays found. A restart
+        // (`permanent == false`) stops the birth and keeps the logical node: it never emits a
+        // departure, so the same NodeId's next incarnation is taken.
+        let op = if req.permanent {
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: run.operation.clone(),
+                node_id: node.node_id.clone(),
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
+                name: name.clone(),
+                event_at_ms: now_unix_ms(),
+            };
+            // The receipt first, then the publish: the Build facts carry the overlay from the
+            // moment it is announced, so a successor derives it from the same facts.
+            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleting(&op).await;
+            Some(op)
+        } else {
+            None
+        };
         node.status = NodeStatus::Draining;
         self.step(&mut run, RetireStep::MarkDraining.name(), async {
             self.sink.publish(node.clone());
@@ -903,12 +959,37 @@ impl DeploymentPipeline<'_> {
                 .terminate(handle, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
                 .await
                 .map_err(|e| e.to_string())?;
+            // Only an exact inspection that says the runtime exited is terminal proof.
             match self.provider.inspect(handle).await {
                 DeploymentStatus::Running => Err(format!("{name} still runs after the stop ladder")),
-                _ => Ok(()),
+                DeploymentStatus::Unknown => Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
+                DeploymentStatus::Exited { .. } => Ok(()),
             }
         })
         .await?;
+        // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything
+        // else: the departure below removes the birth from this admin's view and fences its
+        // digests, so the observation must come first.
+        if req.observe_departure {
+            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
+                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
+                        self.timeouts.drain
+                    ))
+                }
+            })
+            .await?;
+        }
+        // The departure: the provider's inspection above is the proof. Nothing earlier (the
+        // node's Leaving, its drained reply, the claim) is.
+        if let Some(op) = op {
+            let op = LifecycleOp { event_at_ms: now_unix_ms(), ..op };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleted(&op).await;
+        }
         self.step(&mut run, RetireStep::ReleaseEndpoints.name(), async {
             self.allocator.lock().unwrap().release(name);
             Ok(())
@@ -923,19 +1004,6 @@ impl DeploymentPipeline<'_> {
                         Err(e) => Err(format!("{dir}: {e}")),
                     },
                     None => Ok(()),
-                }
-            })
-            .await?;
-        }
-        if req.observe_departure {
-            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
-                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
-                        self.timeouts.drain
-                    ))
                 }
             })
             .await?;

@@ -303,7 +303,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(60)).await;
     // The Build can complete on another admin: wait for the asked one's view.
     let reborn = wait_for("the asked admin's view holds the new birth", Duration::from_secs(15), || async {
-        let now = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+        let now = s(&estate.node_opt("mesh2.rpc.1").await?["incarnation_id"]);
         (!now.is_empty() && now != before).then_some(now)
     })
     .await;

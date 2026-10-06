@@ -41,6 +41,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
         allocator: &allocator,
         observer: &admin.observer,
         sink: &sink,
+        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),

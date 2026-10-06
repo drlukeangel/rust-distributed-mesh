@@ -189,7 +189,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     let pid = estate.pid_of("mesh1.rpc.2").await;
     assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
     wait_for("the frozen member is dead in the view", Duration::from_secs(30), || async {
-        (estate.node("mesh1.rpc.2").await["status"] == "dead").then_some(())
+        (estate.node_opt("mesh1.rpc.2").await?["status"] == "dead").then_some(())
     })
     .await;
 

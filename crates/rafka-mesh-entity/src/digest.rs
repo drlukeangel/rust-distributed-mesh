@@ -22,12 +22,6 @@ pub struct MeshNode {
     pub runtime: Option<RuntimeFact>,
 }
 
-/// How long a process holds a departure after it accepted it (its own local
-/// age, never another machine's clock). It covers the membership repair
-/// horizon: a process cut off for less than this still learns the departure
-/// once it rejoins.
-pub const DEPARTED_RETENTION: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
 /// A member's self-reported status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

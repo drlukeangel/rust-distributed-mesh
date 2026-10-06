@@ -125,8 +125,11 @@ fn now_ms() -> u64 {
 }
 
 /// Bring the node up exactly as `launch` says.
-pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<RunningNode> {
+pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
+    // This process's one live resolver: a handler registered below may hold it; it is fed once
+    // membership is joined.
+    let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
     // This birth's exact runtime, as its provider recorded it: published with
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
@@ -134,7 +137,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
-    let server = register(core_protocols(ServerBuilder::new()))
+    let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
         .seal(launch.endpoints.first().map(|e| e.slot.clone()).unwrap_or_default())
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let mut routers = Vec::new();
@@ -180,7 +183,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, seeds).await?;
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start(ep0.clone(), &membership.book, &name);
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_with(resolver, ep0.clone(), &membership.book, &name);
     // Entry: take the launching admin's membership before marking ready. An
     // admin that cannot answer does not hold the node: its view fills from
     // gossip instead (the pull is named either way).

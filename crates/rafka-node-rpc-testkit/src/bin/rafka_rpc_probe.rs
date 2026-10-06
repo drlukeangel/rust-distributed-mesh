@@ -41,7 +41,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--key" => key = Some(take("--key")?),
             "--value" => value = Some(take("--value")?),
             "--expected" => expected = Some(take("--expected")?),
-            "get" | "put" | "delete" | "cas" if op.is_none() => op = Some(a),
+            "--query" => key = Some(take("--query")?),
+            "get" | "put" | "delete" | "cas" | "resolve" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -129,6 +130,9 @@ fn reply(r: &ProofReply) -> Value {
 
 async fn run(a: Args) -> Result<Value, String> {
     let target = target(&a.target)?;
+    if a.op == "resolve" {
+        return run_resolve(&a, &target).await;
+    }
     let req = request(&a)?;
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
@@ -171,4 +175,42 @@ async fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// `resolve --target <node> --query exact:<id>|path:<p>`: what the target node's own live
+/// resolver says about the query.
+async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
+    use rafka_node_rpc_testkit::resolve_probe::{ProbeTarget, ResolveProbe, ResolveReply, ResolveRequest};
+    let query = match a.key.split_once(':') {
+        Some(("exact", id)) => ProbeTarget::Exact(id.to_string()),
+        Some(("path", p)) => ProbeTarget::Path(p.to_string()),
+        _ => return Err(format!("--query {:?} is neither exact:<node_id> nor path:<path.name>", a.key)),
+    };
+    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
+    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let resolver = Arc::new(StaticResolver::new());
+    for n in resolved(&view) {
+        resolver.insert(n);
+    }
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let client = NodeRpcClient::new(ep, resolver);
+    let req = ResolveRequest::Resolve { traceparent: rafka_mesh_telemetry::current_traceparent(), target: query };
+    let (out, _) = client.call::<ResolveProbe>(target, &req, &CallOptions::default()).await;
+    Ok(match &out {
+        RpcOutcome::Reply(r) => {
+            let v = r.value();
+            let mut reply = json!({"resolution": v.resolution()});
+            if let ResolveReply::Found { node_id, name, incarnation_id, .. } = v {
+                reply["node_id"] = json!(node_id);
+                reply["name"] = json!(name);
+                reply["incarnation_id"] = json!(incarnation_id);
+            }
+            json!({"outcome": out.name(), "reply": reply})
+        }
+        RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
+        RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
+        RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
+    })
 }
