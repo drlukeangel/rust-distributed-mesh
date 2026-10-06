@@ -64,7 +64,7 @@ Telemetry is built FIRST in every sprint, and EVERY code path emits spans. Code 
 - Every state transition is a span
 - Every error is a span attribute or a child error-span
 - Every boot sequence is a chain of nested spans under one parent
-- Every binary calls `rafka_telemetry::init_telemetry(service_name)` in `main()` BEFORE any other work
+- Every binary calls `rafka_mesh_telemetry::init_telemetry(service_name)` in `main()` BEFORE any other work
 - OTLP collector + Jaeger run from day 0 — `deployment/dev/docker-compose.otlp.yml` is the first deliverable of any sprint that needs verification
 
 The pilot phase (now) skips formal test coverage, but telemetry coverage is non-negotiable. You prove behavior via Jaeger queries, not via test assertions.

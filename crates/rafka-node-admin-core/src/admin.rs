@@ -307,7 +307,7 @@ pub async fn reconcile_drift(
     let fact = crate::build_state::BuildIntentFact {
         build_id: build_id.clone(),
         intent: crate::build::BuildIntent::ReconcileFabric { desired: d.desired.clone() },
-        traceparent: span.in_scope(rafka_telemetry::current_traceparent),
+        traceparent: span.in_scope(rafka_mesh_telemetry::current_traceparent),
         submitted_at_ms: now_ms(),
         desired: Some(d.mark()),
         reason: Some(crate::build_state::BuildReason::ProvenDrift),

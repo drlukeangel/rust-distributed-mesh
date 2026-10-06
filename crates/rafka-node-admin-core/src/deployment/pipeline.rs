@@ -697,7 +697,7 @@ impl DeploymentPipeline<'_> {
         };
         let handle: DeploymentHandle = self
             .step(&mut run, CreateStep::DeployRuntime.name(), async {
-                let spec = spec_for(rafka_telemetry::current_traceparent());
+                let spec = spec_for(rafka_mesh_telemetry::current_traceparent());
                 if let Some(h) = self.provider.find(&spec).await {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);

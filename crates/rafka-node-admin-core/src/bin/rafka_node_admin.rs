@@ -5,7 +5,7 @@ use rafka_node_admin_core::admin::{start, AdminConfig};
 
 #[tokio::main]
 async fn main() {
-    let _telemetry = rafka_telemetry::init_evidence_telemetry("rafka-node-admin");
+    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin");
     let cfg = match AdminConfig::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => {
@@ -21,7 +21,7 @@ async fn main() {
         fabric = %cfg.fabric,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_telemetry::set_parent(&boot, &tp);
+        rafka_mesh_telemetry::set_parent(&boot, &tp);
     }
     if let Some(l) = &cfg.launch {
         boot.record("node", l.name.to_string().as_str());

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rafka-telemetry = { path = "../rafka-telemetry" }
+rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-mesh-ops = { path = "../rafka-mesh-ops" }
 tokio = { workspace = true }

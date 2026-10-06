@@ -12,7 +12,7 @@ name = "rafka-admin-ui"
 path = "src/main.rs"
 
 [dependencies]
-rafka-telemetry = { path = "../crates/rafka-telemetry" }
+rafka-mesh-telemetry = { path = "../crates/rafka-mesh-telemetry" }
 rafka-node-admin-client = { path = "../crates/rafka-node-admin-client" }
 rafka-mesh-entity = { path = "../crates/rafka-mesh-entity" }
 tokio = { workspace = true }

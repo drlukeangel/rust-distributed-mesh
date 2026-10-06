@@ -30,7 +30,7 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rafka-test-scenario",
     "rafka-node-rpc-testkit",
     "rafka-chaos",
-    "rafka-telemetry",
+    "rafka-mesh-telemetry",
 ];
 
 pub const CONTRACT: &str = "rafka-node-rpc-contract";
@@ -45,7 +45,7 @@ pub const PUBLIC_INTERFACES: &[&str] = &[
     "rafka-node-rpc-contract",
     "rafka-node-rpc-testkit",
     "rafka-test-scenario",
-    "rafka-telemetry",
+    "rafka-mesh-telemetry",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

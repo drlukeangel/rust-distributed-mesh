@@ -84,7 +84,7 @@ impl ControlPlane {
         let fact = BuildIntentFact {
             build_id: build_id.clone(),
             intent,
-            traceparent: rafka_telemetry::current_traceparent(),
+            traceparent: rafka_mesh_telemetry::current_traceparent(),
             submitted_at_ms: now_ms(),
             desired: Some(next.as_ref().map_or_else(|| current.mark(), |n| n.mark())),
             reason: Some(crate::build_state::BuildReason::RequestedChange),

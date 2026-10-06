@@ -5,7 +5,7 @@
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = rafka_telemetry::init_telemetry("gateway");
+    let _guard = rafka_mesh_telemetry::init_telemetry("gateway");
     // ... your service ...
     // _guard drops at scope exit; flushes spans
     Ok(())
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = rafka_telemetry::init_telemetry_for_cli("rfa");
+    let _guard = rafka_mesh_telemetry::init_telemetry_for_cli("rfa");
     let result = run_command().await;
     result
 }

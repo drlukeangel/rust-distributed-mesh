@@ -93,7 +93,7 @@ impl NodeRuntime {
     }
 
     pub async fn run(self) -> Result<()> {
-        let _guard = rafka_telemetry::init_telemetry(&self.node_type);
+        let _guard = rafka_mesh_telemetry::init_telemetry(&self.node_type);
         run_node(self.node_type, self.role, self.cpu_budget, self.ram_budget).await
     }
 }

@@ -90,7 +90,7 @@ where
                 slot = %peer.slot,
             );
             if let Some(tp) = P::traceparent(&req) {
-                rafka_telemetry::set_parent(&span, tp);
+                rafka_mesh_telemetry::set_parent(&span, tp);
             }
             let reply = f(peer, req).instrument(span).await?;
             P::encode_reply(&reply).map_err(|e| HandlerFault::invariant_broken(e.0))

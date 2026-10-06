@@ -273,7 +273,7 @@ enum TopologyFormat {
 async fn main() -> Result<()> {
     // Use SimpleSpanProcessor for short-lived CLI — synchronous export on span
     // close means no flush race vs runtime teardown, no pre-exit sleep needed.
-    let _guard = rafka_telemetry::init_telemetry_for_cli("rfa");
+    let _guard = rafka_mesh_telemetry::init_telemetry_for_cli("rfa");
 
     let cli = Cli::parse();
     let client = reqwest::Client::new();

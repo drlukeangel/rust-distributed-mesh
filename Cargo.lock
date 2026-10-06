@@ -3388,11 +3388,11 @@ dependencies = [
  "opentelemetry-http",
  "postcard",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-base",
- "rafka-telemetry",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -3497,6 +3497,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-mesh-telemetry"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "http",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "serde_json",
+ "tracing",
+ "tracing-flame",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rafka-mesh-transport"
 version = "0.1.0"
 dependencies = [
@@ -3541,11 +3559,11 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-rpc",
  "rafka-node-rpc-contract",
- "rafka-telemetry",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -3571,8 +3589,8 @@ dependencies = [
  "opentelemetry",
  "postcard",
  "rafka-mesh-ops",
+ "rafka-mesh-telemetry",
  "rafka-mesh-transport",
- "rafka-telemetry",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -3590,8 +3608,8 @@ dependencies = [
  "anyhow",
  "iroh",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
  "rafka-node-rpc-contract",
- "rafka-telemetry",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3615,11 +3633,11 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-core",
  "rafka-node-rpc",
  "rafka-node-rpc-contract",
- "rafka-telemetry",
  "serde",
  "serde_json",
  "tokio",
@@ -3634,24 +3652,6 @@ dependencies = [
  "anyhow",
  "rafka-node-base",
  "tokio",
-]
-
-[[package]]
-name = "rafka-telemetry"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "http",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
- "serde_json",
- "tracing",
- "tracing-flame",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3845,7 +3845,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-http",
  "rafka-chaos",
- "rafka-telemetry",
+ "rafka-mesh-telemetry",
  "reqwest",
  "serde",
  "serde_json",

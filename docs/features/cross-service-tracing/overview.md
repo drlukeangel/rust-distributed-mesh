@@ -10,7 +10,7 @@ Result: an operator clicks any `rafka.cli.command` trace in Jaeger and sees the 
 
 ## How it works
 
-`crates/rafka-telemetry/src/lib.rs::install_propagator()`:
+`crates/rafka-mesh-telemetry/src/lib.rs::install_propagator()`:
 ```rust
 opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 ```
@@ -54,5 +54,5 @@ All four under one `trace_id`. Sprint-10 fix commit a618aba landed this.
 ## Cross-references
 
 * Sibling: [`telemetry-substrate`](../telemetry-substrate/overview.md), [`rfa-cli`](../rfa-cli/overview.md), [`topology-ui-waterfall`](../topology-ui-waterfall/overview.md).
-* Code: `crates/rafka-telemetry/src/lib.rs::install_propagator`, `cli/rfa/src/main.rs::current_traceparent_headers`, `topology-ui/src/main.rs::trace_middleware`.
+* Code: `crates/rafka-mesh-telemetry/src/lib.rs::install_propagator`, `cli/rfa/src/main.rs::current_traceparent_headers`, `topology-ui/src/main.rs::trace_middleware`.
 * Decisions: sprint-10 fix (commit a618aba).

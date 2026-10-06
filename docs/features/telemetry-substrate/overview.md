@@ -4,7 +4,7 @@
 
 ## What it is
 
-`crates/rafka-telemetry/` exposes `init_telemetry(service_name)` and `init_telemetry_for_cli(service_name)`. Every binary calls one of these in `main()` before any other work; both return a `TelemetryGuard` whose `Drop` flushes + shuts down.
+`crates/rafka-mesh-telemetry/` exposes `init_telemetry(service_name)` and `init_telemetry_for_cli(service_name)`. Every binary calls one of these in `main()` before any other work; both return a `TelemetryGuard` whose `Drop` flushes + shuts down.
 
 Also installs the W3C `TraceContextPropagator` globally so HTTP-injected `traceparent` headers chain spans across services.
 
@@ -38,6 +38,6 @@ Also installs the W3C `TraceContextPropagator` globally so HTTP-injected `tracep
 
 ## Cross-references
 
-* Code: `crates/rafka-telemetry/src/lib.rs`.
+* Code: `crates/rafka-mesh-telemetry/src/lib.rs`.
 * Sibling: [`cross-service-tracing`](../cross-service-tracing/overview.md).
 * Decisions: D-024 (telemetry artifacts prove sprint scope), sprint-10 fix (commit a618aba) — added init_telemetry_for_cli.

@@ -6,7 +6,7 @@ use rafka_node_rpc_testkit::node;
 
 #[tokio::main]
 async fn main() {
-    let _telemetry = rafka_telemetry::init_evidence_telemetry("rafka-rpc-node");
+    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
         Err(e) => {
@@ -22,7 +22,7 @@ async fn main() {
         kind = "rpc_node",
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_telemetry::set_parent(&boot, &tp);
+        rafka_mesh_telemetry::set_parent(&boot, &tp);
     }
     // The node's long-lived tasks (endpoints, gossip) must not hold the boot
     // span open: it closes, and is exported, once booted.

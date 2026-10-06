@@ -162,7 +162,7 @@ impl BuildExecutor {
         );
         // The accepting span, on whichever admin took the request, is the parent.
         if let Some(tp) = &build.traceparent {
-            rafka_telemetry::set_parent(&span, tp);
+            rafka_mesh_telemetry::set_parent(&span, tp);
         }
         let r = self.reconcile_attempt(build, attempt, &span).instrument(span.clone()).await;
         span.record(
