@@ -393,11 +393,14 @@ pub async fn reconcile_drift(
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
     );
+    // The attempt names exactly the births proven exited: the plan recreates those and nothing
+    // the view merely does not hear.
+    let exited_paths: Vec<PathName> = short.iter().flat_map(|s| s.exited.iter()).filter_map(|p| p.parse().ok()).collect();
     let opened = crate::build_state::AttemptOpened {
         build_id: current.build_id.clone(),
         attempt,
         reason: crate::build_state::AttemptReason::ProvenDrift,
-        action: None,
+        action: Some(crate::accepted::AttemptAction::Recover { exited: exited_paths }),
         opened_by: me.to_string(),
         opened_at_ms: now_ms(),
     };
@@ -703,8 +706,14 @@ impl AdminRunner {
     /// frozen process is never turned into a replacement (Luke 2026-10-05, silence never
     /// authorizes replacement).
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
-        let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear { gone: None } };
+        let Some(prev) = self.topology.read().await.node(path).cloned() else {
+            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-predecessor-held")
+                .in_scope(|| tracing::info!("the view holds no birth at this path: nothing to fence"));
+            return FenceOutcome::Clear { gone: None };
+        };
         if prev.status.is_live() || prev.incarnation_id.is_none() {
+            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default(), outcome = "predecessor-live")
+                .in_scope(|| tracing::info!("the view holds a live birth at this path: nothing to fence"));
             return FenceOutcome::Clear { gone: None };
         }
         let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
