@@ -180,9 +180,8 @@ pub struct FabricBuildStateAdapter {
 }
 
 impl FabricBuildStateAdapter {
-    /// Join `fabric`'s Build topic through `peers` (the other node-admins).
-    /// With peers, it returns once connected to at least one of them, so the
-    /// facts they append from then on reach this admin.
+    /// Join `fabric`'s Build topic through `peers` (the other node-admins), as
+    /// bootstrap hints: it returns at once, connected or not.
     ///
     /// `accepted` is this admin's `Fabric.build_id` holder: every Fabric record heard on the
     /// topic is offered to it, and a new neighbour is handed the one it holds first. `node` names
@@ -202,13 +201,12 @@ impl FabricBuildStateAdapter {
             lookup.add_endpoint_info(p.clone());
         }
         endpoint.address_lookup().map_err(|e| io(e.to_string()))?.add(lookup);
+        // Seeds are bootstrap hints, never a start barrier: a recorded seed can be dead (an admin
+        // that restarted binds a new mesh port), and a dead seed must not keep this admin from the
+        // point where it can take part in recovery. Subscribe locally; the seeds are dialled as the
+        // topic's first peers and every admin heard later is joined through `join_admins`/refeed.
         let ids = peers.iter().map(|p| p.id).collect();
-        let topic = if peers.is_empty() {
-            gossip.subscribe(build_topic(fabric), ids).await
-        } else {
-            gossip.subscribe_and_join(build_topic(fabric), ids).await
-        }
-        .map_err(|e| io(e.to_string()))?;
+        let topic = gossip.subscribe(build_topic(fabric), ids).await.map_err(|e| io(e.to_string()))?;
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
         let local = Arc::new(MemoryBuildStateAdapter::new());

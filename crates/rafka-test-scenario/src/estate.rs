@@ -99,8 +99,6 @@ pub struct Estate {
     pub evidence: PathBuf,
     pub admin: String,
     bootstrap: Option<Child>,
-    /// Admins this estate relaunched on their data dirs after killing them (a whole-fabric restart).
-    relaunched: Vec<Child>,
     http: reqwest::Client,
 }
 
@@ -127,7 +125,7 @@ impl Estate {
             ],
             "bootstrap node-admin",
         );
-        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), relaunched: Vec::new(), http: reqwest::Client::new() };
+        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -136,74 +134,6 @@ impl Estate {
         })
         .await;
         estate
-    }
-
-    /// The bootstrap admin's data dir (`<root>/<mesh>.admin.1`).
-    pub fn bootstrap_data_dir(&self, mesh: &str) -> PathBuf {
-        self.root.join(format!("{mesh}.admin.1"))
-    }
-
-    /// Relaunch the bootstrap admin on its data dir under the Fabric and Mesh it belonged to (an
-    /// operator relaunch names them: the bootstrap admin minted them, nothing launched it). Returns
-    /// its new control API base.
-    pub fn relaunch_bootstrap(&mut self, fabric: &str, mesh: &str, fabric_id: &str, mesh_id: &str) -> String {
-        let (child, base) = spawn_admin(
-            &[
-                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
-                ("RAFKA_FABRIC", fabric.into()),
-                ("RAFKA_FABRIC_ID", fabric_id.into()),
-                ("RAFKA_MESH", mesh.into()),
-                ("RAFKA_MESH_ID", mesh_id.into()),
-                ("RAFKA_DATA_DIR", self.bootstrap_data_dir(mesh).display().to_string()),
-                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
-            ],
-            "relaunched bootstrap node-admin",
-        );
-        self.relaunched.push(child);
-        base
-    }
-
-    /// Relaunch a launched admin on its data dir, from the launch its provider recorded there
-    /// (`launch.json`). Returns its new control API base.
-    pub fn relaunch_admin(&mut self, data_dir: &str) -> String {
-        let (child, base) = spawn_admin(
-            &[
-                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
-                ("RAFKA_RELAUNCH_DATA_DIR", data_dir.into()),
-                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
-            ],
-            &format!("relaunched node-admin at {data_dir}"),
-        );
-        self.relaunched.push(child);
-        base
-    }
-
-    /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
-    pub fn kill_pid(&self, pid: u32) {
-        let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
-        assert!(ok, "kill -9 {pid}");
-        let until = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < until && Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    /// Stop every admin this estate relaunched (a local signal: a local stop) and every runtime a
-    /// provider left running, then wait for them.
-    pub fn stop_relaunched(&mut self) {
-        for mut c in self.relaunched.drain(..) {
-            let _ = std::process::Command::new("kill").args(["-TERM", &c.id().to_string()]).status();
-            let _ = c.wait();
-        }
-        for (_, pid) in self.live_runtimes() {
-            let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
-        }
-        let until = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < until && !self.live_runtimes().is_empty() {
-            std::thread::sleep(Duration::from_millis(100));
-        }
     }
 
     fn write_manifest(&self) {

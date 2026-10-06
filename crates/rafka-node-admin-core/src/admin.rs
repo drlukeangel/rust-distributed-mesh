@@ -66,37 +66,12 @@ pub struct AdminConfig {
     pub api_bind: SocketAddr,
     /// Set when a deployment pipeline launched this admin.
     pub launch: Option<Launch>,
-    /// Set when an operator relaunched this admin on its data dir (`RAFKA_RELAUNCH_DATA_DIR`,
-    /// the launch read back from the provider's `launch.json`): no pipeline hands it a runtime
-    /// record, so it adopts its own process, as the bootstrap admin does.
-    pub relaunch: bool,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
 }
 
-/// `RAFKA_RELAUNCH_DATA_DIR`: relaunch the admin the provider launched in that data dir.
-pub const ENV_RELAUNCH_DATA_DIR: &str = "RAFKA_RELAUNCH_DATA_DIR";
-
 impl AdminConfig {
-    pub fn from_env(real: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        // A relaunch takes the provider's recorded launch for every key the environment does not
-        // set, under a new incarnation that supersedes the recorded one.
-        let relaunch = real(ENV_RELAUNCH_DATA_DIR).filter(|v| !v.trim().is_empty()).map(PathBuf::from);
-        let recorded: BTreeMap<String, String> = match &relaunch {
-            Some(dir) => {
-                let path = dir.join(crate::deployment::process::LAUNCH_FILE);
-                let raw = std::fs::read(&path).map_err(|e| format!("{ENV_RELAUNCH_DATA_DIR}: reading {}: {e}", path.display()))?;
-                let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| format!("{} is not a launch record: {e}", path.display()))?;
-                let mut env: BTreeMap<String, String> = serde_json::from_value(v["env"].clone()).map_err(|e| format!("{}: env: {e}", path.display()))?;
-                if let Some(old) = env.get(rafka_mesh_entity::launch::ENV_INCARNATION).cloned() {
-                    env.insert(rafka_mesh_entity::launch::ENV_SUPERSEDES.into(), old);
-                }
-                env.insert(rafka_mesh_entity::launch::ENV_INCARNATION.into(), IncarnationId::mint().0);
-                env
-            }
-            None => BTreeMap::new(),
-        };
-        let get = |k: &str| real(k).or_else(|| recorded.get(k).cloned());
+    pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RAFKA_FABRIC")).unwrap_or_else(|| "fabric1".into());
         // A launched node is handed its Fabric's id; the bootstrap admin takes
@@ -140,7 +115,6 @@ impl AdminConfig {
                 .transpose()?,
             data_dir,
             bin_dir,
-            relaunch: relaunch.is_some(),
             spawn_type: get(crate::deployment::provider::SPAWN_TYPE_ENV),
             api_bind,
             launch,
@@ -1006,9 +980,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The mesh's id names its membership channel: the launch names it (the
     // launching admin always does), else the entry pull's projection knows
     // it, else this admin is the mesh's first and mints it.
-    // A relaunched admin has no launching admin to pull from: what it needs to come up is in its
-    // own storage and its recorded launch, and its view fills from gossip.
-    let launched_anchor = if cfg.relaunch { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
+    let launched_anchor = cfg.launch.as_ref().and(seed_addrs.first().cloned());
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
         (Some(id), _) => id.clone(),
@@ -1115,12 +1087,6 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
             FabricPolicy { provider: topology.fabric.provider }
         }
-        None if cfg.relaunch => {
-            // A relaunch is not Day 0: it roots nothing and hydrates from gossip and its storage.
-            tracing::info_span!("rafka.node_admin.fabric.update.via-relaunch", node = %name, fabric_id = %cfg.fabric_id)
-                .in_scope(|| tracing::info!("relaunched on its data dir; no launching admin to pull from"));
-            FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
-        }
         None => {
             // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
             // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
@@ -1188,13 +1154,13 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // way it is published with the birth.
     let mut adoption = None;
     let runtime = match &cfg.launch {
-        Some(_) if !cfg.relaunch => {
+        Some(_) => {
             let dir = cfg.data_dir.clone();
             tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
                 .await
                 .map_err(|e| format!("reading the runtime record: {e}"))??
         }
-        _ => {
+        None => {
             let a = CurrentRuntimeAdoption::begin(&name, &cfg.data_dir, &crate::model::DeploymentId::mint()).map_err(|e| e.to_string())?;
             let f = a.fact().clone();
             adoption = Some(a);
