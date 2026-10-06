@@ -175,7 +175,7 @@ Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registe
 
 A successor adopts a birth it did not launch from that birth's current digest (`AdminRunner::handle_for`); the `handles` map caches the result. No completed Build's `AllocateIdentity`/`DeployRuntime` receipt is read, and the Build topic still hands a new neighbour active Builds only.
 
-Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The desired-topology part of this gate is #2851's.
+Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The accepted-Build hydration part of this gate is #47's.
 
 ### 2.2 Accepted topology, Build state, and storage
 
@@ -581,7 +581,7 @@ later proven drift -> next attempt of the same Build B
 Mandatory Ready-root proof:
 
 ```text
-ordinary joining admin lacks current desired/runtime hydration
+ordinary joining admin lacks current accepted-Build/runtime hydration
     -> remains non-Ready
 restore catch-up
     -> hydrates -> Ready -> election
@@ -602,7 +602,7 @@ Existing canonical spans remain, including:
 | span | purpose |
 |---|---|
 | `rafka.node_admin.build.create.via-rest` | Build accepted |
-| `rafka.node_admin.build.update.via-reconcile` | desired - observed reconciliation |
+| `rafka.node_admin.build.update.via-reconcile` | accepted Build - observed reconciliation |
 | `rafka.node_admin.deployment.update.via-pipeline` | provider pipeline |
 | `rafka.node_admin.deployment.update.via-step` | pipeline step |
 | `rafka.mesh.node.create.via-deployment` | process boot |
