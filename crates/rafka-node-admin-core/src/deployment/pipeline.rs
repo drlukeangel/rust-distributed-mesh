@@ -837,6 +837,11 @@ impl DeploymentPipeline<'_> {
                 if last.as_ref() == Some(&published) {
                     break (true, last);
                 }
+                // A runtime that exited will never join: its own last words, now, not a timeout.
+                if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
+                    let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                    return Err(format!("runtime exited (code {code:?}) before joining the mesh: {detail}"));
+                }
                 if Instant::now() >= until {
                     break (false, last);
                 }

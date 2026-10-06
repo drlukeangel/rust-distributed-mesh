@@ -271,6 +271,18 @@ impl EndpointAllocator {
         Ok(out)
     }
 
+    /// One reserved, probed transport address for `node`, held under its name: what a restarted
+    /// admin binds when the address it last held is taken. Never an OS-chosen port: the ephemeral
+    /// range overlaps this allocator's, and a port handed to a birth between its reservation and
+    /// its bind would be taken from under it.
+    pub fn take_transport(&mut self, node: &PathName) -> Result<SocketAddr, AllocationError> {
+        self.release(node);
+        let ip = self.node_ip(node)?;
+        let transport = self.take_addr(ip)?;
+        self.held.insert(node.clone(), Assignment { transport, slots: Vec::new(), listeners: Vec::new() });
+        Ok(transport)
+    }
+
     /// Release every address of `node` (retire pipeline `ReleaseEndpoints`).
     pub fn release(&mut self, node: &PathName) {
         if let Some(a) = self.held.remove(node) {

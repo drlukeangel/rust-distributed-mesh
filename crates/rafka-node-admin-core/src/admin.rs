@@ -1105,10 +1105,14 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         // A restart rebinds the address it last held so its peers' contacts stay good; another
         // process may hold it now, and then a fresh port serves (peers learn it by gossip).
         Err(e) if restart.is_some() => {
-            tracing::info!(addr = %mesh_addr, error = %e, "the mesh slot this admin last held is taken; binding a fresh port");
-            rafka_node_rpc::endpoint::bind_exact(key.clone(), SocketAddr::new(mesh_addr.ip(), 0), vec![iroh_gossip::ALPN.to_vec()], transport)
+            // A reserved port from the host-wide allocator, never an OS-chosen one: the ephemeral
+            // range overlaps the allocator's, and a port a birth was assigned but has not bound
+            // yet would be taken from under it.
+            let fresh = crate::deployment::endpoint::EndpointAllocator::from_env().take_transport(&name).map_err(|e| format!("mesh slot {mesh_addr} is taken and no reserved port is free: {e}"))?;
+            tracing::info!(addr = %mesh_addr, fresh = %fresh, error = %e, "the mesh slot this admin last held is taken; binding a reserved fresh port");
+            rafka_node_rpc::endpoint::bind_exact(key.clone(), fresh, vec![iroh_gossip::ALPN.to_vec()], transport)
                 .await
-                .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?
+                .map_err(|e| format!("mesh slot {fresh}: {e}"))?
         }
         Err(e) => return Err(format!("mesh slot {mesh_addr}: {e}")),
     };

@@ -123,6 +123,41 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
     Ok(out)
 }
 
+/// Does process `pid` itself hold a socket at `addr` (`udp`, or a `tcp` listener)? The socket's
+/// inode in the namespace table is matched against the process's own descriptors, so a port held
+/// by another process (a squatter, or an earlier birth) never passes for this runtime's.
+pub fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
+    let path = format!("/proc/{pid}/net/{table}");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let inodes: Vec<String> = text
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if let Some(want) = state {
+                if cols.get(3) != Some(&want) {
+                    return None;
+                }
+            }
+            let (ip, port) = cols.get(1)?.split_once(':')?;
+            let (ip, port) = (u32::from_str_radix(ip, 16).ok()?, u16::from_str_radix(port, 16).ok()?);
+            let ip = IpAddr::from(ip.to_ne_bytes());
+            (port == addr.port() && (ip == addr.ip() || ip.is_unspecified())).then(|| cols.get(9).map(|s| s.to_string())).flatten()
+        })
+        .collect();
+    if inodes.is_empty() {
+        return Ok(false);
+    }
+    let fds = format!("/proc/{pid}/fd");
+    let held = std::fs::read_dir(&fds)
+        .map_err(|e| format!("{fds}: {e}"))?
+        .flatten()
+        .filter_map(|e| std::fs::read_link(e.path()).ok())
+        .filter_map(|l| l.to_str().map(String::from))
+        .any(|l| inodes.iter().any(|i| l == format!("socket:[{i}]")));
+    Ok(held)
+}
+
 fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
     let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
@@ -412,6 +447,22 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_socket_is_held_only_by_the_process_whose_descriptor_it_is() {
+        let me = std::process::id();
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = udp.local_addr().unwrap();
+        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(true), "our own UDP socket");
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taddr = tcp.local_addr().unwrap();
+        assert_eq!(super::process_holds(me, "tcp", taddr, Some("0A")), Ok(true), "our own TCP listener");
+        // The same ports, asked of a process that is not us (pid 1 holds neither): false, never a
+        // host-wide "someone holds it".
+        assert_eq!(super::process_holds(1, "udp", addr, None).unwrap_or(false), false);
+        drop(udp);
+        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(false), "released: nobody holds it");
+    }
+
     use super::*;
 
     #[test]

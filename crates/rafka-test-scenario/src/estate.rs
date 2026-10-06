@@ -586,9 +586,22 @@ impl Drop for Estate {
     fn drop(&mut self) {
         // Whatever still runs after the test (a failed run, or a fabric whose
         // control moved) is stopped here, never left behind.
+        // Until nothing under the root is alive: a surviving admin re-creates what one pass killed
+        // (a failed run leaves it reconciling), so one pass is not a stop.
         let sweep = |e: &Estate| {
-            for (_, pid) in e.live_runtimes() {
-                let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+            for _ in 0..10 {
+                let live = e.live_runtimes();
+                if live.is_empty() {
+                    return;
+                }
+                for (_, pid) in live {
+                    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let left = e.live_runtimes();
+            if !left.is_empty() {
+                eprintln!("estate drop: {} runtime(s) still alive under {} after 10 sweeps: {left:?}", left.len(), e.root.display());
             }
         };
         if self.bootstrap.is_none() {

@@ -251,10 +251,14 @@ pub trait DeploymentProvider: Send + Sync {
     /// Does the runtime hold `addr` over `transport` (`WaitForBind`)? Asked
     /// of the operating system, never of the runtime. Default: something in
     /// this host's network namespace holds it.
-    async fn holds(&self, _handle: &DeploymentHandle, addr: std::net::SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
-        match transport {
-            super::endpoint::SlotTransport::Udp => super::endpoint::udp_port_is_held(addr),
-            super::endpoint::SlotTransport::Tcp => super::endpoint::tcp_port_is_held(addr),
+    /// Does this runtime hold `addr`? With a pid, the runtime's own descriptors answer: a port
+    /// another process holds is not this runtime's bind. Without one, whether anyone holds it.
+    async fn holds(&self, handle: &DeploymentHandle, addr: std::net::SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
+        match (handle.pid, transport) {
+            (Some(pid), super::endpoint::SlotTransport::Udp) => super::container::process_holds(pid, "udp", addr, None).unwrap_or(false),
+            (Some(pid), super::endpoint::SlotTransport::Tcp) => super::container::process_holds(pid, "tcp", addr, Some("0A")).unwrap_or(false),
+            (None, super::endpoint::SlotTransport::Udp) => super::endpoint::udp_port_is_held(addr),
+            (None, super::endpoint::SlotTransport::Tcp) => super::endpoint::tcp_port_is_held(addr),
         }
     }
 
