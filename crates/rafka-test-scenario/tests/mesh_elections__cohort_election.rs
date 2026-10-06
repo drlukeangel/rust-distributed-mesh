@@ -81,18 +81,32 @@ async fn accepted_build(estate: &Estate, (status, v): (u16, Value)) {
     estate.await_build(v["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
 }
 
-/// Every node is ready and every seat is the computed one.
-fn settled(nodes: &[Value]) -> bool {
-    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(nodes).is_ok()
+/// The view without the rows of births proven dead: drift recovery restores a killed birth's
+/// count at a free path, so the dead birth's own row is not replaced at its path.
+fn live(nodes: &[Value]) -> Vec<Value> {
+    nodes.iter().filter(|n| n["status"] != "dead").cloned().collect()
 }
 
-/// Wait until `base`'s view is settled; return it.
+/// Every live node is ready and every seat is the computed one.
+fn settled(nodes: &[Value]) -> bool {
+    let nodes = live(nodes);
+    !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok()
+}
+
+/// Wait until `base`'s view is settled; return its live rows. A timeout names the last view.
 async fn settle(estate: &Estate, base: &str, label: &str) -> Vec<Value> {
-    wait_for(&format!("{label}: the view settles on the computed seats"), Duration::from_secs(30), || async {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
         let nodes = estate.nodes_at(base).await;
-        settled(&nodes).then_some(nodes)
-    })
-    .await
+        if settled(&nodes) {
+            return live(&nodes);
+        }
+        if Instant::now() > until {
+            let seats = seats_as_expected(&live(&nodes)).err().unwrap_or_default();
+            panic!("{label}: the view did not settle on the computed seats in 30s ({seats}): {nodes:#?}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// For `hold`, every sample of `base`'s view advertises the computed seats
@@ -100,7 +114,7 @@ async fn settle(estate: &Estate, base: &str, label: &str) -> Vec<Value> {
 async fn steady(estate: &Estate, base: &str, label: &str, hold: Duration) {
     let until = Instant::now() + hold;
     while Instant::now() < until {
-        let nodes = estate.nodes_at(base).await;
+        let nodes = live(&estate.nodes_at(base).await);
         if nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
             if let Err(e) = seats_as_expected(&nodes) {
                 panic!("{label}: {e}: {nodes:#?}");
@@ -180,7 +194,8 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     settle(&estate, &base1, "shrink").await;
     steady(&estate, &base1, "shrink", hold).await;
 
-    // kill the current primary -> the next-lowest succeeds; the recreated path is a new NodeId
+    // kill the current primary -> the next-lowest succeeds; drift recovery restores the count with
+    // a new NodeId at a free path
     let nodes = estate.nodes().await;
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = id_of(&nodes, &killed);
@@ -188,9 +203,10 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let succ = successor(&estate, &base1, &rpc, &killed_id).await;
     let succ_id = id_of(&estate.nodes().await, &succ);
     build(&estate, &[("mesh1", 2, 3)]).await;
-    let nodes = settle(&estate, &base1, "the killed primary's path is back").await;
-    assert_ne!(id_of(&nodes, &killed), killed_id, "a replacement at the path is a new NodeId");
-    steady(&estate, &base1, "the killed primary's path is back", hold).await;
+    let nodes = settle(&estate, &base1, "the cohort is back at its desired count").await;
+    assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again");
+    assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").count(), 3, "three live rpc nodes: {nodes:#?}");
+    steady(&estate, &base1, "the cohort is back at its desired count", hold).await;
 
     // legal removal of the primary -> the next-lowest succeeds
     let removed = primary_of(&nodes, &rpc).unwrap();

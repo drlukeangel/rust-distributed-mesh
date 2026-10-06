@@ -209,9 +209,10 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
 }
 
 /// The positive arm: a member whose exact runtime the provider inspects as `Exited` is
-/// canonically dead, so the same desired topology recreates its path with a new birth.
+/// canonically dead, so the same desired topology restores the count with a new birth at the
+/// lowest free path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_whose_runtime_exited_is_replaced_at_its_path() {
+async fn a_member_whose_runtime_exited_is_replaced() {
     let mut estate = Estate::bootstrap(
         Owner { subfeature: "path-fence".into(), rung: "MN".into(), test: "a_member_whose_runtime_exited_is_replaced".into(), ..owner() },
         "fabric1",
@@ -226,9 +227,10 @@ async fn a_member_whose_runtime_exited_is_replaced_at_its_path() {
     })
     .await;
     kill(estate.pid_of("mesh1.rpc.2").await);
-    wait_for("a new birth holds the path", Duration::from_secs(60), || async {
-        let now = estate.node("mesh1.rpc.2").await;
-        (now["status"] == "ready-for-traffic" && now["incarnation_id"] != gone["incarnation_id"]).then_some(())
+    wait_for("a new birth restores two ready rpc nodes", Duration::from_secs(60), || async {
+        let nodes = estate.nodes().await;
+        let ready: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").collect();
+        (ready.len() == 2 && !ready.iter().any(|n| n["incarnation_id"] == gone["incarnation_id"])).then_some(())
     })
     .await;
     estate.stop().await;

@@ -194,9 +194,9 @@ fn live<'a>(t: &'a Topology, mesh: &str, kind: NodeKind) -> Vec<&'a crate::model
 
 /// Bring one existing mesh's live cohorts to `desired` counts.
 ///
-/// Grow fills the lowest free ordinals; a dead member's path is reused by a
-/// new node. Shrink retires the highest-ordinal non-primary members first, so
-/// no seat moves while any other member can go.
+/// Grow fills the lowest free ordinals among the live members; a dead member's
+/// path is free like any other. Shrink retires the highest-ordinal non-primary
+/// members first, so no seat moves while any other member can go.
 fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     for (kind, want) in [(NodeKind::NodeAdmin, desired.node_admin), (NodeKind::RpcNode, desired.rpc_node)] {
         let members = live(t, &desired.name, kind);
