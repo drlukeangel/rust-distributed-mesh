@@ -12,7 +12,7 @@ This document states the concrete RDM contracts the stories build to: binaries, 
 | `rafka-mesh-entity` | Mesh EF: logical IDs, runtime incarnation, RuntimeFact + current runtime metadata, endpoint slots/freshness, membership, imported connections model | — |
 | `rafka-mesh-transport` | Iroh endpoint/gossip integration, explicit addresses, membership channels, held-member repair | — |
 | `rafka-node-rpc` | server/client runtime, commit cut, admission, slot-aware pool, streaming, one-hop carried execution | — |
-| `rafka-node-admin-core` | DesiredTopologyProjection/bootstrap-catch-up, Build/Reconciler, BuildStateAdapter, deployment providers/pipelines, lifecycle transitions, leadership, recovery, HTTP | `rafka-node-admin` |
+| `rafka-node-admin-core` | Fabric record/accepted-Build hydration, fabric/mesh/nodes/connections/builds storage, Build/Reconciler, deployment providers/pipelines, lifecycle transitions, leadership, recovery, HTTP | `rafka-node-admin` |
 | `rafka-node-admin-client` | typed DTOs + HTTP client for control API | — |
 | `rafka-node-rpc-testkit` | Echo + stateful proof protocol/store, probes | `rafka-rpc-node`, `rafka-rpc-probe` |
 | `rafka-test-scenario` | scenario runner, evidence/replay manifests, e2e canaries | `rafka-scenario` |
@@ -175,65 +175,114 @@ Day-0/operator-started admin uses `adopt_current_runtime` or equivalent, registe
 
 A successor adopts a birth it did not launch from that birth's current digest (`AdminRunner::handle_for`); the `handles` map caches the result. No completed Build's `AllocateIdentity`/`DeployRuntime` receipt is read, and the Build topic still hands a new neighbour active Builds only.
 
-Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The desired-topology part of this gate is #2851's.
+Authority-capable Ready, runtime part: a node-admin publishes `Pending` until every live birth it holds (but itself) publishes a fact its provider adopts in its own control domain (`authority_blockers`); only then does it commit `ReadyForTraffic` and become eligible for any seat. While blocked it reports `rafka.node_admin.runtime.reject.via-not-authority-capable` naming each blocking birth. The accepted-Build hydration part of this gate is #47's.
 
-### 2.2 Desired topology and Build state
+### 2.2 Accepted topology, Build state, and storage
 
-Keep three separate facts:
+Three current fact classes remain separate:
 
 ```text
-DesiredTopologyProjection
-    = what Fabric/Mesh shape should exist
+Fabric.build_id -> complete Build
+    = what Fabric/Mesh shape has been accepted
 
 membership + RuntimeFacts + current runtime metadata
     = what exact current births/runtimes exist and how they can be managed
 
 Build facts
-    = how one reconciliation attempt is executing
+    = how attempts of the accepted Build are executing
 ```
 
-The current desired projection is bounded Fabric control state with a `desired_revision` (or equivalent fencing token). It survives Build completion and Build-history forget.
+There is no independent `DesiredTopologyProjection`, desired revision, lineage, fork winner or `source_build_id` authority.
 
-Topology-changing control requests update desired state under expected/current revision or equivalent insert-and-fail semantics. Silent conflicting last-write-wins is forbidden.
+Only the current fabric-primary accepts topology changes. A non-primary topology route refuses by name with the current fabric-primary.
 
-Current desired-state hydration is separate from Build history:
+Crash-safe acceptance is:
+
+```text
+compile complete Build B from current accepted topology + requested mutation
+  -> persist complete B through builds.storage
+  -> persist Fabric.build_id = B through fabric.storage
+  -> B is accepted
+```
+
+The pointer is never written first.
+
+RDM storage boundaries are:
+
+```text
+fabric.storage
+mesh.storage
+nodes.storage
+connections.storage
+builds.storage
+```
+
+RDM owns each interface plus memory and durable file implementations used by restart/chaos proof. `builds.storage` is the existing `BuildStateAdapter` contract with its memory/FileJournal implementations adopted under that name.
+
+The minimum Fabric record is:
+
+```text
+FabricRecord
+  id
+  name
+  build_id
+
+FabricShutdown?
+```
+
+Every admin persists the current Fabric record it learns. Those copies are durable state, not writer authority.
+
+Hydration is direct:
 
 ```text
 first connection / entry pull
-    -> current DesiredTopologyProjection + desired_revision
+    -> current FabricRecord
+    -> complete Build named by Fabric.build_id
 
 admin reconnect / control catch-up
-    -> latest DesiredTopologyProjection + desired_revision
+    -> latest FabricRecord + named Build
 
-Build-topic NeighborUp catch-up
-    -> active Build facts only
+Build-topic catch-up
+    -> active Build execution facts only
 ```
 
-The concrete transport may reuse an existing entry/control snapshot or a bounded dedicated current-state record, but active/completed Build receipts never substitute for the current desired projection.
+Older Build history is never replayed to reconstruct current topology.
 
-Build-id rules:
+Topology-changing routes compile the current Build's complete topology plus their mutation into a new complete Build. `RestartNode` and same-path replacement do not change topology and therefore do not mint a Build.
+
+A second topology-changing request while the current Build is actively reconciling refuses:
 
 ```text
-active Build B + authority/executor movement
-    -> continue B
-    -> same desired revision
-
-completed Build A + later proven runtime drift
-    -> new Build B
-    -> unchanged current desired revision
+409 build-in-progress
+current_build_id = B
 ```
 
-A failed RPC/dial/partition/provider-domain mismatch is not proven drift requiring replacement.
+There is no Build supersession/cancellation state machine.
 
-In RDM (`rafka-node-admin-core`: `desired`, `drift`):
+Build-id semantics:
 
-- `DesiredTopology { fabric_id, revision, desired: FabricDesired, source_build_id, lineage }`, at most 16 lineage marks: bounded, and kept by each admin's `DesiredStore`, apart from Build facts. Day 0 roots revision 1 (the bootstrap mesh, one node-admin).
-- A request compiles against the current revision (`desired::apply`): `ReconcileFabric` replaces the shape, `ReconcileMesh`/`CreateMesh` set one mesh, `RemoveMesh` drops one, `AddNode`/`RemoveNode` move one count, `RestartNode`/`ReplaceNode` change nothing. A change proposes `revision + 1` with the Build as its source; every Build fact names the revision it proposed or reconciles toward, and its reason (`requested-change` / `proven-drift`). An admin that holds no desired topology answers `503 desired-topology-unavailable`.
-- A record taken by a store: one that descends from the held one is taken; one the held one descends from is stale. Two from one base fork: the branch whose first revision has the lower `source_build_id` holds on every admin, whichever it heard first; no branch wins by being longer. A Build's revision is judged against the held lineage (`Standing`): current or an ancestor runs, newer waits, at or below the held revision outside its lineage lost a fork and is refused (`via-desired-revision-conflict`) whether or not this admin saw the fork.
-- Transport: the entry answer's `control.desired` (hydration before Ready); on the fabric control topic a record of its own, sent when proposed and to every new neighbour before its active Build facts. Completed Build receipts are never shipped for it, and `DELETE /api/builds?id=` never touches it. `GET /api/fabric` shows the held record as `desired`.
-- Drift (`drift::shortfall`): the fabric primary, while its view authorizes, counts each desired cohort's births; a birth the view no longer hears stays counted unless the provider inspected its exact published runtime and found it exited. A cohort short with at least one proven exit, and no active Build on the current revision, starts a new `ReconcileFabric` Build against that revision (`rafka.node_admin.build.create.via-proven-drift`), once per revision and set of exited births. A fabric shutdown stops reconciling before it stops the fabric's runtimes.
+```text
+accepted topology change
+    -> new complete Build B
+    -> Fabric.build_id = B
 
-### 2.3 Canonical elections and authority-capable Ready
+active Build B + authority/executor movement
+    -> same Build B
+    -> next attempt as required
+
+completed Build B + later proven runtime drift
+    -> next attempt of B
+    -> same Fabric.build_id
+    -> reason = proven-drift
+```
+
+Attempts/receipts append to B. There is no `reconcile_build_id`.
+
+`DELETE /api/builds?id=B` refuses while `Fabric.build_id == B`.
+
+Drift checks compare the complete accepted Build with current births. A birth that the view no longer hears remains held unless the provider inspected its exact published runtime and found it terminal. Proven shortfall opens another attempt of the same Build. A fabric shutdown freezes reconciliation before any runtime stop.
+
+### 2.3 Canonical elections and authority-capable Ready### 2.3 Canonical elections and authority-capable Ready
 
 A cohort is one kind's members in one mesh.
 
@@ -253,7 +302,7 @@ creation time
 incarnation/deployment
 RuntimeFact/provider locator/provider_control_domain
 current runtime metadata
-DesiredTopology revision
+Fabric.build_id
 EndpointId/freshness
 incumbency
 ```
@@ -282,7 +331,7 @@ A node-admin may not commit `ReadyForTraffic` until it has hydrated:
 
 ```text
 current membership/topology
-current DesiredTopologyProjection
+current FabricRecord + complete accepted Build
 current RuntimeFacts + required current runtime metadata for held births it may have to manage
 provider-control-domain reachability or a valid domain-local execution route
 ```
@@ -316,23 +365,25 @@ rafka.mesh.election.resolve.via-mesh-primary
 rafka.mesh.election.resolve.via-fabric-recompute
 ```
 
-The parked first s14 branch (`i143-e4-s14`, commit `243ff4a`) produced the canonical RED proving #2850/#2851 are prerequisites: after a lower-NodeId authority won, a retire/restart of a birth from an older completed Build failed with `no Build recorded the birth … it cannot be adopted` (trace `eb8f18449f2d1479`). The GREEN s14 rebase must prove that same case succeeds through current RuntimeFact/runtime-metadata + DesiredTopology hydration.
+The parked first s14 branch (`i143-e4-s14`, commit `243ff4a`) produced the canonical RED after a lower-NodeId authority won and could not adopt an older live birth. The GREEN s14 rebase must prove that case succeeds through current RuntimeFact/runtime-metadata plus `Fabric.build_id` + accepted-Build hydration. #47 supersedes #2851's independent desired-revision model.
 
 ### 2.4 Build execution and recovery
 
 Build authority and local executor are distinct.
 
+For an existing healthy Mesh, its current mesh-primary executes that Mesh's ordinary-member and sibling-node-admin operations. The fabric-primary chooses accepted Fabric topology; it does not become the default runtime executor for every Mesh. A Pending bootstrap/recovery admin is the temporary local executor only for its own Mesh until Ready + election. Whole-Mesh retirement keeps the explicit outside-Mesh executor rule.
+
 Normal mesh creation/recovery:
 
 ```text
-fabric authority owns desired update/recovery authority
+fabric authority owns accepted-topology/recovery authority
   -> birth ONE bootstrap/recovery node-admin with exact FabricId + MeshId
   -> provider/bootstrap obtains exact runtime locator + control domain
   -> node publishes RuntimeFact + required current runtime metadata
-  -> hydrate current topology + desired state + RuntimeFacts/runtime metadata + provider-domain capability
+  -> hydrate current FabricRecord + accepted Build + RuntimeFacts/runtime metadata + provider-domain capability
   -> ApplyMeshState(Pending)
   <- Applied | AlreadyApplied
-  -> run/hand ReconcileMesh for current desired revision
+  -> run/hand the current accepted Build for the target Mesh
   -> Pending admin executes only its own mesh
        preserve held current births
        adopt/manage them through RuntimeFacts/runtime metadata
@@ -349,7 +400,7 @@ A Pending bootstrap admin does not become elected primary by executing Build.
 
 If failed mesh held fabric authority, surviving mesh primaries elect current fabric primary **first**.
 
-If an active Build already exists, authority movement keeps the same Build id. If prior Build is complete/forgotten and later exact-runtime drift appears, DesiredTopologyProjection drives a new reconciliation Build.
+If an active Build already exists, authority movement keeps the same Build id. If the current Build is complete and later exact-runtime drift appears without a topology change, the fabric-primary opens the next attempt of that same Build.
 
 Runtime death proof:
 
@@ -369,6 +420,44 @@ partition
 ```
 
 Partition healing uses held current member + known EndpointId/address + stale coverage -> bounded `join_peers`/refeed. Zero neighbours remains fallback only. Relearned current birth restores RuntimeFact + required runtime metadata.
+
+### 2.5 Fabric shutdown
+
+Fabric shutdown is Fabric control state, never a Build or topology change. It leaves `Fabric.build_id` untouched.
+
+```text
+/api/shutdown at non-primary
+    -> RejectedNotAuthority(current fabric-primary)
+
+/api/shutdown at fabric-primary
+    -> 202
+    -> persist FabricShutdown through fabric.storage
+    -> disseminate it on the Fabric control channel
+
+every admin that receives/hydrates FabricShutdown
+    -> persist own copy
+    -> stop Build reconciliation, drift recovery and rebirth
+    -> gossip Draining
+
+all current live admin births Draining
+    -> freeze barrier satisfied
+
+each mesh-primary
+    -> stop ordinary members through exact RuntimeFacts
+    -> stop non-primary admins through exact RuntimeFacts
+
+fabric-primary
+    -> drains its own Mesh by the same rule
+    -> waits until every Mesh has no live runtime except its mesh-primary
+    -> stops other mesh-primaries through exact RuntimeFacts
+    -> stops itself last
+```
+
+A runtime merely in `Leaving` is still live for the drain barrier. The runtime must be gone/terminal before its mesh-primary is stopped.
+
+An uncontrollable or still-live runtime is named in the shutdown incomplete list and in `rafka.node_admin.fabric.update.via-shutdown-incomplete`; shutdown is not reported complete. `GET /api/fabric` exposes `shutdown.phase = frozen|draining|spine` and exact incomplete runtime + reason while the primary remains alive.
+
+Every admin persists active FabricShutdown, so a restart of every admin on the same data dirs comes back frozen. FabricShutdown is never deleted while its Fabric lives. Local OS/admin stop remains local.
 
 ## 3. Process contract
 
@@ -392,12 +481,12 @@ A serving node-admin prints one `RAFKA_NODE_ADMIN_API_BASE=<url>` line and write
 
 ## 4. Control API
 
-Every topology mutation returns `202 {"build_id":"..."}` and delegates to desired-state + Build control.
+Every topology mutation is accepted only by the current fabric-primary, returns `202 {"build_id":"..."}`, and delegates to complete-Build acceptance/reconciliation. A non-primary refuses by name; a second topology change during active reconciliation returns `409 build-in-progress`.
 
 ```text
 POST   /api/build
 GET    /api/builds?id=<build_id>
-DELETE /api/builds?id=<build_id>   # history only; does not erase desired state
+DELETE /api/builds?id=<build_id>   # history admin; refuses the Build Fabric.build_id names
 POST   /api/nodes/spawn
 DELETE /api/nodes/<path.name>
 POST   /api/nodes/<path.name>/restart
@@ -437,7 +526,7 @@ Conceptual `NodeView` includes:
 
 Raw sensitive provider credentials are never exposed. Runtime locator/control-domain values may be represented by safe fingerprints in public/evidence views if policy forbids raw disclosure. Operational metadata such as `data_dir` is not a runtime-identity key.
 
-Fabric/Mesh views carry logical IDs, current desired revision/state summary where appropriate, and live owning admin endpoint.
+Fabric/Mesh views carry logical IDs, the current `build_id` where appropriate, shutdown progress where active, and the live owning admin endpoint. `/api/fabric` does not store or expose a second desired-topology record.
 
 ## 5. Probe
 
@@ -459,8 +548,8 @@ Artifacts include at least:
 
 ```text
 manifest.json
-DesiredTopologyProjection before/after
-desired revision + bootstrap/reconnect hydration ledger
+FabricRecord before/after including build_id
+accepted-Build bootstrap/reconnect hydration ledger
 Build request/status/facts for active Build only
 Node/Mesh/Fabric public snapshots
 membership RuntimeFact snapshot/fingerprints
@@ -483,16 +572,16 @@ Mandatory late-authority proof:
 Build A converges
 A history is complete/forgotten
 birth lower-NodeId admin
-admin hydrates desired state + current RuntimeFacts/runtime metadata + provider-domain capability
+admin hydrates Fabric.build_id + accepted Build + current RuntimeFacts/runtime metadata + provider-domain capability
 admin Ready -> wins
 admin adopts/controls a runtime launched before it existed
-later proven drift -> new Build B against same desired revision
+later proven drift -> next attempt of the same Build B
 ```
 
 Mandatory Ready-root proof:
 
 ```text
-ordinary joining admin lacks current desired/runtime hydration
+ordinary joining admin lacks current accepted-Build/runtime hydration
     -> remains non-Ready
 restore catch-up
     -> hydrates -> Ready -> election
@@ -513,7 +602,7 @@ Existing canonical spans remain, including:
 | span | purpose |
 |---|---|
 | `rafka.node_admin.build.create.via-rest` | Build accepted |
-| `rafka.node_admin.build.update.via-reconcile` | desired - observed reconciliation |
+| `rafka.node_admin.build.update.via-reconcile` | accepted Build - observed reconciliation |
 | `rafka.node_admin.deployment.update.via-pipeline` | provider pipeline |
 | `rafka.node_admin.deployment.update.via-step` | pipeline step |
 | `rafka.mesh.node.create.via-deployment` | process boot |
@@ -527,7 +616,7 @@ Existing canonical spans remain, including:
 New implementation should add evidence spans for:
 
 ```text
-DesiredTopologyProjection update/conflict/first-hydration/reconnect-hydration
+FabricRecord/build_id accept/first-hydration/reconnect-hydration
 current runtime-metadata hydration
 provider-control-domain resolution/delegated execution
 Ready root/refusal where applicable
