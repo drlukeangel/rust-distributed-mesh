@@ -10,9 +10,10 @@
 //! - `mesh.storage`: the admin's own Mesh (id and name), so a restarted admin rejoins the same
 //!   Mesh channel rather than minting a new one.
 //! - `nodes.storage`: the admin's own row (NodeId, path.name, the incarnation it last ran, its
-//!   transport identity and endpoints), so a restart is the same logical node; and the last-known
-//!   births it heard, as bootstrap contacts. A stored contact is a hint: never topology, never
-//!   death proof.
+//!   transport identity and endpoints), so a restart is the same logical node; the last-known
+//!   births it heard, as bootstrap contacts (a stored contact is a hint: never topology, never
+//!   death proof); and, when this admin is a birth's authority, the lifecycle state that birth
+//!   declared and the admin applied (`status_rpc`).
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
 use crate::model::{IncarnationId, MeshId, NodeId, PathName, TransportId};
@@ -95,6 +96,10 @@ pub struct NodeRecord {
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The lifecycle state this birth declared and its authority applied (`status_rpc`), when
+    /// this admin is that authority. Never liveness: membership still says what is heard.
+    #[serde(default)]
+    pub declared: Option<String>,
 }
 
 impl NodeRecord {
@@ -247,6 +252,7 @@ mod tests {
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             endpoints: vec![EndpointSlot::fresh("rpc-0")],
             listeners: vec![],
+            declared: None,
         }
     }
 

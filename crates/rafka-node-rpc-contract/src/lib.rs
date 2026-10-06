@@ -14,6 +14,7 @@ pub mod forward;
 pub mod framing;
 pub mod outcome;
 pub mod protocol;
+pub mod status;
 pub mod streaming;
 
 pub use codes::ResetCode;

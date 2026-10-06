@@ -70,6 +70,9 @@ pub struct NodeView {
     pub endpoints: Vec<EndpointSlot>,
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
+    /// The lifecycle state the birth declared to its authority, once applied.
+    #[serde(default)]
+    pub declared: Option<String>,
 }
 
 /// `MeshView`.

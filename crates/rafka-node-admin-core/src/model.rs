@@ -92,6 +92,10 @@ pub struct Node {
     /// lifecycle overlay (`NodeDeleting`). The resolver never reads it.
     #[serde(default = "routable_default")]
     pub routable: bool,
+    /// The lifecycle state this birth declared to its authority and the authority applied
+    /// (`status_rpc`); `None` until it declares. Not `status`: that is what membership hears.
+    #[serde(default)]
+    pub declared: Option<String>,
 }
 
 fn routable_default() -> bool {
@@ -119,6 +123,7 @@ impl Node {
             endpoints: Vec::new(),
             listeners: Vec::new(),
             routable: true,
+            declared: None,
         }
     }
 }

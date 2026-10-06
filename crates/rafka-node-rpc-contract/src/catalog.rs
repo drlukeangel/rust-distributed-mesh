@@ -72,8 +72,10 @@ pub fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x18, "forward-read"),
         rafka(0x19, "peer-tickle"),
         LedgerEntry { tag: 0x1A, family: "forward".into(), owner: TagOwner::Core, state: TagState::Live },
+        LedgerEntry { tag: 0x1B, family: "status".into(), owner: TagOwner::Product("rdm".into()), state: TagState::Live },
         LedgerEntry { tag: 0x70, family: "proof-store".into(), owner: TagOwner::Testkit, state: TagState::Live },
         LedgerEntry { tag: 0x71, family: "resolve-probe".into(), owner: TagOwner::Testkit, state: TagState::Live },
+        LedgerEntry { tag: 0x72, family: "declare-probe".into(), owner: TagOwner::Testkit, state: TagState::Live },
     ]
 }
 
@@ -391,24 +393,23 @@ mod tests {
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.tag).collect();
-        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x70, 0x71]);
+        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x70, 0x71, 0x72]);
+        assert_eq!(l.iter().find(|r| r.tag == 0x1B).map(|r| r.owner.clone()), Some(TagOwner::Product("rdm".into())), "status is RDM's control family, not core");
         let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core).map(|r| r.tag).collect();
         assert_eq!(core, vec![0x11, 0x1A], "the core tags are exactly Echo and Forward");
         let testkit: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Testkit).map(|r| r.tag).collect();
-        assert_eq!(testkit, vec![0x70, 0x71], "the testkit tags are the proof store and the resolve probe");
-        assert_eq!(TESTKIT_TAGS, 0x70..=0x7F, "the testkit range is pinned");
-        assert_eq!(l.iter().find(|r| r.tag == 0x16).unwrap().state, TagState::Retired);
+        assert_eq!(testkit, vec![0x70, 0x71, 0x72], "the testkit tags are the proof store, the resolve probe and the declare probe");
     }
 
     #[test]
     fn the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else() {
         let product_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x72, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()), state: TagState::Live }])
+            .ledger([LedgerEntry { tag: 0x73, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()), state: TagState::Live }])
             .seal()
             .unwrap_err();
         assert_eq!(
             product_inside,
-            vec![SealError::TestkitRange { tag: 0x72, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()) }]
+            vec![SealError::TestkitRange { tag: 0x73, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()) }]
         );
         let testkit_outside = CatalogBuilder::new()
             .ledger([LedgerEntry { tag: 0x42, family: "stray".into(), owner: TagOwner::Testkit, state: TagState::Live }])

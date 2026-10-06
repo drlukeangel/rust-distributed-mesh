@@ -2,7 +2,7 @@
 //! All configuration is the launch environment (`docs/i143/design.md` §3).
 
 use rafka_node_rpc_testkit::launch::Launch;
-use rafka_node_rpc_testkit::{node, proof_store, resolve_probe};
+use rafka_node_rpc_testkit::{declare_probe, node, proof_store, resolve_probe};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -25,6 +25,8 @@ async fn main() {
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_mesh_telemetry::set_parent(&boot, &tp);
     }
+    // The declare oracle calls out through the node's one client, which exists once the node runs.
+    let declare_client: Arc<std::sync::OnceLock<rafka_node_rpc_testkit::node_rpc::ProcessNodeRpc>> = Arc::new(std::sync::OnceLock::new());
     let store = match proof_store::FileProofStore::open(&launch.data_dir) {
         Ok(s) => Arc::new(s),
         Err(e) => {
@@ -37,7 +39,7 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match node::start(&launch, |b, resolver| resolve_probe::serve(proof_store::serve(b, store, &launch), resolver, &launch))
+        match node::start(&launch, |b, resolver| declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), resolver, &launch), declare_client.clone(), &launch))
             .instrument(tracing::Span::none())
             .await
         {
@@ -49,6 +51,7 @@ async fn main() {
             }
         }
     };
+    let _ = declare_client.set(running.node_rpc.clone());
     drop(boot);
     println!("RAFKA_NODE_READY {}", launch.node_id);
     wait_for_signal().await;

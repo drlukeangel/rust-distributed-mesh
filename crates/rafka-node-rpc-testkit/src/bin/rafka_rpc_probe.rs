@@ -34,11 +34,18 @@ struct Args {
     via: Option<String>,
     /// Execute the `NoActiveRoute` choice: the seam sends nothing and answers by name.
     no_route: bool,
+    /// `declare`: the authority the node declares to (`path:`/`exact:`), the state, and the
+    /// testkit-only overrides.
+    to: Option<String>,
+    state: Option<String>,
+    as_node_id: Option<String>,
+    as_incarnation: Option<String>,
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut admin, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
     let mut no_route = false;
+    let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -50,19 +57,73 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--query" => key = Some(take("--query")?),
             "--via" => via = Some(take("--via")?),
             "--no-route" => no_route = true,
-            "get" | "put" | "delete" | "cas" | "resolve" if op.is_none() => op = Some(a),
+            "--to" => to = Some(take("--to")?),
+            "--state" => state = Some(take("--state")?),
+            "--as-node-id" => as_node_id = Some(take("--as-node-id")?),
+            "--as-incarnation" => as_incarnation = Some(take("--as-incarnation")?),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
+    let is_declare = op.as_deref() == Some("declare");
     Ok(Args {
         admin: admin.ok_or("--admin is required")?,
-        op: op.ok_or("an op (get, put, delete, cas) is required")?,
+        op: op.ok_or("an op (get, put, delete, cas, resolve, declare) is required")?,
         target: target.ok_or("--target is required")?,
-        key: key.ok_or("--key is required")?,
+        key: if is_declare { key.unwrap_or_default() } else { key.ok_or("--key is required")? },
         value,
         expected,
         via,
         no_route,
+        to,
+        state,
+        as_node_id,
+        as_incarnation,
+    })
+}
+
+/// `declare`: ask the node at `--target` to declare `--state` for its own birth to `--to`.
+async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
+    use rafka_node_rpc_contract::status::NodeState;
+    use rafka_node_rpc_testkit::declare_probe::{DeclareProbe, DeclareReply, DeclareRequest, DeclareTarget};
+    let to = a.to.as_deref().ok_or("declare needs --to <path:..|exact:..>")?;
+    let to = match to.split_once(':') {
+        Some(("exact", id)) => DeclareTarget::Exact(id.to_string()),
+        Some(("path", p)) => DeclareTarget::Path(p.to_string()),
+        _ => return Err(format!("--to {to:?} is neither exact:<node_id> nor path:<path.name>")),
+    };
+    let state = match a.state.as_deref().ok_or("declare needs --state")? {
+        "pending" => NodeState::Pending,
+        "ready-for-traffic" => NodeState::ReadyForTraffic,
+        "draining" => NodeState::Draining,
+        "leaving" => NodeState::Leaving,
+        other => return Err(format!("--state {other:?} is not a node state")),
+    };
+    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
+    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let resolver = Arc::new(StaticResolver::new());
+    for n in resolved(&view) {
+        resolver.insert(n);
+    }
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let req = DeclareRequest::Declare { to, state, node_id: a.as_node_id.clone(), incarnation: a.as_incarnation.clone() };
+    let (out, _) = client.call::<DeclareProbe>(target, &req, &CallOptions::default()).await;
+    Ok(match &out {
+        RpcOutcome::Reply(r) => match r.value() {
+            DeclareReply::Answered { outcome, reply, reason } => json!({
+                "outcome": "Reply",
+                "declared": {
+                    "outcome": outcome,
+                    "reply": reply.as_ref().map(|s| s.name()),
+                    "detail": reply.as_ref().map(|s| format!("{s:?}")),
+                    "reason": reason,
+                }
+            }),
+            other => json!({"outcome": "Reply", "refused": format!("{other:?}")}),
+        },
+        RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
+        other => json!({"outcome": other.name()}),
     })
 }
 
@@ -142,6 +203,9 @@ async fn run(a: Args) -> Result<Value, String> {
     let target = target(&a.target)?;
     if a.op == "resolve" {
         return run_resolve(&a, &target).await;
+    }
+    if a.op == "declare" {
+        return run_declare(&a, &target).await;
     }
     let req = request(&a)?;
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));

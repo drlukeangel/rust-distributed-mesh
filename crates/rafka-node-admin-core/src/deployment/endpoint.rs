@@ -51,8 +51,9 @@ pub const RPC_NODE: KindSpec =
 /// The slots of an rpc node.
 pub const RPC_NODE_SLOTS: &[SlotSpec] = RPC_NODE.slots;
 
-/// A node-admin: its mesh transport and its control API (HTTP); no Node RPC slots.
-pub const NODE_ADMIN: KindSpec = KindSpec { slots: &[], listeners: &["control"] };
+/// A node-admin: its mesh transport, one stable Node RPC slot (the declarations it applies as an
+/// authority arrive through it) and its control API (HTTP).
+pub const NODE_ADMIN: KindSpec = KindSpec { slots: &[SlotSpec { slot: "rpc-0", policy: SlotPolicy::Stable }], listeners: &["control"] };
 
 /// What a node kind binds and serves.
 pub fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
@@ -488,7 +489,7 @@ mod tests {
     fn a_listener_kind_gets_its_own_tcp_address_beside_the_transport() {
         let mut a = alloc();
         let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, false).unwrap();
-        assert!(got.slots.is_empty());
+        assert_eq!(got.slots.len(), 1, "one stable slot, no socket of its own");
         assert_eq!(got.listeners.len(), 1);
         assert_eq!(got.listeners[0].0, "control");
         assert_ne!(got.listeners[0].1, got.transport);
