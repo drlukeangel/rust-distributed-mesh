@@ -371,10 +371,12 @@ The parked first s14 branch (`i143-e4-s14`, commit `243ff4a`) produced the canon
 
 Build authority and local executor are distinct.
 
+For an existing healthy Mesh, its current mesh-primary executes that Mesh's ordinary-member and sibling-node-admin operations. The fabric-primary chooses accepted Fabric topology; it does not become the default runtime executor for every Mesh. A Pending bootstrap/recovery admin is the temporary local executor only for its own Mesh until Ready + election. Whole-Mesh retirement keeps the explicit outside-Mesh executor rule.
+
 Normal mesh creation/recovery:
 
 ```text
-fabric authority owns desired update/recovery authority
+fabric authority owns accepted-topology/recovery authority
   -> birth ONE bootstrap/recovery node-admin with exact FabricId + MeshId
   -> provider/bootstrap obtains exact runtime locator + control domain
   -> node publishes RuntimeFact + required current runtime metadata
@@ -479,7 +481,7 @@ A serving node-admin prints one `RAFKA_NODE_ADMIN_API_BASE=<url>` line and write
 
 ## 4. Control API
 
-Every topology mutation returns `202 {"build_id":"..."}` and delegates to desired-state + Build control.
+Every topology mutation is accepted only by the current fabric-primary, returns `202 {"build_id":"..."}`, and delegates to complete-Build acceptance/reconciliation. A non-primary refuses by name; a second topology change during active reconciliation returns `409 build-in-progress`.
 
 ```text
 POST   /api/build
