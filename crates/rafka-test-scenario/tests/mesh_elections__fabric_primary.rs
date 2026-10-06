@@ -167,13 +167,14 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     );
 }
 
-/// A member that is unheard (frozen: its process runs but says nothing) is
-/// dead in the view, so a reconcile recreates its path. The new birth fences
-/// the old one first: a path never has two live runtimes.
+/// A member that is unheard (frozen: its process runs but says nothing) is dead in the view, but
+/// silence is never death proof (Luke 2026-10-05): the desired Build resubmitted holds it. No new
+/// birth takes the path, nothing is terminated, and the fence names the hold (`held-running`).
+/// Must NOT happen: a replacement birth at the path, or `via-fence outcome=terminated`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_new_birth_fences_an_unheard_predecessor_at_its_path() {
+async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     let mut estate = Estate::bootstrap(
-        Owner { subfeature: "path-fence".into(), rung: "MN".into(), test: "a_new_birth_fences_an_unheard_predecessor".into(), ..owner() },
+        Owner { subfeature: "path-fence".into(), rung: "MN".into(), test: "a_silent_member_whose_runtime_still_runs_is_held".into(), ..owner() },
         "fabric1",
         "mesh1",
     )
@@ -181,7 +182,10 @@ async fn a_new_birth_fences_an_unheard_predecessor_at_its_path() {
     let desired = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}]});
     let (_, a) = estate.post("/api/build", &desired).await;
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let frozen = estate.node("mesh1.rpc.2").await;
+    let frozen = wait_for("this admin hears mesh1.rpc.2", Duration::from_secs(30), || async {
+        estate.nodes().await.into_iter().find(|n| n["name"] == "mesh1.rpc.2")
+    })
+    .await;
     let pid = estate.pid_of("mesh1.rpc.2").await;
     assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
     wait_for("the frozen member is dead in the view", Duration::from_secs(30), || async {
@@ -191,24 +195,43 @@ async fn a_new_birth_fences_an_unheard_predecessor_at_its_path() {
 
     let (_, a) = estate.post("/api/build", &desired).await;
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    // The Build ran on the mesh primary; this admin hears the birth within gossip delay.
-    wait_for("a new birth holds the path", Duration::from_secs(30), || async {
-        let now = estate.node("mesh1.rpc.2").await;
-        (now["status"] == "ready-for-traffic" && now["incarnation_id"] != frozen["incarnation_id"]).then_some(())
-    })
-    .await;
     let at_path: Vec<_> = estate.live_runtimes().into_iter().filter(|(d, _)| d.file_name().unwrap().to_string_lossy().starts_with("mesh1.rpc.2-")).collect();
-    assert_eq!(at_path.len(), 1, "one live runtime at the path: {at_path:?}");
-    assert_ne!(u64::from(at_path[0].1), pid, "the frozen predecessor was stopped");
+    assert_eq!(at_path.len(), 1, "one runtime at the path, the frozen one: {at_path:?}");
+    assert_eq!(u64::from(at_path[0].1), pid, "the frozen predecessor is held, never terminated");
+    assert_eq!(estate.node("mesh1.rpc.2").await["incarnation_id"], frozen["incarnation_id"], "no new birth at the path");
 
+    assert!(Command::new("kill").args(["-CONT", &pid.to_string()]).status().unwrap().success());
     estate.stop().await;
     let spans = estate.spans();
-    assert!(
-        named(&spans, "rafka.node_admin.deployment.delete.via-fence")
-            .iter()
-            .any(|sp| sp["attributes"]["node"] == "mesh1.rpc.2" && sp["attributes"]["outcome"] == "terminated"),
-        "the fence is in the evidence"
-    );
+    let fences: Vec<&Value> = named(&spans, "rafka.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.2").collect();
+    assert!(fences.iter().any(|sp| sp["attributes"]["outcome"] == "held-running"), "the hold is in the evidence: {fences:?}");
+    assert!(!fences.iter().any(|sp| sp["attributes"]["outcome"] == "terminated"), "nothing was terminated on silence: {fences:?}");
+}
+
+/// The positive arm: a member whose exact runtime the provider inspects as `Exited` is
+/// canonically dead, so the same desired topology recreates its path with a new birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_whose_runtime_exited_is_replaced_at_its_path() {
+    let mut estate = Estate::bootstrap(
+        Owner { subfeature: "path-fence".into(), rung: "MN".into(), test: "a_member_whose_runtime_exited_is_replaced".into(), ..owner() },
+        "fabric1",
+        "mesh1",
+    )
+    .await;
+    let desired = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}]});
+    let (_, a) = estate.post("/api/build", &desired).await;
+    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    let gone = wait_for("this admin hears mesh1.rpc.2", Duration::from_secs(30), || async {
+        estate.nodes().await.into_iter().find(|n| n["name"] == "mesh1.rpc.2")
+    })
+    .await;
+    kill(estate.pid_of("mesh1.rpc.2").await);
+    wait_for("a new birth holds the path", Duration::from_secs(60), || async {
+        let now = estate.node("mesh1.rpc.2").await;
+        (now["status"] == "ready-for-traffic" && now["incarnation_id"] != gone["incarnation_id"]).then_some(())
+    })
+    .await;
+    estate.stop().await;
 }
 
 /// Three meshes with shuffled names: the fabric primary is the lowest

@@ -434,6 +434,10 @@ enum FenceOutcome {
     Clear,
     /// The previous birth answers directly: it is alive and keeps the path.
     Alive,
+    /// The previous birth is unheard and does not answer, but the provider inspects its exact
+    /// runtime as running: silence is never death proof, so it is held and keeps the path
+    /// (Luke 2026-10-05). Only an explicit retire or replace may terminate a running runtime.
+    Held,
 }
 
 /// Realises Build operations through the deployment and lifecycle pipelines.
@@ -561,9 +565,11 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
-    /// A new birth at a path whose previous birth this view holds as not live
-    /// (killed, or only unheard): if that runtime still runs, stop it first,
-    /// so a path never has two live runtimes.
+    /// A new birth at a path whose previous birth this view holds as not live (killed, or only
+    /// unheard). Recovery replaces only a birth proven terminal: a predecessor whose exact runtime
+    /// the provider inspects as running is held, never terminated here, so a partition or a
+    /// frozen process is never turned into a replacement (Luke 2026-10-05, silence never
+    /// authorizes replacement).
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
         let Some(prev) = self.topology.read().await.node(path).cloned() else { return FenceOutcome::Clear };
         if prev.status.is_live() || prev.incarnation_id.is_none() {
@@ -582,10 +588,9 @@ impl AdminRunner {
             Err(e) => format!("not-found: {e}"),
             Ok((_, h)) => match self.provider.inspect(&h).await {
                 crate::deployment::provider::DeploymentStatus::Running => {
-                    match self.provider.terminate(&h, TerminationMode::Graceful { grace: Duration::from_secs(8) }).await {
-                        Ok(()) => "terminated".to_string(),
-                        Err(e) => format!("terminate-failed: {e}"),
-                    }
+                    tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
+                        .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
+                    return FenceOutcome::Held;
                 }
                 other => format!("not-running: {other:?}"),
             },
@@ -643,8 +648,9 @@ impl AdminRunner {
     }
 
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>) -> Result<(), String> {
-        if restart_of.is_none() && self.fence_predecessor(node).await == FenceOutcome::Alive {
-            // The member is alive, only unheard: nothing to create.
+        if restart_of.is_none() && matches!(self.fence_predecessor(node).await, FenceOutcome::Alive | FenceOutcome::Held) {
+            // The member is alive (it answers) or held (its exact runtime still runs): nothing to
+            // create. Silence never authorizes a replacement.
             return Ok(());
         }
         let template = self.template_for(node.kind, &node.mesh).await;
