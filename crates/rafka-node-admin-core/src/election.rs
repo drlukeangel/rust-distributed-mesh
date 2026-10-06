@@ -27,7 +27,9 @@
 //! An admin reports each change it owns (`ElectionLog`):
 //! `rafka.mesh.election.resolve.via-recompute` (its mesh's cohorts),
 //! `rafka.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
-//! while it is a mesh primary, `rafka.mesh.election.resolve.via-fabric-recompute`.
+//! while it is a mesh primary, `rafka.mesh.election.resolve.via-fabric-recompute`: on each change
+//! of the fabric seat, and on becoming a mesh primary, when it takes ownership of the seat it was
+//! tracking.
 
 use crate::model::{Node, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
@@ -113,11 +115,13 @@ pub struct ElectionLog {
     /// `None` until the first view.
     last_mesh: Mutex<Option<Option<Seat>>>,
     last_fabric: Mutex<Option<Option<Seat>>>,
+    /// Whether this admin was a mesh primary (an owner of the fabric election) at its last view.
+    owned_fabric: Mutex<bool>,
 }
 
 impl ElectionLog {
     pub fn new(observer: PathName) -> Self {
-        Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None) }
+        Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None), owned_fabric: Mutex::new(false) }
     }
 
     /// Record `t`'s winners. Each change of a seat this admin owns, and each
@@ -187,7 +191,11 @@ impl ElectionLog {
         let fabric = t.fabric_primary().map(Seat::of);
         let mut last_fabric = self.last_fabric.lock().unwrap();
         let owner = mesh_primary.as_ref().is_some_and(|s| s.path == self.observer.to_string());
-        if owner && last_fabric.as_ref() != Some(&fabric) {
+        let mut owned = self.owned_fabric.lock().unwrap();
+        let gained = owner && !*owned;
+        *owned = owner;
+        drop(owned);
+        if owner && (gained || last_fabric.as_ref() != Some(&fabric)) {
             let previous = last_fabric.clone().flatten();
             let candidates: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
             let span = tracing::info_span!(
@@ -209,8 +217,8 @@ impl ElectionLog {
             );
             span.in_scope(|| tracing::info!("fabric primary resolved"));
         }
-        // A non-owner still tracks the seat, so it reports only a change it
-        // sees after it becomes an owner.
+        // A non-owner still tracks the seat; it reports the seat when it becomes an owner and
+        // every change after.
         *last_fabric = Some(fabric);
     }
 }
