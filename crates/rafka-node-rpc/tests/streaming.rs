@@ -48,7 +48,7 @@ enum CountFrame {
 }
 
 impl NodeProtocol for Count {
-    const TAG: u8 = 0x7D;
+    const TAG: u8 = 0x5D;
     const NAME: &'static str = "count";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 256 * 1024;

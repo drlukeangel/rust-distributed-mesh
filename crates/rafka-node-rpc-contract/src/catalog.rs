@@ -21,7 +21,14 @@ pub enum TagOwner {
     Core,
     /// A product family (e.g. Rafka), named.
     Product(String),
+    /// RDM's proof testkit: served only by the testkit rpc node, never by a
+    /// product binary, and only on a tag in [`TESTKIT_TAGS`].
+    Testkit,
 }
+
+/// The tags reserved for RDM's proof testkit, permanently. No core or product
+/// family is ever allocated one, and no testkit family lives outside them.
+pub const TESTKIT_TAGS: std::ops::RangeInclusive<u8> = 0x70..=0x7F;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagState {
@@ -65,6 +72,7 @@ pub fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x18, "forward-read"),
         rafka(0x19, "peer-tickle"),
         LedgerEntry { tag: 0x1A, family: "forward".into(), owner: TagOwner::Core, state: TagState::Live },
+        LedgerEntry { tag: 0x70, family: "proof-store".into(), owner: TagOwner::Testkit, state: TagState::Live },
     ]
 }
 
@@ -143,6 +151,9 @@ pub enum SealError {
     /// Two ledger rows for one tag.
     DuplicateLedgerRow { tag: u8 },
     ZeroCeiling { tag: u8, name: String },
+    /// A ledger row breaks the testkit range: a testkit family outside
+    /// [`TESTKIT_TAGS`], or a core/product family inside it.
+    TestkitRange { tag: u8, family: String, owner: TagOwner },
 }
 
 impl fmt::Display for SealError {
@@ -158,6 +169,12 @@ impl fmt::Display for SealError {
             Self::ForwardableStream { tag, name } => write!(f, "tag {tag:#04x} ({name}): streaming families are not forwardable"),
             Self::DuplicateLedgerRow { tag } => write!(f, "the tag ledger has two rows for {tag:#04x}"),
             Self::ZeroCeiling { tag, name } => write!(f, "tag {tag:#04x} ({name}) declares a zero frame ceiling"),
+            Self::TestkitRange { tag, family, owner } => write!(
+                f,
+                "tag {tag:#04x} ({family}, {owner:?}) breaks the testkit range {:#04x}..={:#04x}: only testkit families live there, and only there",
+                TESTKIT_TAGS.start(),
+                TESTKIT_TAGS.end()
+            ),
         }
     }
 }
@@ -193,6 +210,9 @@ impl CatalogBuilder {
         for row in &self.ledger {
             if ledger.insert(row.tag, row).is_some() {
                 errors.push(SealError::DuplicateLedgerRow { tag: row.tag });
+            }
+            if TESTKIT_TAGS.contains(&row.tag) != (row.owner == TagOwner::Testkit) {
+                errors.push(SealError::TestkitRange { tag: row.tag, family: row.family.clone(), owner: row.owner.clone() });
             }
         }
         let mut served: BTreeMap<u8, CatalogEntry> = BTreeMap::new();
@@ -365,9 +385,34 @@ mod tests {
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.tag).collect();
-        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A]);
+        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x70]);
         let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core).map(|r| r.tag).collect();
         assert_eq!(core, vec![0x11, 0x1A], "the core tags are exactly Echo and Forward");
+        let testkit: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Testkit).map(|r| r.tag).collect();
+        assert_eq!(testkit, vec![0x70], "the testkit tags are exactly the proof store");
+        assert_eq!(TESTKIT_TAGS, 0x70..=0x7F, "the testkit range is pinned");
         assert_eq!(l.iter().find(|r| r.tag == 0x16).unwrap().state, TagState::Retired);
+    }
+
+    #[test]
+    fn the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else() {
+        let product_inside = CatalogBuilder::new()
+            .ledger([LedgerEntry { tag: 0x71, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()), state: TagState::Live }])
+            .seal()
+            .unwrap_err();
+        assert_eq!(
+            product_inside,
+            vec![SealError::TestkitRange { tag: 0x71, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()) }]
+        );
+        let testkit_outside = CatalogBuilder::new()
+            .ledger([LedgerEntry { tag: 0x42, family: "stray".into(), owner: TagOwner::Testkit, state: TagState::Live }])
+            .seal()
+            .unwrap_err();
+        assert_eq!(testkit_outside, vec![SealError::TestkitRange { tag: 0x42, family: "stray".into(), owner: TagOwner::Testkit }]);
+        let core_inside = CatalogBuilder::new()
+            .ledger([LedgerEntry { tag: 0x7F, family: "core-probe".into(), owner: TagOwner::Core, state: TagState::Live }])
+            .seal()
+            .unwrap_err();
+        assert_eq!(core_inside, vec![SealError::TestkitRange { tag: 0x7F, family: "core-probe".into(), owner: TagOwner::Core }]);
     }
 }

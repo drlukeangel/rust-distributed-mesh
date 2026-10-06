@@ -19,6 +19,7 @@ anyhow = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+reqwest = { version = "0.13.3", features = ["json"] }
 
 [dev-dependencies]
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
@@ -28,3 +29,7 @@ tracing-subscriber = { workspace = true }
 [[bin]]
 name = "rafka-rpc-node"
 path = "src/bin/rafka_rpc_node.rs"
+
+[[bin]]
+name = "rafka-rpc-probe"
+path = "src/bin/rafka_rpc_probe.rs"

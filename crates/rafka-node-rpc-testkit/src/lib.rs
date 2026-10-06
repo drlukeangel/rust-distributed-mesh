@@ -5,3 +5,4 @@
 
 pub use rafka_mesh_entity::launch;
 pub mod node;
+pub mod proof_store;

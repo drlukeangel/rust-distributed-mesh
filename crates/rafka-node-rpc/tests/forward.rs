@@ -36,7 +36,7 @@ enum ProbeReply {
 }
 
 impl NodeProtocol for Probe {
-    const TAG: u8 = 0x7E;
+    const TAG: u8 = 0x5E;
     const NAME: &'static str = "probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 4096;

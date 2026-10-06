@@ -2,7 +2,8 @@
 //! All configuration is the launch environment (`docs/i143/design.md` §3).
 
 use rafka_node_rpc_testkit::launch::Launch;
-use rafka_node_rpc_testkit::node;
+use rafka_node_rpc_testkit::{node, proof_store};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -24,11 +25,19 @@ async fn main() {
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_mesh_telemetry::set_parent(&boot, &tp);
     }
+    let store = match proof_store::FileProofStore::open(&launch.data_dir) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            boot.in_scope(|| tracing::error!(error = %e, "the proof store refused to open"));
+            eprintln!("rafka-rpc-node: proof store: {e}");
+            std::process::exit(3);
+        }
+    };
     // The node's long-lived tasks (endpoints, gossip) must not hold the boot
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match node::start(&launch, |b| b).instrument(tracing::Span::none()).await {
+        match node::start(&launch, |b| proof_store::serve(b, store, &launch)).instrument(tracing::Span::none()).await {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
