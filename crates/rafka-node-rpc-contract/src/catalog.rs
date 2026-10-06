@@ -64,6 +64,7 @@ pub fn core_ledger() -> Vec<LedgerEntry> {
         rafka(0x17, "forward-write"),
         rafka(0x18, "forward-read"),
         rafka(0x19, "peer-tickle"),
+        LedgerEntry { tag: 0x1A, family: "forward".into(), owner: TagOwner::Core, state: TagState::Live },
     ]
 }
 
@@ -364,8 +365,9 @@ mod tests {
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.tag).collect();
-        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19]);
-        assert_eq!(l.iter().filter(|r| r.owner == TagOwner::Core).count(), 1, "only echo is core");
+        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A]);
+        let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core).map(|r| r.tag).collect();
+        assert_eq!(core, vec![0x11, 0x1A], "the core tags are exactly Echo and Forward");
         assert_eq!(l.iter().find(|r| r.tag == 0x16).unwrap().state, TagState::Retired);
     }
 }

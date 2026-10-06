@@ -63,6 +63,10 @@ pub enum NotSentReason {
     Deadline,
     /// The sender reset an unfinished request with `499 FRAME_NOT_SENT`.
     FrameNotSent,
+    /// A carrier proved the inner call never committed at the final target.
+    Carried(String),
+    /// The protocol is not forwardable, so it never travels through a carrier.
+    NotForwardable { tag: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,8 @@ pub enum IndeterminateReason {
     CorruptReply,
     /// A framing/order violation on the reply direction.
     ProtocolViolation(String),
+    /// The inner call committed at the final target; the carrier could not learn its outcome.
+    Carried(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +264,14 @@ impl EarlyRefusal {
 
     /// A valid typed reply is the refusal (`Reply`); without one the request
     /// is still provably undispatched (`NotSent`).
+    /// The early refusal's payload undecoded, for a carrier handing it across verbatim.
+    pub fn relayed(self, reply_payload: Option<&[u8]>) -> RpcOutcome<Vec<u8>> {
+        match reply_payload {
+            Some(b) => RpcOutcome::Reply(Replied { value: b.to_vec(), class: ReplyKind::Unclassified }),
+            None => RpcOutcome::NotSent(NotSent { reason: NotSentReason::FrameNotSent }),
+        }
+    }
+
     pub fn reply<P: NodeProtocol>(self, reply_payload: Option<&[u8]>) -> RpcOutcome<P::Reply> {
         match reply_payload.map(P::decode_reply) {
             Some(Ok(value)) => {
@@ -298,6 +312,50 @@ impl Committed {
     /// No valid reply and no reset: lost, timed out, or violated framing.
     pub fn indeterminate<R>(self, reason: IndeterminateReason) -> RpcOutcome<R> {
         RpcOutcome::Indeterminate(Indeterminate { reason })
+    }
+
+    /// The reply payload undecoded, for a carrier handing an inner reply across verbatim.
+    pub fn relayed(self, reply_payload: &[u8]) -> RpcOutcome<Vec<u8>> {
+        RpcOutcome::Reply(Replied { value: reply_payload.to_vec(), class: ReplyKind::Unclassified })
+    }
+}
+
+/// The outcome of a carried call of protocol `P`, from the outcome of its outer forward call to
+/// the carrier (node-rpc.md §36.1). Certainty composes: the outer call proven not dispatched, or
+/// the carrier proving the inner call never committed, is `NotSent`; an outer or inner call that
+/// committed with its outcome unknown is `Indeterminate`; only the target's own reply is a reply.
+pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>) -> RpcOutcome<P::Reply> {
+    use crate::forward::{Forward, ForwardReply};
+    let reply = match outer {
+        RpcOutcome::Reply(r) => r.into_value(),
+        RpcOutcome::NotSent(n) => return RpcOutcome::NotSent(n),
+        RpcOutcome::Unserved(_) => return RpcOutcome::Unserved(Unserved { tag: Forward::TAG }),
+        RpcOutcome::Indeterminate(i) => return RpcOutcome::Indeterminate(i),
+    };
+    let not_sent = |reason: NotSentReason| RpcOutcome::NotSent(NotSent { reason });
+    let indeterminate = |reason: IndeterminateReason| RpcOutcome::Indeterminate(Indeterminate { reason });
+    match reply {
+        ForwardReply::Relayed { inner } => match P::decode_reply(&inner) {
+            Ok(value) => {
+                let class = P::classify_reply(&value);
+                RpcOutcome::Reply(Replied { value, class })
+            }
+            Err(DecodeFailure::UnknownVariant) => indeterminate(IndeterminateReason::UnsupportedReplyVariant),
+            Err(DecodeFailure::Corrupt) => indeterminate(IndeterminateReason::CorruptReply),
+        },
+        ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
+        ForwardReply::InnerUnserved { tag } => RpcOutcome::Unserved(Unserved { tag }),
+        ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
+        ForwardReply::NotForwardable { tag } => not_sent(NotSentReason::NotForwardable { tag }),
+        // The carrier refused the forward itself, before any inner call.
+        ForwardReply::PeerUnresolved { reason }
+        | ForwardReply::NotReady { reason }
+        | ForwardReply::Busy { reason }
+        | ForwardReply::Draining { reason }
+        | ForwardReply::Unauthorized { reason } => not_sent(NotSentReason::Carried(reason)),
+        ForwardReply::Malformed { kind } => {
+            not_sent(NotSentReason::Carried(format!("the carrier refused the forward as malformed: {kind:?}")))
+        }
     }
 }
 

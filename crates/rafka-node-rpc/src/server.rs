@@ -163,11 +163,21 @@ pub struct ServerBuilder {
     pub(crate) catalog: CatalogBuilder,
     pub(crate) handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
+    /// Forwardable protocols this node carries, tag -> max inner reply (node-rpc.md §36.1).
+    pub(crate) carried: HashMap<u8, usize>,
+    /// Filled at seal for the forward handler, when this node serves it.
+    pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
 }
 
 impl ServerBuilder {
     pub fn new() -> Self {
-        Self { catalog: CatalogBuilder::new(), handlers: HashMap::new(), admission: Admission::default() }
+        Self {
+            catalog: CatalogBuilder::new(),
+            handlers: HashMap::new(),
+            admission: Admission::default(),
+            carried: HashMap::new(),
+            carried_table: None,
+        }
     }
 
     /// Serve unary protocol `P` (owned by `owner`) with handler `f`.
@@ -195,6 +205,9 @@ impl ServerBuilder {
     /// Seal the catalog before the first stream is accepted.
     pub fn seal(self, slot: impl Into<String>) -> Result<NodeRpcServer, Vec<SealError>> {
         let catalog = self.catalog.seal()?;
+        if let Some(table) = &self.carried_table {
+            let _ = table.set(self.carried.clone());
+        }
         Ok(NodeRpcServer {
             inner: Arc::new(Inner {
                 catalog,

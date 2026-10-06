@@ -10,6 +10,7 @@
 pub mod admission;
 pub mod client;
 pub mod endpoint;
+pub mod forward;
 pub mod pool;
 pub mod resolve;
 pub mod server;
