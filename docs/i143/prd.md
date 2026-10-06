@@ -751,18 +751,24 @@ e4.s12 #2811  iroh-gossip nonblocking send/pin
   -> e4.s15 #2842 canonical product IDs / transport-id split
   -> e4.s16 #2850 current RuntimeFact/runtime-metadata publication + successor adoption + provider-domain contract
   -> storage #48 fabric.storage + existing builds.storage adoption
+  -> storage #43/#44/#45 mesh/nodes/connections.storage
   -> topology #47 Fabric.build_id accepted topology + same-Build drift
   -> e4.s14 #2840 deterministic leadership + authority-capable Ready proof
+  -> e6.s8 #2815 one process Endpoint + request slot/freshness framing
+  -> e6.s4 generic Forward
+  -> e6.s5 connections integration
+  -> e6.s6 #2802 semantic-target routing composition
   -> e6.s7 #2804 + e4.s11 #2805 definitive lifecycle/status certainty
+  -> e6.s9 #42 caller identity + W3C context
   -> e4.s10 #2803 cross-mesh recovery
   -> e4.s8 replacement revalidation
 ```
 
-`#2850`, #48 and #47 are hard prerequisites for s14 GREEN. Fabric.build_id/accepted-Build hydration, RuntimeFact/runtime metadata, and provider domain are not election keys; they are prerequisites for a node-admin to truthfully commit the one eligibility state, `ReadyForTraffic`. #2851's independent desired-revision model is superseded by #47.
+`#2850`, #48, #43/#44/#45 and #47 are hard prerequisites for s14 GREEN. Fabric.build_id/accepted-Build hydration, RuntimeFact/runtime metadata, and provider domain are not election keys; they are prerequisites for a node-admin to truthfully commit the one eligibility state, `ReadyForTraffic`. #2851's independent desired-revision model is superseded by #47.
 
-The first s14 branch is parked at `i143-e4-s14` commit `243ff4a`; rebase it after #2850/#2851 and redo its `docs/i143/design.md` reconciliation against the then-current design-of-record rather than restoring older wording.
+The first s14 branch is parked at `i143-e4-s14` commit `243ff4a`; rebase it after #2850, the storage stories, and #47, then redo its `docs/i143/design.md` reconciliation against the then-current design-of-record rather than restoring older wording.
 
-Other late export gates include #2815 one-process Endpoint and #2802 semantic routing composition.
+The Node RPC order above is intentional: e6.s8 changes endpoint ownership and request framing, so Forward/routing/control RPC must build on it rather than be retrofitted later.
 
 ---
 
