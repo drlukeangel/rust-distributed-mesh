@@ -5,6 +5,7 @@
 //! freshness. Incarnations and freshness tokens are opaque and compared by
 //! equality/supersession, never ordered. No Application EF, no product state.
 
+pub mod connections;
 pub mod digest;
 pub mod endpoint;
 pub mod launch;
@@ -13,6 +14,10 @@ pub mod membership;
 pub mod path;
 pub mod runtime;
 
+pub use connections::{
+    CarrierChoice, CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery,
+    EffectiveRoute, NodeConnection, RouteResolution,
+};
 pub use digest::{MemberStatus, MeshDigest};
 pub use endpoint::{EndpointSet, EndpointSlot, SlotPolicy};
 pub use ids::{FabricId, FreshnessToken, IdError, IncarnationId, MeshId, NodeId, TransportId, ID_FORMAT};
