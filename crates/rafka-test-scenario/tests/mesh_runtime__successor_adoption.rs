@@ -102,6 +102,10 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     wait_for("mesh1.rpc.3's runtime is gone", Duration::from_secs(30), || async { (!alive(retired_pid)).then_some(()) }).await;
 
+    // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
+    // killed launcher's path, a new NodeId that may take the seat back by NodeId order.
+    let admins_now: Vec<String> =
+        estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] != "dead").map(|n| s(&n["node_id"])).collect();
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
@@ -161,9 +165,11 @@ async fn a_successor_manages_births_it_never_launched() {
             .cloned()
             .unwrap_or_else(|| panic!("the successor adopted {name}'s runtime"));
         let (r, a) = (&ready["attributes"], &adopted["attributes"]);
-        assert_eq!(a["adopter"], "mesh1.admin.2");
-        assert_eq!(a["adopter_node_id"], successor["node_id"]);
-        assert_eq!(a["execution_node_id"], successor["node_id"]);
+        // Adopted by an admin that never launched it: the successor, or the launcher path's rebirth
+        // when it holds the seat by then. Never the killed launcher.
+        assert_ne!(a["adopter_node_id"], launcher["node_id"], "{name}: the killed launcher never adopts");
+        assert!(admins_now.contains(&s(&a["adopter_node_id"])), "{name}: adopted by a current admin {admins_now:?}: {a}");
+        assert_eq!(a["execution_node_id"], a["adopter_node_id"], "{name}: the adopter executes");
         assert_eq!(a["source"], "self-published-membership");
         for k in ["deployment_id", "provider", "provider_control_domain_fingerprint", "runtime_locator_kind", "runtime_locator_fingerprint"] {
             assert_eq!(a[k], r[k], "{name}: the adopted runtime is the one it published ({k})");
