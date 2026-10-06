@@ -94,13 +94,22 @@ fn roles(spans: &[Value], name: &str, key: &str) -> Vec<(u64, String, String, St
     v
 }
 
-/// Who holds `role` for `scope` now, by the last start/stop per node.
-fn holders(events: &[(u64, String, String, String)], scope: &str, dead: &BTreeSet<String>) -> BTreeSet<String> {
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// Who holds `role` for `scope` now, by the last start/stop per node. A killed process never
+/// says stop, so a path in `dead` drops its events from before its kill; drift recovery may
+/// rebirth the same path under a new NodeId, and that birth's events count.
+fn holders(events: &[(u64, String, String, String)], scope: &str, dead: &BTreeMap<String, u64>) -> BTreeSet<String> {
     let mut last: BTreeMap<&str, &str> = BTreeMap::new();
-    for (_, node, _, role) in events.iter().filter(|e| e.2 == scope) {
+    for (at, node, _, role) in events.iter().filter(|e| e.2 == scope) {
+        if dead.get(node.as_str()).is_some_and(|killed| at <= killed) {
+            continue;
+        }
         last.insert(node, role);
     }
-    last.into_iter().filter(|(n, r)| *r == "start" && !dead.contains(*n)).map(|(n, _)| n.to_string()).collect()
+    last.into_iter().filter(|(_, r)| *r == "start").map(|(n, _)| n.to_string()).collect()
 }
 
 /// The latest learned/silent verdict each ordinary node holds about `mesh`.
@@ -146,7 +155,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     }
 
     // 2. One aggregate publisher per mesh, its admin primary.
-    let none = BTreeSet::new();
+    let none: BTreeMap<String, u64> = BTreeMap::new();
     for m in ["mesh1", "mesh2"] {
         let p = s(&primary(&nodes, m)["name"]);
         wait_for(&format!("{m}'s primary publishes it, alone"), Duration::from_secs(15), || {
@@ -181,12 +190,13 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // 3 + 5. Lose mesh2's admin primary: its successor publishes mesh2 and
     // forwards mesh1, and mesh2's rpc nodes hold mesh1 again.
     let old = primary(&nodes, "mesh2");
-    let old_name = s(&old["name"]);
+    let (old_name, old_id) = (s(&old["name"]), s(&old["node_id"]));
     estate.kill_node(&old_name).await;
-    let dead: BTreeSet<String> = [old_name.clone()].into_iter().collect();
+    let dead: BTreeMap<String, u64> = [(old_name.clone(), now_ns())].into_iter().collect();
+    // Tracked by NodeId: drift recovery may rebirth the killed path under a new NodeId.
     let successor = wait_for("mesh2 elects a successor", Duration::from_secs(30), || async {
-        let p = s(&primary(&estate.nodes().await, "mesh2")["name"]);
-        (!p.is_empty() && p != old_name).then_some(p)
+        let p = primary(&estate.nodes().await, "mesh2");
+        (!s(&p["name"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["name"]))
     })
     .await;
     wait_for("mesh2's successor publishes and forwards", Duration::from_secs(20), || {
@@ -210,12 +220,32 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         .await;
     }
 
-    // 4. Lose the fabric primary: status publication moves, never doubled.
-    let nodes = estate.nodes().await;
-    let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).cloned().expect("a fabric primary");
-    let fp_name = s(&fp["name"]);
+    // 4. Lose the fabric primary: status publication moves, never doubled. The seat moved in
+    // step 3; the primary is lost only once it alone publishes the fabric's status.
     let (_, fabric) = estate.get("/api/fabric").await;
-    let survivors: Vec<String> = fabric["meshes"].as_array().unwrap().iter().map(|m| s(&m["admin_api_base"])).filter(|b| *b != s(&fp["admin_api_base"])).collect();
+    let fp = wait_for("the fabric primary alone publishes the fabric's status before it is lost", Duration::from_secs(40), || {
+        let dead = dead.clone();
+        let fabric_id = s(&fabric["id"]);
+        let estate = &estate;
+        async move {
+            let fp = estate.nodes().await.into_iter().find(|n| n["is_fabric_primary"] == true)?;
+            let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
+            (holders(&ev, &fabric_id, &dead) == [s(&fp["name"])].into_iter().collect()).then_some(fp)
+        }
+    })
+    .await;
+    let (fp_name, fp_id) = (s(&fp["name"]), s(&fp["node_id"]));
+    // Survivors from the live view at the kill, never an earlier /api/fabric answer: step 3's
+    // lost admin may still be advertised there.
+    let survivors: Vec<String> = estate
+        .nodes()
+        .await
+        .iter()
+        .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != fp_id)
+        .map(|n| s(&n["admin_api_base"]))
+        .filter(|b| !b.is_empty())
+        .collect();
+    assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     if fp_name == "mesh1.admin.1" {
         estate.kill_bootstrap();
@@ -223,7 +253,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         estate.kill_node(&fp_name).await;
     }
     let mut dead = dead;
-    dead.insert(fp_name.clone());
+    dead.insert(fp_name.clone(), now_ns());
     estate.admin = survivors[0].clone();
     // The winner is read with the publisher, in one poll: until the lost
     // primary's mesh is heard again through its successor's aggregate, a
@@ -231,20 +261,21 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // publishes nothing). The converged view names the one publisher.
     let next = wait_for("a new fabric primary alone publishes the fabric's status", Duration::from_secs(40), || async {
         let n = estate.nodes().await;
-        let next = n.iter().find(|x| x["is_fabric_primary"] == true && x["name"] != fp_name.as_str()).map(|x| s(&x["name"]))?;
+        // Tracked by NodeId: drift recovery may rebirth the lost path under a new NodeId.
+        let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
         // Status publication is keyed by the Fabric's id, the backbone's key.
         let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
         (holders(&ev, &s(&fabric["id"]), &dead) == [next.clone()].into_iter().collect()).then_some(next)
     })
     .await;
-    // The seat moves with the lowest NodeId as meshes grow and lose
-    // primaries; across this loss it moves once: the lost primary was the
-    // last to start publishing, and only its successor starts after it.
+    // The seat moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of
+    // the lost path may hold it on the way: the lost primary was the last to start publishing
+    // before the loss, and the last to start after it is the seat holder the view names.
     let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
     let before = ev.iter().filter(|e| e.0 < lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
-    let after: Vec<&String> = ev.iter().filter(|e| e.0 >= lost_at && e.3 == "start").map(|e| &e.1).collect();
+    let after = ev.iter().filter(|e| e.0 >= lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
     assert_eq!(before.as_deref(), Some(fp_name.as_str()), "the lost primary published before the loss: {ev:?}");
-    assert_eq!(after, vec![&next], "one publisher after the loss: {ev:?}");
+    assert_eq!(after.as_deref(), Some(next.as_str()), "the seat holder is the last to start publishing after the loss: {ev:?}");
 
     // Stop through whoever holds the fabric now.
     let (_, fabric) = estate.get("/api/fabric").await;
