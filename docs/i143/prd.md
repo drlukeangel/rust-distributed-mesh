@@ -24,7 +24,7 @@ logical Fabric / Mesh / Node identities
 Iroh transport integration
 hierarchical membership/topology
 current RuntimeFact + required current runtime metadata per birth
-current DesiredTopologyProjection
+current Fabric record + complete accepted Build
 Direct / Proxy connections
 Node RPC contract/runtime/pool
 Build / Reconciler
@@ -485,7 +485,7 @@ held current member
     -> bounded join/refeed attempt
 ```
 
-Desired intent alone is not dial material. Failed dial is not death proof. Retries are bounded/backed off per peer/window. Exact-runtime/lifecycle retirement removes the peer from repair targets. Zero-neighbour repair may remain fallback. Relearned membership restores RuntimeFact/current runtime metadata.
+Accepted topology alone is not dial material. Failed dial is not death proof. Retries are bounded/backed off per peer/window. Exact-runtime/lifecycle retirement removes the peer from repair targets. Zero-neighbour repair may remain fallback. Relearned membership restores RuntimeFact/current runtime metadata.
 
 ### 6.3 Product IDs
 
@@ -572,7 +572,7 @@ If affected mesh held fabric authority, surviving mesh primaries elect a current
 ```text
 fabric authority exists
   -> fence current old admin births with direct answer + exact runtime/lifecycle facts
-  -> birth ONE bootstrap/recovery admin with exact desired FabricId + MeshId
+  -> birth ONE bootstrap/recovery admin with exact accepted FabricId + MeshId
   -> provider/bootstrap obtains locator/domain; admin publishes RuntimeFact + runtime metadata
   -> normal authenticated first connection
   -> join/adopt exact mesh + backbone
@@ -593,7 +593,7 @@ fabric authority exists
   -> fabric election recomputes
 ```
 
-**Authority != executor:** fabric primary owns cross-mesh recovery authority and desired intent. The target bootstrap/recovery admin is the local Build executor. While Pending it may claim/execute Build work only when every affected path belongs to its own mesh. It cannot perform another mesh's or fabric-wide work.
+**Authority != executor:** fabric primary owns cross-mesh recovery authority and accepted topology intent. The target bootstrap/recovery admin is the local Build executor. While Pending it may claim/execute Build work only when every affected path belongs to its own mesh. It cannot perform another mesh's or fabric-wide work.
 
 Provider locality is another execution boundary, not an authority boundary. If a RuntimeFact belongs to another provider control domain, the current authority/local Build executor must use the provider's remote-control path or delegate that exact runtime action to a valid domain-local executor. It must not infer Dead because a PID/container ID is nonlocal.
 
@@ -676,7 +676,7 @@ MM = two MN meshes under one fabric
 
 Mandatory proof includes:
 - elastic grow/shrink;
-- shape/resize assertions use desired per-cohort counts/settled shape rather than assuming surviving ordinals remain contiguous;
+- shape/resize assertions use accepted-Build per-cohort counts/settled shape rather than assuming surviving ordinals remain contiguous;
 - identity/election/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
 - no election test remembers an incumbent; expected winner is calculated from the current public eligible candidates;
 - node restart and replacement;
@@ -806,7 +806,7 @@ Other late export gates include #2815 one-process Endpoint and #2802 semantic ro
 
 ### Leadership
 - only ReadyForTraffic candidates are eligible;
-- node-admin Ready includes current desired + RuntimeFact/runtime-metadata + provider-domain authority-capable hydration;
+- node-admin Ready includes current Fabric.build_id + accepted Build + RuntimeFact/runtime-metadata + provider-domain authority-capable hydration;
 - normal joining admins cannot self-Ready around missing hydration; only Day-0/fenced single-admin recovery root may establish Ready without existing Ready authority;
 - complete NodeId is the only election key;
 - provider control domain/locality/runtime metadata is not an election key;
@@ -824,7 +824,7 @@ Other late export gates include #2815 one-process Endpoint and #2802 semantic ro
 - Pending executor cannot claim another mesh/fabric-wide work;
 - exact-runtime work in another provider domain uses valid remote/domain-local execution, never local PID/container guessing;
 - fabric authority and local recovery executor are distinct;
-- desired shape survives completed Build history.
+- the accepted Build remains recoverable independently of older Build history.
 
 ### Downstream binding
 The i141 import manifest proves Rafka binds to the exported generic mechanisms rather than recreating them:
@@ -951,7 +951,7 @@ live_after
 - late non-launcher authority can manage current runtimes and required runtime metadata after completed Build history is gone;
 - current process/container proof demonstrates same-provider-domain successor control and rejects cross-domain PID/container misuse;
 - multi-host eligibility, when claimed, proves remote provider control or domain-local exact-runtime execution without changing election ordering;
-- current desired topology survives Build completion/history forget and drives later recovery;
+- the Build `Fabric.build_id` names remains recoverable after older Build history is forgotten and drives later recovery;
 - hierarchical membership and held-member partition repair are green;
 - canonical NodeId leadership is green at node-type, mesh-primary, and fabric-primary levels;
 - s14's parked non-launcher-adoption RED is GREEN after #2850/#2851;
