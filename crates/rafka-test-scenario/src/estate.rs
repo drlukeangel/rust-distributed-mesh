@@ -335,6 +335,12 @@ impl Estate {
         }
     }
 
+    /// The bootstrap admin's process id while the estate still holds it. The bootstrap runtime is
+    /// adopted on day 0, so it has no provider `deployment.json`.
+    pub fn bootstrap_pid(&self) -> Option<u32> {
+        self.bootstrap.as_ref().map(|c| c.id())
+    }
+
     /// SIGKILL the bootstrap admin (a fault: it flushes nothing).
     pub fn kill_bootstrap(&mut self) {
         if let Some(mut c) = self.bootstrap.take() {
