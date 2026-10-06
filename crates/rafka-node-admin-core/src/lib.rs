@@ -24,6 +24,7 @@ pub mod node_rpc;
 pub mod readiness;
 pub mod record_store;
 pub mod shutdown;
+pub mod status_declare;
 pub mod status_rpc;
 pub mod storage;
 pub mod topology;
