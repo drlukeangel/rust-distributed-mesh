@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateAdapter>) {
+async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateAdapter>) {
     let policy = FabricPolicy::bootstrap(spawn_type).expect("bootstrap");
     let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
     admin.status = NodeStatus::ReadyForTraffic;
@@ -30,8 +30,8 @@ fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateA
         nodes: vec![admin],
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let desired = std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(topology.fabric.id.clone(), &topology.fabric.name, "mesh1")));
-    (router(Arc::new(ControlPlane::new(builds.clone(), desired, topology)), axum::Router::new()), builds)
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1").await.unwrap();
+    (router(Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology)), axum::Router::new()), builds)
 }
 
 async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -55,7 +55,7 @@ fn policy_from_view(view: &Value) -> FabricPolicy {
 
 #[tokio::test]
 async fn a_second_admin_inherits_the_fabric_policy_or_refuses_by_name() {
-    let (first, _) = first_admin(Some("container"));
+    let (first, _) = first_admin(Some("container")).await;
     let (_, view) = call(&first, "GET", "/api/fabric", None).await;
     assert_eq!(view["provider"], "container");
     let established = policy_from_view(&view);
@@ -73,7 +73,8 @@ async fn an_unknown_provider_never_bootstraps_a_fabric() {
 
 #[tokio::test]
 async fn a_build_carrying_a_provider_is_refused_and_publishes_nothing() {
-    let (app, builds) = first_admin(None);
+    let (app, builds) = first_admin(None).await;
+    let seed = builds.facts().await.unwrap().len();
     for body in [
         json!({"fabric": "fabric1", "provider": "container", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}),
         json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3, "provider": "process"}]}),
@@ -83,7 +84,7 @@ async fn a_build_carrying_a_provider_is_refused_and_publishes_nothing() {
         assert_eq!(v["error"], "provider-mismatch");
         assert!(v["detail"].as_str().unwrap().contains("Process"), "names the fabric's policy: {v}");
     }
-    assert!(builds.facts().await.unwrap().is_empty());
+    assert_eq!(builds.facts().await.unwrap().len(), seed, "a refused Build publishes nothing");
     let (s, _) = call(&app, "POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}))).await;
     assert_eq!(s, StatusCode::ACCEPTED, "the same Build without a provider is accepted");
 }

@@ -1,25 +1,24 @@
-//! Proven drift: observed topology below the current desired revision
-//! (i143.e1.s7, rafka-v2#2851; `docs/i143/design.md` §2.2, §2.4).
+//! Proven drift: a birth the accepted topology names is gone (RDM #47;
+//! `docs/i143/design.md` §2.2, §2.4).
 //!
 //! The fabric authority (the fabric primary, while its view authorizes)
-//! compares each desired cohort with the births it holds. A birth counts as
-//! present until canonical evidence retires it: one the view no longer hears
-//! (silent, unreachable, partitioned) is still present. It is missing only
-//! when the provider inspected its exact published runtime and found it
-//! exited. RPC failure, gossip silence, a partition or a runtime in another
-//! control domain is never proof.
+//! compares the current Build's topology with the births it holds. A birth
+//! counts as present until canonical evidence retires it: one the view no
+//! longer hears (silent, unreachable, partitioned) is still present. It is
+//! missing only when the provider inspected its exact published runtime and
+//! found it exited. RPC failure, gossip silence, a partition or a runtime in
+//! another control domain is never proof.
 //!
-//! A cohort below its desired count with at least one proven exit is drift.
-//! When no active Build references the current revision, the authority
-//! starts a new reconciliation Build against that same revision (never a
-//! completed Build's id); a Build in flight keeps its id when authority moves.
+//! A path in the topology with no present birth and a proven exit is drift.
+//! The authority opens the next attempt of the same Build (`Fabric.build_id`
+//! is unchanged: the topology did not change); it never mints a Build.
 
-use crate::desired::DesiredTopology;
+use crate::accepted::FabricTopology;
 use crate::model::{IncarnationId, NodeKind, NodeStatus};
 use crate::topology::Topology;
 use std::collections::HashSet;
 
-/// One cohort below its desired count.
+/// One cohort below what the topology names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortfall {
     pub mesh: String,
@@ -36,7 +35,7 @@ impl std::fmt::Display for Shortfall {
             NodeKind::NodeAdmin => "node_admin",
             NodeKind::RpcNode => "rpc_node",
         };
-        write!(f, "{}.{kind}: {} present of {} desired (exited: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
+        write!(f, "{}.{kind}: {} present of {} accepted (exited: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
     }
 }
 
@@ -46,14 +45,15 @@ pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
     t.nodes.iter().filter(|n| n.status == NodeStatus::Dead).collect()
 }
 
-/// The cohorts of `desired` that `t` holds fewer births for than desired,
+/// The cohorts of `topology` that `t` holds fewer births for than it names,
 /// counting every held birth but those in `exited` (incarnations whose exact
 /// runtime was inspected and found exited). A cohort short without a proven
 /// exit is not drift.
-pub fn shortfall(desired: &DesiredTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
+pub fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
     let mut out = Vec::new();
-    for m in &desired.desired.meshes {
-        for (kind, want) in [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::RpcNode, m.rpc_node)] {
+    for m in topology.meshes.values() {
+        for kind in [NodeKind::NodeAdmin, NodeKind::RpcNode] {
+            let want = m.count(kind);
             let (mut present, mut gone) = (0u32, Vec::new());
             for n in t.cohort(&m.name, kind) {
                 if n.incarnation_id.as_ref().is_some_and(|i| exited.contains(i)) {
@@ -73,7 +73,7 @@ pub fn shortfall(desired: &DesiredTopology, t: &Topology, exited: &HashSet<Incar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{FabricDesired, MeshDesired};
+    use crate::accepted::MeshTopology;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, ProviderKind, ScopeStatus};
 
     fn node(name: &str, status: NodeStatus) -> Node {
@@ -91,10 +91,8 @@ mod tests {
         }
     }
 
-    fn desired(a: u32, r: u32) -> DesiredTopology {
-        let mut d = DesiredTopology::root(FabricId::mint(), "fabric1", "mesh1");
-        d.desired = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: a, rpc_node: r }] };
-        d
+    fn desired(a: u32, r: u32) -> FabricTopology {
+        FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of("mesh1", a, r))].into() }
     }
 
     #[test]
@@ -109,7 +107,7 @@ mod tests {
         let exited: HashSet<_> = [t.nodes[2].incarnation_id.clone().unwrap()].into();
         let s = shortfall(&d, &t, &exited);
         assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), kind: NodeKind::RpcNode, desired: 3, present: 2, exited: vec!["mesh1.rpc.2".into()] }]);
-        assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 desired (exited: mesh1.rpc.2)");
+        assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 accepted (exited: mesh1.rpc.2)");
     }
 
     #[test]

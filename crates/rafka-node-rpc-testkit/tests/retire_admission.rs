@@ -11,7 +11,7 @@ mod common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::build::BuildIntent;
+use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
 use rafka_node_admin_core::deployment::pipeline::{
@@ -145,10 +145,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
 
     let build = publish_build(
         &builds,
-        BuildIntent::RemoveNode {
-            node: created.node.name.clone(),
-            incarnation: None,
-        },
+        FabricTopology::root("fabric1", "mesh1"),
     )
     .await;
     let retired = pipeline
@@ -229,10 +226,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     // Retiring B: B ignores its stop and keeps running, every departure is lost.
     let build = publish_build(
         &builds,
-        BuildIntent::RemoveNode {
-            node: b.node.name.clone(),
-            incarnation: None,
-        },
+        FabricTopology::root("fabric1", "mesh1"),
     )
     .await;
     let retired = pipeline
@@ -280,7 +274,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
-    let build = publish_build(&builds, BuildIntent::RemoveNode { node: created.node.name.clone(), incarnation: None }).await;
+    let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
         .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), permanent: true, observe_departure: true })
         .await;
@@ -307,7 +301,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
-    let build = publish_build(&builds, BuildIntent::RemoveNode { node: created.node.name.clone(), incarnation: None }).await;
+    let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
         .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), permanent: true, observe_departure: true })
         .await;

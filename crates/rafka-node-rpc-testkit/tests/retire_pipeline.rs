@@ -12,7 +12,7 @@ mod common;
 
 use common::{add_node, admin_side, publish_build, template, Published, Spans};
 use rafka_mesh_entity::{FabricId, MemberStatus};
-use rafka_node_admin_core::build::BuildIntent;
+use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
@@ -51,7 +51,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
     let ports: Vec<SocketAddr> = first.node.endpoints.iter().map(|e| e.addr).collect();
 
-    let retire_build = publish_build(&builds, BuildIntent::RemoveNode { node: node.clone(), incarnation: None }).await;
+    let retire_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     pipeline
         .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), permanent: true, observe_departure: false })
         .await
@@ -102,7 +102,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     assert_eq!(reused, before, "the new node took the released ports");
     assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
-    let again_build = publish_build(&builds, BuildIntent::RemoveNode { node: node.clone(), incarnation: None }).await;
+    let again_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     pipeline
         .retire(&RetireRequest { build_id: again_build, attempt: 1, node: again.node.clone(), handle: again.handle.clone(), permanent: true, observe_departure: false })
         .await

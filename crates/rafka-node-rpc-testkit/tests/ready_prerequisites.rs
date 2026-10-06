@@ -12,7 +12,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published}
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
-    BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildIntentFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
+    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
@@ -35,8 +35,11 @@ struct Losing {
 
 #[async_trait::async_trait]
 impl BuildStateAdapter for Losing {
-    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError> {
-        self.inner.publish_intent(intent).await
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(accepted).await
+    }
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(opened).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await

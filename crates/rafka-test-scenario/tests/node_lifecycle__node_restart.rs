@@ -95,11 +95,11 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     let (status, restart) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
     assert_eq!(status, 202, "restart route: {restart}");
     let restart_build = restart["build_id"].as_str().expect("restart returns a build_id").to_string();
-    assert_ne!(restart_build, birth_build, "a restart is its own Build");
+    assert_eq!(restart_build, birth_build, "a restart changes no topology: it is an attempt of the accepted Build");
     let (_, submitted) = estate.get(&format!("/api/builds?id={restart_build}")).await;
-    assert_eq!(submitted["build_id"], restart_build.as_str(), "the restart Build is visible by id: {submitted}");
-    assert_eq!(submitted["intent"]["kind"], "restart_node", "{submitted}");
-    assert_eq!(submitted["intent"]["node"], NODE, "{submitted}");
+    assert_eq!(submitted["build_id"], restart_build.as_str(), "the Build is visible by id: {submitted}");
+    assert_eq!(submitted["reason"], "restart", "{submitted}");
+    assert_eq!(submitted["action"]["path"], NODE, "{submitted}");
     let status_after = estate.await_build(&restart_build, SETTLE).await;
     estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": status_after}));
 

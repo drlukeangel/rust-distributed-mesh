@@ -34,16 +34,13 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-async fn build(estate: &Estate, base: &str, method: &str, path: &str, body: Value) -> String {
-    let url = format!("{base}{path}");
-    let http = reqwest::Client::new();
-    let r = match method {
-        "POST" => http.post(&url).json(&body).send().await,
-        _ => http.delete(&url).send().await,
-    }
-    .expect("control API reachable");
-    let status = r.status().as_u16();
-    let a: Value = r.json().await.unwrap_or(Value::Null);
+/// One topology request, accepted by whichever admin holds the fabric now (the estate follows
+/// the seat), run to convergence.
+async fn build(estate: &Estate, method: &str, path: &str, body: Value) -> String {
+    let (status, a) = match method {
+        "POST" => estate.post(path, &body).await,
+        _ => estate.delete(path).await,
+    };
     assert_eq!(status, 202, "{method} {path}: {a}");
     let id = s(&a["build_id"]);
     // Every admin holds the fabric's Build facts: any of them can be asked.
@@ -78,25 +75,26 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
         estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     }
     let base = estate.admin.clone();
-    // Build A: three rpc nodes, launched by the bootstrap admin; then forgotten.
-    let a = build(&estate, &base, "POST", "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
+    // Build A: three rpc nodes, launched by the bootstrap admin. The accepted Build is never
+    // history: it is forgotten only once a later Build holds the pointer.
+    let a = build(&estate, "POST", "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
     let nodes = estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     let incumbent = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
     let a_births: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
-    let (status, _) = estate.delete(&format!("/api/builds?id={a}")).await;
-    assert_eq!(status, 204);
+    let (status, v) = estate.delete_raw(&format!("/api/builds?id={a}")).await;
+    assert_eq!(status, 409, "the accepted Build is never history: {v}");
 
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
     for _ in 0..30 {
-        build(&estate, &base, "POST", "/api/nodes/spawn", json!({"mesh": "mesh1", "kind": "node_admin"})).await;
+        build(&estate, "POST", "/api/nodes/spawn", json!({"mesh": "mesh1", "kind": "node_admin"})).await;
         let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
         let born = nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1").cloned().unwrap();
         if s(&born["node_id"]) < s(&incumbent["node_id"]) {
             late = Some(born);
             break;
         }
-        build(&estate, &base, "DELETE", &format!("/api/nodes/{}", s(&born["name"])), Value::Null).await;
+        build(&estate, "DELETE", &format!("/api/nodes/{}", s(&born["name"])), Value::Null).await;
         estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     }
     let late = late.unwrap_or_else(|| {
@@ -118,18 +116,22 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     })
     .await;
     assert_eq!(estate.node("mesh1.admin.1").await["is_primary"], false, "the incumbent does not keep the seat");
+    // A later Build holds the pointer now: A is history on the admin that ran it, and leaves; the
+    // late admin never held it.
+    let (status, v) = estate.delete_at(&base, &format!("/api/builds?id={a}")).await;
+    assert_eq!(status, 204, "{v}");
     assert_eq!(estate.get(&format!("/api/builds?id={a}")).await.0, 404, "A's history is nowhere");
 
     // It restarts and retires A's births.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
-    build(&estate, &late_base, "POST", &format!("/api/nodes/{}/restart", s(&restarted["name"])), Value::Null).await;
+    build(&estate, "POST", &format!("/api/nodes/{}/restart", s(&restarted["name"])), Value::Null).await;
     let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
         let n = estate.node(&s(&restarted["name"])).await;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted["incarnation_id"]).then_some(n)
     })
     .await;
     assert_eq!(after["node_id"], restarted["node_id"], "a restart keeps the NodeId");
-    build(&estate, &late_base, "DELETE", &format!("/api/nodes/{}", s(&retired["name"])), Value::Null).await;
+    build(&estate, "DELETE", &format!("/api/nodes/{}", s(&retired["name"])), Value::Null).await;
     wait_for("the retired birth leaves the view", Duration::from_secs(30), || async {
         estate.nodes().await.iter().all(|n| n["name"] != retired["name"] || n["incarnation_id"] != retired["incarnation_id"]).then_some(())
     })
@@ -138,18 +140,18 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.stop().await;
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
-    // Before Ready: the desired topology and every held birth's runtime.
+    // Before Ready: Fabric.build_id (taken from the fabric control topic) and every held birth's
+    // runtime.
     let ready = named(&spans, "rafka.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
     assert!(
-        named(&spans, "rafka.node_admin.desired_topology.update.via-hydration")
+        named(&spans, "rafka.node_admin.fabric.update.via-build-accepted")
             .into_iter()
-            .chain(named(&spans, "rafka.node_admin.desired_topology.update.via-catch-up"))
-            .any(|sp| sp["attributes"]["node"] == late_name.as_str() && at(sp) < at(&ready)),
-        "it held the desired topology before Ready"
+            .any(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["via"].as_str().is_some_and(|v| v != "day-0" && v != "accepted") && at(sp) < at(&ready)),
+        "it held Fabric.build_id before Ready"
     );
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");

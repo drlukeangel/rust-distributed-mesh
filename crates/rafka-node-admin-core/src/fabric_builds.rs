@@ -20,11 +20,12 @@
 //! the claim alone (mesh-control-plane.md §4.1).
 
 use crate::build::BuildId;
+use crate::accepted::AcceptedStore;
 use crate::build_state::{
-    BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildIntentFact, BuildProjection, BuildStateAdapter, BuildStateError,
-    BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter,
+    AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter,
+    BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter,
 };
-use crate::desired::{DesiredStore, DesiredTopology, Via};
+use crate::fabric_storage::FabricRecord;
 use futures_lite::StreamExt as _;
 use iroh::address_lookup::MemoryLookup;
 use iroh::{Endpoint, EndpointAddr};
@@ -36,18 +37,17 @@ use std::sync::Arc;
 /// One message on the Build topic. The nonce makes every send distinct, so
 /// a catch-up resend is never taken for a message already seen.
 ///
-/// `desired` is the fabric's current desired topology, a bounded
-/// current-state record of its own: sent alone, when a revision is proposed
-/// and to a new neighbour, never inside a run of Build facts. A neighbour's
-/// catch-up hands it the current revision; Build facts it hands only for
-/// active Builds.
+/// `fabric` is the Fabric record (`Fabric.build_id`): Fabric control state of
+/// its own, sent alone when the pointer moves and to a new neighbour, never
+/// inside a run of Build facts. A neighbour's catch-up hands it the record and
+/// the facts of the Build it names and of every active Build.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Wire {
     nonce: u64,
     #[serde(default)]
     facts: Vec<BuildFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    desired: Option<DesiredTopology>,
+    fabric: Option<FabricRecord>,
     /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
     /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -55,17 +55,15 @@ struct Wire {
 }
 
 fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::Bytes, BuildStateError> {
-    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), desired: None, shutdown: Some(s.clone()) })
+    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) })
         .map(Into::into)
         .map_err(|e| BuildStateError::Io(e.to_string()))
 }
 
-fn encode_desired(d: &DesiredTopology) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), desired: Some(d.clone()), shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
-    if bytes.len() > MAX_MESSAGE_BYTES {
-        return Err(BuildStateError::Io(format!("a desired-topology record of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES}", bytes.len())));
-    }
-    Ok(bytes.into())
+fn encode_fabric(r: &FabricRecord) -> Result<bytes::Bytes, BuildStateError> {
+    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), fabric: Some(r.clone()), shutdown: None })
+        .map(Into::into)
+        .map_err(|e| BuildStateError::Io(e.to_string()))
 }
 
 /// iroh-gossip's frame limit (`DEFAULT_MAX_MESSAGE_SIZE`): a frame of this
@@ -80,7 +78,7 @@ pub const GOSSIP_FRAME_LIMIT: usize = 4096;
 pub const MAX_MESSAGE_BYTES: usize = GOSSIP_FRAME_LIMIT - 64;
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, desired: None, shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, fabric: None, shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!(
             "a Build message of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
@@ -118,19 +116,20 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
     (out, refused)
 }
 
-/// The facts of every active Build `local` holds, in append order.
-async fn active_facts(local: &MemoryBuildStateAdapter) -> Vec<BuildFact> {
-    let active: std::collections::BTreeSet<BuildId> = match local.list_active().await {
+/// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
+/// in append order.
+async fn active_facts(local: &MemoryBuildStateAdapter, also: Option<BuildId>) -> Vec<BuildFact> {
+    let mut active: std::collections::BTreeSet<BuildId> = match local.list_active().await {
         Ok(a) => a.into_iter().map(|b| b.build_id).collect(),
         Err(_) => return Vec::new(),
     };
-    local.facts().await.unwrap_or_default().into_iter().filter(|f| active.contains(f.build_id())).collect()
+    active.extend(also);
+    match local.facts().await {
+        Ok(f) => f.into_iter().filter(|f| active.contains(f.build_id())).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
-/// While the Build topic has had no neighbour for a whole window, hand it
-/// every peer it has known again, once per window (`gossip.md` §6): an admin
-/// whose neighbours all dropped is otherwise never dialed again, and a Build
-/// it accepted in the meantime never reaches the fabric. Nothing is sent.
 fn refeed(
     fabric: String,
     sender: Arc<tokio::sync::RwLock<GossipSender>>,
@@ -185,15 +184,15 @@ impl FabricBuildStateAdapter {
     /// With peers, it returns once connected to at least one of them, so the
     /// facts they append from then on reach this admin.
     ///
-    /// `desired` is this admin's desired-topology store: every revision heard
-    /// on the topic is offered to it (`crate::desired::take`), and a new
-    /// neighbour is handed the one it holds. `node` names this admin in evidence.
+    /// `accepted` is this admin's `Fabric.build_id` holder: every Fabric record heard on the
+    /// topic is offered to it, and a new neighbour is handed the one it holds first. `node` names
+    /// this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
         endpoint: &Endpoint,
         fabric: &rafka_mesh_entity::FabricId,
         peers: Vec<EndpointAddr>,
-        desired: Arc<DesiredStore>,
+        accepted: Arc<AcceptedStore>,
         shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
     ) -> Result<Self, BuildStateError> {
@@ -213,7 +212,7 @@ impl FabricBuildStateAdapter {
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        let (absorb, shared, store, held_shutdown) = (local.clone(), sender.clone(), desired.clone(), shutdown.clone());
+        let (absorb, shared, store, held_shutdown) = (local.clone(), sender.clone(), accepted.clone(), shutdown.clone());
         let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
         let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         let known_peers: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>> = Arc::new(std::sync::Mutex::new(seed_ids.clone()));
@@ -229,9 +228,7 @@ impl FabricBuildStateAdapter {
                     match receiver.next().await {
                         Some(Ok(Event::Received(m))) => match serde_json::from_slice::<Wire>(&m.content) {
                             Ok(w) => {
-                                if let Some(d) = w.desired {
-                                    crate::desired::take(&store, d, Via::CatchUp, &node, &m.delivered_from.to_string());
-                                }
+                                let heard_fabric = w.fabric;
                                 if let Some(sd) = w.shutdown {
                                     if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()) {
                                         tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
@@ -239,6 +236,11 @@ impl FabricBuildStateAdapter {
                                     }
                                 }
                                 absorb.absorb(&w.facts);
+                                if let Some(r) = heard_fabric {
+                                    store.learn(r, &*absorb, &m.delivered_from.to_string()).await;
+                                } else if !w.facts.is_empty() {
+                                    store.resolve_wanted(&*absorb).await;
+                                }
                             }
                             Err(e) => tracing::info_span!("rafka.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
                                 .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
@@ -247,18 +249,20 @@ impl FabricBuildStateAdapter {
                             known_peers.lock().unwrap().push(peer);
                             neighbors.lock().unwrap().insert(peer);
                             // Sent from its own task: the receive loop never waits on the actor.
-                            let (absorb, shared, fabric_name, current) = (absorb.clone(), shared.clone(), fabric_name.clone(), store.current());
+                            let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
+                            let (record, pointer) = (store.record().ok().flatten(), store.build_id());
                             let in_force = held_shutdown.held();
                             tokio::spawn(async move {
                                 // A shutdown in force first: the neighbour comes up frozen.
                                 if let Some(sd) = in_force.as_ref().and_then(|sd| encode_shutdown(sd).ok()) {
                                     let _ = shared.read().await.clone().broadcast_neighbors(sd).await;
                                 }
-                                // The current desired revision first, as its own record.
-                                if let Some(d) = current.as_ref().and_then(|d| encode_desired(d).ok()) {
-                                    let _ = shared.read().await.clone().broadcast_neighbors(d).await;
+                                // The Fabric record first, as its own message; then the facts of the
+                                // Build it names and of every active Build.
+                                if let Some(r) = record.as_ref().and_then(|r| encode_fabric(r).ok()) {
+                                    let _ = shared.read().await.clone().broadcast_neighbors(r).await;
                                 }
-                                let facts = active_facts(&absorb).await;
+                                let facts = active_facts(&absorb, pointer.clone()).await;
                                 let _span = tracing::info_span!(
                                     "rafka.node_admin.build.update.via-neighbor-up",
                                     fabric = %fabric_name,
@@ -343,9 +347,14 @@ impl FabricBuildStateAdapter {
 
 #[async_trait::async_trait]
 impl BuildStateAdapter for FabricBuildStateAdapter {
-    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError> {
-        self.local.publish_intent(intent).await?;
-        self.broadcast(BuildFact::Intent(intent.clone())).await
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.local.publish_accepted(accepted).await?;
+        self.broadcast(BuildFact::Accepted(accepted.clone())).await
+    }
+
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.local.open_attempt(opened).await?;
+        self.broadcast(BuildFact::Opened(opened.clone())).await
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
@@ -383,9 +392,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.broadcast(BuildFact::Forget { build_id: build_id.clone() }).await
     }
 
-    async fn publish_desired(&self, desired: &DesiredTopology) -> Result<(), BuildStateError> {
+
+    async fn publish_fabric(&self, record: &FabricRecord) -> Result<(), BuildStateError> {
         let sender = self.sender.read().await.clone();
-        sender.broadcast(encode_desired(desired)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting desired topology: {e}")))
+        sender.broadcast(encode_fabric(record)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting the Fabric record: {e}")))
     }
 }
 

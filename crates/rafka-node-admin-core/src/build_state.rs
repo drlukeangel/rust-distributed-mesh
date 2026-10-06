@@ -15,7 +15,8 @@
 //!   a successor in another mesh continues a Build from the live projection,
 //!   never from a dead admin's disk.
 
-use crate::build::{BuildId, BuildIntent};
+use crate::accepted::{AttemptAction, FabricTopology, TopologyChange};
+use crate::build::BuildId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -23,40 +24,57 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// A Build accepted by the fabric-primary: the complete topology it realizes, and the change that
+/// produced it (history only; planning reads `topology`, never `submitted_change`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BuildIntentFact {
+pub struct BuildAccepted {
     pub build_id: BuildId,
-    pub intent: BuildIntent,
+    pub topology: FabricTopology,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_change: Option<TopologyChange>,
     /// W3C traceparent of the accepting span, so execution parents to it.
     pub traceparent: Option<String>,
     pub submitted_at_ms: u64,
-    /// The desired-topology revision this Build proposed (a topology-changing
-    /// request) or reconciles toward (a restart, a drift recovery). Absent
-    /// on facts from before desired topology existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desired: Option<crate::desired::DesiredMark>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<BuildReason>,
 }
 
-/// Why a Build exists.
+/// Why an attempt of a Build was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum BuildReason {
-    /// A control request (REST, UI, client).
-    RequestedChange,
-    /// The fabric authority proved observed topology below the current
-    /// desired revision (an exact runtime exited).
+pub enum AttemptReason {
+    /// The first attempt: the Build was just accepted.
+    Requested,
+    /// A birth the topology names was proven exited; the same Build repairs it.
     ProvenDrift,
+    Restart,
+    Replace,
+    /// The previous attempt's executor is gone; another admin continues the Build.
+    AuthorityMoved,
 }
 
-impl BuildReason {
+impl AttemptReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::RequestedChange => "requested-change",
+            Self::Requested => "requested",
             Self::ProvenDrift => "proven-drift",
+            Self::Restart => "restart",
+            Self::Replace => "replace",
+            Self::AuthorityMoved => "authority-moved",
         }
     }
+}
+
+/// An attempt opened on a Build by the authority (the first one by acceptance itself): what it
+/// is for, and the fenced action it carries. Insert-and-fail on `(build_id, attempt)`: two
+/// authorities proving the same drift open one attempt, never two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttemptOpened {
+    pub build_id: BuildId,
+    pub attempt: u32,
+    pub reason: AttemptReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<AttemptAction>,
+    pub opened_by: String,
+    pub opened_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +130,8 @@ pub enum AttemptOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "fact", rename_all = "snake_case")]
 pub enum BuildFact {
-    Intent(BuildIntentFact),
+    Accepted(BuildAccepted),
+    Opened(AttemptOpened),
     Claim(BuildAttemptClaim),
     Step(BuildStepReceipt),
     Attempt(BuildAttemptReceipt),
@@ -124,7 +143,8 @@ pub enum BuildFact {
 impl BuildFact {
     pub fn build_id(&self) -> &BuildId {
         match self {
-            Self::Intent(f) => &f.build_id,
+            Self::Accepted(f) => &f.build_id,
+            Self::Opened(f) => &f.build_id,
             Self::Claim(f) => &f.build_id,
             Self::Step(f) => &f.build_id,
             Self::Attempt(f) => &f.build_id,
@@ -146,18 +166,21 @@ pub enum BuildState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildProjection {
     pub build_id: BuildId,
-    pub intent: BuildIntent,
+    pub topology: FabricTopology,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_change: Option<TopologyChange>,
     pub traceparent: Option<String>,
+    pub submitted_at_ms: u64,
     pub state: BuildState,
-    /// The current attempt: the highest attempt with a winning claim.
+    /// The current attempt: the highest attempt claimed. An opened attempt is `attempt + 1`.
     pub attempt: u32,
     pub executor: Option<String>,
     pub steps: Vec<BuildStepReceipt>,
     pub last_failure: Option<String>,
+    /// Why the current attempt exists, and what it carries.
+    pub reason: AttemptReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desired: Option<crate::desired::DesiredMark>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<BuildReason>,
+    pub action: Option<AttemptAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +188,9 @@ pub enum ClaimOutcome {
     Won,
     /// The attempt is already claimed by `holder`.
     Lost { holder: String },
+    /// Not the Build's next attempt, or the Build is complete and no attempt was opened on it:
+    /// nothing to run, nothing recorded.
+    NotOpen { next: Option<u32> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,23 +218,60 @@ impl std::fmt::Display for BuildStateError {
 /// the same log gives the same views, and a duplicated fact changes nothing.
 /// The winning claim of an attempt is the first one appended.
 pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
+    // Facts arrive in any order (gossip, catch-up); the fold reads them in their one logical order:
+    // per Build, acceptance first, then by attempt with its open before its claim, steps and
+    // verdict, and forget last. Arrival order breaks ties, so the first-appended claim still wins.
+    let rank = |f: &BuildFact| -> (u32, u8) {
+        match f {
+            BuildFact::Accepted(_) => (0, 0),
+            BuildFact::Opened(o) => (o.attempt, 1),
+            BuildFact::Claim(c) => (c.attempt, 2),
+            BuildFact::Step(s) => (s.attempt, 3),
+            BuildFact::Attempt(a) => (a.attempt, 4),
+            BuildFact::Forget { .. } => (u32::MAX, 5),
+        }
+    };
+    let mut ordered: Vec<&BuildFact> = facts.iter().collect();
+    ordered.sort_by(|a, b| a.build_id().cmp(b.build_id()).then(rank(a).cmp(&rank(b))));
     let mut out: BTreeMap<BuildId, BuildProjection> = BTreeMap::new();
     let mut winners: BTreeMap<(BuildId, u32), String> = BTreeMap::new();
-    for f in facts {
+    let mut opened: std::collections::BTreeSet<(BuildId, u32)> = std::collections::BTreeSet::new();
+    // An attempt has one verdict: the first appended. A stale second receipt changes nothing.
+    let mut decided: std::collections::BTreeSet<(BuildId, u32)> = std::collections::BTreeSet::new();
+    for f in ordered {
         match f {
-            BuildFact::Intent(i) => {
+            BuildFact::Accepted(i) => {
                 out.entry(i.build_id.clone()).or_insert_with(|| BuildProjection {
                     build_id: i.build_id.clone(),
-                    intent: i.intent.clone(),
+                    topology: i.topology.clone(),
+                    submitted_change: i.submitted_change.clone(),
                     traceparent: i.traceparent.clone(),
+                    submitted_at_ms: i.submitted_at_ms,
                     state: BuildState::Pending,
                     attempt: 0,
                     executor: None,
                     steps: Vec::new(),
                     last_failure: None,
-                    desired: i.desired.clone(),
-                    reason: i.reason,
+                    reason: AttemptReason::Requested,
+                    action: None,
                 });
+            }
+            BuildFact::Opened(o) => {
+                let key = (o.build_id.clone(), o.attempt);
+                if opened.contains(&key) {
+                    continue;
+                }
+                opened.insert(key);
+                if let Some(p) = out.get_mut(&o.build_id) {
+                    // The authority opens the attempt after the current one, on a Build not in
+                    // flight; it reopens a complete Build. The executor that leads then claims it.
+                    if o.attempt == p.attempt + 1 && !matches!(p.state, BuildState::Running) {
+                        p.state = BuildState::Pending;
+                        p.executor = None;
+                        p.reason = o.reason;
+                        p.action = o.action.clone();
+                    }
+                }
             }
             BuildFact::Claim(c) => {
                 let key = (c.build_id.clone(), c.attempt);
@@ -217,7 +280,9 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
                 winners.insert(key, c.executor.clone());
                 if let Some(p) = out.get_mut(&c.build_id) {
-                    if c.attempt > p.attempt && !matches!(p.state, BuildState::Complete) {
+                    // The next attempt only, and never of a complete Build: a complete Build runs
+                    // again only through an opened attempt.
+                    if c.attempt == p.attempt + 1 && !matches!(p.state, BuildState::Complete) {
                         p.attempt = c.attempt;
                         p.executor = Some(c.executor.clone());
                         p.state = BuildState::Running;
@@ -232,6 +297,9 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Attempt(a) => {
+                if !decided.insert((a.build_id.clone(), a.attempt)) {
+                    continue; // the attempt already has its verdict
+                }
                 if let Some(p) = out.get_mut(&a.build_id) {
                     if a.attempt != p.attempt || p.state == BuildState::Complete {
                         continue; // a superseded attempt's verdict does not decide the Build
@@ -259,7 +327,16 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 
 #[async_trait]
 pub trait BuildStateAdapter: Send + Sync {
-    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError>;
+    /// Record an accepted Build. Insert-and-fail on its id.
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError>;
+    /// Open an attempt of a Build. Insert-and-fail on `(build_id, attempt)`: the first opener wins,
+    /// a second open of the same attempt changes nothing.
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
+    /// Tell the fabric `Fabric.build_id` moved (the record it names). A local-only adapter has no
+    /// fabric to tell.
+    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
+        Ok(())
+    }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
@@ -271,11 +348,6 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
-    /// Send a new desired-topology revision to the fabric's other admins
-    /// (this admin's store already holds it). Local-only adapters send nothing.
-    async fn publish_desired(&self, _desired: &crate::desired::DesiredTopology) -> Result<(), BuildStateError> {
-        Ok(())
-    }
 }
 
 /// The shared append-and-fold core of both RDM adapters.
@@ -285,15 +357,29 @@ struct FactLog {
 }
 
 impl FactLog {
-    fn intent_conflict(&self, intent: &BuildIntentFact) -> Result<bool, BuildStateError> {
+    fn accepted_conflict(&self, accepted: &BuildAccepted) -> Result<bool, BuildStateError> {
         for f in &self.facts {
-            if let BuildFact::Intent(i) = f {
-                if i.build_id == intent.build_id {
-                    return if i == intent { Ok(true) } else { Err(BuildStateError::ConflictingIntent(intent.build_id.clone())) };
+            if let BuildFact::Accepted(i) = f {
+                if i.build_id == accepted.build_id {
+                    return if i == accepted { Ok(true) } else { Err(BuildStateError::ConflictingIntent(accepted.build_id.clone())) };
                 }
             }
         }
         Ok(false)
+    }
+
+    /// A claim that is not the Build's next attempt, or is on a complete Build: refused by name,
+    /// never recorded (the fold would ignore it, but the attempt number stays free).
+    fn not_open(&self, claim: &BuildAttemptClaim) -> Option<ClaimOutcome> {
+        let p = fold(&self.facts).remove(&claim.build_id)?;
+        if matches!(p.state, BuildState::Complete) || claim.attempt != p.attempt + 1 {
+            return Some(ClaimOutcome::NotOpen { next: (!matches!(p.state, BuildState::Complete)).then_some(p.attempt + 1) });
+        }
+        None
+    }
+
+    fn is_opened(&self, build_id: &BuildId, attempt: u32) -> bool {
+        self.facts.iter().any(|f| matches!(f, BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt))
     }
 
     fn claim_holder(&self, build_id: &BuildId, attempt: u32) -> Option<String> {
@@ -304,7 +390,7 @@ impl FactLog {
     }
 
     fn known(&self, build_id: &BuildId) -> bool {
-        self.facts.iter().any(|f| matches!(f, BuildFact::Intent(i) if &i.build_id == build_id))
+        self.facts.iter().any(|f| matches!(f, BuildFact::Accepted(i) if &i.build_id == build_id))
     }
 
     fn read(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
@@ -334,7 +420,8 @@ impl MemoryBuildStateAdapter {
         let mut log = self.log.lock().unwrap();
         for f in facts {
             let new = match f {
-                BuildFact::Intent(i) => !log.known(&i.build_id),
+                BuildFact::Accepted(i) => !log.known(&i.build_id),
+                BuildFact::Opened(o) => !log.is_opened(&o.build_id, o.attempt),
                 BuildFact::Claim(c) => log.claim_holder(&c.build_id, c.attempt).is_none(),
                 _ => !log.facts.contains(f),
             };
@@ -347,10 +434,21 @@ impl MemoryBuildStateAdapter {
 
 #[async_trait]
 impl BuildStateAdapter for MemoryBuildStateAdapter {
-    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError> {
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let mut log = self.log.lock().unwrap();
-        if !log.intent_conflict(intent)? {
-            log.facts.push(BuildFact::Intent(intent.clone()));
+        if !log.accepted_conflict(accepted)? {
+            log.facts.push(BuildFact::Accepted(accepted.clone()));
+        }
+        Ok(())
+    }
+
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        let mut log = self.log.lock().unwrap();
+        if !log.known(&opened.build_id) {
+            return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
+        }
+        if !log.is_opened(&opened.build_id, opened.attempt) {
+            log.facts.push(BuildFact::Opened(opened.clone()));
         }
         Ok(())
     }
@@ -370,6 +468,9 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         }
         if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
             return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
+        }
+        if let Some(not_open) = log.not_open(&claim) {
+            return Ok(not_open);
         }
         log.facts.push(BuildFact::Claim(claim.clone()));
         Ok(ClaimOutcome::Won)
@@ -446,10 +547,21 @@ impl FileJournal {
 
 #[async_trait]
 impl BuildStateAdapter for FileJournal {
-    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError> {
+    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let mut log = self.log.lock().unwrap();
-        if !log.intent_conflict(intent)? {
-            self.append(&mut log, BuildFact::Intent(intent.clone()))?;
+        if !log.accepted_conflict(accepted)? {
+            self.append(&mut log, BuildFact::Accepted(accepted.clone()))?;
+        }
+        Ok(())
+    }
+
+    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        let mut log = self.log.lock().unwrap();
+        if !log.known(&opened.build_id) {
+            return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
+        }
+        if !log.is_opened(&opened.build_id, opened.attempt) {
+            self.append(&mut log, BuildFact::Opened(opened.clone()))?;
         }
         Ok(())
     }
@@ -469,6 +581,9 @@ impl BuildStateAdapter for FileJournal {
         }
         if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
             return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
+        }
+        if let Some(not_open) = log.not_open(&claim) {
+            return Ok(not_open);
         }
         self.append(&mut log, BuildFact::Claim(claim.clone()))?;
         Ok(ClaimOutcome::Won)
@@ -507,17 +622,19 @@ mod tests {
     }
 
     use super::*;
-    use crate::build::BuildIntent;
 
-    fn intent(id: &str) -> BuildIntentFact {
-        BuildIntentFact {
+    fn intent(id: &str) -> BuildAccepted {
+        BuildAccepted {
             build_id: BuildId(id.into()),
-            intent: BuildIntent::RestartNode { node: "mesh1.rpc.2".parse().unwrap(), from_incarnation: None },
+            topology: FabricTopology::root("fabric1", "mesh1"),
+            submitted_change: None,
             traceparent: None,
             submitted_at_ms: 1,
-            desired: None,
-            reason: None,
         }
+    }
+
+    fn opened(id: &str, attempt: u32, reason: AttemptReason) -> AttemptOpened {
+        AttemptOpened { build_id: BuildId(id.into()), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
     }
 
     fn claim(id: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
@@ -534,7 +651,7 @@ mod tests {
 
     fn log() -> Vec<BuildFact> {
         vec![
-            BuildFact::Intent(intent("b1")),
+            BuildFact::Accepted(intent("b1")),
             BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")),
             BuildFact::Step(step("b1", 1, "restart-node:mesh1.rpc.2")),
             BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Failed { reason: "executor lost".into() })),
@@ -542,7 +659,7 @@ mod tests {
             BuildFact::Claim(claim("b1", 2, "mesh1.admin.1")), // loses: attempt 2 already claimed
             BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Converged)), // stale attempt: ignored
             BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Converged)),
-            BuildFact::Intent(intent("b2")),
+            BuildFact::Accepted(intent("b2")),
         ]
     }
 
@@ -574,16 +691,59 @@ mod tests {
     #[tokio::test]
     async fn claims_are_insert_and_fail() {
         let m = MemoryBuildStateAdapter::new();
-        m.publish_intent(&intent("b1")).await.unwrap();
+        m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
         assert_eq!(m.claim_attempt(&claim("b1", 1, "b")).await.unwrap(), ClaimOutcome::Lost { holder: "a".into() });
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
         assert_eq!(m.claim_attempt(&claim("b9", 1, "a")).await, Err(BuildStateError::UnknownBuild(BuildId("b9".into()))));
         let mut other = intent("b1");
         other.submitted_at_ms = 2;
-        assert_eq!(m.publish_intent(&other).await, Err(BuildStateError::ConflictingIntent(BuildId("b1".into()))));
-        m.publish_intent(&intent("b1")).await.unwrap();
+        assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId("b1".into()))));
+        m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.list_active().await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_hand_off_chain_arriving_out_of_order_still_reaches_its_converged_attempt() {
+        // Gossip delivers facts in any order: a later claim can arrive first.
+        let chain = vec![
+            BuildFact::Claim(claim("b7", 3, "c")),
+            BuildFact::Attempt(attempt("b7", 3, AttemptOutcome::Converged)),
+            BuildFact::Attempt(attempt("b7", 2, AttemptOutcome::HandedOff { to: "c".into() })),
+            BuildFact::Claim(claim("b7", 2, "b")),
+            BuildFact::Attempt(attempt("b7", 1, AttemptOutcome::HandedOff { to: "b".into() })),
+            BuildFact::Claim(claim("b7", 1, "a")),
+            BuildFact::Accepted(intent("b7")),
+        ];
+        let b = fold(&chain).remove(&BuildId("b7".into())).unwrap();
+        assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Complete, 3, Some("c")));
+    }
+
+    #[tokio::test]
+    async fn an_attempt_is_opened_once_and_reopens_a_complete_build() {
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        assert_eq!(m.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
+        // A claim on a complete Build runs nothing and records nothing: a complete Build runs
+        // again only once an attempt is opened on it.
+        assert_eq!(m.claim_attempt(&claim("b1", 2, "a")).await.unwrap(), ClaimOutcome::NotOpen { next: None });
+        assert_eq!(m.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
+        // Two authorities proving the same drift open one attempt: the first opener wins.
+        m.open_attempt(&opened("b1", 2, AttemptReason::ProvenDrift)).await.unwrap();
+        let mut again = opened("b1", 2, AttemptReason::Restart);
+        again.opened_by = "mesh1.admin.2".into();
+        m.open_attempt(&again).await.unwrap();
+        let b = m.read_build(&BuildId("b1".into())).await.unwrap();
+        assert_eq!((b.state, b.attempt, b.reason, b.executor), (BuildState::Pending, 1, AttemptReason::ProvenDrift, None));
+        assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1);
+        assert_eq!(m.list_active().await.unwrap().len(), 1, "the reopened Build is active again");
+        assert_eq!(m.claim_attempt(&claim("b1", 3, "b")).await.unwrap(), ClaimOutcome::NotOpen { next: Some(2) }, "only the next attempt");
+        assert_eq!(m.claim_attempt(&claim("b1", 2, "b")).await.unwrap(), ClaimOutcome::Won);
+        let b = m.read_build(&BuildId("b1".into())).await.unwrap();
+        assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Running, 2, Some("b")));
+        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId("b9".into()))));
     }
 
     #[tokio::test]
@@ -607,10 +767,10 @@ mod tests {
         let dir = tmp();
         let before = {
             let j = FileJournal::open(&dir).unwrap();
-            j.publish_intent(&intent("b1")).await.unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "restart-node:mesh1.rpc.2")).await.unwrap();
-            j.publish_intent(&intent("b2")).await.unwrap();
+            j.publish_accepted(&intent("b2")).await.unwrap();
             (j.read_build(&BuildId("b1".into())).await.unwrap(), j.list_active().await.unwrap())
         };
         let j = FileJournal::open(&dir).unwrap(); // the admin restarted
@@ -627,7 +787,7 @@ mod tests {
     async fn a_corrupt_journal_line_is_named() {
         let dir = tmp();
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(JOURNAL_FILE), format!("{}\nnot json\n", serde_json::to_string(&BuildFact::Intent(intent("b1"))).unwrap())).unwrap();
+        std::fs::write(dir.join(JOURNAL_FILE), format!("{}\nnot json\n", serde_json::to_string(&BuildFact::Accepted(intent("b1"))).unwrap())).unwrap();
         assert!(matches!(FileJournal::open(&dir), Err(BuildStateError::CorruptJournal { line: 2, .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }

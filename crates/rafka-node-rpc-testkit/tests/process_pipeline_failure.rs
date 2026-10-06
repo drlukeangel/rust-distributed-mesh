@@ -6,9 +6,11 @@
 //! subscriber, and tracing's process-wide callsite interest cache must not be
 //! shared with a test that runs the same callsites without one.
 
+mod common;
+
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::build::{BuildId, BuildIntent};
-use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rafka_node_admin_core::build::BuildId;
+use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
@@ -55,13 +57,12 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();
     builds
-        .publish_intent(&BuildIntentFact {
+        .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted {
             build_id: build_id.clone(),
-            intent: BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode, target: None },
+            topology: common::add_node(),
+            submitted_change: None,
             traceparent: None,
             submitted_at_ms: 0,
-            desired: None,
-            reason: None,
         })
         .await
         .unwrap();

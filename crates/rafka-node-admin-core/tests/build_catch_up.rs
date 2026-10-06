@@ -7,9 +7,10 @@
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
-use rafka_node_admin_core::build::{BuildId, BuildIntent, MeshDesired};
+use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
+use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
-    AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildIntentFact, BuildState, BuildStateAdapter,
+    AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildAccepted, BuildState, BuildStateAdapter,
 };
 use rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter;
 use rafka_node_admin_core::model::FabricId;
@@ -28,7 +29,7 @@ async fn admin(peers: Vec<EndpointAddr>) -> (Endpoint, Router, Arc<FabricBuildSt
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Default::default(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin"), "test-admin".into()).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test-admin")), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin"), "test-admin".into()).await.unwrap());
     (endpoint, router, builds)
 }
 
@@ -36,15 +37,8 @@ fn addr(e: &Endpoint) -> EndpointAddr {
     EndpointAddr::new(e.id()).with_ip_addr(e.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap())
 }
 
-fn intent(id: &BuildId) -> BuildIntentFact {
-    BuildIntentFact {
-        build_id: id.clone(),
-        intent: BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 3 } },
-        traceparent: None,
-        submitted_at_ms: 0,
-        desired: None,
-        reason: None,
-    }
+fn intent(id: &BuildId) -> BuildAccepted {
+    BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, traceparent: None, submitted_at_ms: 0 }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -53,10 +47,10 @@ async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_bu
 
     // A, alone on the topic, accepts an active Build (claimed) and a finished one.
     let active = BuildId::mint();
-    a.publish_intent(&intent(&active)).await.unwrap();
+    a.publish_accepted(&intent(&active)).await.unwrap();
     a.claim_attempt(&BuildAttemptClaim { build_id: active.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let finished = BuildId::mint();
-    a.publish_intent(&intent(&finished)).await.unwrap();
+    a.publish_accepted(&intent(&finished)).await.unwrap();
     a.claim_attempt(&BuildAttemptClaim { build_id: finished.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     a.append_attempt_receipt(&BuildAttemptReceipt { build_id: finished.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
         .await
@@ -74,7 +68,7 @@ async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_bu
     }
     assert!(caught_up, "C never received the Build accepted before it joined");
     let v = c.read_build(&active).await.unwrap();
-    assert_eq!((v.state, v.intent), (BuildState::Running, intent(&active).intent));
+    assert_eq!((v.state, v.topology), (BuildState::Running, intent(&active).topology));
     assert!(c.read_build(&finished).await.is_err(), "finished Builds are history, not catch-up");
 
     // From here on C hears A's new facts directly.
@@ -99,7 +93,7 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
     use rafka_node_admin_core::build_state::{BuildStepReceipt, StepOutcome};
     let (a_ep, a_router, a) = admin(vec![]).await;
     let id = BuildId::mint();
-    a.publish_intent(&intent(&id)).await.unwrap();
+    a.publish_accepted(&intent(&id)).await.unwrap();
     a.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     // Far more than one gossip message's worth of receipts, each with output.
     for i in 0..120 {
@@ -151,15 +145,15 @@ async fn a_catch_up_at_the_wire_limit_arrives_and_keeps_the_connection() {
     use rafka_node_admin_core::build_state::BuildFact;
     let (a_ep, a_router, a) = admin(vec![]).await;
     let (one, two) = (BuildId::mint(), BuildId::mint());
-    let padded = |id: &BuildId, pad: usize| BuildIntentFact { traceparent: Some("x".repeat(pad)), ..intent(id) };
+    let padded = |id: &BuildId, pad: usize| BuildAccepted { traceparent: Some("x".repeat(pad)), ..intent(id) };
     // Two intents whose facts encode to 4053 bytes of JSON: with the wire
     // object and a nonce of 1 to 20 digits, 4073 to 4092 bytes of payload.
-    let facts_len = |pad: usize| serde_json::to_vec(&vec![BuildFact::Intent(padded(&one, pad)), BuildFact::Intent(padded(&two, pad))]).unwrap().len();
+    let facts_len = |pad: usize| serde_json::to_vec(&vec![BuildFact::Accepted(padded(&one, pad)), BuildFact::Accepted(padded(&two, pad))]).unwrap().len();
     let pad = (4053 - facts_len(0)) / 2;
     let pad = if facts_len(pad) < 4053 { pad + 1 } else { pad };
     assert!((4052..=4054).contains(&facts_len(pad)), "{}", facts_len(pad));
-    a.publish_intent(&padded(&one, pad)).await.unwrap();
-    a.publish_intent(&padded(&two, pad)).await.unwrap();
+    a.publish_accepted(&padded(&one, pad)).await.unwrap();
+    a.publish_accepted(&padded(&two, pad)).await.unwrap();
 
     let (_c_ep, c_router, c) = admin(vec![addr(&a_ep)]).await;
     let mut both = false;

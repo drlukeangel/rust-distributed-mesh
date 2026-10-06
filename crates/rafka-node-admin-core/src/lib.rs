@@ -8,10 +8,10 @@
 //! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
 
 pub mod admin;
+pub mod accepted;
 pub mod build;
 pub mod build_state;
 pub mod deployment;
-pub mod desired;
 pub mod drift;
 pub mod election;
 pub mod executor;

@@ -17,8 +17,9 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_mesh_transport::membership::Membership;
-use rafka_node_admin_core::build::{BuildId, BuildIntent};
-use rafka_node_admin_core::build_state::{BuildIntentFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
+use rafka_node_admin_core::build::BuildId;
+use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE_SLOTS;
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, NodeObserver, Timeouts, TopologySink,
@@ -212,18 +213,19 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr)) -> LaunchTemplate
     }
 }
 
-/// Publish one Build intent and return its id.
-pub async fn publish_build(builds: &MemoryBuildStateAdapter, intent: BuildIntent) -> BuildId {
+/// Accept one Build of `topology` and return its id.
+pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTopology) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_intent(&BuildIntentFact { build_id: build_id.clone(), intent, traceparent: None, submitted_at_ms: 0, desired: None, reason: None })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, traceparent: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     build_id
 }
 
-pub fn add_node() -> BuildIntent {
-    BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: rafka_node_admin_core::model::NodeKind::RpcNode, target: None }
+/// mesh1 with one admin and one rpc node: what the smoke deploys toward.
+pub fn add_node() -> FabricTopology {
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of("mesh1", 1, 1))].into() }
 }
 
 /// What `deploy_through_every_step` found.

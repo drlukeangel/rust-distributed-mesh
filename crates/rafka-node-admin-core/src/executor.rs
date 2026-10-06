@@ -16,7 +16,7 @@
 //! executes ends `HandedOff`, and that admin claims the next attempt of the
 //! same Build.
 
-use crate::build::{plan, BuildId, BuildOperation};
+use crate::build::{BuildId, BuildOperation};
 use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, ClaimOutcome};
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
@@ -78,6 +78,8 @@ pub enum Reconciled {
     Failed { attempt: u32, reason: String },
     /// Another executor holds the attempt this one tried to claim.
     Lost { attempt: u32, holder: String },
+    /// The attempt is not open on this Build (complete, or not its next): nothing ran.
+    NotOpen { attempt: u32 },
     /// The attempt ran `operations` and stopped where admin `to` executes.
     HandedOff { attempt: u32, operations: Vec<BuildOperation>, to: String },
     /// The Build is already complete: nothing to do.
@@ -90,9 +92,6 @@ pub struct BuildExecutor {
     pub builds: Arc<dyn BuildStateAdapter>,
     pub topology: Arc<RwLock<Topology>>,
     pub runner: Arc<dyn OperationRunner>,
-    /// This admin's desired topology: a Build whose desired revision lost a
-    /// fork is refused, never executed.
-    pub desired: Arc<crate::desired::DesiredStore>,
 }
 
 impl BuildExecutor {
@@ -108,10 +107,6 @@ impl BuildExecutor {
         };
         let mut out = Vec::new();
         for b in active {
-            // A Build waits for the desired revision it names to be heard.
-            if b.desired.as_ref().is_some_and(|m| matches!(self.desired.standing(m), crate::desired::Standing::Ahead | crate::desired::Standing::Unhydrated)) {
-                continue;
-            }
             if !self.leads(&b).await {
                 continue;
             }
@@ -141,7 +136,7 @@ impl BuildExecutor {
             }
             BuildState::Pending | BuildState::Failed => {}
         }
-        let ops = plan(&build.intent, &t).map(|p| p.operations).unwrap_or_default();
+        let ops = crate::accepted::plan(&build.topology, &t, build.action.as_ref()).operations;
         lead_for(&ops, &t).is_some_and(|l| l.to_string() == self.executor)
     }
 
@@ -155,8 +150,8 @@ impl BuildExecutor {
             attempt,
             executor = %self.executor,
             previous_executor = build.executor.as_deref().unwrap_or(""),
-            desired_revision = build.desired.as_ref().map(|m| m.revision).unwrap_or(0),
-            reason = build.reason.map(|r| r.as_str()).unwrap_or(""),
+            reason = build.reason.as_str(),
+            action = %build.action.as_ref().map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -171,6 +166,7 @@ impl BuildExecutor {
                 Reconciled::Converged { .. } => "converged",
                 Reconciled::Failed { .. } => "failed",
                 Reconciled::Lost { .. } => "lost",
+                Reconciled::NotOpen { .. } => "not-open",
                 Reconciled::HandedOff { .. } => "handed-off",
                 Reconciled::Finished => "finished",
             },
@@ -187,20 +183,12 @@ impl BuildExecutor {
         match self.builds.claim_attempt(&claim).await {
             Ok(ClaimOutcome::Won) => {}
             Ok(ClaimOutcome::Lost { holder }) => return Reconciled::Lost { attempt, holder },
+            Ok(ClaimOutcome::NotOpen { .. }) => return Reconciled::NotOpen { attempt },
             Err(e) => return Reconciled::Failed { attempt, reason: format!("claiming attempt {attempt}: {e}") },
         }
-        if let Some(mark) = build.desired.as_ref().filter(|m| self.desired.standing(m) == crate::desired::Standing::Lost) {
-            let reason = format!("desired-revision-conflict: {mark} lost to a concurrent update from the same base; resubmit against the current revision");
-            tracing::info_span!("rafka.node_admin.build.reject.via-desired-revision-conflict", build_id = %build.build_id, desired_revision = mark.revision, detail = %reason)
-                .in_scope(|| tracing::info!("Build refused: its desired revision lost"));
-            return self.finish(build, attempt, Err(reason)).await;
-        }
-        // Desired is the pinned intent; observed is read now, never remembered.
+        // The accepted topology is the Build's; observed is read now, never remembered.
         let observed = self.topology.read().await.clone();
-        let operations = match plan(&build.intent, &observed) {
-            Ok(p) => p.operations,
-            Err(reject) => return self.finish(build, attempt, Err(format!("re-plan refused: {reject}"))).await,
-        };
+        let operations = crate::accepted::plan(&build.topology, &observed, build.action.as_ref()).operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
             // The view moves as operations run (a new mesh's admins become
@@ -316,16 +304,15 @@ mod tests {
 
     #[test]
     fn a_handed_off_attempt_leaves_the_build_waiting_for_its_next_claim() {
-        use crate::build_state::{fold, BuildFact, BuildIntentFact};
+        use crate::build_state::{fold, BuildAccepted, BuildFact};
         let id = crate::build::BuildId("bld-x".into());
         let facts = vec![
-            BuildFact::Intent(BuildIntentFact {
+            BuildFact::Accepted(BuildAccepted {
                 build_id: id.clone(),
-                intent: crate::build::BuildIntent::RemoveMesh { mesh: "mesh2".into() },
+                topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"),
+                submitted_change: None,
                 traceparent: None,
                 submitted_at_ms: 0,
-                desired: None,
-                reason: None,
             }),
             BuildFact::Claim(BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),
             BuildFact::Attempt(BuildAttemptReceipt { build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }),

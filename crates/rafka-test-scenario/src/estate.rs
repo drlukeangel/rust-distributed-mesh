@@ -129,6 +129,12 @@ impl Estate {
         );
         let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), relaunched: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
+        // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
+        // Ready and elected, not when its API first answers.
+        wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
+            estate.get("/api/fabric").await.1["fabric_primary"].as_str().map(|_| ())
+        })
+        .await;
         estate
     }
 
@@ -245,16 +251,80 @@ impl Estate {
         (status, r.json().await.unwrap_or(Value::Null))
     }
 
-    pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
-        let r = self.http.post(format!("{}{path}", self.admin)).json(body).send().await.expect("control API reachable");
+    /// `POST` to this estate's entry admin, as is.
+    pub async fn post_raw(&self, path: &str, body: &Value) -> (u16, Value) {
+        self.http_post(&self.admin, path, body).await
+    }
+
+    /// `DELETE base+path`, as is.
+    pub async fn delete_at(&self, base: &str, path: &str) -> (u16, Value) {
+        let r = self.http.delete(format!("{base}{path}")).send().await.unwrap_or_else(|e| panic!("DELETE {base}{path}: {e}"));
         let status = r.status().as_u16();
         (status, r.json().await.unwrap_or(Value::Null))
     }
 
-    pub async fn delete(&self, path: &str) -> (u16, Value) {
+    /// `DELETE` at this estate's entry admin, as is.
+    pub async fn delete_raw(&self, path: &str) -> (u16, Value) {
         let r = self.http.delete(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
         let status = r.status().as_u16();
         (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// A topology request: what an operator does. Topology is accepted only by the current
+    /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
+    /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
+    /// waits out a Build still reconciling (`build-in-progress`), for up to two minutes. Every
+    /// other answer is returned as is.
+    async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut last = (0u16, Value::Null);
+        loop {
+            let base = self.get("/api/fabric").await.1["admin_api_base"].as_str().filter(|b| !b.is_empty()).map(String::from).unwrap_or_else(|| self.admin.clone());
+            // Removing a node: the authority removes a birth it sees, so give its view the moment
+            // gossip needs to hear a node another Mesh just created.
+            if method == "DELETE" {
+                if let Some(name) = path.strip_prefix("/api/nodes/") {
+                    let seen_by = Instant::now() + Duration::from_secs(10);
+                    while Instant::now() < seen_by {
+                        let v = self.http_get(&base, "/api/nodes").await.1;
+                        if v["nodes"].as_array().is_some_and(|ns| ns.iter().any(|n| n["name"] == name && n["status"] != "dead")) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+            let r = match (method, body) {
+                ("DELETE", _) => self.http.delete(format!("{base}{path}")).send().await,
+                (_, Some(b)) => self.http.post(format!("{base}{path}")).json(b).send().await,
+                _ => self.http.post(format!("{base}{path}")).send().await,
+            };
+            if let Ok(r) = r {
+                let status = r.status().as_u16();
+                let v = r.json().await.unwrap_or(Value::Null);
+                let waits = status == 409 && matches!(v["error"].as_str(), Some("rejected-not-authority") | Some("build-in-progress"));
+                if !waits {
+                    return (status, v);
+                }
+                last = (status, v);
+            }
+            assert!(Instant::now() < deadline, "{method} {path}: no fabric-primary accepted it within 120s; last answer: {} {}", last.0, last.1);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
+        if path.starts_with("/api/build") || path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
+            return self.topology_request("POST", path, Some(body)).await;
+        }
+        self.post_raw(path, body).await
+    }
+
+    pub async fn delete(&self, path: &str) -> (u16, Value) {
+        if path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
+            return self.topology_request("DELETE", path, None).await;
+        }
+        self.delete_raw(path).await
     }
 
     /// Wait until Build `id` is `complete`; a `failed` Build fails the test.
@@ -406,6 +476,7 @@ impl Estate {
     /// every runtime of the estate has exited. Every process flushes its
     /// evidence on exit, so read `spans()` after this.
     pub async fn stop(&mut self) {
+        let entry = self.admin.clone();
         let (_, fabric) = self.get("/api/fabric").await;
         if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
             self.admin = holder.to_string();
@@ -417,19 +488,37 @@ impl Estate {
         let mut last = (0u16, Value::Null);
         loop {
             let r = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
-            if let Ok(r) = r {
-                let status = r.status().as_u16();
-                let body = r.json().await.unwrap_or(Value::Null);
-                if status == 202 {
-                    break;
+            let refused_or_gone = match r {
+                Ok(r) => {
+                    let status = r.status().as_u16();
+                    let body = r.json().await.unwrap_or(Value::Null);
+                    if status == 202 {
+                        break;
+                    }
+                    last = (status, body);
+                    true
                 }
-                if body["fabric_primary"].is_string() {
-                    let (_, f) = self.get("/api/fabric").await;
+                Err(e) => {
+                    last = (0, Value::String(e.to_string()));
+                    true
+                }
+            };
+            // The advertised holder refused or is gone: ask the entry admin, then every admin it
+            // lists, who holds the fabric now.
+            if refused_or_gone {
+                let mut candidates = vec![entry.clone()];
+                if let Ok(r) = self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await {
+                    let v: Value = r.json().await.unwrap_or(Value::Null);
+                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && n["status"] != "dead").filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
+                }
+                for c in candidates {
+                    let Ok(r) = self.http.get(format!("{c}/api/fabric")).timeout(Duration::from_secs(2)).send().await else { continue };
+                    let f: Value = r.json().await.unwrap_or(Value::Null);
                     if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
                         self.admin = base.to_string();
+                        break;
                     }
                 }
-                last = (status, body);
             }
             assert!(Instant::now() < until, "no admin accepted /api/shutdown within 30s; last answer from {}: {} {}", self.admin, last.0, last.1);
             tokio::time::sleep(Duration::from_millis(200)).await;

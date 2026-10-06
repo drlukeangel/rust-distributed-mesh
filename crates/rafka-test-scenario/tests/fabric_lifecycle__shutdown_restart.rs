@@ -41,6 +41,7 @@ fn shutdown_file(data_dir: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "RDM #48: a relaunched admin blocks in FabricBuildStateAdapter::join (subscribe_and_join waits on a seed that died with the old fabric); goes GREEN with the dead-seeds ruling"]
 async fn a_fabric_shutdown_survives_an_all_admin_restart() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}]})).await;

@@ -17,11 +17,14 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The Fabric's immutable identity.
+/// The Fabric record: its immutable identity, and `build_id`, the one accepted topology (the
+/// complete Build it names). `None` only before Day 0 accepted the first Build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricRecord {
     pub fabric_id: FabricId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<crate::build::BuildId>,
 }
 
 /// A fabric shutdown in progress. `initiated_by` names the fabric-primary that began it;
@@ -212,7 +215,7 @@ mod tests {
     fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
         let s = FileFabricStorage::open(&d).unwrap();
-        let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-1".into())) };
         s.put_fabric(&fabric).unwrap();
         s.put_shutdown(&shutdown()).unwrap();
         let reopened = FileFabricStorage::open(&d).unwrap();

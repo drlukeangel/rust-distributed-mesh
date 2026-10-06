@@ -19,7 +19,7 @@
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
 use crate::deployment::endpoint::{slots_for, EndpointAllocator};
-use crate::desired::{DesiredStore, DesiredTopology, Via};
+use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
 };
@@ -325,24 +325,27 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     topology
 }
 
-/// The fabric authority's drift check (`crate::drift`): when this admin is
-/// the fabric primary and a desired cohort has fewer births than the current
-/// revision wants, at least one of them with its exact runtime inspected and
-/// found exited, and no active Build references that revision, it starts a
-/// new reconciliation Build against the unchanged revision. `started` holds
-/// the (revision, exited births) it already started one for, so a recovery
-/// that fails is not started again and again.
+/// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
+/// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
+/// it should, at least one of them with its exact runtime inspected and found exited, it opens
+/// the next attempt of that same Build (`Fabric.build_id` unchanged: the topology did not change).
+/// `started` holds the (build, attempt, exited births) it already opened, so a repair that fails
+/// is not opened again and again; the adapter's insert-and-fail on the attempt keeps two
+/// authorities from opening it twice.
 pub async fn reconcile_drift(
     me: &PathName,
     t: &Topology,
-    desired: &DesiredStore,
+    accepted: &AcceptedStore,
     book: &DigestBook,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     builds: &dyn BuildStateAdapter,
-    started: &mut HashSet<(u64, Vec<String>)>,
-) -> Option<crate::build::BuildId> {
+    started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
+) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
-    let d = desired.current()?;
+    let current = accepted.current(builds).await?;
+    if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
+        return None;
+    }
     let mut exited = HashSet::new();
     for n in crate::drift::unheard(t) {
         let Some(fact) = book.get(n.node_id.as_str()).map(|(dg, _)| dg).filter(|dg| Some(&dg.node.incarnation) == n.incarnation_id.as_ref()).and_then(|dg| dg.node.runtime) else {
@@ -355,58 +358,64 @@ pub async fn reconcile_drift(
             exited.insert(n.incarnation_id.clone().expect("filtered on it"));
         }
     }
-    let short = crate::drift::shortfall(&d, t, &exited);
-    if short.is_empty() {
+    let short = crate::drift::shortfall(&current.topology, t, &exited);
+    // Surplus: a live birth of a kept Mesh the accepted topology does not name (a removal the
+    // executing view had not heard yet when the Build closed).
+    let mut surplus: Vec<String> = t
+        .nodes
+        .iter()
+        .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
+        .map(|n| n.name.to_string())
+        .collect();
+    surplus.sort();
+    if short.is_empty() && surplus.is_empty() {
         return None;
     }
-    let active = builds.list_active().await.ok()?;
-    if active.iter().any(|b| b.desired.as_ref().is_some_and(|m| m.revision == d.revision)) {
-        return None;
-    }
-    let mut key: Vec<String> = short.iter().flat_map(|s| s.exited.iter().cloned()).collect();
+    let attempt = current.attempt + 1;
+    let mut key: Vec<String> = short.iter().flat_map(|s| s.exited.iter().cloned()).chain(surplus.iter().cloned()).collect();
     key.sort();
-    if !started.insert((d.revision, key)) {
+    if !started.insert((current.build_id.clone(), attempt, key)) {
         return None;
     }
-    let build_id = crate::build::BuildId::mint();
-    let scope = short.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+    let mut scope: Vec<String> = short.iter().map(ToString::to_string).collect();
+    if !surplus.is_empty() {
+        scope.push(format!("surplus: {}", surplus.join(" ")));
+    }
+    let scope = scope.join("; ");
     let span = tracing::info_span!(
-        "rafka.node_admin.build.create.via-proven-drift",
-        fabric_id = %d.fabric_id,
-        desired_revision = d.revision,
-        source_build_id = %d.source_build_id.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
-        reconcile_build_id = %build_id,
+        "rafka.node_admin.build.update.via-proven-drift",
+        build_id = %current.build_id,
+        attempt,
         scope = %scope,
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
     );
-    let fact = crate::build_state::BuildIntentFact {
-        build_id: build_id.clone(),
-        intent: crate::build::BuildIntent::ReconcileFabric { desired: d.desired.clone() },
-        traceparent: span.in_scope(rafka_mesh_telemetry::current_traceparent),
-        submitted_at_ms: now_ms(),
-        desired: Some(d.mark()),
-        reason: Some(crate::build_state::BuildReason::ProvenDrift),
+    let opened = crate::build_state::AttemptOpened {
+        build_id: current.build_id.clone(),
+        attempt,
+        reason: crate::build_state::AttemptReason::ProvenDrift,
+        action: None,
+        opened_by: me.to_string(),
+        opened_at_ms: now_ms(),
     };
-    match builds.publish_intent(&fact).await {
+    match builds.open_attempt(&opened).await {
         Ok(()) => {
-            span.in_scope(|| tracing::info!("observed topology below the current desired revision: reconciliation Build started"));
-            Some(build_id)
+            span.in_scope(|| tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open"));
+            Some((current.build_id.clone(), attempt))
         }
         Err(e) => {
-            span.in_scope(|| tracing::info!(error = %e, "the reconciliation Build could not be published"));
+            span.in_scope(|| tracing::info!(error = %e, "the attempt could not be opened"));
             None
         }
     }
 }
 
-/// Never Ready around missing control hydration: an admin that holds no
-/// current desired topology names itself blocked. Only Day 0 roots the
-/// desired topology itself; every other admin hydrates it from an existing
-/// authority (its entry pull, or the fabric control topic).
-pub fn hydration_blocker(me: &PathName, desired: &DesiredStore) -> Option<String> {
-    desired.current().is_none().then(|| format!("{me}: holds no current desired topology (not hydrated from an existing authority)"))
+/// Never Ready around missing control hydration: an admin that holds no `Fabric.build_id` names
+/// itself blocked. Only Day 0 accepts the first Build itself; every other admin hydrates the
+/// pointer from an existing authority (its entry pull, or the fabric control topic).
+pub fn hydration_blocker(me: &PathName, accepted: &AcceptedStore) -> Option<String> {
+    accepted.build_id().is_none().then(|| format!("{me}: holds no Fabric.build_id (not hydrated from an existing authority)"))
 }
 
 /// The order a whole-mesh retire takes `members`: every ordinary member, then the admin cohort,
@@ -501,7 +510,7 @@ struct EntryState {
     records: Arc<Records>,
     book: DigestBook,
     digest: Arc<Mutex<MeshDigest>>,
-    desired: Arc<DesiredStore>,
+    accepted: Arc<AcceptedStore>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
 }
 
@@ -984,7 +993,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             members.push(e.digest.lock().unwrap().clone());
             let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
             // The fabric control state a new admin hydrates before it may be Ready.
-            let control = serde_json::json!({ "desired": e.desired.current(), "shutdown": e.shutdown.held() });
+            let control = serde_json::json!({ "fabric": e.accepted.record().ok().flatten(), "shutdown": e.shutdown.held() });
             EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control }
         }
     });
@@ -1024,21 +1033,21 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
-    // The current desired topology: Day 0's root, or hydrated from the entry
-    // pull and kept current over the fabric's control topic.
-    let desired = Arc::new(DesiredStore::default());
     // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
     // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> =
         Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(|e| e.to_string())?);
     if fabric_storage.fabric().map_err(|e| e.to_string())?.is_none() {
         fabric_storage
-            .put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
+            .put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), build_id: None })
             .map_err(|e| e.to_string())?;
     }
     let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).map_err(|e| e.to_string())?);
+    // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
+    // its entry pull or the fabric control topic.
+    let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), desired.clone(), shutdown_control.clone(), name.to_string())
+        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), accepted.clone(), shutdown_control.clone(), name.to_string())
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -1086,13 +1095,11 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             }
             let _ = membership.join_peers(mesh_peers).await;
             backbone.join_admins(admins).await;
-            // Hydrate the current desired topology from the launching admin;
-            // without it this admin stays Pending (the Ready gate below).
-            match answer.control.get("desired").cloned().map(serde_json::from_value::<DesiredTopology>) {
-                Some(Ok(d)) => {
-                    crate::desired::take(&desired, d, Via::Hydration, &name.to_string(), &answer.served_by);
-                }
-                Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's desired topology does not decode"),
+            // Hydrate `Fabric.build_id` from the launching admin; without it this admin stays
+            // Pending (the Ready gate below). The Build it names arrives on the Build topic.
+            match answer.control.get("fabric").filter(|v| !v.is_null()).cloned().map(serde_json::from_value::<crate::fabric_storage::FabricRecord>) {
+                Some(Ok(r)) => accepted.learn(r, &*builds, &answer.served_by).await,
+                Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's Fabric record does not decode"),
                 None => {}
             }
             // A fabric shutdown in force: this admin comes up frozen.
@@ -1115,9 +1122,19 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
         None => {
-            // Day 0: no Fabric authority exists before this admin; it roots
-            // the desired topology with its own mesh.
-            crate::desired::take(&desired, DesiredTopology::root(cfg.fabric_id.clone(), &cfg.fabric, &cfg.mesh), Via::Day0, &name.to_string(), &name.to_string());
+            // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
+            // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
+            if accepted.build_id().is_none() {
+                let b0 = crate::build_state::BuildAccepted {
+                    build_id: crate::build::BuildId::mint(),
+                    topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
+                    submitted_change: None,
+                    traceparent: rafka_mesh_telemetry::current_traceparent(),
+                    submitted_at_ms: now_ms(),
+                };
+                builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
+                accepted.point(&b0.build_id, "day-0").map_err(|e| e.to_string())?;
+            }
             FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
     };
@@ -1128,7 +1145,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     let records = Arc::new(Records::default());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    let control = Arc::new(ControlPlane::new(builds.clone(), desired.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
+    let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
 
     // The deployment hand (used while this admin is fabric primary).
     let prepared = crate::deployment::prepare(policy, &cfg.fabric).await.map_err(|e| e.to_string())?;
@@ -1229,7 +1246,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         records: records.clone(),
         book: book.clone(),
         digest: digest.clone(),
-        desired: desired.clone(),
+        accepted: accepted.clone(),
         shutdown: shutdown_control.clone(),
     });
     if let Some(l) = &cfg.launch {
@@ -1246,7 +1263,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     {
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), prepared.provider.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
-        let hydrated = desired.clone();
+        let hydrated = accepted.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
         tasks.push(tokio::spawn(async move {
@@ -1357,11 +1374,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             builds: builds.clone(),
             topology: control.topology.clone(),
             runner: runner.clone(),
-            desired: desired.clone(),
         };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
-        let (me, deployer, desired, drift_builds) = (name.clone(), runner.provider.clone(), desired.clone(), builds.clone());
+        let (me, deployer, accepted, drift_builds) = (name.clone(), runner.provider.clone(), accepted.clone(), builds.clone());
         let frozen = shutdown_control.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
@@ -1380,7 +1396,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 // (its view then authorizes nothing). The fabric authority first
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
-                    reconcile_drift(&me, &now, &desired, &book, &*deployer, &*drift_builds, &mut started).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &mut started).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
@@ -1624,12 +1640,15 @@ mod tests {
     }
 
     #[test]
-    fn an_admin_without_a_hydrated_desired_topology_is_never_authority_capable() {
+    fn an_admin_without_a_hydrated_fabric_pointer_is_never_authority_capable() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
-        let store = DesiredStore::default();
+        use crate::fabric_storage::FabricStorage as _;
+        let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
+        storage.put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: fabric1(), name: "fabric1".into(), build_id: None }).unwrap();
+        let store = AcceptedStore::new(storage.clone(), "mesh1.admin.2");
         let blocked = hydration_blocker(&me, &store).expect("blocked while unhydrated");
-        assert!(blocked.starts_with("mesh1.admin.2: holds no current desired topology"), "{blocked}");
-        store.offer(DesiredTopology::root(fabric1(), "fabric1", "mesh1"));
+        assert!(blocked.starts_with("mesh1.admin.2: holds no Fabric.build_id"), "{blocked}");
+        store.point(&crate::build::BuildId("bld-0".into()), "test").unwrap();
         assert_eq!(hydration_blocker(&me, &store), None);
     }
 

@@ -13,6 +13,7 @@ use http_body_util::BodyExt;
 use rafka_node_admin_core::build_state::{
     AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter,
 };
+use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::http::{router, ControlPlane};
 use rafka_node_admin_core::model::*;
@@ -50,6 +51,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 fn node(name: &str, primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
     n.status = NodeStatus::ReadyForTraffic;
+    n.incarnation_id = Some(IncarnationId::mint());
     n.is_primary = primary;
     if n.kind == NodeKind::NodeAdmin {
         n.admin_api_base = Some(format!("http://127.0.0.1:1800{}", n.name.ordinal));
@@ -80,12 +82,15 @@ struct Harness {
     _guard: tracing::subscriber::DefaultGuard,
 }
 
-fn harness(runtime_routes: Router) -> Harness {
+/// This admin (`mesh1.admin.1`, the fabric-primary) holds a settled accepted Build of the
+/// observed topology: the one every change compiles against.
+async fn harness(runtime_routes: Router) -> Harness {
     let spans = SpanNames::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(t.fabric.id.clone(), &t.fabric.name, "mesh1"))), t));
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t));
     let app = router(cp.clone(), runtime_routes);
     Harness { cp, builds, app, spans, _guard: guard }
 }
@@ -107,6 +112,13 @@ impl Harness {
     async fn facts(&self) -> Vec<BuildFact> {
         self.builds.facts().await.unwrap()
     }
+    /// Run the Build's open attempt to convergence, as its executor would.
+    async fn settle(&self, id: &str) {
+        let bid = BuildId(id.into());
+        let attempt = self.builds.read_build(&bid).await.unwrap().attempt + 1;
+        self.builds.claim_attempt(&BuildAttemptClaim { build_id: bid.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+        self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: bid, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    }
     fn span_with_build(&self, name: &str, id: &str) -> bool {
         self.spans.0.lock().unwrap().iter().any(|(n, b)| n == name && b.as_deref() == Some(id))
     }
@@ -116,47 +128,83 @@ impl Harness {
 }
 
 #[tokio::test]
-async fn spawn_delete_and_restart_only_submit_build() {
-    let h = harness(Router::new());
+async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_an_attempt() {
+    let h = harness(Router::new()).await;
     let before = h.cp.topology.read().await.clone();
-    let cases = [
-        ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"})), "add_node"),
-        ("DELETE", "/api/nodes/mesh1.rpc.3", None, "remove_node"),
-        ("POST", "/api/nodes/mesh1.rpc.2/restart", None, "restart_node"),
-    ];
-    for (i, (method, uri, body, kind)) in cases.into_iter().enumerate() {
-        let (status, v) = call(&h.app, method, uri, body).await;
-        assert_eq!(status, StatusCode::ACCEPTED, "{uri}: {v}");
-        let id = v["build_id"].as_str().expect("build_id").to_string();
-        let facts = h.facts().await;
-        assert_eq!(facts.len(), i + 1, "exactly one fact per mutation: {facts:?}");
-        assert!(matches!(&facts[i], BuildFact::Intent(f) if f.build_id.0 == id), "the fact is the intent");
-        let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={id}"), None).await;
-        assert_eq!(b["intent"]["kind"], kind, "{b}");
-        assert_eq!(b["state"], "pending");
-        assert!(h.span_with_build("rafka.node_admin.build.create.via-rest", &id), "create span carries the build id");
-    }
+    let b0 = h.cp.accepted.build_id().unwrap().0;
+    let seed = h.facts().await.len();
+
+    // A change: the next complete Build, and Fabric.build_id names it.
+    let (status, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+    let b1 = v["build_id"].as_str().expect("build_id").to_string();
+    assert_ne!(b1, b0);
+    let facts = h.facts().await;
+    assert_eq!(facts.len(), seed + 1, "exactly one fact per accepted change: {facts:?}");
+    assert!(matches!(&facts[seed], BuildFact::Accepted(f) if f.build_id.0 == b1), "the fact is the accepted Build");
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b1}"), None).await;
+    assert_eq!(b["submitted_change"]["kind"], "add_node", "{b}");
+    assert_eq!(b["state"], "pending");
+    assert_eq!(b["reason"], "requested");
+    let paths: Vec<&str> = b["topology"]["meshes"]["mesh1"]["nodes"].as_array().unwrap().iter().filter_map(|p| p.as_str()).collect();
+    assert_eq!(paths, ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3", "mesh1.rpc.4"], "exact paths, the next free ordinal");
+    assert!(h.span_with_build("rafka.node_admin.build.create.via-rest", &b1), "create span carries the build id");
+    let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
+    assert_eq!(f["build_id"], b1.as_str(), "{f}");
+
+    // One Build in flight: the next change is refused by name until it settles.
+    let (status, v) = call(&h.app, "DELETE", "/api/nodes/mesh1.rpc.3", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    assert_eq!((v["error"].as_str(), v["current_build_id"].as_str()), (Some("build-in-progress"), Some(b1.as_str())), "{v}");
+    h.settle(&b1).await;
+    let (status, v) = call(&h.app, "DELETE", "/api/nodes/mesh1.rpc.3", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+    let b2 = v["build_id"].as_str().unwrap().to_string();
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
+    assert_eq!(b["submitted_change"]["kind"], "remove_node", "{b}");
+    let paths: Vec<&str> = b["topology"]["meshes"]["mesh1"]["nodes"].as_array().unwrap().iter().filter_map(|p| p.as_str()).collect();
+    assert_eq!(paths, ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.4"], "exactly that path left");
+    h.settle(&b2).await;
+
+    // A restart changes no topology: it opens the next attempt of the accepted Build.
+    let (status, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.2/restart", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["build_id"], b2.as_str(), "the same Build: {v}");
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
+    assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("restart"), Some("restart"), Some("mesh1.rpc.2")), "{b}");
+    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b2 && o.attempt == 2));
+    assert!(h.span_with_build("rafka.node_admin.build.update.via-rest", &b2));
+    let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
+    assert_eq!(f["build_id"], b2.as_str(), "Fabric.build_id is unchanged by a restart");
     assert_eq!(*h.cp.topology.read().await, before, "no route touched the observed topology");
 }
 
 #[tokio::test]
 async fn post_build_and_mesh_routes_submit_build() {
-    let h = harness(Router::new());
+    let h = harness(Router::new()).await;
     let (s, v) = call(&h.app, "POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 5}]}))).await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    h.settle(v["build_id"].as_str().unwrap()).await;
     let (s, v) = call(&h.app, "POST", "/api/meshes", Some(json!({"name": "mesh2", "node_admin": 2, "rpc_node": 3}))).await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
-    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={}", v["build_id"].as_str().unwrap()), None).await;
-    assert_eq!(b["intent"]["kind"], "create_mesh");
+    let b2 = v["build_id"].as_str().unwrap().to_string();
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
+    assert_eq!(b["submitted_change"]["kind"], "create_mesh");
+    assert_eq!(b["topology"]["meshes"]["mesh2"]["nodes"].as_array().unwrap().len(), 5, "{b}");
+    h.settle(&b2).await;
+    let (s, v) = call(&h.app, "DELETE", "/api/meshes/mesh2", None).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    h.settle(v["build_id"].as_str().unwrap()).await;
     let (s, v) = call(&h.app, "DELETE", "/api/meshes/mesh1", None).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "the only mesh cannot go: {v}");
     assert_eq!(v["error"], "empty-fabric");
-    assert_eq!(h.facts().await.len(), 2);
+    assert_eq!(h.facts().await.iter().filter(|f| matches!(f, BuildFact::Accepted(_))).count(), 4, "the seed and three accepted Builds");
 }
 
 #[tokio::test]
 async fn refusals_are_named_and_publish_nothing() {
-    let h = harness(Router::new());
+    let h = harness(Router::new()).await;
+    let seed = h.facts().await.len();
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/restart", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
     assert_eq!(v["error"], "unknown-node");
@@ -170,32 +218,37 @@ async fn refusals_are_named_and_publish_nothing() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "a legacy role is not a node kind: {v}");
     let (s, _) = call(&h.app, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!(s, StatusCode::ACCEPTED, "two admins: removing one is legal");
-    assert_eq!(h.facts().await.len(), 1, "refusals published nothing");
+    assert_eq!(h.facts().await.len(), seed + 1, "refusals published nothing");
 }
 
 #[tokio::test]
-async fn build_history_is_readable_and_only_finished_builds_can_be_forgotten() {
-    let h = harness(Router::new());
+async fn build_history_is_readable_and_only_finished_builds_that_are_not_current_can_be_forgotten() {
+    let h = harness(Router::new()).await;
+    let b0 = h.cp.accepted.build_id().unwrap().0;
+    // A restart opens an attempt of the accepted Build: it is in flight, not history.
     let (_, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.1/restart", None).await;
-    let id = v["build_id"].as_str().unwrap().to_string();
-    let (s, _) = call(&h.app, "DELETE", &format!("/api/builds?id={id}"), None).await;
+    assert_eq!(v["build_id"], b0.as_str(), "{v}");
+    let (s, _) = call(&h.app, "DELETE", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!(s, StatusCode::CONFLICT, "a pending Build is not history");
-    let bid = BuildId(id.clone());
-    h.builds.claim_attempt(&BuildAttemptClaim { build_id: bid.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    h.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: bid, attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
-    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={id}"), None).await;
-    assert_eq!(b["state"], "complete");
+    h.settle(&b0).await;
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
+    assert_eq!((b["state"].as_str(), b["attempt"].as_u64()), (Some("complete"), Some(2)));
+    // Complete, but the accepted topology: it leaves history only once the pointer moves.
+    let (s, v) = call(&h.app, "DELETE", &format!("/api/builds?id={b0}"), None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let (s, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     let before = h.cp.topology.read().await.clone();
-    let (s, _) = call(&h.app, "DELETE", &format!("/api/builds?id={id}"), None).await;
+    let (s, _) = call(&h.app, "DELETE", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, v) = call(&h.app, "GET", &format!("/api/builds?id={id}"), None).await;
+    let (s, v) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
     assert_eq!(*h.cp.topology.read().await, before, "history administration is not a topology mutation");
 }
 
 #[tokio::test]
 async fn views_publish_nodes_meshes_and_the_owning_admin_endpoint() {
-    let h = harness(Router::new());
+    let h = harness(Router::new()).await;
     let (s, v) = call(&h.app, "GET", "/api/nodes", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v["nodes"].as_array().unwrap().len(), 5);
@@ -223,7 +276,8 @@ async fn shutdown_and_runtime_fault_routes_stay_outside_build() {
             }
         }),
     );
-    let h = harness(chaos);
+    let h = harness(chaos).await;
+    let seed = h.facts().await.len();
     let control = seat(&h, "mesh1.admin.1");
     let (s, _) = call(&h.app, "POST", "/api/chaos/wedge", None).await;
     assert_eq!(s, StatusCode::OK);
@@ -233,7 +287,7 @@ async fn shutdown_and_runtime_fault_routes_stay_outside_build() {
     assert_eq!(control.held().map(|sd| sd.initiated_by), Some("mesh1.admin.1".to_string()), "the fabric-primary holds the shutdown it began");
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
     assert_eq!(f["shutdown"]["phase"], "frozen", "progress is visible on /api/fabric: {f}");
-    assert!(h.facts().await.is_empty(), "neither shutdown nor fault control submitted a Build");
+    assert_eq!(h.facts().await.len(), seed, "neither shutdown nor fault control submitted a Build");
 }
 
 /// A fabric shutdown seat for the admin `me` over memory storage.
@@ -251,7 +305,7 @@ fn seat(h: &Harness, me: &str) -> Arc<rafka_node_admin_core::shutdown::ShutdownC
 
 #[tokio::test]
 async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
-    let h = harness(Router::new());
+    let h = harness(Router::new()).await;
     let control = seat(&h, "mesh1.admin.2");
     let (s, body) = call(&h.app, "POST", "/api/shutdown", Some(json!({}))).await;
     assert_eq!(s, StatusCode::CONFLICT, "{body}");

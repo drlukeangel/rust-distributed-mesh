@@ -38,14 +38,17 @@ async fn node_admin() -> (NodeAdminClient, Arc<ControlPlane>) {
     let topology = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-        nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", true), node("mesh1.rpc.2", false)],
+        nodes: vec![
+            rafka_node_admin_core::model::Node { is_fabric_primary: true, ..node("mesh1.admin.1", true) },
+            node("mesh1.rpc.1", true),
+            node("mesh1.rpc.2", false),
+        ],
     };
-    let desired = Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(
-        topology.fabric.id.clone(),
-        &topology.fabric.name,
-        "mesh1",
-    )));
-    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), desired, topology));
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1")
+        .await
+        .unwrap();
+    let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), topology));
     let app = rafka_node_admin_core::http::router(cp.clone(), axum::Router::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -84,10 +87,23 @@ async fn every_ui_topology_flow_is_one_build_in_node_admin() {
         assert_eq!(status, StatusCode::ACCEPTED, "{method} {uri}: {v}");
         let id = BuildId(v["build_id"].as_str().expect("build_id").to_string());
         let build = client.build_view(&id).await.unwrap();
-        assert_eq!(build.intent["kind"], kind, "{uri}: {}", build.intent);
+        if kind == "restart_node" {
+            // A restart is an attempt of the accepted Build, not a Build of its own.
+            assert_eq!((build.reason.as_str(), build.action.as_ref().and_then(|a| a["path"].as_str())), ("restart", Some("mesh1.rpc.2")), "{uri}");
+        } else {
+            assert_eq!(build.submitted_change.as_ref().and_then(|c| c["kind"].as_str()), Some(kind), "{uri}: {:?}", build.submitted_change);
+        }
+        // One Build in flight at a time: run it to convergence before the next flow.
+        let core_id = rafka_node_admin_core::build::BuildId(id.0.clone());
+        let attempt = cp.builds.read_build(&core_id).await.unwrap().attempt + 1;
+        cp.builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: core_id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+        cp.builds
+            .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: core_id, attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
+            .await
+            .unwrap();
     }
     let bootstrap = client.build_view(&BuildId(timeline.0.lock().unwrap().last().unwrap().1.clone())).await.unwrap();
-    assert_eq!(bootstrap.intent["desired"], json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}));
+    assert_eq!(bootstrap.submitted_change.as_ref().map(|c| c["desired"].clone()), Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})));
     let whats: Vec<String> = timeline.0.lock().unwrap().iter().map(|(w, _)| w.clone()).collect();
     assert_eq!(whats, ["add node", "restart node", "remove node", "bootstrap"]);
     assert_eq!(*cp.topology.read().await, before, "the UI changed nothing itself: only Builds were submitted");

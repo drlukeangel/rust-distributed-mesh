@@ -321,9 +321,12 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     // kill the mesh2 admin primary -> the next-lowest succeeds; the fabric seat is recomputed
     estate.kill_node(&p).await;
     let (succ, succ_id) = successor(&estate, &base1, &nodes, &admin2, &p_id).await;
-    let nodes = wait_for("the view holds the successor's seat", Duration::from_secs(30), || async {
+    // The successor was announced; the repair of the same Build rebirths the killed path within
+    // seconds, and that birth may draw a lower NodeId and take the seat in turn. The view is read
+    // once the killed birth is dead in it; whoever holds the seat then is the computed one.
+    let nodes = wait_for("the view holds the killed birth dead", Duration::from_secs(30), || async {
         let nodes = estate.nodes().await;
-        (primary_of(&nodes, &admin2).is_some_and(|n| n == succ) && !nodes.iter().any(|n| n["node_id"] == p_id.as_str() && n["status"] != "dead")).then_some(nodes)
+        (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && n["status"] != "dead") && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
     })
     .await;
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));

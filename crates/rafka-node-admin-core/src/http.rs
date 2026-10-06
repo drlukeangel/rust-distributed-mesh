@@ -1,14 +1,17 @@
 //! The generic control API (PRD §7; mesh-control-plane.md §2).
 //!
-//! Every topology route is a front door that compiles to one [`BuildIntent`],
-//! validates it against the observed topology, publishes it to the
-//! [`BuildStateAdapter`] and answers `202 {"build_id"}`. A route never spawns,
-//! kills or restarts anything itself: there is no lifecycle handle in
-//! [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault routes
-//! are runtime administration, outside Build.
+//! Every topology route is a front door that submits one [`TopologyChange`]
+//! to the fabric-primary, which compiles it once against the accepted topology
+//! into the next complete Build, persists it, moves `Fabric.build_id` and
+//! answers `202 {"build_id"}`. A restart or replacement changes no topology:
+//! it opens the next attempt of the current Build with its action. A route
+//! never spawns, kills or restarts anything itself: there is no lifecycle
+//! handle in [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault
+//! routes are runtime administration, outside Build.
 
-use crate::build::{pin, BuildId, BuildIntent, BuildReject, FabricDesired, MeshDesired};
-use crate::build_state::{BuildIntentFact, BuildStateAdapter, BuildStateError};
+use crate::accepted::{compile, AcceptedStore, AttemptAction, TopologyChange};
+use crate::build::{BuildId, BuildReject, FabricDesired, MeshDesired};
+use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildState, BuildStateAdapter, BuildStateError};
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
 use axum::extract::{Path, Query, State};
@@ -26,8 +29,10 @@ use tokio::sync::{Notify, RwLock};
 /// runtime.
 pub struct ControlPlane {
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// This admin's current desired topology (`crate::desired`).
-    pub desired: Arc<crate::desired::DesiredStore>,
+    /// `Fabric.build_id` as this admin holds it (`crate::accepted`).
+    pub accepted: Arc<AcceptedStore>,
+    /// This admin's path.name: topology is accepted only while it is the fabric-primary.
+    pub me: PathName,
     pub topology: Arc<RwLock<Topology>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
@@ -45,10 +50,11 @@ pub struct ShutdownSeat {
 }
 
 impl ControlPlane {
-    pub fn new(builds: Arc<dyn BuildStateAdapter>, desired: Arc<crate::desired::DesiredStore>, topology: Topology) -> Self {
+    pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology) -> Self {
         Self {
             builds,
-            desired,
+            accepted,
+            me,
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
@@ -56,21 +62,44 @@ impl ControlPlane {
         }
     }
 
-    /// Validate `intent` against observed state, pin what it means there, and
-    /// publish it as a Build. A topology-changing intent first proposes the
-    /// next desired-topology revision over the current one; a restart or a
-    /// replacement references the current one.
-    pub async fn submit(&self, route: &'static str, intent: BuildIntent) -> Result<BuildId, Refusal> {
+    /// Only the current fabric-primary changes topology or opens attempts.
+    async fn authority(&self, route: &'static str) -> Result<(), Refusal> {
+        let primary = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
+        if primary.as_ref() != Some(&self.me) {
+            tracing::info_span!("rafka.node_admin.build.reject.via-not-authority", route, node = %self.me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
+                .in_scope(|| tracing::info!("topology is changed only by the fabric-primary"));
+            return Err(Refusal::NotAuthority(primary.map(|p| p.to_string())));
+        }
+        Ok(())
+    }
+
+    /// The accepted Build, and the refusal when another Build is still reconciling.
+    async fn current_settled(&self) -> Result<crate::build_state::BuildProjection, Refusal> {
+        let current = self.accepted.current(&*self.builds).await.ok_or_else(|| {
+            Refusal::Unavailable("this admin holds no accepted Build yet (Fabric.build_id is not hydrated); submit through a Ready node-admin".into())
+        })?;
+        if matches!(current.state, BuildState::Pending | BuildState::Running) {
+            return Err(Refusal::BuildInProgress(current.build_id.clone()));
+        }
+        Ok(current)
+    }
+
+    /// Compile `change` once against the accepted topology into the next complete Build, persist
+    /// it, move `Fabric.build_id`, and broadcast both. One accepted topology, one Build in flight.
+    pub async fn submit(&self, route: &'static str, change: TopologyChange) -> Result<BuildId, Refusal> {
         let span = tracing::info_span!(
             "rafka.node_admin.build.create.via-rest",
             route,
             build_id = tracing::field::Empty,
-            intent = tracing::field::Empty,
+            change = %serde_json::to_string(&change).unwrap_or_default(),
+            previous_build_id = tracing::field::Empty,
         );
         let _g = span.enter();
+        self.authority(route).await?;
+        let current = self.current_settled().await?;
         let observed = self.topology.read().await.clone();
-        let intent = match pin(intent, &observed) {
-            Ok(pinned) => pinned,
+        let topology = match compile(&current.topology, &change, &observed) {
+            Ok(t) => t,
             Err(reject) => {
                 drop(_g);
                 reject_span(route, &reject);
@@ -79,42 +108,59 @@ impl ControlPlane {
         };
         let build_id = BuildId::mint();
         span.record("build_id", build_id.0.as_str());
-        span.record("intent", serde_json::to_string(&intent).unwrap_or_default().as_str());
-        // Compiled against the current desired revision, never invented here.
-        let current = self.desired.current().ok_or_else(|| {
-            Refusal::Unavailable("this admin holds no current desired topology yet (it is not hydrated); submit through a Ready node-admin".into())
-        })?;
-        let next = crate::desired::apply(&intent, &current.desired, &observed).map(|d| current.next(d, &build_id));
-        if let Some(next) = &next {
-            match self.desired.offer(next.clone()) {
-                crate::desired::Offer::Taken => {}
-                other => return Err(Refusal::Conflict(format!("the desired topology moved from {} while this request compiled ({other:?}); resubmit", current.mark()))),
-            }
-        }
-        let fact = BuildIntentFact {
+        span.record("previous_build_id", current.build_id.0.as_str());
+        let accepted = BuildAccepted {
             build_id: build_id.clone(),
-            intent,
+            topology,
+            submitted_change: Some(change),
             traceparent: rafka_mesh_telemetry::current_traceparent(),
             submitted_at_ms: now_ms(),
-            desired: Some(next.as_ref().map_or_else(|| current.mark(), |n| n.mark())),
-            reason: Some(crate::build_state::BuildReason::RequestedChange),
         };
-        if let Some(next) = &next {
-            tracing::info_span!(
-                "rafka.node_admin.desired_topology.update.via-build",
-                fabric_id = %next.fabric_id,
-                desired_revision = next.revision,
-                previous_revision = current.revision,
-                source_build_id = %build_id,
-                reason = "requested-change",
-            )
-            .in_scope(|| tracing::info!("desired topology proposed"));
-            self.builds.publish_desired(next).await.map_err(Refusal::State)?;
-        }
-        self.builds.publish_intent(&fact).await.map_err(Refusal::State)?;
+        // The Build is durable before the pointer names it (never the pointer first).
+        self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
+        let record = self.accepted.point(&build_id, "accepted").map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+        self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
         tracing::info!(build_id = %build_id, "build accepted");
         self.build_submitted.notify_waiters();
         Ok(build_id)
+    }
+
+    /// Open the next attempt of the accepted Build with a fenced action (a restart or a
+    /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
+    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<BuildId, Refusal> {
+        let span = tracing::info_span!("rafka.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
+        let _g = span.enter();
+        self.authority(route).await?;
+        let current = self.current_settled().await?;
+        if !current.topology.contains(&path) {
+            let reject = BuildReject::UnknownNode { node: path.to_string() };
+            drop(_g);
+            reject_span(route, &reject);
+            return Err(Refusal::Reject(reject));
+        }
+        let from_incarnation = {
+            let t = self.topology.read().await;
+            let n = t.node(&path).ok_or_else(|| Refusal::Reject(BuildReject::UnknownNode { node: path.to_string() }))?;
+            if !n.status.is_live() {
+                return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
+            }
+            n.incarnation_id.clone().ok_or_else(|| Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }))?
+        };
+        let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
+        let opened = AttemptOpened {
+            build_id: current.build_id.clone(),
+            attempt: current.attempt + 1,
+            reason,
+            action: Some(action),
+            opened_by: self.me.to_string(),
+            opened_at_ms: now_ms(),
+        };
+        span.record("build_id", current.build_id.0.as_str());
+        span.record("attempt", opened.attempt);
+        self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
+        tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
+        self.build_submitted.notify_waiters();
+        Ok(current.build_id)
     }
 }
 
@@ -156,6 +202,10 @@ pub enum Refusal {
     BadRequest(String),
     NotFound(String),
     Conflict(String),
+    /// Another Build is still reconciling: one accepted topology, one Build in flight.
+    BuildInProgress(BuildId),
+    /// This admin is not the fabric-primary (named when known).
+    NotAuthority(Option<String>),
     /// The admin cannot decide the request yet (not hydrated).
     Unavailable(String),
     State(BuildStateError),
@@ -171,7 +221,18 @@ impl IntoResponse for Refusal {
             Refusal::BadRequest(d) => (StatusCode::BAD_REQUEST, "invalid-request".into(), d.clone()),
             Refusal::NotFound(d) => (StatusCode::NOT_FOUND, "not-found".into(), d.clone()),
             Refusal::Conflict(d) => (StatusCode::CONFLICT, "conflict".into(), d.clone()),
-            Refusal::Unavailable(d) => (StatusCode::SERVICE_UNAVAILABLE, "desired-topology-unavailable".into(), d.clone()),
+            Refusal::BuildInProgress(id) => {
+                return (StatusCode::CONFLICT, Json(json!({ "error": "build-in-progress", "current_build_id": id, "detail": format!("Build {id} is still reconciling; one Build at a time") })))
+                    .into_response()
+            }
+            Refusal::NotAuthority(primary) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": "rejected-not-authority", "fabric_primary": primary, "detail": "topology is changed only by the current fabric-primary" })),
+                )
+                    .into_response()
+            }
+            Refusal::Unavailable(d) => (StatusCode::SERVICE_UNAVAILABLE, "accepted-build-unavailable".into(), d.clone()),
             Refusal::State(e) => (StatusCode::SERVICE_UNAVAILABLE, "build-state-unavailable".into(), e.to_string()),
         };
         (status, Json(json!({ "error": error, "detail": detail }))).into_response()
@@ -212,7 +273,7 @@ async fn post_build(State(cp): State<Shared>, raw: String) -> Result<Response, R
         return Err(Refusal::Reject(reject));
     }
     let desired: FabricDesired = body(&raw)?;
-    Ok(accepted(cp.submit("POST /api/build", BuildIntent::ReconcileFabric { desired }).await?))
+    Ok(accepted(cp.submit("POST /api/build", TopologyChange::ReconcileFabric { desired }).await?))
 }
 
 async fn get_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Result<Response, Refusal> {
@@ -229,8 +290,11 @@ async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> 
         BuildStateError::UnknownBuild(id) => Refusal::NotFound(format!("no Build {id}")),
         e => Refusal::State(e),
     })?;
-    if matches!(p.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
+    if matches!(p.state, BuildState::Pending | BuildState::Running) {
         return Err(Refusal::Conflict(format!("Build {id} is still {:?}; only finished Builds leave history", p.state)));
+    }
+    if cp.accepted.build_id().as_ref() == Some(&id) {
+        return Err(Refusal::Conflict(format!("Build {id} is the accepted topology (Fabric.build_id); it leaves history once the pointer moves")));
     }
     cp.builds.forget(&id).await.map_err(Refusal::State)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -238,17 +302,17 @@ async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> 
 
 async fn spawn_node(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {
     let b: SpawnBody = body(&raw)?;
-    Ok(accepted(cp.submit("POST /api/nodes/spawn", BuildIntent::AddNode { mesh: b.mesh, node_kind: b.kind, target: None }).await?))
+    Ok(accepted(cp.submit("POST /api/nodes/spawn", TopologyChange::AddNode { mesh: b.mesh, node_kind: b.kind }).await?))
 }
 
 async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.submit("DELETE /api/nodes/{name}", BuildIntent::RemoveNode { node, incarnation: None }).await?))
+    Ok(accepted(cp.submit("DELETE /api/nodes/{name}", TopologyChange::RemoveNode { node }).await?))
 }
 
 async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.submit("POST /api/nodes/{name}/restart", BuildIntent::RestartNode { node, from_incarnation: None }).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, false).await?))
 }
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
@@ -265,7 +329,7 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
     let mut v = serde_json::to_value(cp.topology.read().await.fabric_view()).unwrap_or(Value::Null);
     // The shape the fabric should have, as this admin holds it.
     if let Some(o) = v.as_object_mut() {
-        o.insert("desired".into(), serde_json::to_value(cp.desired.current()).unwrap_or(Value::Null));
+        o.insert("build_id".into(), serde_json::to_value(cp.accepted.build_id()).unwrap_or(Value::Null));
         // A fabric shutdown's progress as this admin sees it: diagnostics, never authority.
         let progress = cp.fabric_shutdown.get().and_then(|s| s.control.progress());
         o.insert("shutdown".into(), serde_json::to_value(progress).unwrap_or(Value::Null));
@@ -275,16 +339,20 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
 
 async fn create_mesh(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {
     let desired: MeshDesired = body(&raw)?;
-    Ok(accepted(cp.submit("POST /api/meshes", BuildIntent::CreateMesh { desired }).await?))
+    Ok(accepted(cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired }).await?))
 }
 
 async fn delete_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result<Response, Refusal> {
-    let mesh = {
+    // By name in the accepted topology, or by id or name in the observed view.
+    let in_accepted = cp.accepted.current(&*cp.builds).await.is_some_and(|b| b.topology.meshes.contains_key(&id));
+    let mesh = if in_accepted {
+        Some(id.clone())
+    } else {
         let t = cp.topology.read().await;
         t.meshes.iter().find(|m| m.name == id || m.id.as_ref().is_some_and(|i| i.as_str() == id)).map(|m| m.name.clone())
     }
     .ok_or_else(|| Refusal::NotFound(format!("no mesh {id}")))?;
-    Ok(accepted(cp.submit("DELETE /api/meshes/{id}", BuildIntent::RemoveMesh { mesh }).await?))
+    Ok(accepted(cp.submit("DELETE /api/meshes/{id}", TopologyChange::RemoveMesh { mesh }).await?))
 }
 
 /// `POST /api/shutdown`: only the fabric-primary begins a fabric shutdown (fabric-mesh-lifecycle.md

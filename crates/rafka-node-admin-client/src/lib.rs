@@ -129,14 +129,23 @@ pub struct StepView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildView {
     pub build_id: BuildId,
-    /// The Build's intent, tagged by `kind` (`add_node`, `restart_node`, ...).
-    pub intent: serde_json::Value,
+    /// The complete accepted topology this Build realizes: per mesh, its node `path.name`s.
+    pub topology: serde_json::Value,
+    /// The change that produced it, tagged by `kind` (`add_node`, `remove_node`, ...): history.
+    #[serde(default)]
+    pub submitted_change: Option<serde_json::Value>,
     pub traceparent: Option<String>,
+    pub submitted_at_ms: u64,
     pub state: BuildState,
     pub attempt: u32,
     pub executor: Option<String>,
     pub steps: Vec<StepView>,
     pub last_failure: Option<String>,
+    /// Why the current attempt exists (`requested`, `proven-drift`, `restart`, `replace`, ...).
+    pub reason: String,
+    /// The fenced action the current attempt carries, if any.
+    #[serde(default)]
+    pub action: Option<serde_json::Value>,
 }
 
 /// Why a call did not succeed.

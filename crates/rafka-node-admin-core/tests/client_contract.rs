@@ -4,6 +4,7 @@
 //! named reason.
 
 use rafka_node_admin_client::{BuildState, ClientError, FabricDesired, MeshDesired, NodeAdminClient, NodeStatus, ProviderKind};
+use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::http::{router, ControlPlane};
 use rafka_node_admin_core::model::*;
@@ -40,8 +41,14 @@ fn mn() -> Topology {
 }
 
 async fn serve() -> (NodeAdminClient, Arc<ControlPlane>) {
-    let t = mn();
-    let cp = Arc::new(ControlPlane::new(Arc::new(MemoryBuildStateAdapter::new()), std::sync::Arc::new(rafka_node_admin_core::desired::DesiredStore::holding(rafka_node_admin_core::desired::DesiredTopology::root(t.fabric.id.clone(), &t.fabric.name, "mesh1"))), t));
+    let mut t = mn();
+    for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.1") {
+        n.is_primary = true;
+        n.is_fabric_primary = true;
+    }
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), t));
     // This admin is the fabric-primary (mesh1.admin.1): it may begin a fabric shutdown.
     let _ = cp.fabric_shutdown.set(Arc::new(rafka_node_admin_core::http::ShutdownSeat {
         control: rafka_node_admin_core::shutdown::ShutdownControl::memory("mesh1.admin.1"),
@@ -71,19 +78,38 @@ async fn every_read_decodes_into_the_client_views() {
     assert_eq!(mesh.admin_api_base.as_deref(), Some("http://127.0.0.1:18001"));
 }
 
+/// Run the Build's open attempt to convergence, as its executor would.
+async fn settle(cp: &ControlPlane, id: &rafka_node_admin_client::BuildId) {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt};
+    let id = BuildId(id.0.clone());
+    let attempt = cp.builds.read_build(&id).await.unwrap().attempt + 1;
+    cp.builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    cp.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+}
+
 #[tokio::test]
 async fn every_mutation_returns_a_build_and_the_build_reads_back() {
     let (c, cp) = serve().await;
     let before = cp.topology.read().await.clone();
     let spawn = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap();
     let v = c.build_view(&spawn).await.unwrap();
-    assert_eq!((v.build_id.clone(), v.state, v.intent["kind"].as_str()), (spawn, BuildState::Pending, Some("add_node")));
+    assert_eq!((v.build_id.clone(), v.state, v.submitted_change.as_ref().and_then(|c| c["kind"].as_str())), (spawn.clone(), BuildState::Pending, Some("add_node")));
+    assert!(v.topology["meshes"]["mesh1"]["nodes"].as_array().is_some_and(|n| n.len() == 5), "{:?}", v.topology);
+    settle(&cp, &spawn).await;
+    // A restart is an attempt of the accepted Build, never a Build of its own.
     let restart = c.restart(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
-    assert_eq!(c.build_view(&restart).await.unwrap().intent["node"], "mesh1.rpc.2");
-    c.remove(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
-    c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 4 }] }).await.unwrap();
-    c.create_mesh(&MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1 }).await.unwrap();
-    c.remove_mesh("mesh1").await.unwrap_err(); // the fabric's only mesh: refused below
+    assert_eq!(restart, spawn);
+    let v = c.build_view(&restart).await.unwrap();
+    assert_eq!((v.reason.as_str(), v.action.as_ref().and_then(|a| a["path"].as_str())), ("restart", Some("mesh1.rpc.2")));
+    settle(&cp, &restart).await;
+    let removed = c.remove(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
+    settle(&cp, &removed).await;
+    let built = c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 4 }] }).await.unwrap();
+    settle(&cp, &built).await;
+    let mesh2 = c.create_mesh(&MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1 }).await.unwrap();
+    c.remove_mesh("mesh2").await.unwrap_err(); // the Build above is still in flight: refused below
+    settle(&cp, &mesh2).await;
+    c.remove_mesh("mesh9").await.unwrap_err(); // no such mesh
     c.shutdown().await.unwrap();
     assert_eq!(*cp.topology.read().await, before, "the client changed nothing but Build state");
 }
@@ -101,6 +127,7 @@ async fn refusals_keep_their_status_and_named_reason() {
     assert_eq!(refused(c.mesh("mesh9").await.unwrap_err()), (404, "not-found".into()));
     let pending = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap();
     assert_eq!(refused(c.forget(&pending).await.unwrap_err()), (409, "conflict".into()), "a running Build is not history");
+    assert_eq!(refused(c.spawn("mesh1", NodeKind::RpcNode).await.unwrap_err()), (409, "build-in-progress".into()), "one Build at a time");
     let gone = NodeAdminClient::new("http://127.0.0.1:9");
     assert!(matches!(gone.nodes().await.unwrap_err(), ClientError::Transport { .. }));
 }
