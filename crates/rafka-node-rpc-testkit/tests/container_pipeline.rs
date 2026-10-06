@@ -2,13 +2,18 @@
 //! Each node runs in its own container and network namespace on the fabric's
 //! bridge network, at the address node-admin assigned.
 //!
-//! A host that cannot run containers skips with the named reason. With
-//! `RAFKA_REQUIRE_CONTAINER=1` (CI) that skip is a failure instead.
+//! Opt-in: it runs only with `RAFKA_CONTAINER_PROOF=1` (the container-proof step); otherwise it
+//! skips by name and nothing container-shaped is started. With `RAFKA_REQUIRE_CONTAINER=1` a host
+//! that cannot run containers fails instead of skipping.
 
 mod common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admin_deploys_a_container_node_through_every_pipeline_step() {
+    if std::env::var("RAFKA_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RAFKA_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container smoke: opt-in with RAFKA_CONTAINER_PROOF=1 (the container-proof step); the process provider is the proving ground until then");
+        return;
+    }
     match common::deploy_through_every_step("container").await {
         common::Smoke::Passed => {}
         common::Smoke::Unsupported(reason) if std::env::var("RAFKA_REQUIRE_CONTAINER").as_deref() == Ok("1") => {
