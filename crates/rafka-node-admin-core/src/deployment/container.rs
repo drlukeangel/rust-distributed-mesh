@@ -403,12 +403,16 @@ mod tests {
 
     #[test]
     fn the_socket_table_is_read_in_network_byte_order() {
+        // Both sides are read while the socket is held: the table is the whole network
+        // namespace, so a port freed by a drop can be taken at once by any other binder on the
+        // box. While 127.0.0.1:P is held, neither the wildcard nor 127.0.0.2:P can be bound.
         let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let addr = sock.local_addr().unwrap();
+        let other: SocketAddr = (Ipv4Addr::new(127, 0, 0, 2), addr.port()).into();
         assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(true));
-        drop(sock);
-        assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(false));
+        assert_eq!(netns_holds_udp(std::process::id(), other), Ok(false));
         assert!(netns_holds_udp(u32::MAX, addr).unwrap_err().contains("/proc/"));
+        drop(sock);
     }
 
     #[test]
