@@ -325,7 +325,30 @@ impl Estate {
         if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
             self.admin = holder.to_string();
         }
-        let _ = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
+        // Only the fabric-primary accepts the shutdown, and the seat can still be moving when the
+        // test asks: follow the advertised fabric control endpoint until one accepts, and name the
+        // last refusal rather than waiting on a shutdown nobody began.
+        let until = Instant::now() + Duration::from_secs(30);
+        let mut last = (0u16, Value::Null);
+        loop {
+            let r = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
+            if let Ok(r) = r {
+                let status = r.status().as_u16();
+                let body = r.json().await.unwrap_or(Value::Null);
+                if status == 202 {
+                    break;
+                }
+                if body["fabric_primary"].is_string() {
+                    let (_, f) = self.get("/api/fabric").await;
+                    if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
+                        self.admin = base.to_string();
+                    }
+                }
+                last = (status, body);
+            }
+            assert!(Instant::now() < until, "no admin accepted /api/shutdown within 30s; last answer from {}: {} {}", self.admin, last.0, last.1);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         if let Some(mut c) = self.bootstrap.take() {
             let _ = tokio::task::spawn_blocking(move || c.wait()).await;
         }

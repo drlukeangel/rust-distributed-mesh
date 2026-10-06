@@ -124,19 +124,29 @@ async fn steady(estate: &Estate, base: &str, label: &str, hold: Duration) {
     }
 }
 
-/// Wait until `base` no longer hears `gone_id` (a NodeId) and a primary of
-/// `c` other than it holds the seat; that primary is the computed one of the
-/// same view. Tracked by NodeId: drift recovery may already have reborn the
-/// path, under a new NodeId.
-async fn successor(estate: &Estate, base: &str, c: &Cohort, gone_id: &str) -> String {
-    let (succ, nodes) = wait_for(&format!("one successor to {gone_id}"), Duration::from_secs(30), || async {
-        let nodes = estate.nodes_at(base).await;
-        let alive_gone = nodes.iter().any(|n| n["node_id"] == gone_id && n["status"] != "dead");
-        primary_of(&nodes, c).filter(|p| id_of(&nodes, p) != gone_id && !alive_gone).map(|p| (p, nodes))
+/// The successor to `gone_id` in `c`: the lowest NodeId among the cohort's other ready members
+/// in `before` (the view just before the kill), announced by the mesh as the winner after
+/// `gone_id`. Decided from the pre-kill view and the announcement span, never from a polled
+/// view: drift recovery rebirths the path within seconds, and a view polled after that already
+/// shows the reborn NodeId (a different birth) in the seat.
+async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, gone_id: &str) -> (String, String) {
+    let (name, id) = before
+        .iter()
+        .filter(|n| n["mesh"] == c.0.as_str() && n["kind"] == c.1.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != gone_id)
+        .map(|n| (s(&n["name"]), s(&n["node_id"])))
+        .min_by(|a, b| a.1.cmp(&b.1))
+        .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
+    wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), Duration::from_secs(30), || async {
+        announced(&estate.spans(), c, &id, gone_id).then_some(())
     })
     .await;
-    assert_eq!(expected_primaries(&nodes).get(c), Some(&succ), "the successor is the next-lowest ready NodeId: {nodes:#?}");
-    succ
+    // Another admin may announce first: `base`'s own view holds the killed birth dead before
+    // anything is read from it.
+    wait_for(&format!("{base} no longer hears {gone_id}"), Duration::from_secs(30), || async {
+        (!estate.nodes_at(base).await.iter().any(|n| n["node_id"] == gone_id && n["status"] != "dead")).then_some(())
+    })
+    .await;
+    (name, id)
 }
 
 /// The node-type election span that announced `winner` for `c` after `previous` (NodeIds).
@@ -200,11 +210,11 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = id_of(&nodes, &killed);
     estate.kill_node(&killed).await;
-    let succ = successor(&estate, &base1, &rpc, &killed_id).await;
-    let succ_id = id_of(&estate.nodes().await, &succ);
+    let (_succ, succ_id) = successor(&estate, &base1, &nodes, &rpc, &killed_id).await;
     build(&estate, &[("mesh1", 2, 3)]).await;
     let nodes = settle(&estate, &base1, "the cohort is back at its desired count").await;
-    assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again");
+    estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.nodes().await}));
+    assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
     assert_eq!(nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node").count(), 3, "three live rpc nodes: {nodes:#?}");
     steady(&estate, &base1, "the cohort is back at its desired count", hold).await;
 
@@ -306,12 +316,17 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     .await;
     let p = primary_of(&nodes, &admin2).unwrap();
     let p_id = id_of(&nodes, &p);
+    estate.artifact("settled-before-kill.json", &json!({"killed": p, "killed_id": p_id, "nodes": nodes}));
 
     // kill the mesh2 admin primary -> the next-lowest succeeds; the fabric seat is recomputed
     estate.kill_node(&p).await;
-    let succ = successor(&estate, &base1, &admin2, &p_id).await;
-    let nodes = estate.nodes().await;
-    let succ_id = id_of(&nodes, &succ);
+    let (succ, succ_id) = successor(&estate, &base1, &nodes, &admin2, &p_id).await;
+    let nodes = wait_for("the view holds the successor's seat", Duration::from_secs(30), || async {
+        let nodes = estate.nodes().await;
+        (primary_of(&nodes, &admin2).is_some_and(|n| n == succ) && !nodes.iter().any(|n| n["node_id"] == p_id.as_str() && n["status"] != "dead")).then_some(nodes)
+    })
+    .await;
+    estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));
     assert_eq!(advertised_fabric(&nodes), expected_fabric_primary(&nodes));
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     settle(&estate, &base1, "mesh2's killed admin is back").await;
