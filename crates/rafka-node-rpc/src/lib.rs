@@ -13,6 +13,7 @@ pub mod endpoint;
 pub mod pool;
 pub mod resolve;
 pub mod server;
+pub mod stream;
 
 /// The Node RPC ALPN.
 pub const ALPN: &[u8] = b"rafka-node-rpc/1";

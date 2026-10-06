@@ -12,6 +12,7 @@ pub mod echo;
 pub mod framing;
 pub mod outcome;
 pub mod protocol;
+pub mod streaming;
 
 pub use codes::ResetCode;
 pub use outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, ReplyKind, MalformedKind, RequestFinished, RpcOutcome};

@@ -3610,6 +3610,7 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-node-rpc-contract",
+ "serde",
  "tokio",
  "tracing",
  "tracing-subscriber",

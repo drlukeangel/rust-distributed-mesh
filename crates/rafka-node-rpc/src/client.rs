@@ -89,6 +89,22 @@ pub enum Decode<'a> {
     Early(EarlyRefusal, Option<&'a [u8]>),
 }
 
+/// Where an invocation stands after the commit-cut phase.
+pub(crate) enum Phase<R> {
+    Done(RpcOutcome<R>, Option<CallEvidence>),
+    Committed(Opened),
+}
+
+/// A committed invocation: the commit proof and the reply direction.
+pub(crate) struct Opened {
+    pub(crate) committed: rafka_node_rpc_contract::outcome::Committed,
+    pub(crate) recv: iroh::endpoint::RecvStream,
+    pub(crate) evidence: CallEvidence,
+    pub(crate) key: PoolKey,
+    pub(crate) conn: iroh::endpoint::Connection,
+    pub(crate) reply_deadline: Instant,
+}
+
 /// What came back after the commit cut, before protocol decoding.
 enum Committed {
     Reply(Vec<u8>),
@@ -129,18 +145,20 @@ impl NodeRpcClient {
         .await
     }
 
-    /// Invoke a raw tag (any tag, served or not) — the unknown-tag cell uses it.
-    pub async fn invoke_raw<R, D>(
+    /// Everything up to the commit cut: resolve, slot/freshness, dial, open_bi, the request
+    /// write and the clean finish. Ends `Done` with a pre-commit or early-refusal outcome, or
+    /// `Committed` holding the reply direction.
+    pub(crate) async fn open<R, E>(
         &self,
         target: &NodeTarget,
         tag: u8,
         payload: Vec<u8>,
         max_reply: usize,
         opts: &CallOptions,
-        decode: D,
-    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+        early_decode: E,
+    ) -> Phase<R>
     where
-        D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
+        E: FnOnce(EarlyRefusal, Option<&[u8]>) -> RpcOutcome<R>,
     {
         let start = Instant::now();
         let (send_deadline, overall) = match opts.budget {
@@ -150,7 +168,7 @@ impl NodeRpcClient {
         let pre = PreCommit::begin(tag);
         let node = match self.resolver.resolve(target) {
             Ok(n) => n,
-            Err(f) => return (pre.not_sent(NotSentReason::Resolve(f)), None),
+            Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
         };
         // Whatever this node's record no longer names leaves the pool now.
         self.pool.purge_stale(&node);
@@ -162,13 +180,13 @@ impl NodeRpcClient {
         };
         let Some(slot) = slot else {
             let s = opts.slot.clone().or(opts.pin.as_ref().map(|p| p.0.clone())).unwrap_or_default();
-            return (pre.not_sent(NotSentReason::Superseded { slot: s }), None);
+            return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: s }), None);
         };
         if let Some((_, token)) = &opts.pin {
             if *token != slot.freshness {
                 tracing::info_span!("rafka.node_rpc.connection.reject.via-stale-slot", slot = %slot.slot, node = %node.node_id)
                     .in_scope(|| tracing::info!("pinned freshness token is superseded; refused before commit"));
-                return (pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), None);
+                return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), None);
             }
         }
         let mut evidence = CallEvidence {
@@ -201,17 +219,17 @@ impl NodeRpcClient {
                 evidence.reused = reused;
                 c
             }
-            Err(DialError::Superseded) => return (pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), Some(evidence)),
-            Err(DialError::Deadline) => return (pre.not_sent(NotSentReason::Deadline), Some(evidence)),
-            Err(DialError::Failed(e)) => return (pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
+            Err(DialError::Superseded) => return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), Some(evidence)),
+            Err(DialError::Deadline) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
+            Err(DialError::Failed(e)) => return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
         };
         let (mut send, mut recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 self.pool.broken(&key, &conn);
-                return (pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
             }
-            Err(_) => return (pre.not_sent(NotSentReason::Deadline), Some(evidence)),
+            Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
         };
         let frame = encode_request(tag, &payload);
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
@@ -220,7 +238,7 @@ impl NodeRpcClient {
             let _ = send.write_all(&frame[..half]).await;
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
-            return (out, Some(evidence));
+            return Phase::Done(out, Some(evidence));
         }
         let written = timeout_at(send_deadline, send.write_all(&frame)).await;
         if let Ok(Err(WriteError::Stopped(stop))) = &written {
@@ -228,18 +246,18 @@ impl NodeRpcClient {
             // a healthy answer on a healthy connection.
             self.pool.healthy(&key);
             if stop.into_inner() == u64::from(ResetCode::UnservedTag.code()) {
-                return (pre.unserved_before_finish(), Some(evidence));
+                return Phase::Done(pre.unserved_before_finish(), Some(evidence));
             }
             let bytes = timeout_at(send_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await;
             let early = pre.stopped_before_finish();
             let out = match bytes {
                 Ok(Ok(b)) => match decode_single_frame(&b, max_reply) {
-                    Ok(payload) => decode(Decode::Early(early, Some(payload))),
-                    Err(_) => decode(Decode::Early(early, None)),
+                    Ok(payload) => early_decode(early, Some(payload)),
+                    Err(_) => early_decode(early, None),
                 },
-                _ => decode(Decode::Early(early, None)),
+                _ => early_decode(early, None),
             };
-            return (out, Some(evidence));
+            return Phase::Done(out, Some(evidence));
         }
         if !matches!(written, Ok(Ok(()))) {
             if let Ok(Err(WriteError::ConnectionLost(_))) = &written {
@@ -247,13 +265,13 @@ impl NodeRpcClient {
             }
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
-            return (out, Some(evidence));
+            return Phase::Done(out, Some(evidence));
         }
         let finished = send.finish().is_ok();
         let Some(proof) = RequestFinished::after_clean_finish(frame.len(), frame.len(), finished) else {
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
-            return (out, Some(evidence));
+            return Phase::Done(out, Some(evidence));
         };
         let committed = pre.commit(proof);
         evidence.committed = true;
@@ -262,6 +280,30 @@ impl NodeRpcClient {
             (Budget::Split { reply, .. }, None) => Instant::now() + reply,
             (Budget::Overall(_), None) => unreachable!(),
         };
+        Phase::Committed(Opened { committed, recv, evidence, key, conn, reply_deadline })
+    }
+
+    /// Invoke a raw tag (any tag, served or not) — the unknown-tag cell uses it.
+    pub async fn invoke_raw<R, D>(
+        &self,
+        target: &NodeTarget,
+        tag: u8,
+        payload: Vec<u8>,
+        max_reply: usize,
+        opts: &CallOptions,
+        decode: D,
+    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+    where
+        D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
+    {
+        let decode = std::sync::Mutex::new(Some(decode));
+        let take = || decode.lock().unwrap().take().expect("decode runs once");
+        let Opened { committed, mut recv, evidence, key, conn, reply_deadline } =
+            match self.open(target, tag, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
+                Phase::Done(out, evidence) => return (out, evidence),
+                Phase::Committed(o) => o,
+            };
+        let decode = take();
         let got = match timeout_at(reply_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await {
             Err(_) => Committed::Lost(IndeterminateReason::ReplyDeadline),
             Ok(Ok(bytes)) => Committed::Reply(bytes),

@@ -45,19 +45,26 @@ impl HandlerFault {
     }
 }
 
-type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+pub(crate) type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// A typed refusal encoded with the protocol's own constructors.
-enum Refusal {
+pub(crate) enum Refusal {
     Busy(String),
     Draining(String),
     Malformed(MalformedKind),
 }
 
-trait Erased: Send + Sync {
+pub(crate) trait Erased: Send + Sync {
     fn call(&self, peer: PeerContext, payload: Vec<u8>) -> BoxFut<Result<Vec<u8>, HandlerFault>>;
     fn refusal(&self, r: Refusal) -> Vec<u8>;
     fn max_reply(&self) -> usize;
+    /// A server-streaming handler: frames go out through `out` as the handler produces them.
+    fn is_stream(&self) -> bool {
+        false
+    }
+    fn stream(&self, _peer: PeerContext, _payload: Vec<u8>, _out: crate::stream::StreamOut) -> Option<BoxFut<crate::stream::StreamEnd>> {
+        None
+    }
 }
 
 struct Typed<P, F> {
@@ -153,8 +160,8 @@ impl ServerStats {
 /// Registration happens at birth; `seal` consumes the builder.
 #[derive(Default)]
 pub struct ServerBuilder {
-    catalog: CatalogBuilder,
-    handlers: HashMap<u8, Arc<dyn Erased>>,
+    pub(crate) catalog: CatalogBuilder,
+    pub(crate) handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
 }
 
@@ -318,6 +325,20 @@ impl NodeRpcServer {
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
                 let ctx = PeerContext { transport_id: peer, slot: self.slot.clone() };
+                let out = crate::stream::StreamOut::new(send, h.max_reply());
+                if h.is_stream() {
+                    let Some(streaming) = h.stream(ctx, payload, out.clone()) else { return };
+                    let counted = InFlight::enter(&stats);
+                    let joined = tokio::spawn(async move {
+                        let _counted = counted;
+                        streaming.await
+                    })
+                    .await;
+                    drop(permit);
+                    out.finish(joined, &stats).await;
+                    return;
+                }
+                let Some(mut send) = out.take().await else { return };
                 // Supervised: a panic is caught at this boundary.
                 let handler = h.call(ctx, payload);
                 let counted = InFlight::enter(&stats);

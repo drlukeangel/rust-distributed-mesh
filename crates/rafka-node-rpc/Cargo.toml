@@ -16,3 +16,4 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+serde = { workspace = true }
