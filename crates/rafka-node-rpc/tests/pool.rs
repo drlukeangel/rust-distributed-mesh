@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn echo(p: &[u8]) -> EchoRequest {
-    EchoRequest::Echo { traceparent: None, payload: p.to_vec() }
+    EchoRequest::Echo { payload: p.to_vec() }
 }
 
 fn blackhole() -> (UdpSocket, SocketAddr) {

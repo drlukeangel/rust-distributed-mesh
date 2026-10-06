@@ -22,6 +22,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rafka_mesh_entity::{EndpointSlot, FreshnessToken};
+use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
 use rafka_node_rpc_contract::framing::RequestTarget;
 use std::sync::{Arc, RwLock};
 use tracing::Instrument;
@@ -32,6 +33,9 @@ pub struct PeerContext {
     pub transport_id: iroh::PublicKey,
     /// The endpoint slot the request named (and the server held under its token).
     pub slot: String,
+    /// The observability context the request carried, already sanitized: what a carrier
+    /// hands into its inner call unchanged.
+    pub context: CallContext,
 }
 
 /// An unexpected execution fault. Created only by named constructors, so
@@ -98,10 +102,13 @@ where
                 tag = P::TAG,
                 peer = %peer.transport_id,
                 slot = %peer.slot,
+                caller_system = tracing::field::Empty,
+                context_dropped = tracing::field::Empty,
+                test_case = tracing::field::Empty,
+                scenario = tracing::field::Empty,
+                operation = tracing::field::Empty,
             );
-            if let Some(tp) = P::traceparent(&req) {
-                rafka_mesh_telemetry::set_parent(&span, tp);
-            }
+            apply_context(&span, &peer);
             let reply = f(peer, req).instrument(span).await?;
             P::encode_reply(&reply).map_err(|e| HandlerFault::invariant_broken(e.0))
         })
@@ -118,6 +125,22 @@ where
 
     fn max_reply(&self) -> usize {
         P::MAX_REPLY_FRAME_BYTES
+    }
+}
+
+/// Parent `span` on the request's W3C context and record its caller identity and the
+/// allowlisted baggage keys. The context never reaches the handler's decision: it is
+/// evidence on the span and, through `peer`, what a carrier hands onward.
+pub(crate) fn apply_context(span: &tracing::Span, peer: &PeerContext) {
+    let c = &peer.context;
+    if let Some(tp) = c.traceparent.as_deref() {
+        rafka_mesh_telemetry::set_remote_parent(span, tp, c.tracestate.as_deref());
+    }
+    if let Some(s) = c.caller_system.as_deref() {
+        span.record("caller_system", s);
+    }
+    for (k, v) in c.span_baggage() {
+        span.record(k, v.as_str());
     }
 }
 
@@ -378,10 +401,11 @@ impl NodeRpcServer {
                 let _ = send.reset(code(ResetCode::UnservedTag));
                 let _ = recv.stop(code(ResetCode::UnservedTag));
             }
-            ServerAction::ResetStale { tag, target } => {
+            ServerAction::ResetStale { tag, header } => {
                 stats.stale.fetch_add(1, Ordering::SeqCst);
+                let target = header.target;
                 let mismatch = self.check_fence(&target).err().map(FenceMismatch::as_str).unwrap_or("");
-                tracing::info_span!(
+                let span = tracing::info_span!(
                     "rafka.node_rpc.connection.reject.via-stale-slot",
                     decided_by = "target",
                     tag,
@@ -392,8 +416,17 @@ impl NodeRpcServer {
                     freshness = %target.freshness,
                     mismatch,
                     current = self.current_token(&target.slot).unwrap_or_default(),
-                )
-                .in_scope(|| tracing::info!("the request's fence is not this birth's current state: 425"));
+                    caller_system = tracing::field::Empty,
+                );
+                // Correlated with the caller's trace without reading or dispatching the body.
+                let (context, _) = header.context.sanitized();
+                if let Some(tp) = context.traceparent.as_deref() {
+                    rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
+                }
+                if let Some(s) = context.caller_system.as_deref() {
+                    span.record("caller_system", s);
+                }
+                span.in_scope(|| tracing::info!("the request's fence is not this birth's current state: 425"));
                 let _ = send.reset(code(ResetCode::StaleSlot));
                 let _ = recv.stop(code(ResetCode::StaleSlot));
             }
@@ -416,13 +449,19 @@ impl NodeRpcServer {
                     .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
                 let _ = send.reset(code(ResetCode::RequestStop));
             }
-            ServerAction::Dispatch { tag, target, payload } => {
+            ServerAction::Dispatch { tag, header, payload } => {
                 let Some(h) = self.inner.handlers.get(&tag).cloned() else {
                     let _ = send.reset(code(ResetCode::UnservedTag));
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
-                let ctx = PeerContext { transport_id: peer, slot: target.slot };
+                // Bad or over-bound context is dropped here, named, and the call proceeds.
+                let (context, dropped) = header.context.sanitized();
+                if !dropped.is_empty() {
+                    tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "target", tag, peer = %peer, context_dropped = %dropped_as_str(&dropped))
+                        .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
+                }
+                let ctx = PeerContext { transport_id: peer, slot: header.target.slot, context };
                 let out = crate::stream::StreamOut::new(send, h.max_reply());
                 if h.is_stream() {
                     let Some(streaming) = h.stream(ctx, payload, out.clone()) else { return };

@@ -7,6 +7,7 @@
 
 pub mod catalog;
 pub mod codes;
+pub mod context;
 pub mod dispatch;
 pub mod echo;
 pub mod forward;

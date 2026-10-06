@@ -84,14 +84,13 @@ fn resolved(view: &Value) -> Vec<ResolvedNode> {
 }
 
 fn request(a: &Args) -> Result<ProofRequest, String> {
-    let traceparent = rafka_mesh_telemetry::current_traceparent();
     let key = a.key.as_bytes().to_vec();
     let bytes = |v: &Option<String>| v.as_ref().map(|s| s.as_bytes().to_vec());
     Ok(match a.op.as_str() {
-        "get" => ProofRequest::Get { traceparent, key },
-        "put" => ProofRequest::Put { traceparent, key, value: bytes(&a.value).ok_or("put needs --value")? },
-        "delete" => ProofRequest::Delete { traceparent, key },
-        "cas" => ProofRequest::CompareAndSwap { traceparent, key, expected: bytes(&a.expected), new: bytes(&a.value) },
+        "get" => ProofRequest::Get { key },
+        "put" => ProofRequest::Put { key, value: bytes(&a.value).ok_or("put needs --value")? },
+        "delete" => ProofRequest::Delete { key },
+        "cas" => ProofRequest::CompareAndSwap { key, expected: bytes(&a.expected), new: bytes(&a.value) },
         other => return Err(format!("unknown op {other:?}")),
     })
 }
@@ -144,7 +143,7 @@ async fn run(a: Args) -> Result<Value, String> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
         .await
         .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
-    let client = NodeRpcClient::new(ep, resolver);
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let (out, _) = client.call::<ProofStore>(&target, &req, &CallOptions::default()).await;
     Ok(match &out {
         RpcOutcome::Reply(r) => json!({"outcome": out.name(), "reply": reply(r.value())}),
@@ -197,8 +196,8 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
         .await
         .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
-    let client = NodeRpcClient::new(ep, resolver);
-    let req = ResolveRequest::Resolve { traceparent: rafka_mesh_telemetry::current_traceparent(), target: query };
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let req = ResolveRequest::Resolve { target: query };
     let (out, _) = client.call::<ResolveProbe>(target, &req, &CallOptions::default()).await;
     Ok(match &out {
         RpcOutcome::Reply(r) => {

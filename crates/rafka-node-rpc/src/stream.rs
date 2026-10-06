@@ -235,7 +235,18 @@ where
                     return StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default() };
                 }
             };
-            let span = tracing::info_span!("rafka.node_rpc.stream.serve.via-direct", protocol = P::NAME, tag = P::TAG, peer = %peer.transport_id);
+            let span = tracing::info_span!(
+                "rafka.node_rpc.stream.serve.via-direct",
+                protocol = P::NAME,
+                tag = P::TAG,
+                peer = %peer.transport_id,
+                caller_system = tracing::field::Empty,
+                context_dropped = tracing::field::Empty,
+                test_case = tracing::field::Empty,
+                scenario = tracing::field::Empty,
+                operation = tracing::field::Empty,
+            );
+            crate::server::apply_context(&span, &peer);
             let sink = ReplySink::<P, NotStarted> { out, _p: PhantomData };
             match tracing::Instrument::instrument(f(peer, req, sink), span).await {
                 Ok(last) => StreamEnd::Final { kind: P::frame_kind(&last), payload: P::encode_reply(&last).unwrap_or_default() },

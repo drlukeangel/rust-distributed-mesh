@@ -56,9 +56,6 @@ impl NodeProtocol for Count {
     const REPLY_VARIANTS: u32 = 9;
     type Request = CountRequest;
     type Reply = CountFrame;
-    fn traceparent(_: &CountRequest) -> Option<&str> {
-        None
-    }
     fn classify_reply(r: &CountFrame) -> ReplyKind {
         match r {
             CountFrame::Started | CountFrame::Item { .. } | CountFrame::Done { .. } => ReplyKind::Success,

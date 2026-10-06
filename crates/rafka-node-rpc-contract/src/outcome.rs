@@ -462,6 +462,6 @@ mod tests {
         let o = committed().reply::<Echo>(&[0, 0xff, 0xff]);
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::CorruptReply));
         assert!(!o.proves_not_dispatched(), "Indeterminate is never safe to replay");
-        let _ = EchoRequest::Echo { traceparent: None, payload: vec![] };
+        let _ = EchoRequest::Echo { payload: vec![] };
     }
 }

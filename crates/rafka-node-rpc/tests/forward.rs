@@ -45,9 +45,6 @@ impl NodeProtocol for Probe {
     const REPLY_VARIANTS: u32 = 7;
     type Request = ProbeRequest;
     type Reply = ProbeReply;
-    fn traceparent(_: &ProbeRequest) -> Option<&str> {
-        None
-    }
     fn classify_reply(r: &ProbeReply) -> ReplyKind {
         match r {
             ProbeReply::Probed { .. } => ReplyKind::Success,
@@ -206,13 +203,12 @@ async fn a_carried_call_reaches_the_target_once_and_the_target_sees_the_carrier(
 #[tokio::test]
 async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_carrier() {
     let r = rig().await;
-    let echo = EchoRequest::Echo { traceparent: None, payload: b"x".to_vec() };
+    let echo = EchoRequest::Echo { payload: b"x".to_vec() };
     let (out, _) = r.origin.call_via::<Echo>(&carrier_of(&r), &r.target.resolved.node_id, &echo, &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NotForwardable { tag: Echo::TAG }), "{out:?}");
 
     // A forward built by hand for a non-forwardable tag: the carrier refuses it by type.
     let forward = ForwardRequest::Forward {
-        traceparent: None,
         target: r.target.resolved.node_id.as_str().to_string(),
         inner_tag: Echo::TAG,
         inner: Echo::encode_request(&echo).unwrap(),

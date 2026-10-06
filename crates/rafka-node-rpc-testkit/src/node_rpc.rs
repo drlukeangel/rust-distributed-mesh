@@ -31,7 +31,7 @@ impl ProcessNodeRpc {
     /// The same, on a resolver made earlier (a server handler may hold it
     /// before the endpoint is bound).
     pub fn start_with(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        let client = Arc::new(NodeRpcClient::new(endpoint, resolver.clone()));
+        let client = Arc::new(NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm"));
         let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
         (Self { resolver, client }, feed)
     }

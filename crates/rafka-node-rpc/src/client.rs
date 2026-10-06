@@ -14,7 +14,8 @@ use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
 use iroh::Endpoint;
 use rafka_mesh_entity::{FreshnessToken, NodeId};
 use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, RequestTarget, MAX_VARINT_LEN};
+use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
+use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, RequestHeader, RequestTarget, MAX_VARINT_LEN};
 use rafka_node_rpc_contract::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::net::SocketAddr;
@@ -47,6 +48,9 @@ pub struct CallOptions {
     /// Failpoint: a dial this call starts stops after connecting, before it
     /// is checked against the resolver and pooled.
     pub after_connect: Option<Arc<Failpoint>>,
+    /// The observability context to carry, verbatim (a carrier hands the original through).
+    /// `None`: the current span's trace context under the client's `caller_system`.
+    pub context: Option<CallContext>,
 }
 
 impl Default for CallOptions {
@@ -58,6 +62,7 @@ impl Default for CallOptions {
             cut_before_finish: false,
             scope: None,
             after_connect: None,
+            context: None,
         }
     }
 }
@@ -80,6 +85,8 @@ pub struct NodeRpcClient {
     endpoint: Endpoint,
     resolver: Arc<dyn NodeResolver>,
     pool: Pool,
+    /// The system this process originates calls for (`rdm`, `rafka`); observability only.
+    caller_system: Option<String>,
 }
 
 /// How the reply direction is decoded: after the commit cut, or after an
@@ -116,7 +123,31 @@ enum Committed {
 
 impl NodeRpcClient {
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
-        Self { endpoint, resolver, pool: Pool::default() }
+        Self { endpoint, resolver, pool: Pool::default(), caller_system: None }
+    }
+
+    /// Name the originating system every call of this client carries (`rdm`, `rafka`).
+    pub fn with_caller_system(mut self, system: impl Into<String>) -> Self {
+        self.caller_system = Some(system.into());
+        self
+    }
+
+    /// The context a call carries: the one the caller handed in, or the current span's trace
+    /// context under this client's `caller_system`. Anything malformed or over its bound is
+    /// dropped here, named on a local span, so a conforming client never sends it.
+    fn context_for(&self, opts: &CallOptions) -> CallContext {
+        let ctx = opts.context.clone().unwrap_or_else(|| CallContext {
+            caller_system: self.caller_system.clone(),
+            traceparent: rafka_mesh_telemetry::current_traceparent(),
+            tracestate: rafka_mesh_telemetry::current_tracestate(),
+            baggage: None,
+        });
+        let (ctx, dropped) = ctx.sanitized();
+        if !dropped.is_empty() {
+            tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "caller", context_dropped = %dropped_as_str(&dropped))
+                .in_scope(|| tracing::info!("observability context dropped before the request was sent; the call proceeds"));
+        }
+        ctx
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -237,7 +268,8 @@ impl NodeRpcClient {
             }
             Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
         };
-        let frame = encode_request(tag, &request_target, &payload);
+        let header = RequestHeader { target: request_target.clone(), context: self.context_for(opts) };
+        let frame = encode_request(tag, &header, &payload);
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
         if opts.cut_before_finish {
             let half = (frame.len() / 2).max(1);

@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn echo() -> EchoRequest {
-    EchoRequest::Echo { traceparent: None, payload: b"ping".to_vec() }
+    EchoRequest::Echo { payload: b"ping".to_vec() }
 }
 
 /// A process serving Echo on logical slots `rpc-0` and `rpc-1` from one endpoint and one socket.

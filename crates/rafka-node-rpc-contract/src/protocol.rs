@@ -58,8 +58,6 @@ pub trait NodeProtocol: 'static + Send + Sync {
     type Request: Serialize + DeserializeOwned + Send + Sync;
     type Reply: Serialize + DeserializeOwned + Send + Sync;
 
-    /// The request's W3C `traceparent`, carried inside the protocol codec.
-    fn traceparent(req: &Self::Request) -> Option<&str>;
     fn classify_reply(reply: &Self::Reply) -> ReplyKind;
 
     fn peer_unresolved(reason: String) -> Self::Reply;

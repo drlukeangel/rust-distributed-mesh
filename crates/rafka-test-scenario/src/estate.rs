@@ -461,12 +461,24 @@ impl Estate {
             assert!(Instant::now() < until, "no admin accepted /api/shutdown within 30s; last answer from {}: {} {}", self.admin, last.0, last.1);
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        if let Some(mut c) = self.bootstrap.take() {
-            let _ = tokio::task::spawn_blocking(move || c.wait()).await;
+        // The bootstrap admin is stopped by the shutdown like any other admin; one still running
+        // when the bound passes is named and killed, so a stop never hangs on it. The bound covers
+        // the drain bound a stopper waits on (`shutdown::drain_bound`) plus the grace of one stop.
+        let until = Instant::now() + Duration::from_secs(30);
+        let mut bootstrap = self.bootstrap.take();
+        if let Some(c) = bootstrap.as_mut() {
+            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if c.try_wait().ok().flatten().is_none() {
+                let (_, fabric) = self.get("/api/fabric").await;
+                eprintln!("estate stop: bootstrap admin pid {} still ran when the shutdown bound passed; killed. Its fabric view: {fabric}", c.id());
+                let _ = c.kill();
+                let _ = c.wait();
+            }
         }
         // A restarted admin is stopped by the shutdown like any other; one still running when the
         // bound passes is named and killed, so a stop never hangs on it.
-        let until = Instant::now() + Duration::from_secs(30);
         for mut c in std::mem::take(&mut self.restarted) {
             while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
                 tokio::time::sleep(Duration::from_millis(100)).await;

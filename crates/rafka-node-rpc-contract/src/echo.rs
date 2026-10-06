@@ -9,7 +9,7 @@ pub struct Echo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EchoRequest {
-    Echo { traceparent: Option<String>, payload: Vec<u8> },
+    Echo { payload: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,11 +33,6 @@ impl NodeProtocol for Echo {
 
     type Request = EchoRequest;
     type Reply = EchoReply;
-
-    fn traceparent(req: &EchoRequest) -> Option<&str> {
-        let EchoRequest::Echo { traceparent, .. } = req;
-        traceparent.as_deref()
-    }
 
     fn classify_reply(reply: &EchoReply) -> ReplyKind {
         match reply {
@@ -79,14 +74,13 @@ mod tests {
 
     #[test]
     fn request_codec_round_trips_through_the_frame() {
-        let req = EchoRequest::Echo { traceparent: Some("00-ab-cd-01".into()), payload: b"ping".to_vec() };
-        let target = crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() };
-        let frame = encode_request(Echo::TAG, &target, &Echo::encode_request(&req).unwrap());
+        let req = EchoRequest::Echo { payload: b"ping".to_vec() };
+        let header = crate::framing::RequestHeader::fence(crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() });
+        let frame = encode_request(Echo::TAG, &header, &Echo::encode_request(&req).unwrap());
         let (tag, at, body) = decode_request(&frame, |t| (t == Echo::TAG).then_some(Echo::MAX_REQUEST_FRAME_BYTES)).unwrap();
-        assert_eq!((tag, at), (0x11, target));
+        assert_eq!((tag, at), (0x11, header));
         let back = Echo::decode_request(body).unwrap();
         assert_eq!(back, req);
-        assert_eq!(Echo::traceparent(&back), Some("00-ab-cd-01"));
     }
 
     /// node-rpc.md §25: every shared constructor survives constructor -> encode

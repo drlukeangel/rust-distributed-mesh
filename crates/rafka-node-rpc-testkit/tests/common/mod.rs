@@ -119,7 +119,7 @@ impl LiveMesh {
             budget: rafka_node_rpc::Budget::Overall(Duration::from_millis(500)),
             ..CallOptions::default()
         };
-        let req = EchoRequest::Echo { traceparent: None, payload: b"ready?".to_vec() };
+        let req = EchoRequest::Echo { payload: b"ready?".to_vec() };
         self.client.call::<Echo>(target, &req, &opts).await.0
     }
 }

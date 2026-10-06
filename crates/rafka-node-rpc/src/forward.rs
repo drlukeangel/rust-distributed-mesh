@@ -59,15 +59,22 @@ async fn carry_once(
     let Ok(node_id) = NodeId::parse(&target) else {
         return ForwardReply::Malformed { kind: MalformedKind::Corrupt };
     };
+    // The hop is a child span of the origin's trace; the inner call carries the origin's
+    // context unchanged, so the target sees the origin's caller_system and causal parent.
     let span = tracing::info_span!(
         "rafka.node_rpc.request.serve.via-carried-inner",
         inner_tag,
         target = %target,
         caller = %peer.transport_id,
+        caller_system = peer.context.caller_system.as_deref().unwrap_or(""),
         outcome = tracing::field::Empty
     );
+    if let Some(tp) = peer.context.traceparent.as_deref() {
+        rafka_mesh_telemetry::set_remote_parent(&span, tp, peer.context.tracestate.as_deref());
+    }
+    let opts = CallOptions { context: Some(peer.context.clone()), ..CallOptions::default() };
     let (out, _evidence) = client
-        .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_tag, inner, max_reply, &CallOptions::default(), |d| match d {
+        .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_tag, inner, max_reply, &opts, |d| match d {
             Decode::Committed(c, bytes) => c.relayed(bytes),
             Decode::Early(e, bytes) => e.relayed(bytes),
         })
@@ -102,7 +109,6 @@ impl NodeRpcClient {
             Err(e) => return (pre.not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None),
         };
         let forward = ForwardRequest::Forward {
-            traceparent: P::traceparent(req).map(str::to_string),
             target: target.as_str().to_string(),
             inner_tag: P::TAG,
             inner,

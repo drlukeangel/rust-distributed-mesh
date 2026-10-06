@@ -72,7 +72,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
 }
 
 fn echo(p: &[u8]) -> EchoRequest {
-    EchoRequest::Echo { traceparent: None, payload: p.to_vec() }
+    EchoRequest::Echo { payload: p.to_vec() }
 }
 
 async fn eventually(what: &str, f: impl Fn() -> bool) {

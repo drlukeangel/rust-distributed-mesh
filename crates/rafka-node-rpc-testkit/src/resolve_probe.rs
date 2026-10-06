@@ -28,7 +28,7 @@ pub enum ProbeTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveRequest {
-    Resolve { traceparent: Option<String>, target: ProbeTarget },
+    Resolve { target: ProbeTarget },
 }
 
 /// Who answered.
@@ -80,11 +80,6 @@ impl NodeProtocol for ResolveProbe {
     type Request = ResolveRequest;
     type Reply = ResolveReply;
 
-    fn traceparent(req: &ResolveRequest) -> Option<&str> {
-        match req {
-            ResolveRequest::Resolve { traceparent, .. } => traceparent.as_deref(),
-        }
-    }
 
     fn classify_reply(reply: &ResolveReply) -> ReplyKind {
         match reply {
@@ -181,7 +176,7 @@ mod tests {
         for r in all {
             assert_eq!(ResolveProbe::decode_reply(&ResolveProbe::encode_reply(&r).unwrap()).unwrap(), r);
         }
-        let req = ResolveRequest::Resolve { traceparent: None, target: ProbeTarget::Path("mesh1.rpc.1".into()) };
+        let req = ResolveRequest::Resolve { target: ProbeTarget::Path("mesh1.rpc.1".into()) };
         assert_eq!(ResolveProbe::decode_request(&ResolveProbe::encode_request(&req).unwrap()).unwrap(), req);
     }
 }

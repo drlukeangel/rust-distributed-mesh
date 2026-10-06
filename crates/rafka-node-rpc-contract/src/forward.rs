@@ -20,7 +20,6 @@ pub const MAX_CARRIED_BYTES: usize = 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardRequest {
     Forward {
-        traceparent: Option<String>,
         /// The exact final target's logical NodeId.
         target: String,
         inner_tag: u8,
@@ -61,11 +60,6 @@ impl NodeProtocol for Forward {
 
     type Request = ForwardRequest;
     type Reply = ForwardReply;
-
-    fn traceparent(req: &ForwardRequest) -> Option<&str> {
-        let ForwardRequest::Forward { traceparent, .. } = req;
-        traceparent.as_deref()
-    }
 
     fn classify_reply(reply: &ForwardReply) -> ReplyKind {
         match reply {

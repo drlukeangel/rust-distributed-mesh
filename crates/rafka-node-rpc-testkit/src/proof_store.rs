@@ -32,12 +32,12 @@ pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofRequest {
-    Get { traceparent: Option<String>, key: Vec<u8> },
-    Put { traceparent: Option<String>, key: Vec<u8>, value: Vec<u8> },
-    Delete { traceparent: Option<String>, key: Vec<u8> },
+    Get { key: Vec<u8> },
+    Put { key: Vec<u8>, value: Vec<u8> },
+    Delete { key: Vec<u8> },
     /// Swap when the held value equals `expected` (`None`: the key is absent);
     /// `new: None` deletes the key.
-    CompareAndSwap { traceparent: Option<String>, key: Vec<u8>, expected: Option<Vec<u8>>, new: Option<Vec<u8>> },
+    CompareAndSwap { key: Vec<u8>, expected: Option<Vec<u8>>, new: Option<Vec<u8>> },
 }
 
 impl ProofRequest {
@@ -140,14 +140,6 @@ impl NodeProtocol for ProofStore {
     type Request = ProofRequest;
     type Reply = ProofReply;
 
-    fn traceparent(req: &ProofRequest) -> Option<&str> {
-        match req {
-            ProofRequest::Get { traceparent, .. }
-            | ProofRequest::Put { traceparent, .. }
-            | ProofRequest::Delete { traceparent, .. }
-            | ProofRequest::CompareAndSwap { traceparent, .. } => traceparent.as_deref(),
-        }
-    }
 
     fn classify_reply(reply: &ProofReply) -> ReplyKind {
         match reply {
@@ -390,7 +382,7 @@ mod tests {
     }
 
     fn get(s: &FileProofStore, k: &[u8]) -> ProofReply {
-        s.apply(ProofRequest::Get { traceparent: None, key: k.to_vec() }, at(ProofOp::Get))
+        s.apply(ProofRequest::Get { key: k.to_vec() }, at(ProofOp::Get))
     }
 
     #[test]
@@ -398,12 +390,12 @@ mod tests {
         let d = dir();
         let s = FileProofStore::open(&d).unwrap();
         assert_eq!(get(&s, b"k"), ProofReply::Absent { at: at(ProofOp::Get) });
-        let put = |k: &[u8], v: &[u8]| s.apply(ProofRequest::Put { traceparent: None, key: k.into(), value: v.into() }, at(ProofOp::Put));
+        let put = |k: &[u8], v: &[u8]| s.apply(ProofRequest::Put { key: k.into(), value: v.into() }, at(ProofOp::Put));
         assert_eq!(put(b"k", b"v1"), ProofReply::Stored { at: at(ProofOp::Put) });
         assert_eq!(get(&s, b"k"), ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() });
         let cas = |e: Option<&[u8]>, n: Option<&[u8]>| {
             s.apply(
-                ProofRequest::CompareAndSwap { traceparent: None, key: b"k".to_vec(), expected: e.map(|v| v.to_vec()), new: n.map(|v| v.to_vec()) },
+                ProofRequest::CompareAndSwap { key: b"k".to_vec(), expected: e.map(|v| v.to_vec()), new: n.map(|v| v.to_vec()) },
                 at(ProofOp::CompareAndSwap),
             )
         };
@@ -413,7 +405,7 @@ mod tests {
         assert_eq!(get(&s, b"k"), ProofReply::Absent { at: at(ProofOp::Get) });
         assert_eq!(cas(None, Some(b"v3")), ProofReply::Swapped { at: at(ProofOp::CompareAndSwap) }, "expected: None means absent");
         assert_eq!(cas(None, Some(b"v4")), ProofReply::Mismatch { at: at(ProofOp::CompareAndSwap), current: Some(b"v3".to_vec()) });
-        let del = |k: &[u8]| s.apply(ProofRequest::Delete { traceparent: None, key: k.into() }, at(ProofOp::Delete));
+        let del = |k: &[u8]| s.apply(ProofRequest::Delete { key: k.into() }, at(ProofOp::Delete));
         assert_eq!(del(b"k"), ProofReply::Deleted { at: at(ProofOp::Delete) });
         assert_eq!(del(b"k"), ProofReply::Absent { at: at(ProofOp::Delete) });
     }
@@ -422,7 +414,7 @@ mod tests {
     fn the_same_data_dir_keeps_every_value_and_a_fresh_one_holds_none() {
         let d = dir();
         let first = FileProofStore::open(&d).unwrap();
-        first.apply(ProofRequest::Put { traceparent: None, key: b"41".to_vec(), value: b"before-restart".to_vec() }, at(ProofOp::Put));
+        first.apply(ProofRequest::Put { key: b"41".to_vec(), value: b"before-restart".to_vec() }, at(ProofOp::Put));
         drop(first);
         let restarted = FileProofStore::open(&d).unwrap();
         assert_eq!(get(&restarted, b"41"), ProofReply::Value { at: at(ProofOp::Get), value: b"before-restart".to_vec() });
@@ -434,17 +426,17 @@ mod tests {
     fn an_oversized_key_or_value_is_refused_by_name_and_writes_nothing() {
         let d = dir();
         let s = FileProofStore::open(&d).unwrap();
-        let r = s.apply(ProofRequest::Get { traceparent: None, key: vec![0; MAX_KEY_BYTES + 1] }, at(ProofOp::Get));
+        let r = s.apply(ProofRequest::Get { key: vec![0; MAX_KEY_BYTES + 1] }, at(ProofOp::Get));
         assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::Get), field: "key".into(), limit: 256, got: 257 });
-        let r = s.apply(ProofRequest::Put { traceparent: None, key: b"k".to_vec(), value: vec![0; MAX_VALUE_BYTES + 1] }, at(ProofOp::Put));
+        let r = s.apply(ProofRequest::Put { key: b"k".to_vec(), value: vec![0; MAX_VALUE_BYTES + 1] }, at(ProofOp::Put));
         assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::Put), field: "value".into(), limit: 65536, got: 65537 });
         let r = s.apply(
-            ProofRequest::CompareAndSwap { traceparent: None, key: b"k".to_vec(), expected: None, new: Some(vec![0; MAX_VALUE_BYTES + 1]) },
+            ProofRequest::CompareAndSwap { key: b"k".to_vec(), expected: None, new: Some(vec![0; MAX_VALUE_BYTES + 1]) },
             at(ProofOp::CompareAndSwap),
         );
         assert_eq!(r, ProofReply::TooLarge { at: at(ProofOp::CompareAndSwap), field: "new".into(), limit: 65536, got: 65537 });
         assert!(!d.join(STORE_FILE).exists(), "nothing was written");
-        let at_limit = s.apply(ProofRequest::Put { traceparent: None, key: vec![1; MAX_KEY_BYTES], value: vec![2; MAX_VALUE_BYTES] }, at(ProofOp::Put));
+        let at_limit = s.apply(ProofRequest::Put { key: vec![1; MAX_KEY_BYTES], value: vec![2; MAX_VALUE_BYTES] }, at(ProofOp::Put));
         assert_eq!(at_limit, ProofReply::Stored { at: at(ProofOp::Put) }, "exactly at the limits is accepted");
     }
 
@@ -462,10 +454,10 @@ mod tests {
     fn a_failed_write_changes_nothing_and_names_the_file() {
         let d = dir();
         let s = FileProofStore::open(&d).unwrap();
-        s.apply(ProofRequest::Put { traceparent: None, key: b"k".to_vec(), value: b"v1".to_vec() }, at(ProofOp::Put));
+        s.apply(ProofRequest::Put { key: b"k".to_vec(), value: b"v1".to_vec() }, at(ProofOp::Put));
         // A directory where the temp file goes makes the write fail.
         std::fs::create_dir_all(d.join(STORE_FILE).with_extension("json.tmp")).unwrap();
-        let r = s.apply(ProofRequest::Put { traceparent: None, key: b"k".to_vec(), value: b"v2".to_vec() }, at(ProofOp::Put));
+        let r = s.apply(ProofRequest::Put { key: b"k".to_vec(), value: b"v2".to_vec() }, at(ProofOp::Put));
         assert!(matches!(&r, ProofReply::StoreFailed { reason, .. } if reason.contains("json.tmp")), "{r:?}");
         assert_eq!(get(&s, b"k"), ProofReply::Value { at: at(ProofOp::Get), value: b"v1".to_vec() }, "the held value is unchanged");
     }
@@ -497,10 +489,10 @@ mod tests {
             assert_eq!(ProofStore::decode_reply(&ProofStore::encode_reply(&r).unwrap()).unwrap(), r);
         }
         let requests = vec![
-            ProofRequest::Get { traceparent: None, key: vec![1] },
-            ProofRequest::Put { traceparent: None, key: vec![1], value: vec![2] },
-            ProofRequest::Delete { traceparent: None, key: vec![1] },
-            ProofRequest::CompareAndSwap { traceparent: None, key: vec![1], expected: None, new: Some(vec![3]) },
+            ProofRequest::Get { key: vec![1] },
+            ProofRequest::Put { key: vec![1], value: vec![2] },
+            ProofRequest::Delete { key: vec![1] },
+            ProofRequest::CompareAndSwap { key: vec![1], expected: None, new: Some(vec![3]) },
         ];
         assert_eq!(requests.len() as u32, ProofStore::REQUEST_VARIANTS);
         for r in requests {

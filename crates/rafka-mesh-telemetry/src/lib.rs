@@ -180,6 +180,12 @@ pub fn current_traceparent() -> Option<String> {
 /// Make `span` a child of the remote span named by `traceparent`.
 /// A malformed value leaves `span` a root, never panics.
 pub fn set_parent(span: &tracing::Span, traceparent: &str) {
+    set_remote_parent(span, traceparent, None);
+}
+
+/// [`set_parent`] carrying the remote `tracestate` too; a `tracestate` that does not parse
+/// is left out and the parent still applies.
+pub fn set_remote_parent(span: &tracing::Span, traceparent: &str, tracestate: Option<&str>) {
     use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
     let parts: Vec<&str> = traceparent.split('-').collect();
@@ -187,10 +193,24 @@ pub fn set_parent(span: &tracing::Span, traceparent: &str) {
     let (Ok(t), Ok(s), Ok(f)) = (TraceId::from_hex(trace), SpanId::from_hex(span_id), u8::from_str_radix(flags, 16)) else {
         return;
     };
-    let sc = SpanContext::new(t, s, TraceFlags::new(f), true, TraceState::default());
+    let state = tracestate
+        .and_then(|ts| TraceState::from_key_value(ts.split(',').filter_map(|m| m.trim().split_once('=')).map(|(k, v)| (k.trim(), v.trim()))).ok())
+        .unwrap_or_default();
+    let sc = SpanContext::new(t, s, TraceFlags::new(f), true, state);
     if sc.is_valid() {
         span.set_parent(opentelemetry::Context::new().with_remote_span_context(sc));
     }
+}
+
+/// The W3C `tracestate` of the current tracing span, when one rides its context.
+pub fn current_tracestate() -> Option<String> {
+    use opentelemetry::trace::TraceContextExt;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    let cx = tracing::Span::current().context();
+    let span = cx.span();
+    let sc = span.span_context();
+    let header = sc.trace_state().header();
+    (sc.is_valid() && !header.is_empty()).then_some(header)
 }
 
 /// Writes every finished span as one JSON line to

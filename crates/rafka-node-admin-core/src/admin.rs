@@ -774,7 +774,7 @@ impl AdminRunner {
             NodeKind::RpcNode => {
                 let Some(node_rpc) = &self.node_rpc else { return false };
                 let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
-                let req = rafka_node_rpc_contract::echo::EchoRequest::Echo { traceparent: None, payload: b"fence".to_vec() };
+                let req = rafka_node_rpc_contract::echo::EchoRequest::Echo { payload: b"fence".to_vec() };
                 let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::echo::Echo>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
                 out.reply().is_some()
             }
