@@ -20,7 +20,7 @@ use rafka_mesh_transport::membership::Membership;
 use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE_SLOTS;
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, NodeObserver, Timeouts, TopologySink,
 };
@@ -105,7 +105,8 @@ impl LiveMesh {
             name: node.name.clone(),
             transport_id,
             incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
-            endpoints: node.endpoints.clone(),
+            transport_addr: node.transport_addr.ok_or("no transport address")?,
+            slots: node.endpoints.clone(),
         });
         Ok(NodeTarget::ExactNode(node.node_id.clone()))
     }
@@ -275,7 +276,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     };
 
     let created = pipeline
-        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: node_name, spec: &RPC_NODE, restart_of: None })
         .await;
     let created = match created {
         Ok(c) => c,
@@ -286,7 +287,10 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
     let published = sink.nodes.lock().unwrap().clone();
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
-    assert_eq!(created.node.endpoints, allocator.lock().unwrap().held(&created.node.name).unwrap().to_vec());
+    let held = allocator.lock().unwrap().held(&created.node.name).cloned().expect("the allocator holds the node");
+    assert_eq!(created.node.transport_addr, Some(held.transport));
+    assert_eq!(created.node.endpoints, held.slots);
+    assert_eq!(created.node.endpoints.len(), 2, "two logical slots on one socket");
 
     // A container node lives in its own network namespace, at its own
     // address on the fabric network: nothing on the host holds its ports.
@@ -307,14 +311,16 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
         assert_eq!(node_ifs, vec!["eth0".to_string(), "lo".to_string()], "the node sees only its own namespace's interfaces");
         assert_ne!(interfaces("self"), interfaces(&pid.to_string()), "the node shares the host network namespace");
         let (first, last) = c.network().node_range();
-        for e in &created.node.endpoints {
-            let std::net::IpAddr::V4(ip) = e.addr.ip() else { panic!("{} is not IPv4", e.addr) };
-            assert!(ip >= first && ip <= last, "{} is outside the fabric network {:?}", e.addr, c.network());
-            use rafka_node_admin_core::deployment::container::netns_holds_udp;
-            assert_eq!(netns_holds_udp(pid, e.addr), Ok(true), "the node's own namespace holds {}", e.addr);
-            assert_eq!(netns_holds_udp(std::process::id(), e.addr), Ok(false), "the host namespace holds {}", e.addr);
-        }
-        assert_eq!(created.node.endpoints[0].addr.ip(), created.node.endpoints[1].addr.ip(), "one container, one address");
+        let addr = created.node.transport_addr.expect("a created node carries its transport address");
+        let std::net::IpAddr::V4(ip) = addr.ip() else { panic!("{addr} is not IPv4") };
+        assert!(ip >= first && ip <= last, "{addr} is outside the fabric network {:?}", c.network());
+        use rafka_node_admin_core::deployment::container::{netns_holds_udp, netns_udp_sockets};
+        assert_eq!(netns_holds_udp(pid, addr), Ok(true), "the node's own namespace holds {addr}");
+        assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(false), "the host namespace holds {addr}");
+        // One Iroh UDP socket on the node's address: the transport, and nothing else bound there
+        // (the namespace also carries the container runtime's own loopback DNS socket).
+        let udp: Vec<_> = netns_udp_sockets(pid).unwrap().into_iter().filter(|a| a.ip() == addr.ip() || a.ip().is_unspecified()).collect();
+        assert_eq!(udp, vec![addr], "the process holds exactly one Iroh UDP socket on its address: {udp:?}");
     }
 
     // Every step has exactly one Complete receipt, in pipeline order.

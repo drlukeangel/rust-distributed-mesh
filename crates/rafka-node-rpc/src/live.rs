@@ -125,12 +125,12 @@ impl LiveNodeResolver {
             None => Applied::Joined,
             Some(held) if held.transport_id != birth.transport_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
             Some(held) if held.incarnation == birth.incarnation => {
-                let moved: Vec<String> = rafka_mesh_entity::EndpointSet(held.endpoints.clone())
-                    .superseded_by(&rafka_mesh_entity::EndpointSet(birth.endpoints.clone()))
+                let moved: Vec<String> = rafka_mesh_entity::EndpointSet(held.slots.clone())
+                    .superseded_by(&rafka_mesh_entity::EndpointSet(birth.slots.clone()))
                     .into_iter()
                     .map(|(slot, _, _)| slot)
                     .collect();
-                if moved.is_empty() && held.endpoints == birth.endpoints {
+                if moved.is_empty() && held.slots == birth.slots && held.transport_addr == birth.transport_addr {
                     return Applied::Unchanged;
                 }
                 Applied::SlotsMoved { slots: moved }
@@ -211,13 +211,14 @@ mod tests {
             node_id: NodeId::mint(),
             name: path.parse().unwrap(),
             transport_id: key(),
+            transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
-            endpoints: vec![EndpointSlot::assign("rpc", format!("127.0.0.1:{port}").parse().unwrap())],
+            slots: vec![EndpointSlot::fresh("rpc")],
         }
     }
 
     fn restart(n: &ResolvedNode, port: u16) -> ResolvedNode {
-        ResolvedNode { incarnation: IncarnationId::mint(), endpoints: vec![EndpointSlot::assign("rpc", format!("127.0.0.1:{port}").parse().unwrap())], ..n.clone() }
+        ResolvedNode { incarnation: IncarnationId::mint(), transport_addr: format!("127.0.0.1:{port}").parse().unwrap(), slots: vec![EndpointSlot::fresh("rpc")], ..n.clone() }
     }
 
     fn exact(r: &LiveNodeResolver, n: &ResolvedNode) -> Result<ResolvedNode, ResolveFailure> {
@@ -244,7 +245,7 @@ mod tests {
         let a = birth("mesh1.rpc.1", 7000);
         r.apply(a.clone(), None);
         assert_eq!(r.apply(a.clone(), None), Applied::Unchanged);
-        let moved = ResolvedNode { endpoints: vec![EndpointSlot::assign("rpc", "127.0.0.1:7009".parse().unwrap())], ..a.clone() };
+        let moved = ResolvedNode { slots: vec![EndpointSlot::fresh("rpc")], ..a.clone() };
         assert_eq!(r.apply(moved, None), Applied::SlotsMoved { slots: vec!["rpc".into()] });
     }
 

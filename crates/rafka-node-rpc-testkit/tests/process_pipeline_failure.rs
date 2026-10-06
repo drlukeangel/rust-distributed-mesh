@@ -11,7 +11,7 @@ mod common;
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
+use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
@@ -79,7 +79,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
     };
     let err = pipeline
-        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
         .await
         .unwrap_err();
     assert_eq!(err.step, "WaitForBind");

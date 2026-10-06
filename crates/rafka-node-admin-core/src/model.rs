@@ -81,7 +81,13 @@ pub struct Node {
     pub is_fabric_primary: bool,
     /// The control API base a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
+    /// The one address of the birth's Iroh endpoint; `None` until it is born.
+    pub transport_addr: Option<std::net::SocketAddr>,
+    /// The logical Node RPC slots the birth serves, under their tokens.
     pub endpoints: Vec<EndpointSlot>,
+    /// Non-Iroh listeners the birth binds, by name.
+    #[serde(default)]
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
     /// May application routing select this node: held, not departed, and under no open
     /// lifecycle overlay (`NodeDeleting`). The resolver never reads it.
     #[serde(default = "routable_default")]
@@ -109,7 +115,9 @@ impl Node {
             is_primary: false,
             is_fabric_primary: false,
             admin_api_base: None,
+            transport_addr: None,
             endpoints: Vec::new(),
+            listeners: Vec::new(),
             routable: true,
         }
     }

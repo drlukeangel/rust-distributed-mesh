@@ -137,24 +137,17 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
+    // One endpoint for the process: every assigned slot is one socket of it, and Node RPC and
+    // gossip share it by ALPN. The socket a request arrives on names no slot; the request's
+    // target does, and the server holds every slot under its freshness token.
     let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
-        .seal(launch.endpoints.first().map(|e| e.slot.clone()).unwrap_or_default())
+        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() }, launch.endpoints.iter().cloned())
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
-    let mut routers = Vec::new();
-    let mut gossip = None;
-    for (i, slot) in launch.endpoints.iter().enumerate() {
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), slot.addr)
-            .await
-            .with_context(|| format!("slot {} cannot bind its assigned {}", slot.slot, slot.addr))?;
-        let mut b = Router::builder(ep.clone()).accept(rafka_node_rpc::ALPN, server.for_slot(slot.slot.clone()));
-        if i == 0 {
-            let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-            b = b.accept(iroh_gossip::ALPN, g.clone());
-            gossip = Some((g, ep));
-        }
-        routers.push(b.spawn());
-    }
-    let (g, ep0) = gossip.ok_or_else(|| anyhow!("a node needs at least one endpoint slot"))?;
+    let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.transport_addr)
+        .await
+        .with_context(|| format!("the node cannot bind its assigned transport address {}", launch.transport_addr))?;
+    let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
+    let routers = vec![Router::builder(ep0.clone()).accept(rafka_node_rpc::ALPN, server.clone()).accept(iroh_gossip::ALPN, g.clone()).spawn()];
     let seeds: Vec<EndpointAddr> = launch
         .seeds
         .iter()
@@ -211,6 +204,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
             transport_id: rafka_mesh_entity::TransportId(key.public().to_string()),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
+            transport_addr: launch.transport_addr,
             endpoints: EndpointSet(launch.endpoints.clone()),
             runtime: Some(runtime.clone()),
         },

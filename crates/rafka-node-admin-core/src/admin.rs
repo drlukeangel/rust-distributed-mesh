@@ -18,7 +18,7 @@
 
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
-use crate::deployment::endpoint::{slots_for, EndpointAllocator};
+use crate::deployment::endpoint::{spec_for, EndpointAllocator};
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
@@ -194,8 +194,16 @@ impl Records {
 
 impl TopologySink for Records {
     fn publish(&self, node: Node) {
-        if let (Some(store), Some(incarnation_id), Some(transport_id)) = (self.contacts.get(), node.incarnation_id.clone(), node.transport_id.clone()) {
-            let r = crate::storage::NodeRecord { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, transport_id, endpoints: node.endpoints.clone() };
+        if let (Some(store), Some(incarnation_id), Some(transport_id), Some(transport_addr)) = (self.contacts.get(), node.incarnation_id.clone(), node.transport_id.clone(), node.transport_addr) {
+            let r = crate::storage::NodeRecord {
+                node_id: node.node_id.clone(),
+                name: node.name.clone(),
+                incarnation_id,
+                transport_id,
+                transport_addr,
+                endpoints: node.endpoints.clone(),
+                listeners: node.listeners.clone(),
+            };
             if let Err(e) = store.put_contact(&r) {
                 tracing::info!(node = %node.name, error = %e, "a launched birth could not be stored as a contact");
             }
@@ -244,6 +252,7 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         n.status = if silent { NodeStatus::Dead } else { node_status(d.status) };
         n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
         n.admin_api_base = d.admin_api_base.clone();
+        n.transport_addr = Some(d.node.transport_addr);
         n.endpoints = d.node.endpoints.0.clone();
         n.data_dir = d.data_dir.clone();
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
@@ -757,10 +766,9 @@ impl AdminRunner {
         const WITHIN: Duration = Duration::from_secs(2);
         match node.kind {
             NodeKind::NodeAdmin => {
-                let (Some(ep), Some(transport_id)) = (&self.endpoint, &node.transport_id) else { return false };
+                let (Some(ep), Some(transport_id), Some(addr)) = (&self.endpoint, &node.transport_id, node.transport_addr) else { return false };
                 let Ok(peer) = transport_id.0.parse::<iroh::PublicKey>() else { return false };
-                let Some(mesh) = node.endpoints.iter().find(|e| e.slot == "mesh") else { return false };
-                let anchor = EndpointAddr::new(peer).with_ip_addr(mesh.addr);
+                let anchor = EndpointAddr::new(peer).with_ip_addr(addr);
                 rafka_mesh_transport::entry::pull_once(ep, anchor, &self.me.to_string(), WITHIN).await.is_ok()
             }
             NodeKind::RpcNode => {
@@ -796,7 +804,7 @@ impl AdminRunner {
             }
         }
         let template = self.template_for(node.kind, &node.mesh).await;
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), slots: slots_for(node.kind), restart_of };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of };
         let created = self.pipeline(&template).create(&req).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -1043,11 +1051,14 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // which answering is enough.
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
         (Some(l), _) => {
-            let slot = |s: &str| l.endpoints.iter().find(|e| e.slot == s).map(|e| e.addr).ok_or_else(|| format!("launch assigns no `{s}` slot"));
-            (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), slot("mesh")?, slot("control")?, l.seeds.clone())
+            let control = l.listeners.iter().find(|(n, _)| n == "control").map(|(_, a)| *a).ok_or_else(|| "launch assigns no `control` listener".to_string())?;
+            (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), l.transport_addr, control, l.seeds.clone())
         }
         (None, Some(own)) => {
-            let slot = |s: &str| own.endpoints.iter().find(|e| e.slot == s).map(|e| e.addr);
+            let slot = |s: &str| match s {
+                "mesh" => Some(own.transport_addr),
+                _ => own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a),
+            };
             let mut contacts = nodes_storage.contacts().map_err(storage_err)?;
             contacts.retain(|c| c.node_id != own.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
@@ -1336,23 +1347,12 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
             node_id: node_id.clone(),
             name: name.clone(),
             transport_id: TransportId(key.public().to_string()),
+            // The mesh endpoint as bound (a rebind may have moved it); a node-admin serves no
+            // Node RPC slots.
+            transport_addr: mesh_addr,
             incarnation: incarnation.clone(),
             supersedes,
-            endpoints: EndpointSet({
-                // A slot a restart rebinds at the address it last held keeps its freshness token;
-                // a slot at a new address gets a new one.
-                let token = |slot: &str, addr: SocketAddr| {
-                    restart
-                        .as_ref()
-                        .and_then(|own| own.endpoints.iter().find(|e| e.slot == slot && e.addr == addr).map(|e| e.freshness.clone()))
-                        .unwrap_or_else(FreshnessToken::mint)
-                };
-                let control = listener.local_addr().map_err(|e| e.to_string())?;
-                vec![
-                    EndpointSlot { slot: "mesh".into(), addr: mesh_addr, freshness: token("mesh", mesh_addr) },
-                    EndpointSlot { slot: "control".into(), addr: control, freshness: token("control", control) },
-                ]
-            }),
+            endpoints: EndpointSet(Vec::new()),
             // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
             runtime: adoption.is_none().then(|| runtime.clone()),
         },
@@ -1373,7 +1373,9 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 name: name.clone(),
                 incarnation_id: incarnation.clone(),
                 transport_id: d.node.transport_id.clone(),
+                transport_addr: d.node.transport_addr,
                 endpoints: d.node.endpoints.0.clone(),
+                listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
             })
             .map_err(storage_err)?;
         mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: cfg.mesh.clone() }).map_err(storage_err)?;
@@ -1393,7 +1395,9 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                         name: d.node.name.clone(),
                         incarnation_id: d.node.incarnation.clone(),
                         transport_id: d.node.transport_id.clone(),
+                        transport_addr: d.node.transport_addr,
                         endpoints: d.node.endpoints.0.clone(),
+                        listeners: Vec::new(),
                     };
                     if written.get(&r.node_id) != Some(&r) && nodes_storage.put_contact(&r).is_ok() {
                         written.insert(r.node_id.clone(), r);
@@ -1693,6 +1697,7 @@ mod tests {
                 node_id: NodeId::mint(),
                 name: name.clone(),
                 transport_id: TransportId(format!("key-{name}")),
+                transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: IncarnationId::mint(),
                 supersedes: None,
                 endpoints: EndpointSet(vec![]),

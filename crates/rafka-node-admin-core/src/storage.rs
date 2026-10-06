@@ -89,15 +89,19 @@ pub struct NodeRecord {
     /// The incarnation this birth last ran (a restart supersedes it).
     pub incarnation_id: IncarnationId,
     pub transport_id: TransportId,
+    /// The one address of the birth's Iroh endpoint.
+    pub transport_addr: std::net::SocketAddr,
     pub endpoints: Vec<EndpointSlot>,
+    /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
+    #[serde(default)]
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
 impl NodeRecord {
-    /// Where this birth's gossip was last reachable: its first endpoint slot, as membership dials.
+    /// Where this birth's gossip was last reachable: its transport address, as membership dials.
     pub fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
         let key = self.transport_id.0.parse::<iroh::PublicKey>().ok()?;
-        let slot = self.endpoints.first()?;
-        Some(iroh::EndpointAddr::new(key).with_ip_addr(slot.addr))
+        Some(iroh::EndpointAddr::new(key).with_ip_addr(self.transport_addr))
     }
 }
 
@@ -240,7 +244,9 @@ mod tests {
             name: name.parse().unwrap(),
             incarnation_id: IncarnationId::mint(),
             transport_id: TransportId(iroh::SecretKey::generate().public().to_string()),
-            endpoints: vec![EndpointSlot::assign("mesh", "127.0.0.1:41001".parse().unwrap())],
+            transport_addr: "127.0.0.1:41001".parse().unwrap(),
+            endpoints: vec![EndpointSlot::fresh("rpc-0")],
+            listeners: vec![],
         }
     }
 

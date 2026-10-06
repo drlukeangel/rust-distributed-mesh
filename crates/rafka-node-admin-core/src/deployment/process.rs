@@ -268,7 +268,8 @@ mod tests {
             args: vec!["30".into()],
             env: Default::default(),
             data_dir: dir.to_path_buf(),
-            endpoints: vec![],
+            transport: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
         }
     }
 

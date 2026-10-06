@@ -13,9 +13,12 @@ pub struct MeshNode {
     pub node_id: NodeId,
     pub name: PathName,
     pub transport_id: TransportId,
+    /// The one address of the birth's Iroh endpoint: where every slot is reached.
+    pub transport_addr: std::net::SocketAddr,
     pub incarnation: IncarnationId,
     /// The incarnation this birth replaces; `None` for the first birth.
     pub supersedes: Option<IncarnationId>,
+    /// The logical slots the birth serves, under their current tokens.
     pub endpoints: EndpointSet,
     /// This birth's exact runtime (`runtime`): immutable for the incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,9 +75,10 @@ mod tests {
             node_id: NodeId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             transport_id: TransportId("k".into()),
+            transport_addr: "127.0.0.1:7000".parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
-            endpoints: EndpointSet(vec![EndpointSlot::assign("rpc", "127.0.0.1:7000".parse().unwrap())]),
+            endpoints: EndpointSet(vec![EndpointSlot::fresh("rpc")]),
             runtime: None,
         };
         let back: MeshNode = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();

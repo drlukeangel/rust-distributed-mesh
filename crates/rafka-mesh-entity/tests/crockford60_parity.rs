@@ -49,6 +49,7 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
             node_id: node_id.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),
             transport_id: rafka_mesh_entity::TransportId("key".into()),
+            transport_addr: "127.0.0.1:41000".parse().unwrap(),
             incarnation: rafka_mesh_entity::IncarnationId::mint(),
             supersedes: None,
             endpoints: rafka_mesh_entity::EndpointSet(vec![]),

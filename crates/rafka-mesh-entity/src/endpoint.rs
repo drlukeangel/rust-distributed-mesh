@@ -1,34 +1,36 @@
 //! Endpoint slots and their freshness (PRD §1.19, §14; ownership §8.2).
 //!
-//! Each slot assignment carries an opaque freshness token. A slot whose
-//! assignment changes gets a new token; a slot that keeps its assignment keeps
-//! its token. Supersession is per exact slot, never whole-peer.
+//! A slot is a logical invocation fence, not a transport endpoint: it owns no
+//! socket, port, NAT candidate or QUIC connection. A process has one Iroh
+//! endpoint at one address; every slot rides it, and a request names the
+//! slot it targets under the slot's current freshness token. A slot whose
+//! token moves is superseded for callers pinned to the old token; its
+//! siblings, and the process's connections, are untouched.
 
 use crate::ids::FreshnessToken;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 
-/// Per-slot restart policy (`docs/i143/design.md` §2).
+/// Per-slot restart policy: what happens to the slot's freshness token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlotPolicy {
-    /// A new address and token on every process birth.
+    /// A new token on every process birth.
     Fresh,
-    /// A restart keeps the address and token; a replacement does not.
+    /// A restart of the same logical node keeps the token; a replacement
+    /// mints a new one.
     Stable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointSlot {
     pub slot: String,
-    pub addr: SocketAddr,
     pub freshness: FreshnessToken,
 }
 
 impl EndpointSlot {
-    /// A new assignment of `slot` to `addr`, with a newly minted token.
-    pub fn assign(slot: impl Into<String>, addr: SocketAddr) -> Self {
-        Self { slot: slot.into(), addr, freshness: FreshnessToken::mint() }
+    /// `slot` under a newly minted token.
+    pub fn fresh(slot: impl Into<String>) -> Self {
+        Self { slot: slot.into(), freshness: FreshnessToken::mint() }
     }
 }
 

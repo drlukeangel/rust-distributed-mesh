@@ -1,19 +1,18 @@
 //! The scoped, slot-aware connection pool (i143 PRD §1.19–20, §14;
 //! node-rpc-rdm-ownership.md §8–§9).
 //!
-//! A pooled connection is keyed by `(scope, peer, incarnation, slot,
-//! freshness)`: the caller's execution scope, the peer's authenticated Iroh
-//! key, the process birth it was dialled to, and the exact endpoint slot under
-//! the freshness token it was dialled with. Tokens and incarnations are
-//! compared by equality only.
+//! A pooled connection is keyed by `(scope, peer, incarnation)`: the caller's
+//! execution scope, the peer's authenticated Iroh key and the process birth it
+//! was dialled to. A connection is to a process, never to a slot: slots are
+//! invocation fences carried in each request's framing, so one slot's token
+//! moving never touches a connection, and every slot of a birth shares it.
 //!
-//! Supersession is per exact slot target:
-//! - a dial in flight whose `(incarnation, slot, freshness)` the resolver no
-//!   longer names is cancelled the moment the resolver changes, and its
-//!   waiters get typed supersession at once;
-//! - a dial that completes after its target was superseded is never pooled;
-//! - pooled connections of a superseded slot or birth are evicted;
-//! - a sibling slot whose target did not move keeps its connection.
+//! Supersession is per birth:
+//! - a dial in flight whose incarnation the resolver no longer names is
+//!   cancelled the moment the resolver changes, and its waiters get
+//!   `RejectedStale` at once;
+//! - a dial that completes after its birth was superseded is never pooled;
+//! - pooled connections of a superseded birth are evicted.
 //!
 //! One dial per key is in flight at a time; concurrent callers share it.
 //!
@@ -29,7 +28,7 @@
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
-use rafka_mesh_entity::{FreshnessToken, IncarnationId};
+use rafka_mesh_entity::IncarnationId;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -45,26 +44,16 @@ pub struct PoolKey {
     pub scope: Option<String>,
     pub peer: iroh::PublicKey,
     pub incarnation: IncarnationId,
-    pub slot: String,
-    pub freshness: FreshnessToken,
 }
 
 impl PoolKey {
-    /// Does `node` (the resolver's answer now) still name this exact target?
+    /// Does `node` (the resolver's answer now) still name this exact birth?
     pub fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
-        node.is_some_and(|n| {
-            n.transport_id == self.peer
-                && n.incarnation == self.incarnation
-                && n.endpoints.iter().any(|e| e.slot == self.slot && e.freshness == self.freshness)
-        })
+        node.is_some_and(|n| n.transport_id == self.peer && n.incarnation == self.incarnation)
     }
 
-    /// Which part of the target moved: the process birth or the slot.
-    fn superseded_by(&self, node: Option<&ResolvedNode>) -> &'static str {
-        match node {
-            Some(n) if n.transport_id == self.peer && n.incarnation != self.incarnation => "via-incarnation-superseded",
-            _ => "via-slot-superseded",
-        }
+    fn superseded_by(&self, _node: Option<&ResolvedNode>) -> &'static str {
+        "via-incarnation-superseded"
     }
 }
 
@@ -122,18 +111,12 @@ pub struct DialSpec {
     pub failpoint: Option<Arc<Failpoint>>,
 }
 
-fn evict_span(reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
-    let span = match reason {
-        "via-incarnation-superseded" => tracing::info_span!(
-            "rafka.node_rpc.connection.evict.via-incarnation-superseded",
-            peer = %key.peer.fmt_short(), slot = %key.slot, outcome, elapsed_ms = elapsed_ms as u64
-        ),
-        _ => tracing::info_span!(
-            "rafka.node_rpc.connection.evict.via-slot-superseded",
-            peer = %key.peer.fmt_short(), slot = %key.slot, outcome, elapsed_ms = elapsed_ms as u64
-        ),
-    };
-    span.in_scope(|| tracing::info!("superseded target: {outcome}"));
+fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
+    tracing::info_span!(
+        "rafka.node_rpc.connection.evict.via-incarnation-superseded",
+        peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, outcome, elapsed_ms = elapsed_ms as u64
+    )
+    .in_scope(|| tracing::info!("superseded birth: {outcome}"));
 }
 
 impl Pool {
@@ -282,7 +265,7 @@ impl Pool {
             if self.remove_if_same(key, conn) {
                 tracing::info_span!(
                     "rafka.node_rpc.connection.evict.via-timeout-strikes",
-                    peer = %key.peer.fmt_short(), slot = %key.slot, strikes
+                    peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, strikes
                 )
                 .in_scope(|| tracing::info!("poisoned connection evicted; the node is not marked unreachable"));
             }

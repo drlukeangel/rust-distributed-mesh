@@ -22,8 +22,17 @@ pub struct ResolvedNode {
     pub name: PathName,
     /// The node's Iroh public key.
     pub transport_id: iroh::PublicKey,
+    /// The one address of the node's Iroh endpoint: where every slot is reached.
+    pub transport_addr: std::net::SocketAddr,
     pub incarnation: IncarnationId,
-    pub endpoints: Vec<EndpointSlot>,
+    /// The logical slots the birth serves, under their current tokens.
+    pub slots: Vec<EndpointSlot>,
+}
+
+impl ResolvedNode {
+    pub fn slot(&self, slot: &str) -> Option<&EndpointSlot> {
+        self.slots.iter().find(|s| s.slot == slot)
+    }
 }
 
 pub trait NodeResolver: Send + Sync {

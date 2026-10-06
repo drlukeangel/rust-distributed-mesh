@@ -10,7 +10,7 @@ mod common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
+use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{
@@ -120,7 +120,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
-    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None };
+    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {
@@ -146,7 +146,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
         _ = reached.notified() => {}
     }
     let first_pid = *first.spawned.lock().unwrap().first().expect("attempt 1 spawned the runtime");
-    let held_after_kill = allocator.lock().unwrap().held(&"mesh1.rpc.1".parse().unwrap()).unwrap().to_vec();
+    let held_after_kill = allocator.lock().unwrap().held(&"mesh1.rpc.1".parse().unwrap()).cloned().unwrap();
 
     // Attempt 2: the real provider and observer, the same Build.
     let second = Killable { inner: process.clone(), kill_at: None, reached, spawned: Mutex::new(vec![]) };
@@ -168,8 +168,9 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     assert!(second.spawned.lock().unwrap().is_empty(), "the re-run spawned a second runtime");
     assert_eq!(created.handle.pid, Some(first_pid));
     assert_eq!(runtimes_of(&created.node.node_id), vec![first_pid], "exactly one runtime runs for the node");
-    assert_eq!(created.node.endpoints, held_after_kill);
-    assert_eq!(allocator.lock().unwrap().in_use_count(), RPC_NODE_SLOTS.len(), "no port taken twice");
+    assert_eq!(created.node.transport_addr, Some(held_after_kill.transport));
+    assert_eq!(created.node.endpoints, held_after_kill.slots);
+    assert_eq!(allocator.lock().unwrap().in_use_count(), 1, "one socket, no port taken twice");
 
     // Every step Complete exactly once across both attempts; the steps
     // before the kill point keep attempt 1's receipt.

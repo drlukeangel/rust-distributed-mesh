@@ -13,7 +13,9 @@ pub const ENV_NODE_NAME: &str = "RAFKA_NODE_NAME";
 pub const ENV_NODE_ID: &str = "RAFKA_NODE_ID";
 pub const ENV_INCARNATION: &str = "RAFKA_INCARNATION_ID";
 pub const ENV_SUPERSEDES: &str = "RAFKA_SUPERSEDES";
-pub const ENV_ENDPOINTS: &str = "RAFKA_ENDPOINTS";
+pub const ENV_TRANSPORT_ADDR: &str = "RAFKA_TRANSPORT_ADDR";
+pub const ENV_SLOTS: &str = "RAFKA_SLOTS";
+pub const ENV_LISTENERS: &str = "RAFKA_LISTENERS";
 pub const ENV_SEEDS: &str = "RAFKA_SEEDS";
 pub const ENV_DATA_DIR: &str = "RAFKA_DATA_DIR";
 pub const ENV_MESH_ID: &str = "RAFKA_MESH_ID";
@@ -28,7 +30,12 @@ pub struct Launch {
     pub node_id: NodeId,
     pub incarnation: IncarnationId,
     pub supersedes: Option<IncarnationId>,
+    /// The one address the process's Iroh endpoint binds: gossip and Node RPC.
+    pub transport_addr: SocketAddr,
+    /// The logical Node RPC slots the process serves, under their tokens.
     pub endpoints: Vec<EndpointSlot>,
+    /// Non-Iroh listeners the process binds (a node-admin's `control` HTTP API), by name.
+    pub listeners: Vec<(String, SocketAddr)>,
     /// `(public key hex, address)` of members to join gossip through.
     pub seeds: Vec<(String, SocketAddr)>,
     pub data_dir: PathBuf,
@@ -36,20 +43,32 @@ pub struct Launch {
     pub mesh_id: Option<MeshId>,
 }
 
-/// `rpc-0=127.0.0.1:41001=<token>,rpc-1=...`
-pub fn encode_endpoints(slots: &[EndpointSlot]) -> String {
-    slots.iter().map(|s| format!("{}={}={}", s.slot, s.addr, s.freshness)).collect::<Vec<_>>().join(",")
+/// `rpc-0=<token>,rpc-1=<token>`
+pub fn encode_slots(slots: &[EndpointSlot]) -> String {
+    slots.iter().map(|s| format!("{}={}", s.slot, s.freshness)).collect::<Vec<_>>().join(",")
 }
 
-pub fn decode_endpoints(s: &str) -> Result<Vec<EndpointSlot>> {
+pub fn decode_slots(s: &str) -> Result<Vec<EndpointSlot>> {
     s.split(',')
         .filter(|x| !x.is_empty())
         .map(|e| {
-            let mut p = e.splitn(3, '=');
-            let (Some(slot), Some(addr), Some(tok)) = (p.next(), p.next(), p.next()) else {
-                return Err(format!("{ENV_ENDPOINTS} entry `{e}` is not slot=addr=token"));
-            };
-            Ok(EndpointSlot { slot: slot.into(), addr: addr.parse().map_err(|x| format!("address in `{e}`: {x}"))?, freshness: FreshnessToken(tok.into()) })
+            let (slot, tok) = e.split_once('=').ok_or_else(|| format!("{ENV_SLOTS} entry `{e}` is not slot=token"))?;
+            Ok(EndpointSlot { slot: slot.into(), freshness: FreshnessToken(tok.into()) })
+        })
+        .collect()
+}
+
+/// `control=127.0.0.1:41002,...`
+pub fn encode_listeners(listeners: &[(String, SocketAddr)]) -> String {
+    listeners.iter().map(|(n, a)| format!("{n}={a}")).collect::<Vec<_>>().join(",")
+}
+
+pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
+    s.split(',')
+        .filter(|x| !x.is_empty())
+        .map(|e| {
+            let (n, a) = e.split_once('=').ok_or_else(|| format!("{ENV_LISTENERS} entry `{e}` is not name=addr"))?;
+            Ok((n.to_string(), a.parse().map_err(|x| format!("address in `{e}`: {x}"))?))
         })
         .collect()
 }
@@ -76,7 +95,9 @@ impl Launch {
         if let Some(s) = &self.supersedes {
             m.insert(ENV_SUPERSEDES.into(), s.0.clone());
         }
-        m.insert(ENV_ENDPOINTS.into(), encode_endpoints(&self.endpoints));
+        m.insert(ENV_TRANSPORT_ADDR.into(), self.transport_addr.to_string());
+        m.insert(ENV_SLOTS.into(), encode_slots(&self.endpoints));
+        m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
         if let Some(id) = &self.mesh_id {
@@ -94,7 +115,9 @@ impl Launch {
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
             incarnation: IncarnationId(req(ENV_INCARNATION)?),
             supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(IncarnationId),
-            endpoints: decode_endpoints(&req(ENV_ENDPOINTS)?)?,
+            transport_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
+            endpoints: decode_slots(&get(ENV_SLOTS).unwrap_or_default())?,
+            listeners: decode_listeners(&get(ENV_LISTENERS).unwrap_or_default())?,
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
@@ -115,7 +138,9 @@ mod tests {
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
-            endpoints: vec![EndpointSlot::assign("rpc-0", "127.0.0.1:41001".parse().unwrap())],
+            transport_addr: "127.0.0.1:41001".parse().unwrap(),
+            endpoints: vec![EndpointSlot::fresh("rpc-0"), EndpointSlot::fresh("rpc-1")],
+            listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             mesh_id: Some(MeshId::mint()),

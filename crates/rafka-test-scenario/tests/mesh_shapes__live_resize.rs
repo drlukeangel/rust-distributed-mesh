@@ -57,13 +57,11 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     if let Err(e) = seats_as_expected(&nodes) {
         panic!("{label}: {e}: {nodes:#?}");
     }
-    // No port collision: every advertised endpoint is unique.
+    // No port collision: every advertised transport address is unique.
     let mut seen = BTreeSet::new();
     for n in &nodes {
-        for e in n["endpoints"].as_array().unwrap() {
-            let addr = e["addr"].as_str().unwrap().to_string();
-            assert!(seen.insert(addr.clone()), "{label}: {addr} advertised twice");
-        }
+        let addr = n["transport_addr"].as_str().unwrap().to_string();
+        assert!(seen.insert(addr.clone()), "{label}: {addr} advertised twice");
     }
     // A node that survived the step kept its birth (nothing restarted).
     let births = |ns: &[Value]| -> BTreeMap<String, String> {

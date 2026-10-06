@@ -1,17 +1,18 @@
-//! i143.e6.s2 functional: the scoped, slot-aware pool (PRD §1.19–20, §14;
+//! i143.e6.s2 functional: the scoped pool, keyed by process birth (PRD §1.19–20, §14;
 //! node-rpc-rdm-ownership.md §8–§9).
 //!
-//! Pool identity is `(scope, peer, incarnation, endpoint slot, freshness)`.
-//! Every cell runs over real Iroh endpoints on 127.0.0.1. A dial that must
-//! stay in flight targets a "blackhole": a UDP socket that is bound and never
-//! read, so a QUIC handshake to it never completes.
+//! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth, never to
+//! a slot. Slots are invocation fences in the framing: one moving never touches a connection,
+//! every slot of a birth shares it, and a new incarnation evicts it. Every cell runs over real
+//! Iroh endpoints on 127.0.0.1. A dial that must stay in flight targets a "blackhole": a UDP
+//! socket that is bound and never read, so a QUIC handshake to it never completes.
 //!
 //! Freshness and incarnation are compared by equality only.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
-use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
+use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::TagOwner;
 use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
@@ -29,41 +30,49 @@ fn blackhole() -> (UdpSocket, SocketAddr) {
     (s, a)
 }
 
-/// A node serving Echo on two slots (`rpc-0`, `rpc-1`), one Iroh endpoint per
-/// slot under the node's one key. `hang` never replies; `slow` replies after
-/// 1.5 s; anything else echoes at once.
+/// A node serving Echo on logical slots `rpc-0` and `rpc-1` from one endpoint and one socket.
+/// `hang` never replies; `slow` replies after 1.5 s; anything else echoes at once.
 struct Node {
-    _routers: Vec<Router>,
-    key: SecretKey,
-    addrs: Vec<SocketAddr>,
+    _router: Router,
+    server: rafka_node_rpc::NodeRpcServer,
+    resolved: ResolvedNode,
+}
+
+impl Node {
+    /// The node moves `slot` to a new freshness token.
+    fn reassign(&self, slot: &str) -> EndpointSlot {
+        let moved = EndpointSlot::fresh(slot);
+        self.server.assign(moved.clone());
+        moved
+    }
 }
 
 async fn node() -> Node {
     let key = SecretKey::generate();
-    let (mut routers, mut addrs) = (Vec::new(), Vec::new());
-    for slot in ["rpc-0", "rpc-1"] {
-        let server = ServerBuilder::new()
-            .serve::<Echo, _, _>(TagOwner::Core, |_peer, req: EchoRequest| async move {
-                let EchoRequest::Echo { payload, .. } = req;
-                match payload.as_slice() {
-                    b"hang" => {
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                        unreachable!()
-                    }
-                    b"slow" => {
-                        tokio::time::sleep(Duration::from_millis(1500)).await;
-                        Ok(EchoReply::Echoed { payload })
-                    }
-                    _ => Ok(EchoReply::Echoed { payload }),
+    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
+    let slots = vec![EndpointSlot::fresh("rpc-0"), EndpointSlot::fresh("rpc-1")];
+    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let server = ServerBuilder::new()
+        .serve::<Echo, _, _>(TagOwner::Core, |_peer, req: EchoRequest| async move {
+            let EchoRequest::Echo { payload, .. } = req;
+            match payload.as_slice() {
+                b"hang" => {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    unreachable!()
                 }
-            })
-            .seal(slot)
-            .unwrap();
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        addrs.push(ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
-        routers.push(Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn());
-    }
-    Node { _routers: routers, key, addrs }
+                b"slow" => {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    Ok(EchoReply::Echoed { payload })
+                }
+                _ => Ok(EchoReply::Echoed { payload }),
+            }
+        })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }, slots.clone())
+        .unwrap();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+    let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), transport_id: key.public(), transport_addr: addr, incarnation, slots };
+    Node { _router: router, server, resolved }
 }
 
 struct Rig {
@@ -74,27 +83,21 @@ struct Rig {
     target: NodeTarget,
 }
 
-/// A client whose resolver names `fabric` at `slots`.
-async fn rig(fabric: &SecretKey, slots: Vec<EndpointSlot>) -> Rig {
+/// A client whose resolver holds `record`.
+async fn rig(record: ResolvedNode) -> Rig {
     let resolver = Arc::new(StaticResolver::new());
-    let node_id = NodeId::mint();
-    let record = ResolvedNode {
-        node_id: node_id.clone(),
-        name: "mesh1.rpc.1".parse().unwrap(),
-        transport_id: fabric.public(),
-        incarnation: IncarnationId::mint(),
-        endpoints: slots,
-    };
     resolver.insert(record.clone());
     let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let node_id = record.node_id.clone();
     Rig { client: NodeRpcClient::new(cep, resolver.clone()), resolver, node_id: node_id.clone(), record, target: NodeTarget::ExactNode(node_id) }
 }
 
 impl Rig {
-    /// Republish the record with `slot` moved to `addr` under a new token.
-    fn move_slot(&mut self, slot: &str, addr: SocketAddr) {
-        let e = self.record.endpoints.iter_mut().find(|e| e.slot == slot).unwrap();
-        *e = EndpointSlot::assign(slot, addr);
+    /// The node moves `slot` to a new token and the record follows.
+    fn move_slot(&mut self, n: &Node, slot: &str) {
+        let moved = n.reassign(slot);
+        let e = self.record.slots.iter_mut().find(|e| e.slot == slot).unwrap();
+        *e = moved;
         self.resolver.insert(self.record.clone());
     }
 
@@ -108,117 +111,115 @@ impl Rig {
     }
 }
 
+/// The caller found the target stale: `RejectedStale`, never `NotSent`.
 fn superseded(out: &RpcOutcome<EchoReply>, slot: &str) -> bool {
-    matches!(out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Superseded { slot: slot.into() })
+    matches!(out, RpcOutcome::RejectedStale(s) if s.slot() == slot) && out.proves_not_dispatched()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn changed_slot_cancels_only_stale_inflight_dials() {
-    let fabric = SecretKey::generate();
-    let ((_h0, a0), (_h1, a1), (_h2, a2)) = (blackhole(), blackhole(), blackhole());
-    let r = rig(&fabric, vec![EndpointSlot::assign("rpc-0", a0), EndpointSlot::assign("rpc-1", a1)]).await;
-    {
-        // Two dials in flight, one per slot; neither handshake can complete.
-        let budget = CallOptions { budget: Budget::Overall(Duration::from_secs(4)), ..Default::default() };
-        let opts0 = CallOptions { slot: Some("rpc-0".into()), ..budget.clone() };
-        let opts1 = CallOptions { slot: Some("rpc-1".into()), ..budget };
-        let rr = &r;
-        let stale = async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &opts0).await };
-        let sibling = async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &opts1).await };
-        let started = Instant::now();
-        let (stale, sibling, ()) = tokio::join!(
-            async {
-                let (out, _) = stale.await;
-                (out, started.elapsed())
-            },
-            async {
-                let (out, _) = sibling.await;
-                (out, started.elapsed())
-            },
-            async {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                // rpc-0 moves; rpc-1 does not.
-                let mut rec = rr.record.clone();
-                rec.endpoints[0] = EndpointSlot::assign("rpc-0", a2);
-                rr.resolver.insert(rec);
-            }
-        );
-        assert!(superseded(&stale.0, "rpc-0"), "the stale dial ends as typed supersession: {:?}", stale.0);
-        assert!(stale.1 < Duration::from_millis(1500), "released at the move, not at the deadline: {:?}", stale.1);
-        assert!(matches!(&sibling.0, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Deadline), "the sibling dial ran on: {:?}", sibling.0);
-        assert!(sibling.1 >= Duration::from_secs(4), "the sibling dial was not cancelled: {:?}", sibling.1);
-    }
+async fn a_new_incarnation_cancels_an_inflight_dial_and_a_slot_move_does_not() {
+    let key = SecretKey::generate();
+    let (_h0, a0) = blackhole();
+    let record = ResolvedNode {
+        node_id: NodeId::mint(),
+        name: "mesh1.rpc.1".parse().unwrap(),
+        transport_id: key.public(),
+        transport_addr: a0,
+        incarnation: IncarnationId::mint(),
+        slots: vec![EndpointSlot::fresh("rpc-0"), EndpointSlot::fresh("rpc-1")],
+    };
+    // A slot moving while the dial is in flight: the dial runs on to its deadline.
+    let r = rig(record.clone()).await;
+    let budget = CallOptions { slot: Some("rpc-1".into()), budget: Budget::Overall(Duration::from_secs(3)), ..Default::default() };
+    let started = Instant::now();
+    let rr = &r;
+    let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut rec = rr.record.clone();
+        rec.slots[0] = EndpointSlot::fresh("rpc-0");
+        rr.resolver.insert(rec);
+    });
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Deadline), "a sibling slot moving is not this dial's business: {out:?}");
+    assert!(started.elapsed() >= Duration::from_secs(3), "the dial was not cancelled");
+    assert!(r.client.pooled().is_empty());
+
+    // The birth moving while the dial is in flight: released at once, as a stale target.
+    let r = rig(record.clone()).await;
+    let budget = CallOptions { slot: Some("rpc-0".into()), budget: Budget::Overall(Duration::from_secs(4)), ..Default::default() };
+    let started = Instant::now();
+    let rr = &r;
+    let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let mut rec = rr.record.clone();
+        rec.incarnation = IncarnationId::mint();
+        rr.resolver.insert(rec);
+    });
+    assert!(superseded(&out, "rpc-0"), "the stale dial ends as RejectedStale: {out:?}");
+    assert!(started.elapsed() < Duration::from_millis(1500), "released at the move, not at the deadline");
     assert!(r.client.pooled().is_empty(), "nothing pooled from a dial that never completed: {:?}", r.client.pooled());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn unchanged_sibling_slot_stays_usable() {
+async fn every_slot_of_a_birth_shares_one_connection_and_a_slot_move_keeps_it() {
     let n = node().await;
-    let mut r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let mut r = rig(n.resolved.clone()).await;
     let (out0, e0) = r.ping("rpc-0").await;
     let (out1, e1) = r.ping("rpc-1").await;
     assert!(out0.reply().is_some() && out1.reply().is_some());
-    assert_eq!(r.client.pooled().len(), 2, "one pooled connection per slot");
+    assert!(e1.reused && e1.connection == e0.connection, "the second slot reused the first's connection");
+    assert_eq!(r.client.pooled().len(), 1, "one pooled connection per birth");
 
-    // rpc-0 moves (a new token at the same address: a fresh slot's restart).
-    r.move_slot("rpc-0", n.addrs[0]);
-    let (out1b, e1b) = r.ping("rpc-1").await;
-    assert!(out1b.reply().is_some(), "{out1b:?}");
-    assert!(e1b.reused, "the unchanged sibling's pooled connection is reused");
-    assert_eq!(e1b.connection, e1.connection, "the very same connection");
+    r.move_slot(&n, "rpc-0");
     let (out0b, e0b) = r.ping("rpc-0").await;
     assert!(out0b.reply().is_some(), "{out0b:?}");
-    assert!(!e0b.reused && e0b.connection != e0.connection, "the moved slot dials anew");
+    assert!(e0b.reused && e0b.connection == e0.connection, "the moved slot rides the same connection under its new token");
     assert_ne!(e0b.freshness, e0.freshness);
+    let (out1b, e1b) = r.ping("rpc-1").await;
+    assert!(out1b.reply().is_some() && e1b.reused && e1b.connection == e0.connection);
+    assert_eq!(r.client.pooled().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn late_superseded_dial_never_pools() {
     let n = node().await;
-    let mut r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let r = rig(n.resolved.clone()).await;
     let fp = Arc::new(Failpoint::default());
     let opts = CallOptions { slot: Some("rpc-0".into()), after_connect: Some(fp.clone()), ..Default::default() };
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &opts).await.0 }, async {
-        // The handshake completed; before it is pooled, the slot moves.
+        // The handshake completed; before it is pooled, the birth moves.
         fp.reached.notified().await;
         let mut rec = rr.record.clone();
-        rec.endpoints[0] = EndpointSlot::assign("rpc-0", n.addrs[0]);
+        rec.incarnation = IncarnationId::mint();
         rr.resolver.insert(rec);
         fp.release.notify_one();
     });
-    assert!(superseded(&out, "rpc-0"), "a late connect to a superseded slot is typed supersession: {out:?}");
+    assert!(superseded(&out, "rpc-0"), "a late connect to a superseded birth is RejectedStale: {out:?}");
     assert!(r.client.pooled().is_empty(), "the late connection is never pooled: {:?}", r.client.pooled());
-    r.record = r.resolver_record();
-    let (out, ev) = r.ping("rpc-0").await;
-    assert!(out.reply().is_some() && !ev.reused, "the current slot dials its own connection");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn old_freshness_token_never_reenters() {
+async fn old_freshness_token_never_reenters_and_evicts_nothing() {
     let n = node().await;
-    let mut r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let mut r = rig(n.resolved.clone()).await;
     let (_, old) = r.ping("rpc-0").await;
-    r.move_slot("rpc-0", n.addrs[0]);
+    r.move_slot(&n, "rpc-0");
     // Pinned to the old token: refused before any dial.
     let pinned = CallOptions { pin: Some(("rpc-0".into(), old.freshness.clone())), ..Default::default() };
-    let (out, _) = r.client.call::<Echo>(&r.target, &echo(b"x"), &pinned).await;
+    let (out, ev) = r.client.call::<Echo>(&r.target, &echo(b"x"), &pinned).await;
     assert!(superseded(&out, "rpc-0"), "{out:?}");
-    // The current token never rides the old token's connection, even at the same address.
+    assert!(ev.is_none(), "nothing dialled");
+    // The current token rides the connection the old one used: a slot is not a connection.
     let (out, now) = r.ping("rpc-0").await;
     assert!(out.reply().is_some());
-    assert!(!now.reused && now.connection != old.connection);
-    assert!(
-        r.client.pooled().iter().all(|k| k.freshness != old.freshness),
-        "the old token's entry is gone from the pool: {:?}",
-        r.client.pooled()
-    );
+    assert!(now.reused && now.connection == old.connection);
+    assert_ne!(now.freshness, old.freshness);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeated_timeout_evicts_poisoned_connection_without_marking_node_unreachable() {
     let n = node().await;
-    let r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let r = rig(n.resolved.clone()).await;
     let (_, first) = r.ping("rpc-0").await;
     // A long call already riding the pooled connection.
     let (slow, on0) = (echo(b"slow"), r.on("rpc-0"));
@@ -246,7 +247,7 @@ async fn repeated_timeout_evicts_poisoned_connection_without_marking_node_unreac
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn refusal_reply_keeps_healthy_connection_pooled() {
     let n = node().await;
-    let r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let r = rig(n.resolved.clone()).await;
     let (_, first) = r.ping("rpc-0").await;
     for _ in 0..3 {
         let (out, ev) = r
@@ -267,20 +268,15 @@ async fn refusal_reply_keeps_healthy_connection_pooled() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_incarnation_evicts_its_predecessors_connection_without_a_failed_call() {
     let n = node().await;
-    let mut r = rig(&n.key, vec![EndpointSlot::assign("rpc-0", n.addrs[0]), EndpointSlot::assign("rpc-1", n.addrs[1])]).await;
+    let mut r = rig(n.resolved.clone()).await;
     let (_, before) = r.ping("rpc-1").await;
-    // Same key, same addresses, same tokens: only the process birth changed.
+    // Same key, same address, same tokens: only the process birth changed. The server still
+    // answers for its own birth, so the new birth's first call is refused by the target's fence;
+    // what matters here is the pool: the predecessor's connection is gone.
     r.record.incarnation = IncarnationId::mint();
     r.resolver.insert(r.record.clone());
     let (out, after) = r.ping("rpc-1").await;
-    assert!(out.reply().is_some(), "the first call after the new birth succeeds: {out:?}");
-    assert!(!after.reused && after.connection != before.connection, "it rides a connection of the new birth");
+    assert!(superseded(&out, "rpc-1"), "the old server refuses a fence naming a birth it is not: {out:?}");
+    assert!(!after.reused && after.connection != before.connection, "it rode a connection of the new birth");
     assert!(r.client.pooled().iter().all(|k| k.incarnation == r.record.incarnation));
-}
-
-impl Rig {
-    fn resolver_record(&self) -> ResolvedNode {
-        use rafka_node_rpc::NodeResolver;
-        self.resolver.resolve(&self.target).unwrap()
-    }
 }

@@ -15,7 +15,7 @@ use rafka_node_admin_core::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
+use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts, READY_PREREQUISITES,
 };
@@ -111,7 +111,7 @@ async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None };
+    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None };
     let result = pipeline.create(&req).await;
     let view = builds.read_build(&build_id).await.unwrap();
     let complete = |s: CreateStep| view.steps.iter().any(|r| r.step == s.name() && r.outcome == StepOutcome::Complete);

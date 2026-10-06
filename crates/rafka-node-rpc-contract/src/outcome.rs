@@ -1,7 +1,8 @@
 //! The local outcome algebra (node-rpc.md §24, §40; ownership amendment §6).
 //!
-//! `RpcOutcome = Reply | NotSent | Unserved | Indeterminate`. Typed domain
-//! refusals are classified *inside* `Reply`, never a fifth outcome.
+//! `RpcOutcome = Reply | NotSent | Unserved | RejectedStale | Indeterminate`.
+//! Typed domain refusals are classified *inside* `Reply`, never an outcome of
+//! their own.
 //!
 //! Every outcome is constructible only from its proving condition. A call is a
 //! [`PreCommit`] until the complete request has been written and the request
@@ -57,8 +58,6 @@ pub enum NotSentReason {
     Connection(String),
     /// No streaming permit before the deadline.
     StreamBudget,
-    /// The exact endpoint slot/freshness target was superseded before commit.
-    Superseded { slot: String },
     /// The caller deadline expired before commit.
     Deadline,
     /// The sender reset an unfinished request with `499 FRAME_NOT_SENT`.
@@ -135,6 +134,23 @@ impl Unserved {
     }
 }
 
+/// The receiver's `425 STALE_SLOT`: the request's target slot was unknown to it,
+/// or not under the freshness token the request named.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedStale {
+    slot: String,
+    freshness: String,
+}
+
+impl RejectedStale {
+    pub fn slot(&self) -> &str {
+        &self.slot
+    }
+    pub fn freshness(&self) -> &str {
+        &self.freshness
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Indeterminate {
     reason: IndeterminateReason,
@@ -156,6 +172,10 @@ pub enum RpcOutcome<R> {
     NotSent(NotSent),
     /// The receiver's `421 UNSERVED_TAG` proves the tag was never dispatched.
     Unserved(Unserved),
+    /// The receiver's `425 STALE_SLOT` proves the request was never dispatched:
+    /// it reached the process, which does not hold the slot under that token. It
+    /// is not `NotSent`: the request was sent and refused.
+    RejectedStale(RejectedStale),
     /// Committed, and no stronger proof exists. Never silently replayed.
     Indeterminate(Indeterminate),
 }
@@ -166,6 +186,7 @@ impl<R> RpcOutcome<R> {
             Self::Reply(_) => "Reply",
             Self::NotSent(_) => "NotSent",
             Self::Unserved(_) => "Unserved",
+            Self::RejectedStale(_) => "RejectedStale",
             Self::Indeterminate(_) => "Indeterminate",
         }
     }
@@ -173,7 +194,7 @@ impl<R> RpcOutcome<R> {
     /// True only when the request provably never reached a protocol handler,
     /// so a new attempt cannot double-apply it. `Indeterminate` is never safe.
     pub fn proves_not_dispatched(&self) -> bool {
-        matches!(self, Self::NotSent(_) | Self::Unserved(_))
+        matches!(self, Self::NotSent(_) | Self::Unserved(_) | Self::RejectedStale(_))
     }
 
     pub fn reply(&self) -> Option<&Replied<R>> {
@@ -249,6 +270,14 @@ impl PreCommit {
     pub fn unserved_before_finish<R>(self) -> RpcOutcome<R> {
         RpcOutcome::Unserved(Unserved { tag: self.tag })
     }
+
+    /// The target `(slot, freshness)` is stale: the caller found it superseded
+    /// before or during the dial, or the receiver refused it with
+    /// `425 STALE_SLOT` before the request finished. Definitive no-dispatch,
+    /// never `NotSent`.
+    pub fn stale_before_finish<R>(self, target: &crate::framing::RequestTarget) -> RpcOutcome<R> {
+        RpcOutcome::RejectedStale(RejectedStale { slot: target.slot.clone(), freshness: target.freshness.clone() })
+    }
 }
 
 /// A request the server refused before the caller could finish it.
@@ -300,11 +329,15 @@ impl Committed {
         }
     }
 
-    /// The stream was reset with `code` after commit. Only `421` proves
-    /// non-dispatch; every other code leaves the call `Indeterminate`.
-    pub fn reset<R>(self, code: u64) -> RpcOutcome<R> {
+    /// The stream was reset with `code` after commit, for a request that named
+    /// `target`. Only `421` and `425` prove non-dispatch; every other code leaves
+    /// the call `Indeterminate`.
+    pub fn reset<R>(self, code: u64, target: &crate::framing::RequestTarget) -> RpcOutcome<R> {
         match ResetCode::from_code(code) {
             Some(ResetCode::UnservedTag) => RpcOutcome::Unserved(Unserved { tag: self.tag }),
+            Some(ResetCode::StaleSlot) => {
+                RpcOutcome::RejectedStale(RejectedStale { slot: target.slot.clone(), freshness: target.freshness.clone() })
+            }
             _ => self.indeterminate(IndeterminateReason::Reset(code)),
         }
     }
@@ -330,6 +363,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         RpcOutcome::Reply(r) => r.into_value(),
         RpcOutcome::NotSent(n) => return RpcOutcome::NotSent(n),
         RpcOutcome::Unserved(_) => return RpcOutcome::Unserved(Unserved { tag: Forward::TAG }),
+        RpcOutcome::RejectedStale(s) => return RpcOutcome::RejectedStale(s),
         RpcOutcome::Indeterminate(i) => return RpcOutcome::Indeterminate(i),
     };
     let not_sent = |reason: NotSentReason| RpcOutcome::NotSent(NotSent { reason });
@@ -345,6 +379,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         },
         ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
         ForwardReply::InnerUnserved { tag } => RpcOutcome::Unserved(Unserved { tag }),
+        ForwardReply::InnerRejectedStale { slot, freshness } => RpcOutcome::RejectedStale(RejectedStale { slot, freshness }),
         ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
         ForwardReply::NotForwardable { tag } => not_sent(NotSentReason::NotForwardable { tag }),
         // The carrier refused the forward itself, before any inner call.
@@ -397,11 +432,12 @@ mod tests {
 
     #[test]
     fn unserved_comes_only_from_a_421_after_commit() {
-        let o: RpcOutcome<EchoReply> = committed().reset(421);
+        let target = crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() };
+        let o: RpcOutcome<EchoReply> = committed().reset(421, &target);
         assert!(matches!(&o, RpcOutcome::Unserved(u) if u.tag() == 0x11));
         assert!(o.proves_not_dispatched());
         for code in [422u64, 423, 424, 499, 0, 501] {
-            let o: RpcOutcome<EchoReply> = committed().reset(code);
+            let o: RpcOutcome<EchoReply> = committed().reset(code, &target);
             assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(code)), "{code}");
             assert!(!o.proves_not_dispatched());
         }

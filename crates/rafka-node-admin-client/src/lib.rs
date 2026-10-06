@@ -66,7 +66,10 @@ pub struct NodeView {
     pub is_primary: bool,
     pub is_fabric_primary: bool,
     pub admin_api_base: Option<String>,
+    pub transport_addr: Option<std::net::SocketAddr>,
     pub endpoints: Vec<EndpointSlot>,
+    #[serde(default)]
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
 /// `MeshView`.

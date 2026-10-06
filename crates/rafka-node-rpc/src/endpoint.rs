@@ -5,14 +5,22 @@ use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
 
-/// Bind an endpoint for `secret` at exactly `addr` (relay off, no discovery):
-/// the address is node-admin's assignment, never chosen here.
+/// The process's one endpoint: one identity, one physical UDP socket, at
+/// exactly the transport address node-admin assigned (relay off, no
+/// discovery, Iroh's default transport configuration). Node RPC and gossip
+/// share it by ALPN. A Node RPC slot is a fence a request names in its
+/// framing; it owns no socket, so the socket decides nothing and there is
+/// never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
-    let transport = iroh::endpoint::QuicTransportConfig::builder()
-        .keep_alive_interval(std::time::Duration::from_secs(15))
-        .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?))
-        .build();
-    bind_exact(secret, addr, vec![crate::ALPN.to_vec()], transport).await
+    let ep = Endpoint::builder(presets::Minimal)
+        .secret_key(secret)
+        .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+        .relay_mode(RelayMode::Disabled)
+        .clear_ip_transports()
+        .bind_addr(addr)?
+        .bind()
+        .await?;
+    Ok(ep)
 }
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder

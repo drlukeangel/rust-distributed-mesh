@@ -1,10 +1,14 @@
 //! Endpoint authority (PRD §8, gap R8; mesh-control-plane.md §6).
 //!
-//! Node-admin assigns every externally advertised endpoint before a provider
-//! launches anything. A provider must honour the assignment; it never invents
-//! an advertised port. `WaitForBind` checks that independently: it asks the
-//! operating system whether the assigned UDP port is actually held, rather than
-//! trusting the runtime's own report.
+//! Node-admin assigns every externally advertised address before a provider
+//! launches anything: one Iroh transport address per process (gossip and Node
+//! RPC share it), and one address per non-Iroh listener a kind declares (a
+//! node-admin's `control` HTTP API). Node RPC slots own no address: they are
+//! logical fences, each under a freshness token, and `SlotPolicy` decides only
+//! what a restart does to the token. A provider must honour the assignment; it
+//! never invents an advertised port. `WaitForBind` checks that independently:
+//! it asks the operating system whether each assigned socket is actually held,
+//! rather than trusting the runtime's own report.
 //!
 //! On a shared host every node-admin (of any fabric) draws from the same port
 //! range, and a probe bind sees a port free until the launched runtime binds
@@ -13,44 +17,71 @@
 //! holding the claiming process's pid. A claim whose process is gone is
 //! stale and is taken over.
 
-use crate::model::{EndpointSlot, FreshnessToken, PathName, SlotPolicy};
+use crate::model::{EndpointSlot, PathName, SlotPolicy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
-/// What a slot's runtime binds: an Iroh endpoint (UDP) or a listener (TCP).
+/// What an assigned socket is: the Iroh transport (UDP) or a listener (TCP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotTransport {
     Udp,
     Tcp,
 }
 
-/// One slot a node kind declares.
+/// One logical Node RPC slot a node kind declares: a fence, never a socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotSpec {
     pub slot: &'static str,
     pub policy: SlotPolicy,
-    pub transport: SlotTransport,
 }
 
-/// The two Node RPC endpoint slots of an rpc node (`docs/i143/design.md` §2).
-pub const RPC_NODE_SLOTS: &[SlotSpec] = &[
-    SlotSpec { slot: "rpc-0", policy: SlotPolicy::Fresh, transport: SlotTransport::Udp },
-    SlotSpec { slot: "rpc-1", policy: SlotPolicy::Stable, transport: SlotTransport::Udp },
-];
+/// What a node kind binds and serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindSpec {
+    /// The logical Node RPC slots, all on the one transport address.
+    pub slots: &'static [SlotSpec],
+    /// Non-Iroh listeners, each its own TCP address.
+    pub listeners: &'static [&'static str],
+}
 
-/// A node-admin's mesh endpoint (Iroh) and its control API (HTTP), both
-/// fresh on restart.
-pub const NODE_ADMIN_SLOTS: &[SlotSpec] = &[
-    SlotSpec { slot: "mesh", policy: SlotPolicy::Fresh, transport: SlotTransport::Udp },
-    SlotSpec { slot: "control", policy: SlotPolicy::Fresh, transport: SlotTransport::Tcp },
-];
+/// An rpc node: two logical slots, no listener.
+pub const RPC_NODE: KindSpec =
+    KindSpec { slots: &[SlotSpec { slot: "rpc-0", policy: SlotPolicy::Fresh }, SlotSpec { slot: "rpc-1", policy: SlotPolicy::Stable }], listeners: &[] };
+/// The slots of an rpc node.
+pub const RPC_NODE_SLOTS: &[SlotSpec] = RPC_NODE.slots;
 
-/// The slots a node kind declares.
-pub fn slots_for(kind: crate::model::NodeKind) -> &'static [SlotSpec] {
+/// A node-admin: its mesh transport and its control API (HTTP); no Node RPC slots.
+pub const NODE_ADMIN: KindSpec = KindSpec { slots: &[], listeners: &["control"] };
+
+/// What a node kind binds and serves.
+pub fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
     match kind {
-        crate::model::NodeKind::RpcNode => RPC_NODE_SLOTS,
-        crate::model::NodeKind::NodeAdmin => NODE_ADMIN_SLOTS,
+        crate::model::NodeKind::RpcNode => &RPC_NODE,
+        crate::model::NodeKind::NodeAdmin => &NODE_ADMIN,
+    }
+}
+
+/// Everything node-admin assigned one process: its transport address, its
+/// logical slots under their tokens, and its listeners.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Assignment {
+    pub transport: SocketAddr,
+    pub slots: Vec<EndpointSlot>,
+    pub listeners: Vec<(String, SocketAddr)>,
+}
+
+impl Assignment {
+    /// Every socket the process must hold: the transport (UDP) and each listener (TCP).
+    pub fn sockets(&self) -> Vec<(String, SocketAddr, SlotTransport)> {
+        let mut out = vec![("transport".to_string(), self.transport, SlotTransport::Udp)];
+        out.extend(self.listeners.iter().map(|(n, a)| (n.clone(), *a, SlotTransport::Tcp)));
+        out
+    }
+
+    /// The assignment a held node record describes.
+    pub fn of_node(node: &crate::model::Node) -> Option<Self> {
+        Some(Self { transport: node.transport_addr?, slots: node.endpoints.clone(), listeners: node.listeners.clone() })
     }
 }
 
@@ -61,7 +92,7 @@ pub enum AllocationError {
     Exhausted { first: u16, last: u16 },
     /// Every node address of the range is held.
     AddressesExhausted,
-    /// A stable slot was asked to survive a restart it has no prior assignment for.
+    /// A restart was asked to keep what it has no prior assignment for.
     NoPriorAssignment { node: PathName, slot: String },
 }
 
@@ -70,7 +101,7 @@ impl fmt::Display for AllocationError {
         match self {
             Self::Exhausted { first, last } => write!(f, "no free port left in {first}..={last}"),
             Self::AddressesExhausted => write!(f, "every node address of the range is held"),
-            Self::NoPriorAssignment { node, slot } => write!(f, "{node} slot {slot}: a restart keeps a stable slot, but none was assigned"),
+            Self::NoPriorAssignment { node, slot } => write!(f, "{node} {slot}: a restart keeps it, but none was assigned"),
         }
     }
 }
@@ -78,22 +109,14 @@ impl fmt::Display for AllocationError {
 /// `WaitForBind` refusals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindRefusal {
-    /// Nothing holds the assigned port: the runtime bound somewhere else or not at all.
-    NotBoundAtAssigned { slot: String, assigned: SocketAddr },
-    /// The runtime reports a different address for the slot than node-admin assigned.
-    ReportedElsewhere { slot: String, assigned: SocketAddr, reported: SocketAddr },
-    /// The runtime reported no address for an assigned slot.
-    SlotMissing { slot: String },
+    /// Nothing holds the assigned socket: the runtime bound somewhere else or not at all.
+    NotBoundAtAssigned { socket: String, assigned: SocketAddr },
 }
 
 impl fmt::Display for BindRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotBoundAtAssigned { slot, assigned } => write!(f, "slot {slot}: nothing is bound at the assigned {assigned}"),
-            Self::ReportedElsewhere { slot, assigned, reported } => {
-                write!(f, "slot {slot}: assigned {assigned} but the runtime bound {reported}; a provider cannot invent an advertised port")
-            }
-            Self::SlotMissing { slot } => write!(f, "slot {slot}: the runtime reported no address"),
+            Self::NotBoundAtAssigned { socket, assigned } => write!(f, "{socket}: nothing is bound at the assigned {assigned}"),
         }
     }
 }
@@ -118,7 +141,7 @@ pub struct EndpointAllocator {
     first: u16,
     last: u16,
     next: u16,
-    held: BTreeMap<PathName, Vec<EndpointSlot>>,
+    held: BTreeMap<PathName, Assignment>,
     in_use: BTreeSet<SocketAddr>,
 }
 
@@ -155,10 +178,10 @@ impl EndpointAllocator {
         match &mut self.addressing {
             Addressing::SharedHost(h) => Ok(*h),
             Addressing::PerNode { first, last, next } => {
-                if let Some(e) = self.held.get(node).and_then(|s| s.first()) {
-                    return Ok(e.addr.ip());
+                if let Some(a) = self.held.get(node) {
+                    return Ok(a.transport.ip());
                 }
-                let taken: BTreeSet<IpAddr> = self.held.values().flatten().map(|e| e.addr.ip()).collect();
+                let taken: BTreeSet<IpAddr> = self.held.values().map(|a| a.transport.ip()).collect();
                 for _ in 0..=(*last - *first) {
                     let ip = IpAddr::from(std::net::Ipv4Addr::from(*next));
                     *next = if *next == *last { *first } else { *next + 1 };
@@ -195,35 +218,46 @@ impl EndpointAllocator {
         Err(AllocationError::Exhausted { first: self.first, last: self.last })
     }
 
-    /// Assign every slot of `node` for a new process birth.
+    /// Assign `node` everything a process birth needs.
     ///
-    /// - first birth or replacement (`restart = false`): every slot gets a new
-    ///   port and a new freshness token;
-    /// - restart (`restart = true`): `stable` slots keep their address and
-    ///   token, `fresh` slots get a new port and token.
-    pub fn assign(&mut self, node: &PathName, slots: &[SlotSpec], restart: bool) -> Result<Vec<EndpointSlot>, AllocationError> {
-        let prior = if restart { self.held.get(node).cloned().unwrap_or_default() } else { Vec::new() };
-        // Refuse before taking anything, so a refusal leaks no port.
+    /// - first birth or replacement (`restart = false`): a new transport
+    ///   address, a new address per listener, every slot under a new token;
+    /// - restart (`restart = true`): the transport and listener addresses are
+    ///   kept, `stable` slots keep their token, `fresh` slots get a new one.
+    pub fn assign(&mut self, node: &PathName, spec: &KindSpec, restart: bool) -> Result<Assignment, AllocationError> {
         if restart {
-            if let Some(s) = slots.iter().find(|s| s.policy == SlotPolicy::Stable && !prior.iter().any(|e| e.slot == s.slot)) {
-                return Err(AllocationError::NoPriorAssignment { node: node.clone(), slot: s.slot.into() });
-            }
-        } else {
-            self.release(node);
-        }
-        let ip = self.node_ip(node)?;
-        let mut out = Vec::new();
-        let mut taken = Vec::new();
-        for s in slots {
-            if restart && s.policy == SlotPolicy::Stable {
-                out.push(prior.iter().find(|e| e.slot == s.slot).expect("checked above").clone());
-                continue;
-            }
-            match self.take_addr(ip) {
-                Ok(addr) => {
-                    taken.push(addr);
-                    out.push(EndpointSlot { slot: s.slot.into(), addr, freshness: FreshnessToken::mint() });
+            let prior = self.held.get(node).cloned().ok_or_else(|| AllocationError::NoPriorAssignment { node: node.clone(), slot: "transport".into() })?;
+            let mut slots = Vec::new();
+            for s in spec.slots {
+                let kept = prior.slots.iter().find(|e| e.slot == s.slot);
+                match (s.policy, kept) {
+                    (SlotPolicy::Stable, Some(e)) => slots.push(e.clone()),
+                    (SlotPolicy::Stable, None) => return Err(AllocationError::NoPriorAssignment { node: node.clone(), slot: s.slot.into() }),
+                    (SlotPolicy::Fresh, _) => slots.push(EndpointSlot::fresh(s.slot)),
                 }
+            }
+            let out = Assignment { transport: prior.transport, slots, listeners: prior.listeners };
+            self.held.insert(node.clone(), out.clone());
+            return Ok(out);
+        }
+        self.release(node);
+        let ip = self.node_ip(node)?;
+        let mut taken = Vec::new();
+        let mut take = |me: &mut Self| match me.take_addr(ip) {
+            Ok(a) => {
+                taken.push(a);
+                Ok(a)
+            }
+            Err(e) => Err(e),
+        };
+        let transport = match take(self) {
+            Ok(a) => a,
+            Err(e) => return Err(e),
+        };
+        let mut listeners = Vec::new();
+        for name in spec.listeners {
+            match take(self) {
+                Ok(a) => listeners.push((name.to_string(), a)),
                 Err(e) => {
                     for a in taken {
                         self.free(a);
@@ -232,21 +266,16 @@ impl EndpointAllocator {
                 }
             }
         }
-        // Release the fresh slots' old ports now that the new ones are held.
-        for p in &prior {
-            if !out.iter().any(|e| e.addr == p.addr) {
-                self.free(p.addr);
-            }
-        }
+        let out = Assignment { transport, slots: spec.slots.iter().map(|s| EndpointSlot::fresh(s.slot)).collect(), listeners };
         self.held.insert(node.clone(), out.clone());
         Ok(out)
     }
 
-    /// Release every port of `node` (retire pipeline `ReleaseEndpoints`).
+    /// Release every address of `node` (retire pipeline `ReleaseEndpoints`).
     pub fn release(&mut self, node: &PathName) {
-        if let Some(slots) = self.held.remove(node) {
-            for s in slots {
-                self.free(s.addr);
+        if let Some(a) = self.held.remove(node) {
+            for (_, addr, _) in a.sockets() {
+                self.free(addr);
             }
         }
     }
@@ -259,14 +288,14 @@ impl EndpointAllocator {
     }
 
     /// Record an assignment that already exists (an admin adopting a running
-    /// node after a takeover), so its ports are never handed out again.
-    pub fn adopt(&mut self, node: &PathName, slots: Vec<EndpointSlot>) {
-        for s in &slots {
-            if self.in_use.insert(s.addr) && matches!(self.addressing, Addressing::SharedHost(_)) {
-                claim_on_host(s.addr);
+    /// node after a takeover), so its addresses are never handed out again.
+    pub fn adopt(&mut self, node: &PathName, assignment: Assignment) {
+        for (_, addr, _) in assignment.sockets() {
+            if self.in_use.insert(addr) && matches!(self.addressing, Addressing::SharedHost(_)) {
+                claim_on_host(addr);
             }
         }
-        self.held.insert(node.clone(), slots);
+        self.held.insert(node.clone(), assignment);
     }
 
     /// How many advertised addresses are held across all nodes.
@@ -274,8 +303,8 @@ impl EndpointAllocator {
         self.in_use.len()
     }
 
-    pub fn held(&self, node: &PathName) -> Option<&[EndpointSlot]> {
-        self.held.get(node).map(Vec::as_slice)
+    pub fn held(&self, node: &PathName) -> Option<&Assignment> {
+        self.held.get(node)
     }
 }
 
@@ -381,29 +410,21 @@ pub fn tcp_port_is_held(addr: SocketAddr) -> bool {
     matches!(std::net::TcpListener::bind(addr), Err(e) if e.kind() == std::io::ErrorKind::AddrInUse)
 }
 
-/// `WaitForBind`: every assigned slot is held at its assigned address, and the
-/// runtime's own report (when it gives one) names exactly that address.
-pub fn verify_bound(assigned: &[EndpointSlot], reported: &[(String, SocketAddr)]) -> Result<(), BindRefusal> {
-    verify_bound_with(assigned, reported, udp_port_is_held)
+/// `WaitForBind`: every assigned socket (the transport and each listener) is
+/// held at its assigned address.
+pub fn verify_bound(assigned: &Assignment) -> Result<(), BindRefusal> {
+    verify_bound_with(assigned, |a, t| match t {
+        SlotTransport::Udp => udp_port_is_held(a),
+        SlotTransport::Tcp => tcp_port_is_held(a),
+    })
 }
 
 /// [`verify_bound`] with the provider's own view of what the runtime holds
 /// (a container's sockets live in its network namespace, not the host's).
-pub fn verify_bound_with(
-    assigned: &[EndpointSlot],
-    reported: &[(String, SocketAddr)],
-    held: impl Fn(SocketAddr) -> bool,
-) -> Result<(), BindRefusal> {
-    for a in assigned {
-        match reported.iter().find(|(s, _)| *s == a.slot) {
-            None if !reported.is_empty() => return Err(BindRefusal::SlotMissing { slot: a.slot.clone() }),
-            Some((_, r)) if *r != a.addr => {
-                return Err(BindRefusal::ReportedElsewhere { slot: a.slot.clone(), assigned: a.addr, reported: *r })
-            }
-            _ => {}
-        }
-        if !held(a.addr) {
-            return Err(BindRefusal::NotBoundAtAssigned { slot: a.slot.clone(), assigned: a.addr });
+pub fn verify_bound_with(assigned: &Assignment, held: impl Fn(SocketAddr, SlotTransport) -> bool) -> Result<(), BindRefusal> {
+    for (socket, addr, transport) in assigned.sockets() {
+        if !held(addr, transport) {
+            return Err(BindRefusal::NotBoundAtAssigned { socket, assigned: addr });
         }
     }
     Ok(())
@@ -427,68 +448,95 @@ mod tests {
         let mut a = alloc();
         let mut seen = BTreeSet::new();
         for i in 1..=400 {
-            for e in a.assign(&p(&format!("mesh1.rpc.{i}")), RPC_NODE_SLOTS, false).unwrap() {
-                assert!(seen.insert(e.addr), "port {} handed out twice", e.addr);
-            }
+            let got = a.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE, false).unwrap();
+            assert!(seen.insert(got.transport), "port {} handed out twice", got.transport);
+            assert_eq!(got.slots.len(), 2, "two logical slots, no socket each");
+            assert!(got.listeners.is_empty());
         }
-        assert_eq!(seen.len(), 800);
+        assert_eq!(seen.len(), 400, "one socket per process");
+        assert_eq!(a.in_use_count(), 400);
     }
 
     #[test]
-    fn a_restart_moves_only_the_fresh_slot_and_keeps_the_stable_token() {
+    fn a_restart_keeps_the_transport_moves_only_the_fresh_token_and_keeps_the_stable_one() {
         let mut a = alloc();
         let node = p("mesh1.rpc.2");
-        let first = a.assign(&node, RPC_NODE_SLOTS, false).unwrap();
-        let again = a.assign(&node, RPC_NODE_SLOTS, true).unwrap();
-        assert_ne!(first[0].addr, again[0].addr, "rpc-0 is fresh");
-        assert_ne!(first[0].freshness, again[0].freshness);
-        assert_eq!(first[1], again[1], "rpc-1 is stable: same address and token");
-        let replaced = a.assign(&node, RPC_NODE_SLOTS, false).unwrap();
-        assert_ne!(replaced[1].freshness, again[1].freshness, "a replacement gets new tokens everywhere");
+        let first = a.assign(&node, &RPC_NODE, false).unwrap();
+        let again = a.assign(&node, &RPC_NODE, true).unwrap();
+        assert_eq!(first.transport, again.transport, "a slot owns no socket: the transport stays");
+        assert_eq!(first.slots[0].slot, "rpc-0");
+        assert_ne!(first.slots[0].freshness, again.slots[0].freshness, "rpc-0 is fresh: a new token");
+        assert_eq!(first.slots[1], again.slots[1], "rpc-1 is stable: the same token");
+        assert_eq!(a.in_use_count(), 1, "a restart takes no new port");
+        let replaced = a.assign(&node, &RPC_NODE, false).unwrap();
+        assert_ne!(replaced.slots[1].freshness, again.slots[1].freshness, "a replacement gets new tokens everywhere");
+    }
+
+    #[test]
+    fn a_listener_kind_gets_its_own_tcp_address_beside_the_transport() {
+        let mut a = alloc();
+        let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, false).unwrap();
+        assert!(got.slots.is_empty());
+        assert_eq!(got.listeners.len(), 1);
+        assert_eq!(got.listeners[0].0, "control");
+        assert_ne!(got.listeners[0].1, got.transport);
+        let sockets = got.sockets();
+        assert_eq!(sockets[0].2, SlotTransport::Udp);
+        assert_eq!(sockets[1].2, SlotTransport::Tcp);
+        let again = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, true).unwrap();
+        assert_eq!(again.listeners, got.listeners, "a restart keeps the listener address");
     }
 
     #[test]
     fn released_ports_return_and_a_restart_without_prior_is_named() {
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30000, 30003);
-        a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        a.assign(&p("mesh1.rpc.2"), RPC_NODE_SLOTS, false).unwrap();
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false), Err(AllocationError::Exhausted { .. })));
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30000, 30001);
+        a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).unwrap();
+        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::Exhausted { .. })));
+        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
         a.release(&p("mesh1.rpc.1"));
-        assert!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false).is_ok());
+        assert!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false).is_ok());
         assert_eq!(
-            a.assign(&p("mesh1.rpc.9"), RPC_NODE_SLOTS, true),
-            Err(AllocationError::NoPriorAssignment { node: p("mesh1.rpc.9"), slot: "rpc-1".into() })
+            a.assign(&p("mesh1.rpc.9"), &RPC_NODE, true),
+            Err(AllocationError::NoPriorAssignment { node: p("mesh1.rpc.9"), slot: "transport".into() })
         );
+    }
+
+    #[test]
+    fn a_partial_listener_allocation_frees_what_it_took() {
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30010, 30010);
+        assert!(matches!(a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, false), Err(AllocationError::Exhausted { .. })));
+        assert_eq!(a.in_use_count(), 0, "the transport taken before the listener failed was freed");
+        assert!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).is_ok());
     }
 
     #[test]
     fn per_node_addressing_gives_each_node_its_own_address_kept_across_a_restart() {
         let first = std::net::Ipv4Addr::new(10, 9, 0, 2);
-        let mut a = EndpointAllocator::per_node(first, std::net::Ipv4Addr::new(10, 9, 0, 3), 41000, 41001);
-        let one = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        let two = a.assign(&p("mesh1.rpc.2"), RPC_NODE_SLOTS, false).unwrap();
-        assert!(one.iter().all(|e| e.addr.ip() == IpAddr::from(first)));
-        assert!(two.iter().all(|e| e.addr.ip() == IpAddr::from([10, 9, 0, 3])));
-        assert_eq!(one.iter().map(|e| e.addr.port()).collect::<Vec<_>>(), two.iter().map(|e| e.addr.port()).collect::<Vec<_>>(), "ports repeat across node addresses");
-        assert_eq!(a.assign(&p("mesh1.rpc.3"), RPC_NODE_SLOTS, false), Err(AllocationError::AddressesExhausted));
+        let mut a = EndpointAllocator::per_node(first, std::net::Ipv4Addr::new(10, 9, 0, 3), 41000, 41000);
+        let one = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        let two = a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).unwrap();
+        assert_eq!(one.transport.ip(), IpAddr::from(first));
+        assert_eq!(two.transport.ip(), IpAddr::from([10, 9, 0, 3]));
+        assert_eq!(one.transport.port(), two.transport.port(), "ports repeat across node addresses");
+        assert_eq!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::AddressesExhausted));
         a.release(&p("mesh1.rpc.2"));
-        a.assign(&p("mesh1.rpc.3"), &RPC_NODE_SLOTS[1..], false).unwrap();
-        // A restart keeps the node's address and its stable slot; the fresh
-        // slot moves to the one free port left on that address.
-        let mut b = EndpointAllocator::per_node(first, first, 41000, 41002);
-        let before = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        let after = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, true).unwrap();
-        assert_eq!(after[1], before[1]);
-        assert_eq!(after[0].addr, SocketAddr::new(IpAddr::from(first), 41002));
+        a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false).unwrap();
+        // A restart keeps the node's address and its stable slot; only the fresh token moves.
+        let mut b = EndpointAllocator::per_node(first, first, 41000, 41000);
+        let before = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        let after = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, true).unwrap();
+        assert_eq!(after.transport, before.transport);
+        assert_eq!(after.slots[1], before.slots[1]);
+        assert_ne!(after.slots[0].freshness, before.slots[0].freshness);
     }
 
     #[test]
     fn a_port_bound_by_another_process_is_never_handed_out() {
         let squatter = UdpSocket::bind("127.0.0.1:30100").unwrap();
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30100, 30102);
-        let got = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        assert!(got.iter().all(|e| e.addr.port() != 30100));
+        let got = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        assert_ne!(got.transport.port(), 30100);
         drop(squatter);
     }
 
@@ -501,17 +549,14 @@ mod tests {
             EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
             EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
         );
-        let x = a.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        let y = b.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).unwrap();
-        let mut seen = BTreeSet::new();
-        for e in x.iter().chain(&y) {
-            assert!(seen.insert(e.addr), "{} handed out twice", e.addr);
-        }
+        let x = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        let y = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        assert_ne!(x.transport, y.transport, "{} handed out twice", x.transport);
         // A released port is free to the other allocator again.
         a.release(&p("mesh1.rpc.1"));
         b.release(&p("mesh1.rpc.1"));
-        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30201);
-        assert!(c.assign(&p("mesh1.rpc.1"), RPC_NODE_SLOTS, false).is_ok(), "released reservations are gone");
+        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30200);
+        assert!(c.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).is_ok(), "released reservations are gone");
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.
@@ -523,8 +568,8 @@ mod tests {
         // pid_max on Linux is at most 2^22: this pid cannot be live.
         std::fs::write(&path, "4194305").unwrap();
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30300, 30300);
-        assert!(a.assign(&p("mesh1.admin.2"), &[SlotSpec { slot: "control", policy: SlotPolicy::Fresh, transport: SlotTransport::Tcp }], false).is_ok());
-        a.release(&p("mesh1.admin.2"));
+        assert!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).is_ok());
+        a.release(&p("mesh1.rpc.2"));
         assert!(!path.exists(), "release removes the reservation");
     }
 }

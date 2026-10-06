@@ -58,11 +58,10 @@ pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()
     Ok(())
 }
 
-/// A member's gossip address: its key at its first endpoint slot.
+/// A member's gossip address: its key at its one transport address.
 pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
     let key = d.node.transport_id.0.parse::<iroh::PublicKey>().ok()?;
-    let slot = d.node.endpoints.0.first()?;
-    Some(EndpointAddr::new(key).with_ip_addr(slot.addr))
+    Some(EndpointAddr::new(key).with_ip_addr(d.node.transport_addr))
 }
 
 /// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
@@ -1018,6 +1017,7 @@ mod tests {
                 node_id: node_id.clone(),
                 name: "mesh1.rpc.1".parse().unwrap(),
                 transport_id: TransportId("key".into()),
+                transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: incarnation.clone(),
                 supersedes,
                 endpoints: EndpointSet(vec![]),

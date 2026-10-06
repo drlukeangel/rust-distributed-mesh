@@ -13,7 +13,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published}
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
+use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
 };
@@ -138,7 +138,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
             build_id: publish_build(&builds, add_node()).await,
             attempt: 1,
             node: "mesh1.rpc.1".parse().unwrap(),
-            slots: RPC_NODE_SLOTS,
+            spec: &RPC_NODE,
             restart_of: None,
         })
         .await
@@ -202,7 +202,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
         build_id,
         attempt: 1,
         node: "mesh1.rpc.1".parse().unwrap(),
-        slots: RPC_NODE_SLOTS,
+        spec: &RPC_NODE,
         restart_of,
     };
 
@@ -273,7 +273,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let observer = DeparturesLost { live: &admin.observer };
     let pipeline = DeploymentPipeline { provider: &provider, allocator: &allocator, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
@@ -300,7 +300,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let process = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline { provider: &process, allocator: &allocator, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None })
+        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;

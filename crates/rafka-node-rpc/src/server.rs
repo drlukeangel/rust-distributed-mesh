@@ -1,6 +1,7 @@
 //! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
 //!
-//! Per bi-stream: read the tag (unserved → `421`), the declared length
+//! Per bi-stream: read the tag (unserved → `421`), the target slot and its
+//! freshness (not this birth's current one → `425`), the declared length
 //! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
 //! `Busy`), read the body, and dispatch only after the request direction
 //! finished cleanly. A request the sender reset (`499`) or left unfinished is
@@ -20,14 +21,16 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use rafka_mesh_entity::{EndpointSlot, FreshnessToken};
+use rafka_node_rpc_contract::framing::RequestTarget;
+use std::sync::{Arc, RwLock};
 use tracing::Instrument;
 
 /// Who is calling, as the transport proved it.
 #[derive(Debug, Clone)]
 pub struct PeerContext {
     pub transport_id: iroh::PublicKey,
-    /// The local endpoint slot the call arrived on.
+    /// The endpoint slot the request named (and the server held under its token).
     pub slot: String,
 }
 
@@ -129,6 +132,8 @@ pub struct ServerStats {
     pub busy: AtomicU64,
     pub draining: AtomicU64,
     pub violations: AtomicU64,
+    /// Requests refused `425 STALE_SLOT`.
+    pub stale: AtomicU64,
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (WaitForDrain reads it).
     pub in_flight: AtomicU64,
@@ -202,8 +207,11 @@ impl ServerBuilder {
         self
     }
 
-    /// Seal the catalog before the first stream is accepted.
-    pub fn seal(self, slot: impl Into<String>) -> Result<NodeRpcServer, Vec<SealError>> {
+    /// Seal the catalog before the first stream is accepted, as `birth`: the
+    /// exact node and incarnation this process is, serving `slots` under their
+    /// freshness tokens. A request is dispatched only when it names this birth
+    /// and one of its slots under the slot's current token.
+    pub fn seal(self, birth: ServedBirth, slots: impl IntoIterator<Item = EndpointSlot>) -> Result<NodeRpcServer, Vec<SealError>> {
         let catalog = self.catalog.seal()?;
         if let Some(table) = &self.carried_table {
             let _ = table.set(self.carried.clone());
@@ -215,9 +223,37 @@ impl ServerBuilder {
                 admission: self.admission,
                 draining: AtomicBool::new(false),
                 stats: Arc::new(ServerStats::default()),
+                birth,
+                slots: RwLock::new(slots.into_iter().map(|s| (s.slot, s.freshness)).collect()),
             }),
-            slot: slot.into(),
         })
+    }
+}
+
+/// The exact birth a server is: what every request's fence is checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedBirth {
+    pub node_id: String,
+    pub incarnation: String,
+}
+
+/// Which part of a request's fence was not current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenceMismatch {
+    NodeId,
+    Incarnation,
+    Slot,
+    Freshness,
+}
+
+impl FenceMismatch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NodeId => "node_id",
+            Self::Incarnation => "incarnation",
+            Self::Slot => "slot",
+            Self::Freshness => "freshness",
+        }
     }
 }
 
@@ -227,18 +263,21 @@ struct Inner {
     admission: Admission,
     draining: AtomicBool,
     stats: Arc<ServerStats>,
+    birth: ServedBirth,
+    /// Every slot this birth serves, under its current freshness token.
+    slots: RwLock<HashMap<String, FreshnessToken>>,
 }
 
-/// One sealed server, shareable across a node's endpoint slots.
+/// One sealed server for every endpoint slot of the process's one endpoint.
+/// The socket a request arrives on names no slot: the request's target does.
 #[derive(Clone)]
 pub struct NodeRpcServer {
     inner: Arc<Inner>,
-    slot: String,
 }
 
 impl std::fmt::Debug for NodeRpcServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeRpcServer").field("slot", &self.slot).finish()
+        f.debug_struct("NodeRpcServer").field("slots", &*self.inner.slots.read().unwrap()).finish()
     }
 }
 
@@ -247,9 +286,34 @@ fn code(c: ResetCode) -> VarInt {
 }
 
 impl NodeRpcServer {
-    /// The same server answering on another local endpoint slot.
-    pub fn for_slot(&self, slot: impl Into<String>) -> Self {
-        Self { inner: self.inner.clone(), slot: slot.into() }
+    /// Assign `slot` (a new freshness token, or a slot this birth did not
+    /// hold): a request naming the slot's previous token is `425` from now.
+    pub fn assign(&self, slot: EndpointSlot) {
+        self.inner.slots.write().unwrap().insert(slot.slot, slot.freshness);
+    }
+
+    /// Is `target` this exact birth, at one of its slots under exactly the
+    /// slot's current token? `Err` names the first part that is not.
+    pub fn check_fence(&self, target: &RequestTarget) -> Result<(), FenceMismatch> {
+        if target.node_id != self.inner.birth.node_id {
+            return Err(FenceMismatch::NodeId);
+        }
+        if target.incarnation != self.inner.birth.incarnation {
+            return Err(FenceMismatch::Incarnation);
+        }
+        match self.inner.slots.read().unwrap().get(&target.slot) {
+            None => Err(FenceMismatch::Slot),
+            Some(f) if f.to_string() != target.freshness => Err(FenceMismatch::Freshness),
+            Some(_) => Ok(()),
+        }
+    }
+
+    pub fn is_current(&self, target: &RequestTarget) -> bool {
+        self.check_fence(target).is_ok()
+    }
+
+    fn current_token(&self, slot: &str) -> Option<String> {
+        self.inner.slots.read().unwrap().get(slot).map(|f| f.to_string())
     }
 
     pub fn stats(&self) -> Arc<ServerStats> {
@@ -272,7 +336,9 @@ impl NodeRpcServer {
 
     async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
         let stats = self.inner.stats.clone();
-        let mut asm = RequestAssembly::new(&self.inner.catalog);
+        let me = self.clone();
+        let current = move |t: &RequestTarget| me.is_current(t);
+        let mut asm = RequestAssembly::new(&self.inner.catalog, &current);
         let mut buf = vec![0u8; 16 * 1024];
         let mut permit: Option<Permit> = None;
         let action = loop {
@@ -307,14 +373,33 @@ impl NodeRpcServer {
             ServerAction::Continue => unreachable!("loop breaks only on a decision"),
             ServerAction::ResetUnserved { tag } => {
                 stats.unserved.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-unserved-tag", tag, peer = %peer, slot = %self.slot)
+                tracing::info_span!("rafka.node_rpc.request.reject.via-unserved-tag", tag, peer = %peer)
                     .in_scope(|| tracing::info!(tag, "unserved tag: 421"));
                 let _ = send.reset(code(ResetCode::UnservedTag));
                 let _ = recv.stop(code(ResetCode::UnservedTag));
             }
+            ServerAction::ResetStale { tag, target } => {
+                stats.stale.fetch_add(1, Ordering::SeqCst);
+                let mismatch = self.check_fence(&target).err().map(FenceMismatch::as_str).unwrap_or("");
+                tracing::info_span!(
+                    "rafka.node_rpc.connection.reject.via-stale-slot",
+                    decided_by = "target",
+                    tag,
+                    peer = %peer,
+                    node_id = %target.node_id,
+                    incarnation_id = %target.incarnation,
+                    slot = %target.slot,
+                    freshness = %target.freshness,
+                    mismatch,
+                    current = self.current_token(&target.slot).unwrap_or_default(),
+                )
+                .in_scope(|| tracing::info!("the request's fence is not this birth's current state: 425"));
+                let _ = send.reset(code(ResetCode::StaleSlot));
+                let _ = recv.stop(code(ResetCode::StaleSlot));
+            }
             ServerAction::RefuseMalformed { tag, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", tag, kind = ?kind, slot = %self.slot)
+                tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", tag, kind = ?kind)
                     .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
                 self.refuse(tag, Refusal::Malformed(kind), send, recv).await;
             }
@@ -327,17 +412,17 @@ impl NodeRpcServer {
             }
             ServerAction::Drop { reason } => {
                 stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer, slot = %self.slot)
+                tracing::info_span!("rafka.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
                     .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
                 let _ = send.reset(code(ResetCode::RequestStop));
             }
-            ServerAction::Dispatch { tag, payload } => {
+            ServerAction::Dispatch { tag, target, payload } => {
                 let Some(h) = self.inner.handlers.get(&tag).cloned() else {
                     let _ = send.reset(code(ResetCode::UnservedTag));
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
-                let ctx = PeerContext { transport_id: peer, slot: self.slot.clone() };
+                let ctx = PeerContext { transport_id: peer, slot: target.slot };
                 let out = crate::stream::StreamOut::new(send, h.max_reply());
                 if h.is_stream() {
                     let Some(streaming) = h.stream(ctx, payload, out.clone()) else { return };

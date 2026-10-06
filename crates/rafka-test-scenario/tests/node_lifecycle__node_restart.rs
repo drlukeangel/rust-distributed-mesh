@@ -18,17 +18,13 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_secs(120);
 const NODE: &str = "mesh1.rpc.2";
 
-fn slots(node: &Value) -> BTreeMap<String, (String, String)> {
+/// Each logical slot's freshness token: a slot owns no address.
+fn slots(node: &Value) -> BTreeMap<String, String> {
     node["endpoints"]
         .as_array()
         .unwrap_or_else(|| panic!("node view has no endpoints: {node}"))
         .iter()
-        .map(|e| {
-            (
-                e["slot"].as_str().unwrap().to_string(),
-                (e["addr"].as_str().unwrap().to_string(), e["freshness"].as_str().unwrap().to_string()),
-            )
-        })
+        .map(|e| (e["slot"].as_str().unwrap().to_string(), e["freshness"].as_str().unwrap().to_string()))
         .collect()
 }
 
@@ -37,9 +33,9 @@ fn ready(node: &Value) -> bool {
 }
 
 /// CONTRACT: an RPC node restarted through Build comes back as the same logical
-/// node (same node id and transport identity, new process incarnation), rebinds
-/// only its fresh endpoint slot under a new freshness token while the stable slot
-/// keeps its token, never lets the old token back into the pool, still serves the
+/// node (same node id and transport identity, new process incarnation) at the
+/// same transport address, mints a new freshness token for its fresh slot while
+/// the stable slot keeps its token, refuses the old token as stale, still serves the
 /// value written before the restart from its own data dir, resets an unfinished
 /// request with 499 (NotSent), and leaves a Build -> deployment -> node-lifecycle
 /// span chain linked by ParentSpanId.
@@ -117,27 +113,21 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(after["name"], before["name"]);
     assert_ne!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "a new runtime deployment");
 
-    // 6. The changed slot has new_token != old_token; unchanged slots keep theirs.
+    // 6. The fresh slot has a new token, the stable slot keeps its token, and the process keeps
+    //    its one transport address: a slot owns no socket.
+    assert_eq!(after["transport_addr"], before["transport_addr"], "a restart keeps the transport address");
     let slots_after = slots(&after);
     assert_eq!(slots_after.keys().collect::<Vec<_>>(), slots_before.keys().collect::<Vec<_>>(), "same slot set");
-    let mut changed = Vec::new();
-    for (slot, (addr_b, tok_b)) in &slots_before {
-        let (addr_a, tok_a) = &slots_after[slot];
-        if addr_a != addr_b {
-            assert_ne!(tok_a, tok_b, "slot {slot} moved {addr_b} -> {addr_a} but kept its freshness token");
-            changed.push(slot.clone());
-        } else {
-            assert_eq!(tok_a, tok_b, "slot {slot} did not move but its token was spuriously superseded");
-        }
-    }
-    assert!(!changed.is_empty(), "a restart moves at least the fresh slot: {slots_before:?} -> {slots_after:?}");
+    assert_ne!(slots_after["rpc-0"], slots_before["rpc-0"], "the fresh slot's token moved");
+    assert_eq!(slots_after["rpc-1"], slots_before["rpc-1"], "the stable slot keeps its token");
+    let changed = vec!["rpc-0".to_string()];
 
-    // 7. The old slot/token never successfully re-enters the pool.
+    // 7. The old token is refused as stale, by the caller, before any dial.
     for slot in &changed {
-        let old = format!("{slot}={}", slots_before[slot].1);
+        let old = format!("{slot}={}", slots_before[slot]);
         let stale = estate.probe(&["get", "--target", &exact, "--key", "41", "--pin", &old]);
-        assert_eq!(stale["outcome"], "NotSent", "a superseded token must not be dialled: {stale}");
-        assert_eq!(stale["reason"], "superseded", "{stale}");
+        assert_eq!(stale["outcome"], "RejectedStale", "a superseded token is stale, never dialled: {stale}");
+        assert_eq!(stale["slot"], *slot, "{stale}");
     }
 
     // 8. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
@@ -147,9 +137,9 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(get["reply"]["executing_node"], node_id.as_str(), "{get}");
     assert_eq!(get["reply"]["incarnation_id"], after["incarnation_id"], "served by the new incarnation: {get}");
     let served = (get["reply"]["slot"].as_str().unwrap().to_string(), get["reply"]["freshness"].as_str().unwrap().to_string());
-    assert_eq!(slots_after[&served.0].1, served.1, "the reply's slot evidence is current: {get}");
+    assert_eq!(slots_after[&served.0], served.1, "the reply's slot evidence is current: {get}");
     for slot in &changed {
-        assert_ne!(served.1, slots_before[slot].1, "an old token served a request: {get}");
+        assert_ne!(served.1, slots_before[slot], "an old token served a request: {get}");
     }
 
     // 9. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.

@@ -14,7 +14,7 @@ use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
 use iroh::Endpoint;
 use rafka_mesh_entity::{FreshnessToken, NodeId};
 use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, MAX_VARINT_LEN};
+use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, RequestTarget, MAX_VARINT_LEN};
 use rafka_node_rpc_contract::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::net::SocketAddr;
@@ -103,6 +103,8 @@ pub(crate) struct Opened {
     pub(crate) key: PoolKey,
     pub(crate) conn: iroh::endpoint::Connection,
     pub(crate) reply_deadline: Instant,
+    /// The `(slot, freshness)` the request named.
+    pub(crate) target: RequestTarget,
 }
 
 /// What came back after the commit cut, before protocol decoding.
@@ -172,44 +174,43 @@ impl NodeRpcClient {
         };
         // Whatever this node's record no longer names leaves the pool now.
         self.pool.purge_stale(&node);
-        // The exact slot target and its freshness.
+        // The exact slot target and its freshness: a fence in the framing, never a dial target.
+        let fence = |slot: &str, freshness: String| RequestTarget { node_id: node.node_id.to_string(), incarnation: node.incarnation.0.clone(), slot: slot.into(), freshness };
         let want = opts.pin.as_ref().map(|(s, _)| s.clone()).or_else(|| opts.slot.clone());
         let slot = match want {
-            Some(s) => node.endpoints.iter().find(|e| e.slot == s).cloned(),
-            None => node.endpoints.first().cloned(),
+            Some(s) => node.slot(&s).cloned(),
+            None => node.slots.first().cloned(),
         };
         let Some(slot) = slot else {
+            // The node's current birth holds no such slot: the caller's target is stale.
             let s = opts.slot.clone().or(opts.pin.as_ref().map(|p| p.0.clone())).unwrap_or_default();
-            return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: s }), None);
+            let asked = fence(&s, opts.pin.as_ref().map(|p| p.1.to_string()).unwrap_or_default());
+            stale_span("caller", &node.node_id.to_string(), &asked, None);
+            return Phase::Done(pre.stale_before_finish(&asked), None);
         };
         if let Some((_, token)) = &opts.pin {
             if *token != slot.freshness {
-                tracing::info_span!("rafka.node_rpc.connection.reject.via-stale-slot", slot = %slot.slot, node = %node.node_id)
-                    .in_scope(|| tracing::info!("pinned freshness token is superseded; refused before commit"));
-                return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), None);
+                let asked = fence(&slot.slot, token.to_string());
+                stale_span("caller", &node.node_id.to_string(), &asked, Some(&slot.freshness.to_string()));
+                return Phase::Done(pre.stale_before_finish(&asked), None);
             }
         }
+        let request_target = fence(&slot.slot, slot.freshness.to_string());
         let mut evidence = CallEvidence {
             node_id: node.node_id.clone(),
             slot: slot.slot.clone(),
-            addr: slot.addr,
+            addr: node.transport_addr,
             freshness: slot.freshness.clone(),
             committed: false,
             connection: None,
             reused: false,
         };
-        let key = PoolKey {
-            scope: opts.scope.clone(),
-            peer: node.transport_id,
-            incarnation: node.incarnation.clone(),
-            slot: slot.slot.clone(),
-            freshness: slot.freshness.clone(),
-        };
+        let key = PoolKey { scope: opts.scope.clone(), peer: node.transport_id, incarnation: node.incarnation.clone() };
         let spec = DialSpec {
             endpoint: self.endpoint.clone(),
             resolver: self.resolver.clone(),
             target: target.clone(),
-            addr: slot.addr,
+            addr: node.transport_addr,
             deadline: send_deadline,
             failpoint: opts.after_connect.clone(),
         };
@@ -219,7 +220,12 @@ impl NodeRpcClient {
                 evidence.reused = reused;
                 c
             }
-            Err(DialError::Superseded) => return Phase::Done(pre.not_sent(NotSentReason::Superseded { slot: slot.slot.clone() }), Some(evidence)),
+            Err(DialError::Superseded) => {
+                // The birth moved while this dial was in flight: the target is stale.
+                let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.0);
+                stale_span("caller", &node.node_id.to_string(), &request_target, now.as_deref());
+                return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
+            }
             Err(DialError::Deadline) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
             Err(DialError::Failed(e)) => return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
         };
@@ -231,7 +237,7 @@ impl NodeRpcClient {
             }
             Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
         };
-        let frame = encode_request(tag, &payload);
+        let frame = encode_request(tag, &request_target, &payload);
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
         if opts.cut_before_finish {
             let half = (frame.len() / 2).max(1);
@@ -247,6 +253,11 @@ impl NodeRpcClient {
             self.pool.healthy(&key);
             if stop.into_inner() == u64::from(ResetCode::UnservedTag.code()) {
                 return Phase::Done(pre.unserved_before_finish(), Some(evidence));
+            }
+            if stop.into_inner() == u64::from(ResetCode::StaleSlot.code()) {
+                // The target refused the fence; the connection to the process stays pooled.
+                stale_span("target", &node.node_id.to_string(), &request_target, None);
+                return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
             }
             let bytes = timeout_at(send_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await;
             let early = pre.stopped_before_finish();
@@ -280,7 +291,7 @@ impl NodeRpcClient {
             (Budget::Split { reply, .. }, None) => Instant::now() + reply,
             (Budget::Overall(_), None) => unreachable!(),
         };
-        Phase::Committed(Opened { committed, recv, evidence, key, conn, reply_deadline })
+        Phase::Committed(Opened { committed, recv, evidence, key, conn, reply_deadline, target: request_target })
     }
 
     /// Invoke a raw tag (any tag, served or not) — the unknown-tag cell uses it.
@@ -298,7 +309,7 @@ impl NodeRpcClient {
     {
         let decode = std::sync::Mutex::new(Some(decode));
         let take = || decode.lock().unwrap().take().expect("decode runs once");
-        let Opened { committed, mut recv, evidence, key, conn, reply_deadline } =
+        let Opened { committed, mut recv, evidence, key, conn, reply_deadline, target: request_target } =
             match self.open(target, tag, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
                 Phase::Done(out, evidence) => return (out, evidence),
                 Phase::Committed(o) => o,
@@ -323,9 +334,29 @@ impl NodeRpcClient {
                 Ok(payload) => decode(Decode::Committed(committed, payload)),
                 Err(e) => committed.indeterminate(IndeterminateReason::ProtocolViolation(format!("reply frame: {e:?}"))),
             },
-            Committed::Reset(c) => committed.reset(c),
+            Committed::Reset(c) => {
+                if c == u64::from(ResetCode::StaleSlot.code()) {
+                    stale_span("target", &evidence.node_id.to_string(), &request_target, None);
+                }
+                committed.reset(c, &request_target)
+            }
             Committed::Lost(r) => committed.indeterminate(r),
         };
         (out, Some(evidence))
     }
+}
+
+/// One span family for every stale-slot refusal, whoever decided it: the
+/// caller (its resolver no longer names the target) or the target (`425`).
+fn stale_span(decided_by: &'static str, node_id: &str, asked: &RequestTarget, current: Option<&str>) {
+    tracing::info_span!(
+        "rafka.node_rpc.connection.reject.via-stale-slot",
+        decided_by,
+        node_id,
+        incarnation_id = %asked.incarnation,
+        slot = %asked.slot,
+        freshness = %asked.freshness,
+        current = current.unwrap_or(""),
+    )
+    .in_scope(|| tracing::info!("the target slot is stale: RejectedStale, never dispatched"));
 }

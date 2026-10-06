@@ -36,11 +36,11 @@
 //! deployment id already started, so a crash between spawning and the
 //! receipt never starts a second one. Every other step is idempotent.
 
-use super::endpoint::{verify_bound_with, EndpointAllocator, SlotSpec};
+use super::endpoint::{verify_bound_with, Assignment, EndpointAllocator, KindSpec};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
-use crate::model::{DeploymentId, EndpointSlot, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
+use crate::model::{DeploymentId, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
@@ -422,7 +422,7 @@ pub struct CreateRequest {
     pub build_id: BuildId,
     pub attempt: u32,
     pub node: PathName,
-    pub slots: &'static [SlotSpec],
+    pub spec: &'static KindSpec,
     /// `Some(current record)` for a restart: same node id, data dir and
     /// transport key, a new incarnation, stable slots kept.
     pub restart_of: Option<Node>,
@@ -677,18 +677,18 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         let reused_endpoints = run.reusing && run.done.contains_key(CreateStep::AllocateEndpoints.name());
-        let endpoints: Vec<EndpointSlot> = self
+        let assigned: Assignment = self
             .step(&mut run, CreateStep::AllocateEndpoints.name(), async {
                 let mut a = self.allocator.lock().unwrap();
-                if let Some(p) = &prior {
-                    a.adopt(&req.node, p.endpoints.clone());
+                if let Some(held) = prior.as_ref().and_then(Assignment::of_node) {
+                    a.adopt(&req.node, held);
                 }
-                a.assign(&req.node, req.slots, prior.is_some()).map_err(|e| e.to_string())
+                a.assign(&req.node, req.spec, prior.is_some()).map_err(|e| e.to_string())
             })
             .await?;
         if reused_endpoints {
             // The decision stands: hold exactly these, take nothing new.
-            self.allocator.lock().unwrap().adopt(&req.node, endpoints.clone());
+            self.allocator.lock().unwrap().adopt(&req.node, assigned.clone());
         }
         let data_dir = match prior.as_ref().and_then(|p| p.data_dir.clone()) {
             Some(d) => PathBuf::from(d),
@@ -705,7 +705,9 @@ impl DeploymentPipeline<'_> {
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
             supersedes: id.supersedes.clone(),
-            endpoints: endpoints.clone(),
+            transport_addr: assigned.transport,
+            endpoints: assigned.slots.clone(),
+            listeners: assigned.listeners.clone(),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
@@ -725,7 +727,8 @@ impl DeploymentPipeline<'_> {
                 args: vec![],
                 env,
                 data_dir: data_dir.clone(),
-                endpoints: endpoints.clone(),
+                transport: assigned.transport,
+                listeners: assigned.listeners.clone(),
             }
         };
         let handle: DeploymentHandle = self
@@ -791,13 +794,12 @@ impl DeploymentPipeline<'_> {
                     return Err(format!("runtime exited (code {code:?}) before binding: {detail}"));
                 }
                 let mut held = Vec::new();
-                for e in &endpoints {
-                    let transport = req.slots.iter().find(|s| s.slot == e.slot).map(|s| s.transport).unwrap_or(super::endpoint::SlotTransport::Udp);
-                    if self.provider.holds(&handle, e.addr, transport).await {
-                        held.push(e.addr);
+                for (_, addr, transport) in assigned.sockets() {
+                    if self.provider.holds(&handle, addr, transport).await {
+                        held.push(addr);
                     }
                 }
-                match verify_bound_with(&endpoints, &[], |a| held.contains(&a)) {
+                match verify_bound_with(&assigned, |a, _| held.contains(&a)) {
                     Ok(()) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e.to_string()),
                     Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
@@ -812,7 +814,9 @@ impl DeploymentPipeline<'_> {
         node.deployment_id = Some(id.deployment_id.clone());
         node.provider = Some(self.provider.kind());
         node.data_dir = Some(data_dir.display().to_string());
-        node.endpoints = endpoints.clone();
+        node.transport_addr = Some(assigned.transport);
+        node.endpoints = assigned.slots.clone();
+        node.listeners = assigned.listeners.clone();
         node.status = NodeStatus::Pending;
         if let Some(p) = &prior {
             node.is_primary = p.is_primary;

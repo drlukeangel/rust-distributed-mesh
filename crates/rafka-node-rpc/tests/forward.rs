@@ -4,7 +4,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
-use rafka_node_rpc::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
+use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
 use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
@@ -90,17 +90,20 @@ struct Node {
     resolved: ResolvedNode,
 }
 
-async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str) -> Node {
+/// A birth's identity, minted before its server seals.
+fn birth() -> (NodeId, IncarnationId, EndpointSlot) {
+    (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"))
+}
+
+fn served(b: &(NodeId, IncarnationId, EndpointSlot)) -> ServedBirth {
+    ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .0.clone() }
+}
+
+async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId, EndpointSlot)) -> Node {
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
-    let resolved = ResolvedNode {
-        node_id: NodeId::mint(),
-        name: name.parse().unwrap(),
-        transport_id: key.public(),
-        incarnation: IncarnationId::mint(),
-        endpoints: vec![EndpointSlot::assign("rpc-0", addr)],
-    };
+    let resolved = ResolvedNode { node_id: b.0, name: name.parse().unwrap(), transport_id: key.public(), transport_addr: addr, incarnation: b.1, slots: vec![b.2] };
     Node { router, key, resolved }
 }
 
@@ -127,6 +130,7 @@ async fn rig() -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
     let applied = Arc::new(tokio::sync::Notify::new());
     let (h, a) = (handled.clone(), applied.clone());
+    let target_birth = birth();
     let target_server = ServerBuilder::new()
         .ledger(test_ledger())
         .serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer, req: ProbeRequest| {
@@ -145,9 +149,9 @@ async fn rig() -> Rig {
             let EchoRequest::Echo { payload, .. } = req;
             Ok(EchoReply::Echoed { payload })
         })
-        .seal("rpc-0")
+        .seal(served(&target_birth), [target_birth.2.clone()])
         .unwrap();
-    let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3").await;
+    let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3", target_birth).await;
 
     // The carrier calls out on the endpoint it serves on, as a node does: the target sees the
     // carrier's own transport identity.
@@ -157,22 +161,24 @@ async fn rig() -> Rig {
     let carrier_resolver = Arc::new(StaticResolver::new());
     carrier_resolver.insert(target.resolved.clone());
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver));
+    let carrier_birth = birth();
     let carrier_server = ServerBuilder::new()
         .ledger(test_ledger())
         .carry::<Probe>()
         .carry::<Echo>()
         .serve_forward(carrier_client)
-        .seal("rpc-0")
+        .seal(served(&carrier_birth), [carrier_birth.2.clone()])
         .unwrap();
     let carrier = Node {
         router: Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server).spawn(),
         key: carrier_key.clone(),
         resolved: ResolvedNode {
-            node_id: NodeId::mint(),
+            node_id: carrier_birth.0,
             name: "mesh1.rpc.2".parse().unwrap(),
             transport_id: carrier_key.public(),
-            incarnation: IncarnationId::mint(),
-            endpoints: vec![EndpointSlot::assign("rpc-0", carrier_addr)],
+            transport_addr: carrier_addr,
+            incarnation: carrier_birth.1,
+            slots: vec![carrier_birth.2],
         },
     };
     let origin = client_with(&[&carrier.resolved, &target.resolved]).await;

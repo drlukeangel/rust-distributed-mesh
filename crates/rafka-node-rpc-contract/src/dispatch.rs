@@ -3,7 +3,8 @@
 //!
 //! [`RequestAssembly`] is the server's request-direction state machine. A
 //! request reaches its protocol handler only after the tag was read, the
-//! length decoded, the complete payload read within the protocol ceiling, the
+//! target slot and freshness checked against the server's current assignment,
+//! the length decoded, the complete payload read within the protocol ceiling, the
 //! request direction finished cleanly and the payload decoded. An unfinished
 //! or reset request never dispatches. The client's side of the same table is
 //! [`crate::outcome`]; [`replay_verdict`] is the rule that no mutating
@@ -11,7 +12,7 @@
 
 use crate::catalog::SealedCatalog;
 use crate::codes::ResetCode;
-use crate::framing::{parse_request_head, RequestHead};
+use crate::framing::{parse_request_length, parse_request_target, RequestHead, RequestTarget};
 use crate::outcome::{MalformedKind, RpcOutcome};
 
 /// What the server does with a request direction.
@@ -21,6 +22,9 @@ pub enum ServerAction {
     Continue,
     /// Reset the stream with `421 UNSERVED_TAG`; no protocol dispatch.
     ResetUnserved { tag: u8 },
+    /// Reset the stream with `425 STALE_SLOT`: the target slot is unknown here
+    /// or not under that freshness token; no protocol dispatch.
+    ResetStale { tag: u8, target: RequestTarget },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
     RefuseMalformed { tag: u8, kind: MalformedKind },
@@ -30,46 +34,69 @@ pub enum ServerAction {
     /// without a complete frame: drop it, never dispatch.
     Drop { reason: &'static str },
     /// The complete, cleanly finished request: decode and dispatch.
-    Dispatch { tag: u8, payload: Vec<u8> },
+    Dispatch { tag: u8, target: RequestTarget, payload: Vec<u8> },
 }
 
 /// The request direction, fed by the transport.
-#[derive(Debug)]
 pub struct RequestAssembly<'c> {
     catalog: &'c SealedCatalog,
+    current: &'c (dyn Fn(&RequestTarget) -> bool + Send + Sync),
     buf: Vec<u8>,
+    target: Option<RequestTarget>,
     head: Option<(u8, usize, usize)>,
     done: bool,
 }
 
+impl std::fmt::Debug for RequestAssembly<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestAssembly").field("target", &self.target).field("head", &self.head).field("done", &self.done).finish()
+    }
+}
+
 impl<'c> RequestAssembly<'c> {
-    pub fn new(catalog: &'c SealedCatalog) -> Self {
-        Self { catalog, buf: Vec::new(), head: None, done: false }
+    /// `current(target)` answers whether this server holds the target's slot
+    /// under exactly its freshness token now.
+    pub fn new(catalog: &'c SealedCatalog, current: &'c (dyn Fn(&RequestTarget) -> bool + Send + Sync)) -> Self {
+        Self { catalog, current, buf: Vec::new(), target: None, head: None, done: false }
     }
 
-    /// The tag, once the head has been read and the tag is served.
+    /// The tag, once the head has been read, the tag is served and the target is current.
     pub fn head_tag(&self) -> Option<u8> {
         self.head.map(|(t, _, _)| t)
     }
 
-    /// Bytes arrived. Head decisions (unserved tag, oversize declaration) are
-    /// made as soon as the head is readable — before the body.
+    /// Bytes arrived. Head decisions (unserved tag, stale target, oversize
+    /// declaration) are made as soon as the head is readable — before the body.
     pub fn push(&mut self, bytes: &[u8]) -> ServerAction {
         if self.done {
             return ServerAction::Continue;
         }
         self.buf.extend_from_slice(bytes);
         if self.head.is_none() {
-            match parse_request_head(&self.buf, |t| self.catalog.request_ceiling(t)) {
-                RequestHead::NeedMore => return ServerAction::Continue,
-                RequestHead::Unserved { tag } => return self.end(ServerAction::ResetUnserved { tag }),
+            let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
+                Ok(read) => read,
+                Err(RequestHead::Unserved { tag }) => return self.end(ServerAction::ResetUnserved { tag }),
+                Err(RequestHead::BadTarget { tag }) => {
+                    return self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "bad request target" })
+                }
+                Err(_) => return ServerAction::Continue,
+            };
+            if self.target.is_none() {
+                if !(self.current)(&read.target) {
+                    return self.end(ServerAction::ResetStale { tag: read.tag, target: read.target });
+                }
+                self.target = Some(read.target.clone());
+            }
+            match parse_request_length(&self.buf, read) {
+                RequestHead::Targeted { .. } | RequestHead::NeedMore => return ServerAction::Continue,
                 RequestHead::TooLarge { tag, .. } => {
                     return self.end(ServerAction::RefuseMalformed { tag, kind: MalformedKind::TooLarge })
                 }
                 RequestHead::BadLength { tag } => {
                     return self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "bad length prefix" })
                 }
-                RequestHead::Ready { tag, payload_len, head_len } => self.head = Some((tag, payload_len, head_len)),
+                RequestHead::Ready { tag, payload_len, head_len, .. } => self.head = Some((tag, payload_len, head_len)),
+                RequestHead::Unserved { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
             }
         }
         let (tag, len, head) = self.head.expect("set above");
@@ -87,7 +114,8 @@ impl<'c> RequestAssembly<'c> {
         match self.head {
             Some((tag, len, head)) if self.buf.len() == head + len => {
                 let payload = self.buf.split_off(head);
-                self.end(ServerAction::Dispatch { tag, payload })
+                let target = self.target.clone().expect("a head is set only after its target");
+                self.end(ServerAction::Dispatch { tag, target, payload })
             }
             Some((tag, _, _)) => self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "FIN before the declared length" }),
             None if self.buf.is_empty() => self.end(ServerAction::Drop { reason: "empty request direction" }),
@@ -132,7 +160,7 @@ pub enum ReplayVerdict {
 pub fn replay_verdict<R>(outcome: &RpcOutcome<R>, mutating: bool) -> ReplayVerdict {
     match outcome {
         RpcOutcome::Reply(_) => ReplayVerdict::Answered,
-        RpcOutcome::NotSent(_) | RpcOutcome::Unserved(_) => ReplayVerdict::SafeToRetry,
+        RpcOutcome::NotSent(_) | RpcOutcome::Unserved(_) | RpcOutcome::RejectedStale(_) => ReplayVerdict::SafeToRetry,
         RpcOutcome::Indeterminate(_) if mutating => ReplayVerdict::MustNotReplay,
         RpcOutcome::Indeterminate(_) => ReplayVerdict::ReadMayRepeat,
     }
@@ -151,9 +179,21 @@ mod tests {
         CatalogBuilder::new().serve(CatalogEntry::canonical::<Echo>(TagOwner::Core, Shape::Unary)).seal().unwrap()
     }
 
+    fn target() -> RequestTarget {
+        RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "f1".into() }
+    }
+
+    fn current(t: &RequestTarget) -> bool {
+        *t == target()
+    }
+
+    fn assembly(c: &SealedCatalog) -> RequestAssembly<'_> {
+        RequestAssembly::new(c, &current)
+    }
+
     fn echo_frame(payload: &[u8]) -> Vec<u8> {
         let req = EchoRequest::Echo { traceparent: None, payload: payload.to_vec() };
-        encode_request(Echo::TAG, &Echo::encode_request(&req).unwrap())
+        encode_request(Echo::TAG, &target(), &Echo::encode_request(&req).unwrap())
     }
 
     // ---- PRD §13 dispatch table ----
@@ -161,13 +201,14 @@ mod tests {
     #[test]
     fn known_tag_and_known_opcode_dispatch_to_the_handler_after_a_clean_finish() {
         let c = catalog();
-        let mut a = RequestAssembly::new(&c);
+        let mut a = assembly(&c);
         let f = echo_frame(b"ping");
         assert_eq!(a.push(&f[..3]), ServerAction::Continue);
         assert_eq!(a.push(&f[3..]), ServerAction::Continue, "a complete frame waits for FIN");
         match a.finish() {
-            ServerAction::Dispatch { tag, payload } => {
+            ServerAction::Dispatch { tag, target: t, payload } => {
                 assert_eq!(tag, 0x11);
+                assert_eq!(t, target(), "the dispatched request carries the target it named");
                 assert!(matches!(Echo::decode_request(&payload), Ok(EchoRequest::Echo { .. })));
             }
             other => panic!("expected dispatch, got {other:?}"),
@@ -178,9 +219,9 @@ mod tests {
     fn known_tag_with_unknown_opcode_is_malformed_unknown_variant() {
         let mut body = Vec::new();
         encode_varint(7, &mut body); // op variant 7 does not exist
-        let f = encode_request(Echo::TAG, &body);
+        let f = encode_request(Echo::TAG, &target(), &body);
         let c = catalog();
-        let mut a = RequestAssembly::new(&c);
+        let mut a = assembly(&c);
         a.push(&f);
         let ServerAction::Dispatch { payload, .. } = a.finish() else { panic!() };
         // Decode is the dispatcher's first step; its failure is the typed reply.
@@ -192,7 +233,7 @@ mod tests {
     #[test]
     fn unknown_tag_is_421_before_any_body() {
         let c = catalog();
-        let mut a = RequestAssembly::new(&c);
+        let mut a = assembly(&c);
         assert_eq!(a.push(&[0x42]), ServerAction::ResetUnserved { tag: 0x42 });
         assert_eq!(a.push(&[1, 2, 3]), ServerAction::Continue, "nothing after the decision");
     }
@@ -200,10 +241,31 @@ mod tests {
     #[test]
     fn known_oversize_is_typed_too_large_after_the_tag_read() {
         let c = catalog();
-        let mut a = RequestAssembly::new(&c);
-        let mut head = vec![Echo::TAG];
+        let mut a = assembly(&c);
+        let mut head = encode_request(Echo::TAG, &target(), b"");
+        head.pop();
         encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
         assert_eq!(a.push(&head), ServerAction::RefuseMalformed { tag: 0x11, kind: MalformedKind::TooLarge });
+    }
+
+    #[test]
+    fn a_stale_or_unknown_target_is_425_before_the_length_or_body() {
+        let c = catalog();
+        for stale in [RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "old".into() }, RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-9".into(), freshness: "f1".into() }] {
+            let mut a = assembly(&c);
+            let mut f = encode_request(Echo::TAG, &stale, b"");
+            f.pop();
+            // Only the tag and target: decided before any length is read.
+            assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, target: stale.clone() });
+            assert_eq!(a.finish(), ServerAction::Continue, "nothing after the decision");
+        }
+        // An oversize declaration behind a stale target is still 425: the target is checked first.
+        let mut a = assembly(&c);
+        let stale = RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "old".into() };
+        let mut f = encode_request(Echo::TAG, &stale, b"");
+        f.pop();
+        encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
+        assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, target: stale });
     }
 
     #[test]
@@ -216,13 +278,13 @@ mod tests {
     #[test]
     fn before_request_finish_a_499_reset_is_never_dispatched_and_is_not_sent() {
         let c = catalog();
-        let mut a = RequestAssembly::new(&c);
+        let mut a = assembly(&c);
         let f = echo_frame(b"partial");
         a.push(&f[..f.len() - 2]);
         assert!(matches!(a.reset(499), ServerAction::Drop { reason } if reason.contains("499")));
         assert_eq!(a.finish(), ServerAction::Continue, "a dropped request never dispatches later");
         // Even a complete frame that was reset instead of finished is never dispatched.
-        let mut b = RequestAssembly::new(&c);
+        let mut b = assembly(&c);
         b.push(&f);
         assert!(matches!(b.reset(499), ServerAction::Drop { .. }));
         let (code, outcome): (_, RpcOutcome<EchoReply>) = PreCommit::begin(0x11).cut_before_finish();
@@ -234,10 +296,10 @@ mod tests {
     fn a_fin_before_the_declared_length_or_bytes_past_it_is_a_violation_not_a_dispatch() {
         let c = catalog();
         let f = echo_frame(b"abc");
-        let mut a = RequestAssembly::new(&c);
+        let mut a = assembly(&c);
         a.push(&f[..f.len() - 1]);
         assert!(matches!(a.finish(), ServerAction::ResetViolation { .. }));
-        let mut b = RequestAssembly::new(&c);
+        let mut b = assembly(&c);
         let mut long = f.clone();
         long.push(0);
         assert!(matches!(b.push(&long), ServerAction::ResetViolation { .. }));
@@ -255,7 +317,17 @@ mod tests {
 
     #[test]
     fn complete_request_and_unserved_proof_is_unserved() {
-        assert_eq!(committed().reset::<EchoReply>(421).name(), "Unserved");
+        assert_eq!(committed().reset::<EchoReply>(421, &target()).name(), "Unserved");
+    }
+
+    #[test]
+    fn complete_request_and_stale_proof_is_rejected_stale_never_not_sent() {
+        let out = committed().reset::<EchoReply>(425, &target());
+        assert!(matches!(&out, RpcOutcome::RejectedStale(s) if s.slot() == "rpc-0" && s.freshness() == "f1"), "{out:?}");
+        assert!(out.proves_not_dispatched());
+        assert_eq!(replay_verdict(&out, true), ReplayVerdict::SafeToRetry);
+        let early: RpcOutcome<EchoReply> = PreCommit::begin(0x11).stale_before_finish(&target());
+        assert_eq!(early.name(), "RejectedStale");
     }
 
     #[test]
@@ -277,7 +349,7 @@ mod tests {
         assert_eq!(replay_verdict(&ind, false), ReplayVerdict::ReadMayRepeat);
         let ns: RpcOutcome<EchoReply> = PreCommit::begin(0x11).not_sent(NotSentReason::Deadline);
         assert_eq!(replay_verdict(&ns, true), ReplayVerdict::SafeToRetry);
-        assert_eq!(replay_verdict(&committed().reset::<EchoReply>(421), true), ReplayVerdict::SafeToRetry);
+        assert_eq!(replay_verdict(&committed().reset::<EchoReply>(421, &target()), true), ReplayVerdict::SafeToRetry);
         let bytes = Echo::encode_reply(&Echo::busy("x".into())).unwrap();
         assert_eq!(replay_verdict(&committed().reply::<Echo>(&bytes), true), ReplayVerdict::Answered);
     }

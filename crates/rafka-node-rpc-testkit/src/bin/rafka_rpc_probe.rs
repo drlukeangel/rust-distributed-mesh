@@ -75,8 +75,9 @@ fn resolved(view: &Value) -> Vec<ResolvedNode> {
                 node_id: NodeId::parse(n["node_id"].as_str()?).ok()?,
                 name: n["name"].as_str()?.parse().ok()?,
                 transport_id: n["transport_id"].as_str()?.parse().ok()?,
+                transport_addr: n["transport_addr"].as_str()?.parse().ok()?,
                 incarnation: IncarnationId(n["incarnation_id"].as_str()?.to_string()),
-                endpoints: serde_json::from_value::<Vec<EndpointSlot>>(n["endpoints"].clone()).ok()?,
+                slots: serde_json::from_value::<Vec<EndpointSlot>>(n["endpoints"].clone()).ok()?,
             })
         })
         .collect()
@@ -150,6 +151,7 @@ async fn run(a: Args) -> Result<Value, String> {
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
         RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "slot": r.slot(), "freshness": r.freshness()}),
     })
 }
 
@@ -212,5 +214,6 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
         RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "slot": r.slot(), "freshness": r.freshness()}),
     })
 }

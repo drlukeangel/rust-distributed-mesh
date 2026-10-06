@@ -61,11 +61,7 @@ impl Drop for Partition {
 pub fn udp_ports(nodes: &[Value], names: &[String]) -> Vec<u16> {
     let mut out = Vec::new();
     for n in nodes.iter().filter(|n| names.contains(&s(&n["name"]))) {
-        for e in n["endpoints"].as_array().unwrap() {
-            if e["slot"] != "control" {
-                out.push(s(&e["addr"]).rsplit(':').next().unwrap().parse().unwrap());
-            }
-        }
+        out.push(s(&n["transport_addr"]).rsplit(':').next().unwrap().parse().unwrap());
     }
     out
 }

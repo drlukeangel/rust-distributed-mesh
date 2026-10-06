@@ -81,7 +81,7 @@ pub fn build_names_a_provider(body: &serde_json::Value) -> bool {
 // retires one runtime from an already-resolved launch; it decides nothing.
 // ---------------------------------------------------------------------------
 
-use crate::model::{DeploymentId, EndpointSlot, PathName};
+use crate::model::{DeploymentId, PathName};
 use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -95,9 +95,10 @@ pub struct ResolvedNodeLaunch {
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
     pub data_dir: PathBuf,
-    /// The advertised endpoints the runtime must bind. The provider honours
-    /// them; it never invents one.
-    pub endpoints: Vec<EndpointSlot>,
+    /// The advertised sockets the runtime must bind: its Iroh transport and its
+    /// listeners. The provider honours them; it never invents one.
+    pub transport: std::net::SocketAddr,
+    pub listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
 /// A realised runtime, exactly: a pid only together with its start token, a

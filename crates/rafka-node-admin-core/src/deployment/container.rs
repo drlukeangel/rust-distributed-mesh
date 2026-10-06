@@ -104,6 +104,25 @@ pub fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
     netns_table_holds(pid, "tcp", addr, Some("0A"))
 }
 
+/// Every UDP socket bound in the network namespace of `pid`, as
+/// `/proc/<pid>/net/udp` lists them (IPv4 only; an unspecified bind is kept as such).
+pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
+    let path = format!("/proc/{pid}/net/udp");
+    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let mut out: Vec<SocketAddr> = table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let local = line.split_whitespace().nth(1)?;
+            let (ip, port) = local.split_once(':')?;
+            let (ip, port) = (u32::from_str_radix(ip, 16).ok()?, u16::from_str_radix(port, 16).ok()?);
+            Some(SocketAddr::new(IpAddr::from(ip.to_ne_bytes()), port))
+        })
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
     let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
@@ -264,9 +283,9 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
         let err = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason };
-        let ip = spec.endpoints.first().map(|e| e.addr.ip()).ok_or_else(|| err("no endpoint assigned".into()))?;
-        if let Some(e) = spec.endpoints.iter().find(|e| e.addr.ip() != ip) {
-            return Err(err(format!("slot {} is assigned {}, but one container has one address ({ip})", e.slot, e.addr)));
+        let ip = spec.transport.ip();
+        if let Some((n, a)) = spec.listeners.iter().find(|(_, a)| a.ip() != ip) {
+            return Err(err(format!("listener {n} is assigned {a}, but one container has one address ({ip})")));
         }
         std::fs::create_dir_all(&spec.data_dir).map_err(|e| err(format!("data dir {}: {e}", spec.data_dir.display())))?;
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;

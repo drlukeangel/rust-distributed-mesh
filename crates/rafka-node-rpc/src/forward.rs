@@ -78,6 +78,7 @@ async fn carry_once(
         RpcOutcome::Reply(r) => ForwardReply::Relayed { inner: r.into_value() },
         RpcOutcome::NotSent(n) => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
         RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { tag: u.tag() },
+        RpcOutcome::RejectedStale(r) => ForwardReply::InnerRejectedStale { slot: r.slot().to_string(), freshness: r.freshness().to_string() },
         RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { reason: format!("{:?}", i.reason()) },
     }
 }

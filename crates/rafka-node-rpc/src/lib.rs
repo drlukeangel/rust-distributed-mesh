@@ -24,4 +24,4 @@ pub use client::{Budget, CallEvidence, CallOptions, Decode, NodeRpcClient};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
-pub use server::{HandlerFault, NodeRpcServer, PeerContext, ServerBuilder, ServerStats};
+pub use server::{FenceMismatch, HandlerFault, NodeRpcServer, PeerContext, ServedBirth, ServerBuilder, ServerStats};

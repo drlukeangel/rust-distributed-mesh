@@ -8,7 +8,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
 use rafka_node_rpc::admission::Limits;
-use rafka_node_rpc::{Budget, CallOptions, Decode, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
+use rafka_node_rpc::{ServedBirth, Budget, CallOptions, Decode, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::catalog::TagOwner;
 use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
@@ -27,6 +27,7 @@ struct Rig {
 
 async fn rig(echo_cap: Option<Limits>) -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
+    let (node_id, incarnation, slot) = (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"));
     let h = handled.clone();
     let mut b = ServerBuilder::new().serve::<Echo, _, _>(TagOwner::Core, move |_peer, req: EchoRequest| {
         let h = h.clone();
@@ -51,20 +52,20 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     if let Some(l) = echo_cap {
         b = b.limits(Echo::TAG, l);
     }
-    let server = b.seal("rpc-0").unwrap();
+    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }, [slot.clone()]).unwrap();
     let stats = server.stats();
     let key = SecretKey::generate();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
-    let node_id = NodeId::mint();
     resolver.insert(ResolvedNode {
         node_id: node_id.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),
         transport_id: key.public(),
-        incarnation: IncarnationId::mint(),
-        endpoints: vec![EndpointSlot::assign("rpc-0", addr)],
+        transport_addr: addr,
+        incarnation,
+        slots: vec![slot],
     });
     let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     Rig { _router: router, stats, handled, client: NodeRpcClient::new(cep, resolver), target: NodeTarget::ExactNode(node_id) }
@@ -174,14 +175,18 @@ async fn admission_full_is_an_immediate_typed_busy_and_the_handler_never_runs() 
 }
 
 #[tokio::test]
-async fn resolution_failures_and_a_superseded_pin_are_not_sent_before_any_dial() {
+async fn a_resolution_failure_is_not_sent_and_a_superseded_pin_is_rejected_stale_before_any_dial() {
     let r = rig(None).await;
     let (out, ev) = r.client.call::<Echo>(&NodeTarget::ExactNode(NodeId::mint()), &echo(b"x"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Resolve(_))), "{out:?}");
     assert!(ev.is_none());
-    let opts = CallOptions { pin: Some(("rpc-0".into(), rafka_mesh_entity::FreshnessToken::mint())), ..Default::default() };
+    let stale = rafka_mesh_entity::FreshnessToken::mint();
+    let opts = CallOptions { pin: Some(("rpc-0".into(), stale.clone())), ..Default::default() };
     let (out, _) = r.client.call::<Echo>(&r.target, &echo(b"x"), &opts).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Superseded { slot: "rpc-0".into() }), "{out:?}");
+    assert!(
+        matches!(&out, RpcOutcome::RejectedStale(s) if s.slot() == "rpc-0" && s.freshness() == stale.to_string()),
+        "the caller decided the target is stale: RejectedStale, not NotSent: {out:?}"
+    );
     assert_eq!(ServerStats::get(&r.stats.dispatched), 0);
 }
 

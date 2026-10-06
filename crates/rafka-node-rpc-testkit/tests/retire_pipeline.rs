@@ -14,7 +14,7 @@ use common::{add_node, admin_side, publish_build, template, Published, Spans};
 use rafka_mesh_entity::{FabricId, MemberStatus};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE_SLOTS};
+use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
@@ -33,7 +33,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     // Exactly one rpc node's worth of ports.
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58600, 58601));
+    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58600, 58600));
     let sink = Published::default();
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
@@ -47,10 +47,10 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
         timeouts: Timeouts::default(),
     };
     let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-    let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), slots: RPC_NODE_SLOTS, restart_of: None };
+    let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None };
 
     let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
-    let ports: Vec<SocketAddr> = first.node.endpoints.iter().map(|e| e.addr).collect();
+    let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
     let retire_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     pipeline
@@ -71,7 +71,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
     assert_eq!(digest.status, MemberStatus::Leaving, "the node said Leaving on the fabric before it went");
     assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
-    assert!(ports.iter().all(|a| UdpSocket::bind(a).is_ok()), "the runtime released its ports");
+    assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
     assert_eq!(allocator.lock().unwrap().held(&node), None);
     assert_eq!(allocator.lock().unwrap().in_use_count(), 0, "no port leaked");
     assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
@@ -96,11 +96,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
 
     // Create again on the same node: only possible on the released ports.
     let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
-    let mut reused: Vec<SocketAddr> = again.node.endpoints.iter().map(|e| e.addr).collect();
-    let mut before = ports.clone();
-    reused.sort();
-    before.sort();
-    assert_eq!(reused, before, "the new node took the released ports");
+    assert_eq!(again.node.transport_addr, Some(port), "the new node took the released port");
     assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
     let again_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
