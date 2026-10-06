@@ -79,8 +79,8 @@ BuildStateAdapter facts   = how one reconciliation is executing
 28. Logical `NodeId`, `MeshId`, `FabricId` are bare 12-character lowercase Crockford Base32 values carrying 60 random bits.
 29. Only `NodeId` is an election ordering key. `MeshId` and `FabricId` are equality-only identities.
 30. Iroh `EndpointId` is transport identity. It must never be represented by logical `FabricId`.
-31. Canonical leadership is committed Ready candidates -> lowest complete NodeId. Ready is the only election eligibility bit.
-32. For node-admins, committed Ready means authority-capable hydration is complete: current topology, current DesiredTopologyProjection, RuntimeFacts + required runtime metadata for held births it may have to manage, provider-control-domain reachability or a valid domain-local execution path, and required lifecycle/status provenance. These facts are readiness prerequisites, not election scoring.
+31. Canonical leadership is ReadyForTraffic candidates -> lowest complete NodeId. Ready is the only election eligibility bit.
+32. For node-admins, Ready means authority-capable hydration is complete: current topology, current DesiredTopologyProjection, RuntimeFacts + required runtime metadata for held births it may have to manage, and provider-control-domain reachability or a valid domain-local execution path. These facts are readiness prerequisites, not election scoring.
 33. Product chaos remains downstream i87; i143 proves generic deterministic + real process/container fault behavior.
 34. Transitional Rafka legacy tags exist only as downstream i141/i142 adapters. Generic RDM has no Rafka legacy handlers.
 
@@ -346,7 +346,7 @@ Day 0
   bootstrap current control state and first Ready through Day-0 lifecycle
 
 single-admin recovery root
-  fenced rule proves no live authority-Applied Ready admin exists
+  fenced rule proves no live Ready admin exists
   recovery-root self-apply grants Ready only
 ```
 
@@ -400,7 +400,7 @@ Current RDM transport identity formerly named `FabricId` must be renamed/retyped
 ### 6.4 Election canon
 
 ```text
-eligible = committed ReadyForTraffic candidates
+eligible = ReadyForTraffic candidates
 winner   = lowest complete canonical NodeId
 ```
 
@@ -482,7 +482,7 @@ fabric authority exists
        retire only canonically proven dead/superseded births
        create missing ordinary members
        create missing sibling node-admins
-  -> committed ReadyForTraffic
+  -> ReadyForTraffic
   -> normal node-admin election chooses actual mesh primary
   -> elected mesh primary owns normal Mesh lifecycle/status
   -> fabric election recomputes
@@ -524,11 +524,11 @@ NotSent
 Indeterminate
 ```
 
-Pending-before-Build is hard: only `Applied|AlreadyApplied` permits reconciliation to start. Retry uses the same transition ID and exact target/birth fencing.
+Pending-before-Build is hard: only `Applied|AlreadyApplied` permits reconciliation to start. A retry resends the same operation, idempotent on its natural key, with exact target/birth fencing.
 
-Before durable product control rows exist, committed gossip status must carry authority/transition provenance distinct from self-claim. After durable cutover, `Applied` means the authoritative write ACKed.
+After durable cutover, `Applied` means the authoritative write ACKed.
 
-Single-admin restart may use the defined recovery-root Ready self-apply only if no live authority-Applied Ready admin exists. It grants Ready only; election still runs. Ordinary joining admins never use that as a fallback for failed hydration.
+Single-admin restart may use the defined recovery-root Ready self-apply only if no live Ready admin exists. It grants Ready only; election still runs. Ordinary joining admins never use that as a fallback for failed hydration.
 
 ---
 
@@ -696,7 +696,7 @@ Other late export gates include #2815 one-process Endpoint and #2802 semantic ro
 - failed RPC/dial/silence/provider-domain mismatch is never exported as death proof.
 
 ### Leadership
-- only committed Ready candidates are eligible;
+- only ReadyForTraffic candidates are eligible;
 - node-admin Ready includes current desired + RuntimeFact/runtime-metadata + provider-domain authority-capable hydration;
 - normal joining admins cannot self-Ready around missing hydration; only Day-0/fenced single-admin recovery root may establish Ready without existing Ready authority;
 - complete NodeId is the only election key;

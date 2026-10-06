@@ -238,7 +238,7 @@ In RDM (`rafka-node-admin-core`: `desired`, `drift`):
 A cohort is one kind's members in one mesh.
 
 ```text
-eligible = committed ReadyForTraffic candidates
+eligible = ReadyForTraffic candidates
 winner   = lowest complete canonical NodeId
 ```
 
@@ -285,7 +285,6 @@ current membership/topology
 current DesiredTopologyProjection
 current RuntimeFacts + required current runtime metadata for held births it may have to manage
 provider-control-domain reachability or a valid domain-local execution route
-required lifecycle/status provenance
 ```
 
 This hydration is a readiness prerequisite, not an election score.
@@ -303,7 +302,7 @@ Day 0
     commit first Ready through the Day-0 lifecycle path
 
 single-admin recovery root
-    only when canonical lifecycle proof says no live authority-Applied Ready admin exists
+    only when canonical lifecycle proof says no live Ready admin exists
     use the defined fenced recovery-root Ready self-apply
 ```
 
