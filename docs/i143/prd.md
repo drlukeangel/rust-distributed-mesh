@@ -633,6 +633,46 @@ Wedge cuts include request pre-send/post-apply, Build/deployment stall, desired-
 
 Every E2E produces blackbox state plus OTLP artifacts. Fault injection itself is never the success criterion.
 
+### 12.1 Seeded soak (export bar)
+
+One deterministic endurance gate, not a second scenario suite:
+
+```text
+shape:     multi-Mesh estate; enough admins for real mesh-primary and fabric-primary movement;
+           ordinary rpc nodes in every Mesh
+duration:  30 minutes
+seed:      fixed, printed in the evidence, rerunnable exactly
+faults, repeatedly:
+    node-admin restart          ordinary node restart
+    same-path replacement       exact runtime kill
+    mesh-primary loss           fabric-primary loss
+    temporary partition + heal  endpoint slot/freshness supersession
+```
+
+It passes on outcomes, never on faults detected:
+
+- no hang or deadlock;
+- no two current births for one path;
+- no two accepted topology writers;
+- no duplicate drift attempt opened for one proven loss;
+- no Build minted for unchanged-topology drift;
+- no stale-slot application dispatch;
+- no permanent split after a partition heals;
+- no loss of `Fabric.build_id` or the accepted Build it names;
+- no unexplained orphan attempt or claim;
+- the final accepted topology converges, and every surviving expected path is reachable and current.
+
+A named refusal the architecture calls for is a pass. An unexplained timeout, silent drop, duplicate authority action or non-convergence fails the soak.
+
+### 12.2 Container proof (export bar)
+
+The named container cells, not the whole scenario gate rerun under `MESH_SPAWN_TYPE=container`:
+
+- exact container identity is the provider control domain plus the immutable container ID;
+- a successor in the same provider control domain adopts, inspects and controls the exact container;
+- an authority in another provider control domain never treats the locator as local: it refuses by name or delegates to a domain-local executor;
+- a real container kill: exact provider inspection proves it terminal, that is the death evidence, and recovery proceeds. This cell runs through the Build and runtime-adoption path, not the provider alone.
+
 ---
 
 ## 13. Story ordering and late gates
@@ -661,6 +701,8 @@ Other late export gates include #2815 one-process Endpoint and #2802 semantic ro
 ---
 
 ## 14. Export/import gate
+
+i141 pins RDM once: the exact 40-hex merged `main` commit on which the complete export gate below is green. There is no partial pin and no sequence of pins.
 
 `eligible=true` requires one exact RDM SHA with proof that:
 
