@@ -78,8 +78,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     let (_, fabric) = estate.get("/api/fabric").await;
     let advertised: Vec<String> = fabric["meshes"].as_array().unwrap().iter().map(|m| s(&m["admin_api_base"])).collect();
 
-    // B: grow mesh1. Once its first attempt is claimed, lose mesh1 entirely.
-    let (status, a) = estate.post("/api/build", &shape(5)).await;
+    // B: grow mesh1. Once its first attempt is claimed, lose mesh1 entirely. Its births run one
+    // after another (~55 ms each on the process provider), so six of them keep the first attempt
+    // running across several polls; two finished inside one 100 ms poll.
+    let (status, a) = estate.post("/api/build", &shape(9)).await;
     assert_eq!(status, 202, "{a}");
     let b = s(&a["build_id"]);
     // Active fabric-wide: the surviving mesh's admin already sees mesh1's
@@ -117,7 +119,7 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     // B completes under its own id, and mesh1 is back as itself.
     let done = estate.await_build(&b, Duration::from_secs(180)).await;
     assert!(done["attempt"].as_u64().unwrap() > 1, "a successor continued B: {done:#}");
-    let after = estate.settled(&names(&[("mesh1", 2, 5), ("mesh2", 2, 3)]), Duration::from_secs(60)).await;
+    let after = estate.settled(&names(&[("mesh1", 2, 9), ("mesh2", 2, 3)]), Duration::from_secs(60)).await;
     let (_, mesh1) = estate.get("/api/meshes/mesh1").await;
     assert_eq!(s(&mesh1["id"]), mesh1_id, "mesh1 recovered as itself: {mesh1:#}");
     // ...in the recovered mesh's own admins too: they carry its identity.
