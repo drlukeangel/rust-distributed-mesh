@@ -128,6 +128,10 @@ pub enum RetireStep {
     ReleaseEndpoints,
     /// Only when the retirement is permanent.
     ReleaseStorage,
+    /// Only in a whole-mesh retire: the executor's own membership view has heard this birth's
+    /// own `Leaving` before the local cleanup (Luke 2026-10-05). Not in [`RetireStep::ORDER`],
+    /// which is an ordinary node retire.
+    ObserveDeparture,
     RemoveTopologyMembership,
     Complete,
 }
@@ -154,6 +158,7 @@ impl RetireStep {
             Self::TerminateRuntime => "TerminateRuntime",
             Self::ReleaseEndpoints => "ReleaseEndpoints",
             Self::ReleaseStorage => "ReleaseStorage",
+            Self::ObserveDeparture => "ObserveDeparture",
             Self::RemoveTopologyMembership => "RemoveTopologyMembership",
             Self::Complete => "Complete",
         }
@@ -306,6 +311,12 @@ pub trait NodeObserver: Send + Sync {
     /// Does the node refuse new Node RPC work on every slot (a typed
     /// `Draining`, or nothing admits the call at all)?
     async fn admission_closed(&self, node: &Node) -> Result<(), String>;
+    /// Has this exact birth's own `Leaving` reached this admin's membership view (its own digest,
+    /// heard through gossip; never what this admin's pipeline wrote into its own view)? A birth
+    /// this admin never heard leave, or only judged dead from silence, has not departed.
+    async fn departed(&self, _node: &Node) -> bool {
+        false
+    }
 }
 
 /// The runtime part of a birth's own membership digest.
@@ -395,6 +406,9 @@ pub struct RetireRequest {
     /// Permanent: the data dir goes too. Otherwise it is kept (a restart or
     /// a replacement that reuses it).
     pub permanent: bool,
+    /// Part of a whole-mesh retire: hold the local cleanup until this admin's own membership view
+    /// has heard the birth's `Leaving` ([`RetireStep::ObserveDeparture`]).
+    pub observe_departure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -909,6 +923,19 @@ impl DeploymentPipeline<'_> {
                         Err(e) => Err(format!("{dir}: {e}")),
                     },
                     None => Ok(()),
+                }
+            })
+            .await?;
+        }
+        if req.observe_departure {
+            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
+                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
+                        self.timeouts.drain
+                    ))
                 }
             })
             .await?;

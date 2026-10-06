@@ -53,7 +53,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
 
     let retire_build = publish_build(&builds, BuildIntent::RemoveNode { node: node.clone(), incarnation: None }).await;
     pipeline
-        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), permanent: true })
+        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), permanent: true, observe_departure: false })
         .await
         .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -104,7 +104,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
 
     let again_build = publish_build(&builds, BuildIntent::RemoveNode { node: node.clone(), incarnation: None }).await;
     pipeline
-        .retire(&RetireRequest { build_id: again_build, attempt: 1, node: again.node.clone(), handle: again.handle.clone(), permanent: true })
+        .retire(&RetireRequest { build_id: again_build, attempt: 1, node: again.node.clone(), handle: again.handle.clone(), permanent: true, observe_departure: false })
         .await
         .unwrap();
     assert_eq!(allocator.lock().unwrap().in_use_count(), 0);

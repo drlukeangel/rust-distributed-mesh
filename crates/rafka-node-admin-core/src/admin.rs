@@ -332,6 +332,21 @@ pub fn hydration_blocker(me: &PathName, desired: &DesiredStore) -> Option<String
     desired.current().is_none().then(|| format!("{me}: holds no current desired topology (not hydrated from an existing authority)"))
 }
 
+/// The order a whole-mesh retire takes `members`: every ordinary member, then the admin cohort,
+/// then `last_admin` (the mesh's admin primary) last, so a live admin of the mesh forwards every
+/// departure before the last one goes. Within a group, path order.
+pub fn retire_mesh_order(members: Vec<PathName>, last_admin: Option<&PathName>) -> Vec<PathName> {
+    let mut ordinary: Vec<PathName> = members.iter().filter(|n| n.kind != NodeKind::NodeAdmin).cloned().collect();
+    let mut admins: Vec<PathName> = members.iter().filter(|n| n.kind == NodeKind::NodeAdmin && Some(*n) != last_admin).cloned().collect();
+    ordinary.sort();
+    admins.sort();
+    ordinary.extend(admins);
+    if let Some(r) = last_admin.filter(|r| members.contains(r)) {
+        ordinary.push(r.clone());
+    }
+    ordinary
+}
+
 /// Why this admin cannot yet take authority over `held` (every live birth it
 /// hears but itself): each birth that publishes no runtime fact, or one this
 /// admin's provider cannot adopt in its own control domain. Empty: it is
@@ -393,6 +408,10 @@ impl NodeObserver for MembershipObserver {
             None => Ok(()), // gone from the fabric
             Some(d) => Err(format!("{} still reports {:?}", node.name, d.status)),
         }
+    }
+
+    async fn departed(&self, node: &Node) -> bool {
+        self.digest_of(node).is_some_and(|d| d.status == MemberStatus::Leaving)
     }
 }
 
@@ -637,13 +656,17 @@ impl AdminRunner {
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
+        self.retire_with(build_id, attempt, node, permanent, false).await
+    }
+
+    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool, observe_departure: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
         let template = self.template_for(node.kind, &node.mesh).await;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent, observe_departure };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
@@ -718,15 +741,20 @@ impl AdminRunner {
                 self.retire(build_id, attempt, node, *permanent).instrument(span).await.map(|_| ())
             }
             BuildOperation::RetireMesh { mesh } => {
-                let members: Vec<PathName> = {
+                let (members, last_admin) = {
                     let view = self.topology.read().await;
                     let mut m: BTreeSet<PathName> = view.nodes.iter().filter(|n| n.mesh == *mesh && n.status.is_live()).map(|n| n.name.clone()).collect();
                     m.extend(self.handles.lock().unwrap().keys().filter(|n| n.mesh == *mesh).cloned());
-                    m.into_iter().collect()
+                    let last_admin = view.cohort_primary(mesh, NodeKind::NodeAdmin).map(|n| n.name.clone());
+                    (m.into_iter().collect::<Vec<_>>(), last_admin)
                 };
-                for node in members {
+                // Members first, the admin cohort last, the mesh's admin primary very
+                // last: every departure leaves the mesh through a live admin (Luke 2026-10-05).
+                // Each retire holds its local cleanup until this admin has heard the birth's own
+                // `Leaving`.
+                for node in retire_mesh_order(members, last_admin.as_ref()) {
                     let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                    self.retire(build_id, attempt, &node, true).instrument(span).await?;
+                    self.retire_with(build_id, attempt, &node, true, true).instrument(span).await?;
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
                 Ok(())
@@ -742,6 +770,9 @@ pub struct Running {
     pub runner: Arc<AdminRunner>,
     pub membership: Membership,
     pub digest: Arc<Mutex<MeshDigest>>,
+    /// This admin's place on the backbone: while it leaves, its aggregate publication carries its
+    /// own `Leaving` out of its mesh ([`Running::leave`]).
+    backbone: Backbone,
     router: IrohRouter,
     /// The digest cadence, the Build executor and the hierarchy publication:
     /// stopped first on leave.
@@ -777,11 +808,20 @@ impl Running {
             d
         };
         let _ = self.membership.publish(&say(MemberStatus::Draining)).await;
+        // The hierarchy loop is stopped above, so the backbone roles stay as they were when this
+        // admin began to leave: an admin primary keeps publishing its mesh's members on the
+        // backbone through the linger, its own `Leaving` among them, so its self-authored departure
+        // leaves the mesh by the path every member's does (Luke 2026-10-05). No other admin is a
+        // publisher of this admin's membership.
         let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
             let d = say(MemberStatus::Leaving);
-            let m = self.membership.clone();
+            let (m, bb, control) = (self.membership.clone(), self.backbone.clone(), self.control.clone());
             async move {
                 let _ = m.publish(&d).await;
+                let mesh = d.node.name.mesh.clone();
+                let mine: Vec<MeshDigest> = m.book.current(SILENT_AFTER).into_iter().filter(|x| x.node.name.mesh == mesh).collect();
+                let status = serde_json::to_value(control.topology.read().await.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                bb.publish(&m, mine, &status).await;
             }
         })
         .await;
@@ -1204,12 +1244,23 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, router: iroh_router, publisher, executor, hierarchy, tasks })
+    Ok(Running { api_base, control, runner, membership, digest, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (Luke 2026-10-05): a whole-mesh retire takes the mesh's ordinary members first,
+    /// then its admin cohort, and its admin primary last. Must NOT happen: an admin
+    /// before a member (path order puts `admin` before `rpc`).
+    #[test]
+    fn a_mesh_retire_takes_members_first_and_its_admin_primary_last() {
+        let p = |s: &str| -> PathName { s.parse().unwrap() };
+        let members = vec![p("mesh2.admin.1"), p("mesh2.admin.2"), p("mesh2.rpc.2"), p("mesh2.rpc.1")];
+        let order = retire_mesh_order(members, Some(&p("mesh2.admin.1")));
+        assert_eq!(order, vec![p("mesh2.rpc.1"), p("mesh2.rpc.2"), p("mesh2.admin.2"), p("mesh2.admin.1")]);
+    }
 
     fn fabric1() -> FabricId {
         FabricId::parse("fab000000001").unwrap()

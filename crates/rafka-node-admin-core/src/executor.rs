@@ -38,8 +38,26 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
+        // A whole-mesh retire runs outside the mesh it removes: an executor inside M cannot see a
+        // member's departure leave M, and would retire itself mid-plan. The fabric primary keeps
+        // authority; when it sits in M, execution goes to the lowest-NodeId ready mesh-primary
+        // admin of another mesh (the Build's ordinary hand-off). No such admin: none.
+        BuildOperation::RetireMesh { mesh } => match t.fabric_primary() {
+            Some(fp) if fp.mesh != *mesh => Some(fp.name.clone()),
+            _ => retire_mesh_executor_outside(mesh, t),
+        },
         _ => fabric(),
     }
+}
+
+/// The admin that executes `retire-mesh:mesh` when the fabric primary is inside `mesh`: the
+/// lowest-NodeId ready-for-traffic admin primary of another mesh.
+fn retire_mesh_executor_outside(mesh: &str, t: &Topology) -> Option<PathName> {
+    t.nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && n.mesh != mesh && n.status == crate::model::NodeStatus::ReadyForTraffic)
+        .min_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()))
+        .map(|n| n.name.clone())
 }
 
 /// The admin that executes what is left of a plan: the first operation's
@@ -268,6 +286,24 @@ mod tests {
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
+    }
+
+    /// CONTRACT (Luke 2026-10-05, mesh retire runs outside the mesh): `retire-mesh:M` runs on the
+    /// fabric primary when it is outside M; when the fabric primary sits inside M, on the
+    /// lowest-NodeId ready admin primary of another mesh; with no admin outside M, on none.
+    #[test]
+    fn a_mesh_retire_runs_outside_the_mesh_it_removes() {
+        let t = mm(true);
+        assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1", "the fabric primary, outside mesh2");
+        let mut inside = mm(true);
+        for n in inside.nodes.iter_mut() {
+            n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
+        }
+        assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &inside), "mesh1.admin.1", "the fabric primary is in mesh2: another mesh's admin primary runs it");
+        let mut alone = mm(true);
+        alone.nodes.retain(|n| n.mesh == "mesh2");
+        alone.nodes[0].is_fabric_primary = true;
+        assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &alone), "", "no admin outside mesh2: no executor");
     }
 
     #[test]

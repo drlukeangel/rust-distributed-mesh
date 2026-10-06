@@ -152,6 +152,14 @@ impl NodeObserver for LiveMesh {
         })
     }
 
+    async fn departed(&self, node: &Node) -> bool {
+        use rafka_mesh_entity::MemberStatus;
+        self.membership
+            .book
+            .get(node.node_id.as_str())
+            .is_some_and(|(d, _)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && d.status == MemberStatus::Leaving)
+    }
+
     async fn admission_closed(&self, node: &Node) -> Result<(), String> {
         let target = self.echo_target(node)?;
         for slot in &node.endpoints {
