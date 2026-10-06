@@ -4,8 +4,11 @@
 //!
 //! Build A grows mesh1 and completes; its history is forgotten. Admins are
 //! then born one at a time until one draws a NodeId lower than the incumbent
-//! admin's (NodeIds are random; each birth is a fair coin, and a loser is
-//! removed again). That late admin:
+//! admin's (NodeIds are random, so a birth wins with the incumbent's share of the
+//! id space; a loser is removed again). The incumbent is drawn first from the
+//! upper 70% of the space (an estate whose bootstrap id is lower is stopped and
+//! bootstrapped again), so each birth wins at least 30% of the time. That late
+//! admin:
 //! - holds the current desired topology and every held birth's runtime
 //!   before it commits Ready;
 //! - is elected (lowest ready NodeId: node-admin cohort, mesh, fabric);
@@ -48,9 +51,32 @@ async fn build(estate: &Estate, base: &str, method: &str, path: &str, body: Valu
     id
 }
 
+/// The share of the 60-bit id space below `id` (canonical Crockford, most significant first),
+/// read from its first two characters.
+fn share_below(id: &str) -> f64 {
+    const ALPHABET: &str = "0123456789abcdefghjkmnpqrstvwxyz";
+    let digit = |c: char| ALPHABET.find(c).unwrap_or(0) as f64;
+    let mut chars = id.chars();
+    let (a, b) = (chars.next().map_or(0.0, digit), chars.next().map_or(0.0, digit));
+    (a * 32.0 + b) / 1024.0
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() {
+    // An incumbent near the bottom of the id space can never be beaten by a later birth: draw it
+    // from the upper 70%.
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    for _ in 0..5 {
+        let me = wait_for("the bootstrap admin lists itself", Duration::from_secs(30), || async {
+            estate.nodes().await.into_iter().find(|n| n["name"] == "mesh1.admin.1" && !n["node_id"].as_str().unwrap_or_default().is_empty())
+        })
+        .await;
+        if share_below(&s(&me["node_id"])) >= 0.3 {
+            break;
+        }
+        estate.stop().await;
+        estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    }
     let base = estate.admin.clone();
     // Build A: three rpc nodes, launched by the bootstrap admin; then forgotten.
     let a = build(&estate, &base, "POST", "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
@@ -62,7 +88,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
 
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
-    for _ in 0..10 {
+    for _ in 0..30 {
         build(&estate, &base, "POST", "/api/nodes/spawn", json!({"mesh": "mesh1", "kind": "node_admin"})).await;
         let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
         let born = nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1").cloned().unwrap();
@@ -73,7 +99,13 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
         build(&estate, &base, "DELETE", &format!("/api/nodes/{}", s(&born["name"])), Value::Null).await;
         estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     }
-    let late = late.expect("one of ten births drew a lower NodeId than the incumbent (a fair coin each)");
+    let late = late.unwrap_or_else(|| {
+        panic!(
+            "none of 30 births drew a NodeId below the incumbent {} (it holds {:.0}% of the space below it)",
+            s(&incumbent["node_id"]),
+            share_below(&s(&incumbent["node_id"])) * 100.0
+        )
+    });
     let late_name = s(&late["name"]);
     let late_base = s(&late["admin_api_base"]);
 
