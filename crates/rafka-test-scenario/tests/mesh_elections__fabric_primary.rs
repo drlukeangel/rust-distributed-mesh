@@ -258,11 +258,17 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
         kill(estate.pid_of(&winner).await);
     }
     estate.admin = survivor_base.clone();
-    let after = wait_for("the fabric seat moves to the next-lowest mesh primary", Duration::from_secs(60), || async {
+    // The killed winner is tracked by its NodeId, never its path: drift recovery reborns the
+    // exited path at once under a NEW NodeId (the dead incarnation is gone or `dead`), and that
+    // rebirth may even take the seat back by NodeId order. What moved is the seat away from the
+    // killed NodeId.
+    let winner_id = s(&winner_node["node_id"]);
+    let after = wait_for("the fabric seat moves off the killed winner's NodeId", Duration::from_secs(60), || async {
         let v = estate.nodes_at(&survivor_base).await;
         let fp = expected_fabric_primary(&v);
-        let dead = v.iter().any(|n| n["name"] == winner.as_str() && n["status"] == "dead");
-        (dead && fp.is_some() && fp.as_deref() != Some(winner.as_str()) && seats_as_expected(&v).is_ok()).then_some(v)
+        let fp_id = fp.as_deref().and_then(|name| v.iter().find(|n| n["name"] == name)).map(|n| s(&n["node_id"]));
+        let killed_gone = !v.iter().any(|n| s(&n["node_id"]) == winner_id && n["status"] != "dead");
+        (killed_gone && fp_id.is_some() && fp_id.as_deref() != Some(winner_id.as_str()) && seats_as_expected(&v).is_ok()).then_some(v)
     })
     .await;
     let next = expected_fabric_primary(&after).unwrap();

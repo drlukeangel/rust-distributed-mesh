@@ -159,9 +159,23 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         })
         .await;
     }
-    let ev = roles(&estate.spans(), "rafka.mesh.backbone.update.via-aggregate-publisher", "mesh");
+    // An admin that is not its mesh's primary now may have published earlier: under
+    // lowest-ready-NodeId elections a mesh's first admin holds the seat until a lower NodeId of
+    // its cohort is ready, then hands it over. What must hold: it publishes only while it is its
+    // mesh's primary in its own view, and none of its publishing intervals is still open.
+    let spans = estate.spans();
+    let ev = roles(&spans, "rafka.mesh.backbone.update.via-aggregate-publisher", "mesh");
     for n in admins.iter().filter(|n| ["mesh1", "mesh2"].iter().all(|m| s(&primary(&nodes, m)["name"]) != **n)) {
-        assert!(!ev.iter().any(|e| &e.1 == n), "the non-primary admin {n} never publishes: {ev:?}");
+        let mine: Vec<&(u64, String, String, String)> = ev.iter().filter(|e| &e.1 == n).collect();
+        assert!(mine.last().is_none_or(|e| e.3 == "stop"), "the non-primary admin {n} has stopped publishing: {mine:?}");
+        for e in mine.iter().filter(|e| e.3 == "start") {
+            let seat = named(&spans, "rafka.mesh.election.resolve.via-mesh-primary")
+                .into_iter()
+                .filter(|sp| attr(sp, "observer") == *n && start(sp) <= e.0)
+                .max_by_key(|sp| start(sp))
+                .map(|sp| attr(sp, "winner_path"));
+            assert_eq!(seat.as_deref(), Some(n.as_str()), "{n} started publishing {} only while it held the mesh seat: {mine:?}", e.2);
+        }
     }
 
     // 3 + 5. Lose mesh2's admin primary: its successor publishes mesh2 and
