@@ -96,8 +96,6 @@ builds.storage facts = execution evidence for attempts of that Build
 
 ---
 
----
-
 ## 2. Substrate ownership
 
 ```text
@@ -194,8 +192,6 @@ A downstream wrapper may add policy/evidence but may not reimplement the generic
 
 ---
 
----
-
 ## 5. Accepted topology, Build, deployment, exact runtime proof, lifecycle
 
 ### 5.1 Accepted topology
@@ -283,7 +279,7 @@ Attempts and receipts append to the Build `Fabric.build_id` names. Evidence for 
 
 `DELETE /api/builds?id=B` refuses while `Fabric.build_id == B`, even when the latest attempt is complete.
 
-### 5.3 RuntimeFact / provider / current runtime metadata### 5.3 RuntimeFact / provider / current runtime metadata
+### 5.3 RuntimeFact / provider / current runtime metadata
 
 Conceptually:
 
