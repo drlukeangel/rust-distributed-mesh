@@ -14,6 +14,7 @@ pub mod forward;
 pub mod live;
 pub mod pool;
 pub mod resolve;
+pub mod route;
 pub mod server;
 pub mod stream;
 
@@ -24,4 +25,5 @@ pub use client::{Budget, CallEvidence, CallOptions, Decode, NodeRpcClient};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
+pub use route::{RouteChoice, RouteLeg};
 pub use server::{FenceMismatch, HandlerFault, NodeRpcServer, PeerContext, ServedBirth, ServerBuilder, ServerStats};

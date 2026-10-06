@@ -16,7 +16,7 @@
 //! `Reply` carries the executing node's provenance and the typed result.
 
 use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId, PathName};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
 use serde_json::{json, Value};
@@ -29,10 +29,16 @@ struct Args {
     key: String,
     value: Option<String>,
     expected: Option<String>,
+    /// Carry the call through this node (`path:<path.name>` or `exact:<node_id>`) to the exact
+    /// target: the `ViaPeer` route, executed as the composition seam does.
+    via: Option<String>,
+    /// Execute the `NoActiveRoute` choice: the seam sends nothing and answers by name.
+    no_route: bool,
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
-    let (mut admin, mut op, mut target, mut key, mut value, mut expected) = (None, None, None, None, None, None);
+    let (mut admin, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
+    let mut no_route = false;
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -42,6 +48,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--value" => value = Some(take("--value")?),
             "--expected" => expected = Some(take("--expected")?),
             "--query" => key = Some(take("--query")?),
+            "--via" => via = Some(take("--via")?),
+            "--no-route" => no_route = true,
             "get" | "put" | "delete" | "cas" | "resolve" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -53,6 +61,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         key: key.ok_or("--key is required")?,
         value,
         expected,
+        via,
+        no_route,
     })
 }
 
@@ -143,14 +153,33 @@ async fn run(a: Args) -> Result<Value, String> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
         .await
         .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
-    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
-    let (out, _) = client.call::<ProofStore>(&target, &req, &CallOptions::default()).await;
+    let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+    // The exact final target first; `--via` only decides how it is reached.
+    // The exact final target first (a `path:` is the current holder); a target the view does
+    // not hold is the client's own `NotSent(Resolve(..))`, never a refusal here.
+    let route = match (&a.via, a.no_route) {
+        (_, true) => rafka_node_rpc::RouteChoice::NoActiveRoute,
+        (None, false) => rafka_node_rpc::RouteChoice::Direct,
+        (Some(v), false) => {
+            let carrier = self::target(v)?;
+            let c = resolver.resolve(&carrier).map_err(|f| format!("the carrier {v} does not resolve: {f:?}"))?;
+            rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name }
+        }
+    };
+    let (out, leg): (RpcOutcome<ProofReply>, &str) = match resolver.resolve(&target) {
+        Ok(n) => {
+            let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &CallOptions::default()).await;
+            (out, leg.token())
+        }
+        Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
+        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::TAG).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
+    };
     Ok(match &out {
-        RpcOutcome::Reply(r) => json!({"outcome": out.name(), "reply": reply(r.value())}),
-        RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
-        RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
-        RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
-        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "slot": r.slot(), "freshness": r.freshness()}),
+        RpcOutcome::Reply(r) => json!({"outcome": out.name(), "route": leg, "reply": reply(r.value())}),
+        RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", n.reason())}),
+        RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", i.reason())}),
+        RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "route": leg, "reason": format!("{u:?}")}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "route": leg, "slot": r.slot(), "freshness": r.freshness()}),
     })
 }
 

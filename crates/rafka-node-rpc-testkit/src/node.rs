@@ -137,15 +137,19 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
-    // One endpoint for the process: every assigned slot is one socket of it, and Node RPC and
-    // gossip share it by ALPN. The socket a request arrives on names no slot; the request's
-    // target does, and the server holds every slot under its freshness token.
-    let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
-        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() }, launch.endpoints.iter().cloned())
-        .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
+    // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
+    // names its slot in its framing; the server holds every slot under its freshness token.
     let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.transport_addr)
         .await
         .with_context(|| format!("the node cannot bind its assigned transport address {}", launch.transport_addr))?;
+    // The process's one client, made before the server seals: the server carries the proof
+    // store for others through it (one direct inner call per forward, never a second hop).
+    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
+    let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
+        .carry::<crate::proof_store::ProofStore>()
+        .serve_forward(client.clone())
+        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() }, launch.endpoints.iter().cloned())
+        .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
     let routers = vec![Router::builder(ep0.clone()).accept(rafka_node_rpc::ALPN, server.clone()).accept(iroh_gossip::ALPN, g.clone()).spawn()];
     let seeds: Vec<EndpointAddr> = launch
@@ -176,7 +180,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, seeds).await?;
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_with(resolver, ep0.clone(), &membership.book, &name);
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver, client, &membership.book, &name);
     // Entry: take the launching admin's membership before marking ready. An
     // admin that cannot answer does not hold the node: its view fills from
     // gossip instead (the pull is named either way).

@@ -66,6 +66,8 @@ pub enum NotSentReason {
     Carried(String),
     /// The protocol is not forwardable, so it never travels through a carrier.
     NotForwardable { tag: u8 },
+    /// Connections chose no route to the exact target: no leg was started.
+    NoActiveRoute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

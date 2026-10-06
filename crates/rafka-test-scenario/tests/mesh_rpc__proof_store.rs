@@ -105,7 +105,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     // The admin's view is current-only, so the probe's own resolver can only say the old id is
     // nothing it knows.
     let old = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
-    assert_eq!(old, json!({"outcome": "NotSent", "reason": "Resolve(Unknown)"}), "exact:<old> never follows a replacement: {old}");
+    assert_eq!(old, json!({"outcome": "NotSent", "reason": "Resolve(Unknown)", "route": "direct"}), "exact:<old> never follows a replacement: {old}");
     // A node's own live resolver knows more: the replacement published the old birth's
     // departure, so the other rpc node answers Gone for the old id, the new holder for the
     // path, and Unknown for an id nobody ever saw.

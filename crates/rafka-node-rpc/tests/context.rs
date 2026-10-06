@@ -30,9 +30,23 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-const TP: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
 const PARENT: &str = "b7ad6b7169203331";
+
+/// A trace of this cell's own: the cells share one exporter, so each reads only its trace.
+struct Trace {
+    id: String,
+    tp: String,
+}
+
+fn trace() -> Trace {
+    let id = format!("{:032x}", (u128::from(rand_u64()) << 64) | u128::from(rand_u64()));
+    Trace { tp: format!("00-{id}-{PARENT}-01"), id }
+}
+
+fn rand_u64() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new().build_hasher().finish() | 1
+}
 
 /// One in-memory exporter for the test binary; each cell reads only its own trace or payload.
 fn spans() -> InMemorySpanExporter {
@@ -184,10 +198,10 @@ fn with(context: CallContext) -> CallOptions {
     CallOptions { context: Some(context), ..Default::default() }
 }
 
-fn full() -> CallContext {
+fn full(t: &Trace) -> CallContext {
     CallContext {
         caller_system: Some("rdm".into()),
-        traceparent: Some(TP.into()),
+        traceparent: Some(t.tp.clone()),
         tracestate: Some("rojo=00f067aa0ba902b7".into()),
         baggage: Some("test_case=ctx,scenario=direct,operation=echo,secret=never".into()),
     }
@@ -198,17 +212,18 @@ async fn a_direct_call_continues_the_callers_trace_and_records_only_allowlisted_
     spans();
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(None, &[&p.resolved]).await;
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"direct"), &with(full())).await;
+    let t = trace();
+    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"direct"), &with(full(&t))).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
 
     // The whole context reaches the handler: baggage and tracestate propagate whole.
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].context, full(), "the handler sees the context the caller sent, whole");
+    assert_eq!(seen[0].context, full(&t), "the handler sees the context the caller sent, whole");
 
     // The serve span is a child of the caller's remote span, carries its tracestate, names the
     // caller system and exposes the allowlisted keys only.
-    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(TRACE));
+    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id));
     assert_eq!(serve.len(), 1, "{serve:?}");
     let s = &serve[0];
     assert_eq!(s.parent_span_id.to_string(), PARENT, "the caller's span is the parent");
@@ -291,12 +306,13 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     assert_eq!(seen[0].context, CallContext::default(), "an invalid traceparent took the tracestate with it; nothing survived");
 
     // A tracestate over its bound travels with a valid traceparent and is dropped alone.
-    let ts = CallContext { tracestate: Some("k=".to_string() + &"v".repeat(MAX_TRACESTATE_BYTES)), ..full() };
+    let t = trace();
+    let ts = CallContext { tracestate: Some("k=".to_string() + &"v".repeat(MAX_TRACESTATE_BYTES)), ..full(&t) };
     let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"ts"), &with(ts)).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
-    assert_eq!(seen[1].context, CallContext { tracestate: None, ..full() });
-    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(TRACE));
+    assert_eq!(seen[1].context, CallContext { tracestate: None, ..full(&t) });
+    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id));
     assert!(serve.iter().any(|s| attr(s, "caller_system").as_deref() == Some("rdm") && s.parent_span_id.to_string() == PARENT), "the valid parts still apply: {serve:?}");
 }
 
@@ -309,15 +325,16 @@ async fn context_never_reaches_the_fence_decision() {
     let mut stale = p.resolved.clone();
     stale.slots[0] = EndpointSlot::fresh("rpc-0");
     let (c2, _) = client(None, &[&stale]).await;
-    let ctx = CallContext { baggage: Some("operation=make-it-current".into()), ..full() };
+    let t = trace();
+    let ctx = CallContext { baggage: Some("operation=make-it-current".into()), ..full(&t) };
     let (out, _) = c2.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
     assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
     // The refusal is still correlated with the caller's trace.
-    let refused = finished("rafka.node_rpc.connection.reject.via-stale-slot", Some(TRACE));
+    let refused = finished("rafka.node_rpc.connection.reject.via-stale-slot", Some(&t.id));
     assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").as_deref() == Some("rdm")), "{refused:?}");
     // The current client serves with the same context.
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full())).await;
+    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
 }
 
@@ -343,7 +360,8 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
     let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), transport_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc, slots: vec![cslot] };
 
     let (origin, _) = client(Some("rdm"), &[&carrier, &target.resolved]).await;
-    let ctx = CallContext { baggage: Some("test_case=ctx,scenario=carried".into()), ..full() };
+    let t = trace();
+    let ctx = CallContext { baggage: Some("test_case=ctx,scenario=carried".into()), ..full(&t) };
     let probe = ProbeRequest::Probe { payload: b"via".to_vec() };
     let (out, _) = origin.call_via::<Probe>(&NodeTarget::ExactNode(carrier.node_id.clone()), &target.resolved.node_id, &probe, &with(ctx.clone())).await;
     assert!(matches!(&out, RpcOutcome::Reply(r) if matches!(r.value(), ProbeReply::Probed { payload } if payload == b"via")), "{out:?}");
@@ -356,15 +374,15 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
 
     // One trace: the Forward serve and the hop are children of the origin's span, and the
     // target's serve span keeps the origin's causal parent rather than the hop.
-    let forward_serve: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(TRACE)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("forward")).collect();
+    let forward_serve: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("forward")).collect();
     assert_eq!(forward_serve.len(), 1, "{forward_serve:?}");
     assert_eq!(forward_serve[0].parent_span_id.to_string(), PARENT);
     assert_eq!(attr(&forward_serve[0], "caller_system").as_deref(), Some("rdm"));
-    let hop = finished("rafka.node_rpc.request.serve.via-carried-inner", Some(TRACE));
+    let hop = finished("rafka.node_rpc.request.serve.via-carried-inner", Some(&t.id));
     assert_eq!(hop.len(), 1, "{hop:?}");
     assert_eq!(hop[0].parent_span_id.to_string(), PARENT, "the hop is a child span in the origin's trace");
     assert_eq!(attr(&hop[0], "caller_system").as_deref(), Some("rdm"));
-    let inner: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(TRACE)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("probe")).collect();
+    let inner: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("probe")).collect();
     assert_eq!(inner.len(), 1, "{inner:?}");
     assert_eq!(inner[0].parent_span_id.to_string(), PARENT, "the origin's parent, not the hop");
     assert_eq!(attr(&inner[0], "caller_system").as_deref(), Some("rdm"));
