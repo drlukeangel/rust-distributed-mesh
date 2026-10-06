@@ -44,6 +44,26 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
+/// Start a `rafka-node-admin` with `env` and wait for the control API base it advertises.
+fn spawn_admin(env: &[(&str, String)], what: &str) -> (Child, String) {
+    let mut cmd = Command::new(binary("rafka-node-admin"));
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap_or_else(|e| panic!("spawn {what}: {e}"));
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(base) = line.strip_prefix("RAFKA_NODE_ADMIN_API_BASE=") {
+                let _ = tx.send(base.trim().to_string());
+            }
+        }
+    });
+    let base = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("{what} never advertised RAFKA_NODE_ADMIN_API_BASE"));
+    (child, base)
+}
+
 pub fn binary(name: &str) -> PathBuf {
     let p = bin_dir().join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
@@ -79,6 +99,8 @@ pub struct Estate {
     pub evidence: PathBuf,
     pub admin: String,
     bootstrap: Option<Child>,
+    /// Admins this estate relaunched on their data dirs after killing them (a whole-fabric restart).
+    relaunched: Vec<Child>,
     http: reqwest::Client,
 }
 
@@ -94,32 +116,88 @@ impl Estate {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
-        let mut child = Command::new(binary("rafka-node-admin"))
-            .env("MESH_SPAWN_TYPE", &owner.provider)
-            .env("RAFKA_FABRIC", fabric)
-            .env("RAFKA_MESH", mesh)
-            .env("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")))
-            .env("RAFKA_BIN_DIR", bin_dir())
-            .env("RAFKA_EVIDENCE_DIR", &evidence)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn rafka-node-admin");
-        let stdout = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(base) = line.strip_prefix("RAFKA_NODE_ADMIN_API_BASE=") {
-                    let _ = tx.send(base.trim().to_string());
-                }
-            }
-        });
-        let admin = rx
-            .recv_timeout(Duration::from_secs(30))
-            .expect("bootstrap node-admin never advertised RAFKA_NODE_ADMIN_API_BASE");
-        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), http: reqwest::Client::new() };
+        let (child, admin) = spawn_admin(
+            &[
+                ("MESH_SPAWN_TYPE", owner.provider.clone()),
+                ("RAFKA_FABRIC", fabric.into()),
+                ("RAFKA_MESH", mesh.into()),
+                ("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
+                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+                ("RAFKA_EVIDENCE_DIR", evidence.display().to_string()),
+            ],
+            "bootstrap node-admin",
+        );
+        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), relaunched: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         estate
+    }
+
+    /// The bootstrap admin's data dir (`<root>/<mesh>.admin.1`).
+    pub fn bootstrap_data_dir(&self, mesh: &str) -> PathBuf {
+        self.root.join(format!("{mesh}.admin.1"))
+    }
+
+    /// Relaunch the bootstrap admin on its data dir under the Fabric and Mesh it belonged to (an
+    /// operator relaunch names them: the bootstrap admin minted them, nothing launched it). Returns
+    /// its new control API base.
+    pub fn relaunch_bootstrap(&mut self, fabric: &str, mesh: &str, fabric_id: &str, mesh_id: &str) -> String {
+        let (child, base) = spawn_admin(
+            &[
+                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
+                ("RAFKA_FABRIC", fabric.into()),
+                ("RAFKA_FABRIC_ID", fabric_id.into()),
+                ("RAFKA_MESH", mesh.into()),
+                ("RAFKA_MESH_ID", mesh_id.into()),
+                ("RAFKA_DATA_DIR", self.bootstrap_data_dir(mesh).display().to_string()),
+                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
+            ],
+            "relaunched bootstrap node-admin",
+        );
+        self.relaunched.push(child);
+        base
+    }
+
+    /// Relaunch a launched admin on its data dir, from the launch its provider recorded there
+    /// (`launch.json`). Returns its new control API base.
+    pub fn relaunch_admin(&mut self, data_dir: &str) -> String {
+        let (child, base) = spawn_admin(
+            &[
+                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
+                ("RAFKA_RELAUNCH_DATA_DIR", data_dir.into()),
+                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
+            ],
+            &format!("relaunched node-admin at {data_dir}"),
+        );
+        self.relaunched.push(child);
+        base
+    }
+
+    /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
+    pub fn kill_pid(&self, pid: u32) {
+        let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
+        assert!(ok, "kill -9 {pid}");
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until && Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Stop every admin this estate relaunched (a local signal: a local stop) and every runtime a
+    /// provider left running, then wait for them.
+    pub fn stop_relaunched(&mut self) {
+        for mut c in self.relaunched.drain(..) {
+            let _ = std::process::Command::new("kill").args(["-TERM", &c.id().to_string()]).status();
+            let _ = c.wait();
+        }
+        for (_, pid) in self.live_runtimes() {
+            let _ = std::process::Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        }
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && !self.live_runtimes().is_empty() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn write_manifest(&self) {
@@ -156,6 +234,13 @@ impl Estate {
     /// `GET path` on another admin's control API (`base`).
     pub async fn http_get(&self, base: &str, path: &str) -> (u16, Value) {
         let r = self.http.get(format!("{base}{path}")).send().await.expect("control API reachable");
+        let status = r.status().as_u16();
+        (status, r.json().await.unwrap_or(Value::Null))
+    }
+
+    /// `POST base+path` with `body`: status and the JSON body (or `Null`).
+    pub async fn http_post(&self, base: &str, path: &str, body: &Value) -> (u16, Value) {
+        let r = self.http.post(format!("{base}{path}")).json(body).send().await.unwrap_or_else(|e| panic!("POST {base}{path}: {e}"));
         let status = r.status().as_u16();
         (status, r.json().await.unwrap_or(Value::Null))
     }

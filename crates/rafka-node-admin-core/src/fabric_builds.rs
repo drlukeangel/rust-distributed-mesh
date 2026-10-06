@@ -48,10 +48,20 @@ struct Wire {
     facts: Vec<BuildFact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     desired: Option<DesiredTopology>,
+    /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
+    /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shutdown: Option<crate::fabric_storage::FabricShutdown>,
+}
+
+fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::Bytes, BuildStateError> {
+    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), desired: None, shutdown: Some(s.clone()) })
+        .map(Into::into)
+        .map_err(|e| BuildStateError::Io(e.to_string()))
 }
 
 fn encode_desired(d: &DesiredTopology) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), desired: Some(d.clone()) }).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), desired: Some(d.clone()), shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!("a desired-topology record of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES}", bytes.len())));
     }
@@ -70,7 +80,7 @@ pub const GOSSIP_FRAME_LIMIT: usize = 4096;
 pub const MAX_MESSAGE_BYTES: usize = GOSSIP_FRAME_LIMIT - 64;
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, desired: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, desired: None, shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!(
             "a Build message of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
@@ -184,6 +194,7 @@ impl FabricBuildStateAdapter {
         fabric: &rafka_mesh_entity::FabricId,
         peers: Vec<EndpointAddr>,
         desired: Arc<DesiredStore>,
+        shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
@@ -202,7 +213,7 @@ impl FabricBuildStateAdapter {
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
         let local = Arc::new(MemoryBuildStateAdapter::new());
-        let (absorb, shared, store) = (local.clone(), sender.clone(), desired.clone());
+        let (absorb, shared, store, held_shutdown) = (local.clone(), sender.clone(), desired.clone(), shutdown.clone());
         let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
         let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         let known_peers: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>> = Arc::new(std::sync::Mutex::new(seed_ids.clone()));
@@ -221,6 +232,12 @@ impl FabricBuildStateAdapter {
                                 if let Some(d) = w.desired {
                                     crate::desired::take(&store, d, Via::CatchUp, &node, &m.delivered_from.to_string());
                                 }
+                                if let Some(sd) = w.shutdown {
+                                    if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()) {
+                                        tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
+                                            .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
+                                    }
+                                }
                                 absorb.absorb(&w.facts);
                             }
                             Err(e) => tracing::info_span!("rafka.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
@@ -231,7 +248,12 @@ impl FabricBuildStateAdapter {
                             neighbors.lock().unwrap().insert(peer);
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name, current) = (absorb.clone(), shared.clone(), fabric_name.clone(), store.current());
+                            let in_force = held_shutdown.held();
                             tokio::spawn(async move {
+                                // A shutdown in force first: the neighbour comes up frozen.
+                                if let Some(sd) = in_force.as_ref().and_then(|sd| encode_shutdown(sd).ok()) {
+                                    let _ = shared.read().await.clone().broadcast_neighbors(sd).await;
+                                }
                                 // The current desired revision first, as its own record.
                                 if let Some(d) = current.as_ref().and_then(|d| encode_desired(d).ok()) {
                                     let _ = shared.read().await.clone().broadcast_neighbors(d).await;
@@ -305,6 +327,12 @@ impl FabricBuildStateAdapter {
             Ok(()) => fresh.len(),
             Err(_) => 0,
         }
+    }
+
+    /// Broadcast a fabric shutdown on the control channel (fabric-mesh-lifecycle.md §11.1).
+    pub async fn publish_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<(), BuildStateError> {
+        let sender = self.sender.read().await.clone();
+        sender.broadcast(encode_shutdown(shutdown)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting fabric shutdown: {e}")))
     }
 
     async fn broadcast(&self, fact: BuildFact) -> Result<(), BuildStateError> {

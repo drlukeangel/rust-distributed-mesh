@@ -31,8 +31,17 @@ pub struct ControlPlane {
     pub topology: Arc<RwLock<Topology>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
-    /// Woken by `POST /api/shutdown`.
+    /// Woken when this admin's part of a fabric shutdown is done and it should leave.
     pub shutdown: Arc<Notify>,
+    /// This admin's fabric shutdown seat, set once at start.
+    pub fabric_shutdown: std::sync::OnceLock<Arc<ShutdownSeat>>,
+}
+
+/// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
+pub struct ShutdownSeat {
+    pub control: Arc<crate::shutdown::ShutdownControl>,
+    pub me: crate::model::PathName,
+    pub node_id: crate::model::NodeId,
 }
 
 impl ControlPlane {
@@ -43,6 +52,7 @@ impl ControlPlane {
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
+            fabric_shutdown: std::sync::OnceLock::new(),
         }
     }
 
@@ -256,6 +266,9 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
     // The shape the fabric should have, as this admin holds it.
     if let Some(o) = v.as_object_mut() {
         o.insert("desired".into(), serde_json::to_value(cp.desired.current()).unwrap_or(Value::Null));
+        // A fabric shutdown's progress as this admin sees it: diagnostics, never authority.
+        let progress = cp.fabric_shutdown.get().and_then(|s| s.control.progress());
+        o.insert("shutdown".into(), serde_json::to_value(progress).unwrap_or(Value::Null));
     }
     Json(v)
 }
@@ -274,10 +287,39 @@ async fn delete_mesh(State(cp): State<Shared>, Path(id): Path<String>) -> Result
     Ok(accepted(cp.submit("DELETE /api/meshes/{id}", BuildIntent::RemoveMesh { mesh }).await?))
 }
 
+/// `POST /api/shutdown`: only the fabric-primary begins a fabric shutdown (fabric-mesh-lifecycle.md
+/// §11.1); any other admin refuses by name, naming the current fabric-primary.
 async fn shutdown(State(cp): State<Shared>) -> Response {
-    tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown").in_scope(|| tracing::info!("shutdown requested"));
-    cp.shutdown.notify_waiters();
-    (StatusCode::ACCEPTED, Json(json!({ "shutdown": "requested" }))).into_response()
+    let Some(seat) = cp.fabric_shutdown.get() else {
+        return Refusal::Unavailable("this admin holds no fabric shutdown state".into()).into_response();
+    };
+    let primary = cp.topology.read().await.fabric_primary().map(|n| n.name.to_string());
+    if primary.as_deref() != Some(seat.me.to_string().as_str()) {
+        tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-not-authority", node = %seat.me, fabric_primary = primary.as_deref().unwrap_or(""))
+            .in_scope(|| tracing::info!("a fabric shutdown is begun only by the fabric-primary"));
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "rejected-not-authority",
+                "detail": format!("{} is not the fabric-primary; only the fabric-primary begins a fabric shutdown", seat.me),
+                "fabric_primary": primary,
+            })),
+        )
+            .into_response();
+    }
+    let begun = crate::fabric_storage::FabricShutdown {
+        initiated_by: seat.me.to_string(),
+        initiated_by_node_id: seat.node_id.as_str().to_string(),
+        initiated_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+    };
+    match seat.control.initiate(begun) {
+        Ok(held) => {
+            tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown", node = %seat.me, initiated_by = %held.initiated_by)
+                .in_scope(|| tracing::info!("fabric shutdown begun"));
+            (StatusCode::ACCEPTED, Json(json!({ "shutdown": "accepted", "initiated_by": held.initiated_by }))).into_response()
+        }
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "fabric-storage-unavailable", "detail": e.to_string() }))).into_response(),
+    }
 }
 
 /// The control router. `runtime_routes` (fault injection and the like) are

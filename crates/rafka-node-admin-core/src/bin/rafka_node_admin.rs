@@ -43,7 +43,9 @@ async fn main() {
     drop(boot);
     println!("RAFKA_NODE_ADMIN_API_BASE={}", running.api_base);
 
-    // Stop on the shutdown route (the whole fabric this admin started) or a signal.
+    // Leave when this admin's part of a fabric shutdown is done (the fabric-primary, after it has
+    // stopped the mesh-primary spine; fabric-mesh-lifecycle.md §11.1), or on a signal. A signal is a
+    // local stop: this admin leaves and nothing Fabric-wide follows.
     let shutdown = running.control.shutdown.clone();
     let by_route = shutdown.notified();
     tokio::pin!(by_route);
@@ -53,10 +55,6 @@ async fn main() {
     };
     let span = tracing::info_span!("rafka.mesh.node.delete.via-signal", fabric_shutdown);
     let _g = span.enter();
-    if fabric_shutdown {
-        running.stop_reconciling();
-        running.runner.stop_all().await;
-    }
     running.leave().await;
 }
 

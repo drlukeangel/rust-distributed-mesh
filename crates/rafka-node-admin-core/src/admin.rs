@@ -66,12 +66,37 @@ pub struct AdminConfig {
     pub api_bind: SocketAddr,
     /// Set when a deployment pipeline launched this admin.
     pub launch: Option<Launch>,
+    /// Set when an operator relaunched this admin on its data dir (`RAFKA_RELAUNCH_DATA_DIR`,
+    /// the launch read back from the provider's `launch.json`): no pipeline hands it a runtime
+    /// record, so it adopts its own process, as the bootstrap admin does.
+    pub relaunch: bool,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
 }
 
+/// `RAFKA_RELAUNCH_DATA_DIR`: relaunch the admin the provider launched in that data dir.
+pub const ENV_RELAUNCH_DATA_DIR: &str = "RAFKA_RELAUNCH_DATA_DIR";
+
 impl AdminConfig {
-    pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+    pub fn from_env(real: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        // A relaunch takes the provider's recorded launch for every key the environment does not
+        // set, under a new incarnation that supersedes the recorded one.
+        let relaunch = real(ENV_RELAUNCH_DATA_DIR).filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+        let recorded: BTreeMap<String, String> = match &relaunch {
+            Some(dir) => {
+                let path = dir.join(crate::deployment::process::LAUNCH_FILE);
+                let raw = std::fs::read(&path).map_err(|e| format!("{ENV_RELAUNCH_DATA_DIR}: reading {}: {e}", path.display()))?;
+                let v: serde_json::Value = serde_json::from_slice(&raw).map_err(|e| format!("{} is not a launch record: {e}", path.display()))?;
+                let mut env: BTreeMap<String, String> = serde_json::from_value(v["env"].clone()).map_err(|e| format!("{}: env: {e}", path.display()))?;
+                if let Some(old) = env.get(rafka_mesh_entity::launch::ENV_INCARNATION).cloned() {
+                    env.insert(rafka_mesh_entity::launch::ENV_SUPERSEDES.into(), old);
+                }
+                env.insert(rafka_mesh_entity::launch::ENV_INCARNATION.into(), IncarnationId::mint().0);
+                env
+            }
+            None => BTreeMap::new(),
+        };
+        let get = |k: &str| real(k).or_else(|| recorded.get(k).cloned());
         let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RAFKA_FABRIC")).unwrap_or_else(|| "fabric1".into());
         // A launched node is handed its Fabric's id; the bootstrap admin takes
@@ -115,6 +140,7 @@ impl AdminConfig {
                 .transpose()?,
             data_dir,
             bin_dir,
+            relaunch: relaunch.is_some(),
             spawn_type: get(crate::deployment::provider::SPAWN_TYPE_ENV),
             api_bind,
             launch,
@@ -159,6 +185,34 @@ pub struct Records {
     nodes: Mutex<BTreeMap<PathName, Node>>,
     removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
     meshes: Mutex<BTreeMap<String, MeshId>>,
+    seats: Mutex<Seats>,
+}
+
+/// The seats (`is_primary`, `is_fabric_primary`) by holder. A fabric shutdown runs no election
+/// because admins go `Draining`: when this admin learns one it holds the seats of its last view
+/// in which no admin was `Draining`, and keeps each seat while its holder is present. A seat goes
+/// only with its holder; nothing re-elects into it. An admin that learns the shutdown before it
+/// has any view (one joining during the shutdown) holds no seats: it drains nothing.
+#[derive(Default)]
+pub struct Seats {
+    /// The seats of the last view with no `Draining` admin.
+    calm: BTreeMap<NodeId, (bool, bool)>,
+    /// The seats held for the shutdown, once one is learned.
+    held: Option<BTreeMap<NodeId, (bool, bool)>>,
+}
+
+impl Records {
+    /// A fabric shutdown is held: keep the seats as they were before any admin drained.
+    pub fn hold_seats(&self) {
+        let mut seats = self.seats.lock().unwrap();
+        if seats.held.is_none() {
+            seats.held = Some(seats.calm.clone());
+        }
+    }
+
+    pub fn held_seats(&self) -> Option<BTreeMap<NodeId, (bool, bool)>> {
+        self.seats.lock().unwrap().held.clone()
+    }
 }
 
 impl TopologySink for Records {
@@ -235,8 +289,31 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
         nodes: nodes.into_values().collect(),
     };
     let mesh_names: BTreeSet<String> = mesh_ids.keys().cloned().chain(topology.nodes.iter().map(|n| n.mesh.clone())).collect();
-    // Every seat, by the one election function (`election`).
+    // Every seat, by the one election function (`election`); through a fabric shutdown, the
+    // seats held when it was learned (`Seats`).
     crate::election::resolve(&mut topology.nodes);
+    {
+        let mut seats = records.seats.lock().unwrap();
+        match &seats.held {
+            Some(held) => {
+                for n in topology.nodes.iter_mut() {
+                    let (p, f) = held.get(&n.node_id).copied().unwrap_or((false, false));
+                    n.is_primary = p;
+                    n.is_fabric_primary = f;
+                }
+            }
+            None => {
+                if !topology.nodes.iter().any(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::Draining) {
+                    seats.calm = topology
+                        .nodes
+                        .iter()
+                        .filter(|n| n.is_primary || n.is_fabric_primary)
+                        .map(|n| (n.node_id.clone(), (n.is_primary, n.is_fabric_primary)))
+                        .collect();
+                }
+            }
+        }
+    }
     if topology.fabric_primary().is_some() {
         topology.fabric.status = ScopeStatus::ReadyForTraffic;
     }
@@ -425,6 +502,7 @@ struct EntryState {
     book: DigestBook,
     digest: Arc<Mutex<MeshDigest>>,
     desired: Arc<DesiredStore>,
+    shutdown: Arc<crate::shutdown::ShutdownControl>,
 }
 
 /// What fencing a path's previous birth found.
@@ -515,7 +593,7 @@ impl AdminRunner {
     /// Build history is read: whoever launched it, and however long ago, the
     /// birth itself says where its runtime is. A fact from another provider
     /// or control domain is refused by name, never acted on.
-    async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
+    pub(crate) async fn handle_for(&self, node: &Node) -> Result<(Node, DeploymentHandle), String> {
         if let Some((rec, h)) = self.handles.lock().unwrap().get(&node.name).cloned() {
             if node.incarnation_id.is_none() || rec.incarnation_id == node.incarnation_id {
                 return Ok((rec, h));
@@ -769,6 +847,28 @@ impl AdminRunner {
     }
 }
 
+/// The drain's view of this admin: its projection, and its provider through each runtime's
+/// RuntimeFact.
+struct AdminStopper {
+    runner: Arc<AdminRunner>,
+    topology: Arc<tokio::sync::RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl crate::shutdown::Stopper for AdminStopper {
+    async fn view(&self) -> Topology {
+        self.topology.read().await.clone()
+    }
+    async fn stop(&self, node: &Node) -> Result<(), String> {
+        let (_, handle) = self.runner.handle_for(node).await?;
+        self.runner
+            .provider
+            .terminate(&handle, TerminationMode::Graceful { grace: Duration::from_secs(8) })
+            .await
+            .map_err(|e| format!("terminating {}: {e}", node.name))
+    }
+}
+
 /// A running node-admin: what `run` needs to keep alive and shut down.
 pub struct Running {
     pub api_base: String,
@@ -884,7 +984,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             members.push(e.digest.lock().unwrap().clone());
             let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
             // The fabric control state a new admin hydrates before it may be Ready.
-            let control = serde_json::json!({ "desired": e.desired.current() });
+            let control = serde_json::json!({ "desired": e.desired.current(), "shutdown": e.shutdown.held() });
             EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control }
         }
     });
@@ -897,7 +997,9 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The mesh's id names its membership channel: the launch names it (the
     // launching admin always does), else the entry pull's projection knows
     // it, else this admin is the mesh's first and mints it.
-    let launched_anchor = cfg.launch.as_ref().and(seed_addrs.first().cloned());
+    // A relaunched admin has no launching admin to pull from: what it needs to come up is in its
+    // own storage and its recorded launch, and its view fills from gossip.
+    let launched_anchor = if cfg.relaunch { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
         (Some(id), _) => id.clone(),
@@ -925,9 +1027,32 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The current desired topology: Day 0's root, or hydrated from the entry
     // pull and kept current over the fabric's control topic.
     let desired = Arc::new(DesiredStore::default());
+    // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
+    // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
+    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> =
+        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(|e| e.to_string())?);
+    if fabric_storage.fabric().map_err(|e| e.to_string())?.is_none() {
+        fabric_storage
+            .put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
+            .map_err(|e| e.to_string())?;
+    }
+    let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).map_err(|e| e.to_string())?);
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), desired.clone(), name.to_string()).await.map_err(|e| e.to_string())?,
+        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), desired.clone(), shutdown_control.clone(), name.to_string())
+            .await
+            .map_err(|e| e.to_string())?,
     );
+    {
+        let b = builds.clone();
+        shutdown_control.set_publish(Arc::new(move |sd| {
+            let b = b.clone();
+            tokio::spawn(async move {
+                if let Err(e) = b.publish_shutdown(&sd).await {
+                    tracing::info!(error = %e, "broadcasting the fabric shutdown failed");
+                }
+            });
+        }));
+    }
 
     // Fabric policy and the first view. The bootstrap admin takes its policy
     // from MESH_SPAWN_TYPE. A launched admin takes its entry from the admin
@@ -970,9 +1095,24 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's desired topology does not decode"),
                 None => {}
             }
+            // A fabric shutdown in force: this admin comes up frozen.
+            if let Some(v) = answer.control.get("shutdown").filter(|v| !v.is_null()).cloned() {
+                match serde_json::from_value::<crate::fabric_storage::FabricShutdown>(v) {
+                    Ok(sd) => {
+                        shutdown_control.learn(sd, "hydration", &answer.served_by).map_err(|e| e.to_string())?;
+                    }
+                    Err(e) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's fabric shutdown does not decode"),
+                }
+            }
             tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
             FabricPolicy { provider: topology.fabric.provider }
+        }
+        None if cfg.relaunch => {
+            // A relaunch is not Day 0: it roots nothing and hydrates from gossip and its storage.
+            tracing::info_span!("rafka.node_admin.fabric.update.via-relaunch", node = %name, fabric_id = %cfg.fabric_id)
+                .in_scope(|| tracing::info!("relaunched on its data dir; no launching admin to pull from"));
+            FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
         None => {
             // Day 0: no Fabric authority exists before this admin; it roots
@@ -1031,13 +1171,13 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // way it is published with the birth.
     let mut adoption = None;
     let runtime = match &cfg.launch {
-        Some(_) => {
+        Some(_) if !cfg.relaunch => {
             let dir = cfg.data_dir.clone();
             tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
                 .await
                 .map_err(|e| format!("reading the runtime record: {e}"))??
         }
-        None => {
+        _ => {
             let a = CurrentRuntimeAdoption::begin(&name, &cfg.data_dir, &crate::model::DeploymentId::mint()).map_err(|e| e.to_string())?;
             let f = a.fact().clone();
             adoption = Some(a);
@@ -1090,6 +1230,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         book: book.clone(),
         digest: digest.clone(),
         desired: desired.clone(),
+        shutdown: shutdown_control.clone(),
     });
     if let Some(l) = &cfg.launch {
         // The pipeline's assignment, not a re-minted one.
@@ -1221,9 +1362,15 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         let (me, deployer, desired, drift_builds) = (name.clone(), runner.provider.clone(), desired.clone(), builds.clone());
+        let frozen = shutdown_control.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
             loop {
+                // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
+                // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
+                if frozen.held().is_some() {
+                    return;
+                }
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
                 let now = project(&fabric, &fabric_id, provider, &book, &records);
@@ -1242,6 +1389,43 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
                 }
             }
         });
+    }
+    // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
+    // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
+    {
+        let (abort, digest_w, membership_w, me, records_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), records.clone());
+        let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
+        let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
+        let done = control.shutdown.clone();
+        let _ = control.fabric_shutdown.set(Arc::new(crate::http::ShutdownSeat {
+            control: shutdown_control.clone(),
+            me: name.clone(),
+            node_id: node_id.clone(),
+        }));
+        tasks.push(tokio::spawn(async move {
+            let mut seen = seen;
+            while seen.borrow_and_update().is_none() {
+                if seen.changed().await.is_err() {
+                    return;
+                }
+            }
+            // The seats stay as they were before any admin drained (FML-26): held before this
+            // admin says Draining, so no view of its own moves them.
+            records_w.hold_seats();
+            abort.abort();
+            let d = {
+                let mut d = digest_w.lock().unwrap();
+                d.status = MemberStatus::Draining;
+                d.emitted_unix_ms = now_ms();
+                d.clone()
+            };
+            let _ = membership_w.publish(&d).await;
+            tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown-frozen", node = %me)
+                .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
+            if crate::shutdown::drain(me, drain_control, stopper).await {
+                done.notify_waiters();
+            }
+        }));
     }
     let app = router(control.clone(), axum::Router::new());
     tasks.push(tokio::spawn(async move {
@@ -1331,6 +1515,67 @@ mod tests {
         assert!(t.violations().is_empty(), "{:?}", t.violations());
         assert_eq!(t.mesh_view("mesh2").unwrap().id, Some(mesh_id("mesh2")));
         assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic);
+    }
+
+    /// CONTRACT (fabric-mesh-lifecycle.md §11.1, FML-26): a fabric shutdown runs no election
+    /// because admins go Draining. The seats held when the shutdown was learned stay with their
+    /// holders through the drain and go only with them. Must NOT happen: a Draining primary's seat
+    /// recomputed away, or re-elected into, while the shutdown is held.
+    #[test]
+    fn a_fabric_shutdown_keeps_every_seat_with_its_holder_and_re_elects_nothing() {
+        use MemberStatus::*;
+        let records = Records::default();
+        let book = DigestBook::default();
+        let admins = [
+            with_id(digest("mesh1.admin.1", ReadyForTraffic), "900000000000"),
+            with_id(digest("mesh1.admin.2", ReadyForTraffic), "100000000000"),
+            with_id(digest("mesh2.admin.1", ReadyForTraffic), "500000000000"),
+            with_id(digest("mesh1.rpc.1", ReadyForTraffic), "700000000000"),
+        ];
+        for d in &admins {
+            book.record(d.clone());
+        }
+        let calm = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        let seat = |t: &Topology, name: &str| t.nodes.iter().find(|n| n.name.to_string() == name).map(|n| (n.is_primary, n.is_fabric_primary)).unwrap();
+        assert_eq!(seat(&calm, "mesh1.admin.2"), (true, true), "lowest admin id holds mesh1 and the fabric");
+        assert_eq!(seat(&calm, "mesh2.admin.1"), (true, false));
+
+        // Outside a shutdown a Draining primary loses its seat: the ordinary rule.
+        let mut draining = admins[1].clone();
+        draining.status = Draining;
+        draining.emitted_unix_ms += 1;
+        book.record(draining.clone());
+        let moved = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat(&moved, "mesh1.admin.2"), (false, false));
+        assert_eq!(seat(&moved, "mesh1.admin.1"), (true, false), "re-elected outside a shutdown");
+
+        // The shutdown is learned: the seats of the last all-ready view are held, whatever the
+        // statuses say now.
+        records.hold_seats();
+        let held = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat(&held, "mesh1.admin.2"), (true, true), "the Draining primary keeps mesh1 and the fabric");
+        assert_eq!(seat(&held, "mesh1.admin.1"), (false, false), "nothing is re-elected into a held seat");
+        assert_eq!(seat(&held, "mesh2.admin.1"), (true, false));
+        for d in admins.iter().skip(2) {
+            let mut d = d.clone();
+            d.status = Draining;
+            d.emitted_unix_ms += 1;
+            book.record(d);
+        }
+        let all_draining = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat(&all_draining, "mesh2.admin.1"), (true, false), "every admin Draining moves no seat");
+        assert_eq!(all_draining.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
+
+        // A holder that disappears takes its seat with it: nothing fills it.
+        let book2 = DigestBook::default();
+        for d in [&admins[0], &admins[2], &admins[3]] {
+            book2.record(d.clone());
+        }
+        let after = project("fabric1", &fabric1(), ProviderKind::Process, &book2, &records);
+        assert!(after.nodes.iter().all(|n| n.name.to_string() != "mesh1.admin.2"), "the holder has left the view");
+        assert!(after.fabric_primary().is_none(), "the fabric seat went with its holder");
+        assert!(after.cohort_primary("mesh1", NodeKind::NodeAdmin).is_none(), "mesh1's seat went with its holder");
+        assert_eq!(seat(&after, "mesh2.admin.1"), (true, false), "the other mesh's seat is untouched");
     }
 
     #[test]

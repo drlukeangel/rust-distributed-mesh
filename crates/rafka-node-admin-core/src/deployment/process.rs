@@ -19,6 +19,8 @@ use std::time::Duration;
 
 /// Written into the node's data dir at spawn: `{"deployment_id", "pid"}`.
 pub const DEPLOYMENT_FILE: &str = "deployment.json";
+/// The launch the provider ran in a data dir: executable, args and env.
+pub const LAUNCH_FILE: &str = "launch.json";
 
 /// One child this provider started: its deployment, and its exit once seen.
 #[derive(Debug, Clone)]
@@ -116,6 +118,10 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         // Which deployment this pid realises, so a re-run can find it.
         let record = serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid, "start": start });
         std::fs::write(spec.data_dir.join(DEPLOYMENT_FILE), record.to_string()).map_err(|e| err(format!("{DEPLOYMENT_FILE}: {e}")))?;
+        // What was launched here, so an operator can relaunch this node on its data dir when no
+        // admin is left to run a pipeline (a whole-fabric restart).
+        let launch = serde_json::json!({ "executable": spec.executable, "args": spec.args, "env": spec.env });
+        std::fs::write(spec.data_dir.join(LAUNCH_FILE), launch.to_string()).map_err(|e| err(format!("{LAUNCH_FILE}: {e}")))?;
         self.children.lock().unwrap().insert(pid, Launched { deployment_id: spec.deployment_id.clone(), start, exit: None });
         let children = self.children.clone();
         std::thread::Builder::new()

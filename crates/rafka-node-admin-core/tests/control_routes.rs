@@ -224,16 +224,37 @@ async fn shutdown_and_runtime_fault_routes_stay_outside_build() {
         }),
     );
     let h = harness(chaos);
-    let waiter = {
-        let n = h.cp.shutdown.clone();
-        tokio::spawn(async move { n.notified().await })
-    };
-    tokio::task::yield_now().await;
+    let control = seat(&h, "mesh1.admin.1");
     let (s, _) = call(&h.app, "POST", "/api/chaos/wedge", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(*hit.lock().unwrap(), 1);
-    let (s, _) = call(&h.app, "POST", "/api/shutdown", Some(json!({}))).await;
-    assert_eq!(s, StatusCode::ACCEPTED);
-    tokio::time::timeout(std::time::Duration::from_secs(5), waiter).await.expect("shutdown notified").unwrap();
+    let (s, body) = call(&h.app, "POST", "/api/shutdown", Some(json!({}))).await;
+    assert_eq!((s, body["initiated_by"].as_str()), (StatusCode::ACCEPTED, Some("mesh1.admin.1")), "{body}");
+    assert_eq!(control.held().map(|sd| sd.initiated_by), Some("mesh1.admin.1".to_string()), "the fabric-primary holds the shutdown it began");
+    let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
+    assert_eq!(f["shutdown"]["phase"], "frozen", "progress is visible on /api/fabric: {f}");
     assert!(h.facts().await.is_empty(), "neither shutdown nor fault control submitted a Build");
+}
+
+/// A fabric shutdown seat for the admin `me` over memory storage.
+fn seat(h: &Harness, me: &str) -> Arc<rafka_node_admin_core::shutdown::ShutdownControl> {
+    let control = Arc::new(
+        rafka_node_admin_core::shutdown::ShutdownControl::open(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), me).unwrap(),
+    );
+    let _ = h.cp.fabric_shutdown.set(Arc::new(rafka_node_admin_core::http::ShutdownSeat {
+        control: control.clone(),
+        me: me.parse().unwrap(),
+        node_id: rafka_node_admin_core::model::NodeId::mint(),
+    }));
+    control
+}
+
+#[tokio::test]
+async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
+    let h = harness(Router::new());
+    let control = seat(&h, "mesh1.admin.2");
+    let (s, body) = call(&h.app, "POST", "/api/shutdown", Some(json!({}))).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!((body["error"].as_str(), body["fabric_primary"].as_str()), (Some("rejected-not-authority"), Some("mesh1.admin.1")), "{body}");
+    assert!(control.held().is_none(), "a refused shutdown holds nothing");
 }
