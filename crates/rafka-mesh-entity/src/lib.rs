@@ -12,6 +12,7 @@ pub mod launch;
 pub mod ids;
 pub mod membership;
 pub mod path;
+pub mod reconnect;
 pub mod runtime;
 
 pub use connections::{

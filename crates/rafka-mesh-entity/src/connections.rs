@@ -136,6 +136,9 @@ pub struct ConnectionsHeld {
     complete: bool,
     own_source: Option<PathName>,
     own_proxies: HashMap<PathName, NodeConnection>,
+    /// This node's latest Direct entry per destination, whatever its state: what its reconnect
+    /// series is reconstructed from.
+    own_directs: HashMap<PathName, NodeConnection>,
 }
 
 /// Why an entry was not applied.
@@ -165,6 +168,9 @@ impl ConnectionsHeld {
                 return Err(ApplyRefusal::Stale { held: held.stamp, offered: stamp });
             }
         }
+        if entry.kind == ConnectionKind::Direct && self.own_source.as_ref() == Some(&entry.source.name) {
+            self.own_directs.insert(entry.destination.name.clone(), entry.clone());
+        }
         if entry.kind == ConnectionKind::Proxy && self.own_source.as_ref() == Some(&entry.source.name) {
             if entry.state == ConnectionState::Connected {
                 self.own_proxies.insert(entry.destination.name.clone(), entry.clone());
@@ -182,6 +188,7 @@ impl ConnectionsHeld {
         if self.own_source.as_ref() != Some(&name) {
             self.own_source = Some(name);
             self.own_proxies.clear();
+            self.own_directs.clear();
         }
     }
 
@@ -201,6 +208,25 @@ impl ConnectionsHeld {
             return None;
         }
         Some(self.own_proxies.get(destination))
+    }
+
+    /// This node's own source path, once named.
+    pub fn own_source(&self) -> Option<&PathName> {
+        self.own_source.as_ref()
+    }
+
+    /// This node's latest Direct entry per destination, whatever its state, sorted by destination.
+    pub fn own_latest_directs(&self) -> Vec<&NodeConnection> {
+        let mut out: Vec<&NodeConnection> = self.own_directs.values().collect();
+        out.sort_by(|a, b| a.destination.name.cmp(&b.destination.name));
+        out
+    }
+
+    /// This node's active Proxy entries, sorted by destination.
+    pub fn own_active_proxies(&self) -> Vec<&NodeConnection> {
+        let mut out: Vec<&NodeConnection> = self.own_proxies.values().collect();
+        out.sort_by(|a, b| a.destination.name.cmp(&b.destination.name));
+        out
     }
 
     /// The active Direct fact `source -> destination`: `Some(None)` when none is held, `None` when
