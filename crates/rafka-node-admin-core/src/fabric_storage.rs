@@ -14,7 +14,7 @@
 
 use crate::model::FabricId;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 /// The Fabric record: its immutable identity, and `build_id`, the one accepted topology (the
@@ -38,22 +38,8 @@ pub struct FabricShutdown {
     pub initiated_at_ms: u64,
 }
 
-/// Why a storage read or write failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FabricStorageError {
-    Io { file: String, reason: String },
-    /// A file this build does not recognise: refused, never read as a value.
-    Unrecognised { file: String, reason: String },
-}
-
-impl std::fmt::Display for FabricStorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io { file, reason } => write!(f, "fabric.storage {file}: {reason}"),
-            Self::Unrecognised { file, reason } => write!(f, "fabric.storage {file} is not a record this build recognises: {reason}"),
-        }
-    }
-}
+/// Why a `fabric.storage` read or write failed.
+pub use crate::record_store::StorageError as FabricStorageError;
 
 /// node-admin's Fabric control state.
 pub trait FabricStorage: Send + Sync {
@@ -106,85 +92,39 @@ impl FabricStorage for MemoryFabricStorage {
 
 /// The directory inside an admin's data dir.
 pub const FABRIC_DIR: &str = "fabric";
-const FABRIC_FILE: &str = "fabric.json";
-const SHUTDOWN_FILE: &str = "shutdown.json";
+const FABRIC_KEY: &str = "fabric";
+const SHUTDOWN_KEY: &str = "shutdown";
 const FABRIC_FORMAT: &str = "fabric-record/1";
 const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 
-#[derive(Serialize, Deserialize)]
-struct Stored<T> {
-    format: String,
-    record: T,
-}
-
-/// One record per file under `<data dir>/fabric/`.
+/// One record per file under `<data dir>/fabric/` (`crate::record_store`).
 #[derive(Debug)]
 pub struct FileFabricStorage {
-    dir: PathBuf,
-    write: Mutex<()>,
+    records: crate::record_store::FileRecords,
+    shutdown: Mutex<()>,
 }
 
 impl FileFabricStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, FabricStorageError> {
-        let dir = own_data_dir.join(FABRIC_DIR);
-        std::fs::create_dir_all(&dir).map_err(|e| FabricStorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self { dir, write: Mutex::new(()) })
-    }
-
-    fn read<T: serde::de::DeserializeOwned>(&self, file: &str, format: &str) -> Result<Option<T>, FabricStorageError> {
-        let path = self.dir.join(file);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(FabricStorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
-        };
-        let stored: Stored<T> = serde_json::from_slice(&bytes)
-            .map_err(|e| FabricStorageError::Unrecognised { file: path.display().to_string(), reason: e.to_string() })?;
-        if stored.format != format {
-            return Err(FabricStorageError::Unrecognised {
-                file: path.display().to_string(),
-                reason: format!("format {:?}, this build reads {format:?}", stored.format),
-            });
-        }
-        Ok(Some(stored.record))
-    }
-
-    fn write<T: Serialize>(&self, file: &str, format: &str, record: &T) -> Result<(), FabricStorageError> {
-        use std::io::Write as _;
-        let path = self.dir.join(file);
-        let tmp = self.dir.join(format!(".{file}.tmp"));
-        let io = |e: std::io::Error| FabricStorageError::Io { file: path.display().to_string(), reason: e.to_string() };
-        let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| FabricStorageError::Io {
-            file: path.display().to_string(),
-            reason: e.to_string(),
-        })?;
-        let mut f = std::fs::File::create(&tmp).map_err(io)?;
-        f.write_all(&bytes).map_err(io)?;
-        f.sync_all().map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(io)?;
-        if let Ok(d) = std::fs::File::open(&self.dir) {
-            let _ = d.sync_all();
-        }
-        Ok(())
+        Ok(Self { records: crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR)?, shutdown: Mutex::new(()) })
     }
 }
 
 impl FabricStorage for FileFabricStorage {
     fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.read(FABRIC_FILE, FABRIC_FORMAT)
+        self.records.read(FABRIC_KEY, FABRIC_FORMAT)
     }
     fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
-        let _g = self.write.lock().unwrap();
-        self.write(FABRIC_FILE, FABRIC_FORMAT, record)
+        self.records.write(FABRIC_KEY, FABRIC_FORMAT, record)
     }
     fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.read(SHUTDOWN_FILE, SHUTDOWN_FORMAT)
+        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)
     }
     fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        let _g = self.write.lock().unwrap();
+        let _g = self.shutdown.lock().unwrap();
         let (now, changed) = decide(self.shutdown()?, shutdown);
         if changed {
-            self.write(SHUTDOWN_FILE, SHUTDOWN_FORMAT, &now)?;
+            self.records.write(SHUTDOWN_KEY, SHUTDOWN_FORMAT, &now)?;
         }
         Ok(now)
     }
@@ -221,15 +161,13 @@ mod tests {
         let reopened = FileFabricStorage::open(&d).unwrap();
         assert_eq!(reopened.fabric().unwrap(), Some(fabric));
         assert_eq!(reopened.shutdown().unwrap(), Some(shutdown()));
-        std::fs::write(d.join(FABRIC_DIR).join(SHUTDOWN_FILE), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
+        std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
         assert!(matches!(reopened.shutdown(), Err(FabricStorageError::Unrecognised { .. })));
-        std::fs::write(d.join(FABRIC_DIR).join(SHUTDOWN_FILE), b"not json").unwrap();
+        std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), b"not json").unwrap();
         assert!(matches!(reopened.shutdown(), Err(FabricStorageError::Unrecognised { .. })));
     }
 
-    fn tempdir() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("fabric-storage-{}-{}", std::process::id(), rand::random::<u64>()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tempdir() -> std::path::PathBuf {
+        crate::record_store::tempdir("fabric-storage")
     }
 }

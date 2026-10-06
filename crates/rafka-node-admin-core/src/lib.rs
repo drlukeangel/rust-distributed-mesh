@@ -21,5 +21,7 @@ pub mod http;
 pub mod lifecycle;
 pub mod model;
 pub mod readiness;
+pub mod record_store;
 pub mod shutdown;
+pub mod storage;
 pub mod topology;

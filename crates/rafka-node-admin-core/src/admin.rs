@@ -160,6 +160,9 @@ pub struct Records {
     removed: Mutex<std::collections::HashSet<(PathName, Option<IncarnationId>)>>,
     meshes: Mutex<BTreeMap<String, MeshId>>,
     seats: Mutex<Seats>,
+    /// nodes.storage: a birth this admin launches is a contact from the moment it is published,
+    /// not only once gossip carries it.
+    contacts: std::sync::OnceLock<Arc<dyn crate::storage::NodesStorage>>,
 }
 
 /// The seats (`is_primary`, `is_fabric_primary`) by holder. A fabric shutdown runs no election
@@ -191,6 +194,12 @@ impl Records {
 
 impl TopologySink for Records {
     fn publish(&self, node: Node) {
+        if let (Some(store), Some(incarnation_id), Some(transport_id)) = (self.contacts.get(), node.incarnation_id.clone(), node.transport_id.clone()) {
+            let r = crate::storage::NodeRecord { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, transport_id, endpoints: node.endpoints.clone() };
+            if let Err(e) = store.put_contact(&r) {
+                tracing::info!(node = %node.name, error = %e, "a launched birth could not be stored as a contact");
+            }
+        }
         self.removed.lock().unwrap().remove(&(node.name.clone(), node.incarnation_id.clone()));
         self.nodes.lock().unwrap().insert(node.name.clone(), node);
     }
@@ -924,16 +933,70 @@ impl Running {
 
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
-pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
+pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let key = load_or_mint_key(&cfg.data_dir)?;
-    // Identity and the two slots: assigned by the launching pipeline, or the
-    // bootstrap admin's own.
-    let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match &cfg.launch {
-        Some(l) => {
+    // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
+    // nodes.storage was here before: it restarts as the same logical node, in the same Mesh and
+    // Fabric, holding the same Builds.
+    let storage_err = |e: crate::record_store::StorageError| e.to_string();
+    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> =
+        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let _connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
+        Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
+    let restart = match (&cfg.launch, nodes_storage.own().map_err(storage_err)?) {
+        (None, Some(own)) => {
+            let fabric = fabric_storage.fabric().map_err(storage_err)?.ok_or_else(|| {
+                format!("{}: nodes.storage holds this admin ({}) but fabric.storage holds no Fabric record", cfg.data_dir.display(), own.name)
+            })?;
+            let mesh = mesh_storage.mesh(&own.name.mesh).map_err(storage_err)?.ok_or_else(|| {
+                format!("{}: nodes.storage holds this admin ({}) but mesh.storage holds no {} record", cfg.data_dir.display(), own.name, own.name.mesh)
+            })?;
+            cfg.fabric = fabric.name.clone();
+            cfg.fabric_id = fabric.fabric_id.clone();
+            cfg.mesh = mesh.name.clone();
+            cfg.mesh_id = Some(mesh.mesh_id.clone());
+            Some(own)
+        }
+        _ => None,
+    };
+    // Identity and the two slots: assigned by the launching pipeline, the bootstrap admin's own,
+    // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
+    // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
+    // which answering is enough.
+    let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
+        (Some(l), _) => {
             let slot = |s: &str| l.endpoints.iter().find(|e| e.slot == s).map(|e| e.addr).ok_or_else(|| format!("launch assigns no `{s}` slot"));
             (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), slot("mesh")?, slot("control")?, l.seeds.clone())
         }
-        None => (
+        (None, Some(own)) => {
+            let slot = |s: &str| own.endpoints.iter().find(|e| e.slot == s).map(|e| e.addr);
+            let mut contacts = nodes_storage.contacts().map_err(storage_err)?;
+            contacts.retain(|c| c.node_id != own.node_id);
+            contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
+            let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
+            tracing::info_span!(
+                "rafka.node_admin.node.update.via-restart",
+                node = %own.name,
+                node_id = %own.node_id,
+                supersedes = %own.incarnation_id,
+                fabric_id = %cfg.fabric_id,
+                contacts = contacts.len(),
+            )
+            .in_scope(|| tracing::info!("restarting as the same logical node from nodes.storage"));
+            (
+                own.name.clone(),
+                own.node_id.clone(),
+                IncarnationId::mint(),
+                Some(own.incarnation_id.clone()),
+                slot("mesh").unwrap_or_else(|| SocketAddr::new(cfg.api_bind.ip(), 0)),
+                slot("control").unwrap_or(cfg.api_bind),
+                seeds,
+            )
+        }
+        (None, None) => (
             PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1),
             NodeId::mint(),
             IncarnationId::mint(),
@@ -951,9 +1014,18 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         .keep_alive_interval(Duration::from_secs(1))
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
-    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, vec![iroh_gossip::ALPN.to_vec()], transport)
-        .await
-        .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?;
+    let endpoint = match rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, vec![iroh_gossip::ALPN.to_vec()], transport.clone()).await {
+        Ok(ep) => ep,
+        // A restart rebinds the address it last held so its peers' contacts stay good; another
+        // process may hold it now, and then a fresh port serves (peers learn it by gossip).
+        Err(e) if restart.is_some() => {
+            tracing::info!(addr = %mesh_addr, error = %e, "the mesh slot this admin last held is taken; binding a fresh port");
+            rafka_node_rpc::endpoint::bind_exact(key.clone(), SocketAddr::new(mesh_addr.ip(), 0), vec![iroh_gossip::ALPN.to_vec()], transport)
+                .await
+                .map_err(|e| format!("mesh slot {mesh_addr}: {e}"))?
+        }
+        Err(e) => return Err(format!("mesh slot {mesh_addr}: {e}")),
+    };
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     // Entry: what this admin holds, for a node it launched (filled once the
@@ -980,7 +1052,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // The mesh's id names its membership channel: the launch names it (the
     // launching admin always does), else the entry pull's projection knows
     // it, else this admin is the mesh's first and mints it.
-    let launched_anchor = cfg.launch.as_ref().and(seed_addrs.first().cloned());
+    let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
         (Some(id), _) => id.clone(),
@@ -1007,8 +1079,6 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         .map_err(|e| format!("backbone: {e}"))?;
     // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
     // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
-    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> =
-        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(|e| e.to_string())?);
     if fabric_storage.fabric().map_err(|e| e.to_string())?.is_none() {
         fabric_storage
             .put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), build_id: None })
@@ -1019,7 +1089,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
     let builds = Arc::new(
-        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), accepted.clone(), shutdown_control.clone(), name.to_string())
+        FabricBuildStateAdapter::join(&gossip, &endpoint, &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string())
             .await
             .map_err(|e| e.to_string())?,
     );
@@ -1090,7 +1160,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         None => {
             // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
             // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
-            if accepted.build_id().is_none() {
+            if restart.is_some() {
+                tracing::info_span!("rafka.node_admin.fabric.update.via-restart", node = %name, build_id = %accepted.build_id().map(|b| b.0).unwrap_or_default())
+                    .in_scope(|| tracing::info!("Fabric.build_id and its Build reloaded from this admin's own storage"));
+            } else if accepted.build_id().is_none() {
                 let b0 = crate::build_state::BuildAccepted {
                     build_id: crate::build::BuildId::mint(),
                     topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
@@ -1106,9 +1179,18 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     };
 
     // The control API.
-    let listener = tokio::net::TcpListener::bind(control_addr).await.map_err(|e| format!("control slot {control_addr}: {e}"))?;
+    let listener = match tokio::net::TcpListener::bind(control_addr).await {
+        Ok(l) => l,
+        // As the mesh slot: a restart's last control address may be held by another process now.
+        Err(e) if restart.is_some() => {
+            tracing::info!(addr = %control_addr, error = %e, "the control slot this admin last held is taken; binding a fresh port");
+            tokio::net::TcpListener::bind(SocketAddr::new(control_addr.ip(), 0)).await.map_err(|e| format!("control slot {control_addr}: {e}"))?
+        }
+        Err(e) => return Err(format!("control slot {control_addr}: {e}")),
+    };
     let api_base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
     let records = Arc::new(Records::default());
+    let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
     let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
@@ -1178,14 +1260,21 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
             transport_id: TransportId(key.public().to_string()),
             incarnation: incarnation.clone(),
             supersedes,
-            endpoints: EndpointSet(vec![
-                EndpointSlot { slot: "mesh".into(), addr: mesh_addr, freshness: FreshnessToken::mint() },
-                EndpointSlot {
-                    slot: "control".into(),
-                    addr: listener.local_addr().map_err(|e| e.to_string())?,
-                    freshness: FreshnessToken::mint(),
-                },
-            ]),
+            endpoints: EndpointSet({
+                // A slot a restart rebinds at the address it last held keeps its freshness token;
+                // a slot at a new address gets a new one.
+                let token = |slot: &str, addr: SocketAddr| {
+                    restart
+                        .as_ref()
+                        .and_then(|own| own.endpoints.iter().find(|e| e.slot == slot && e.addr == addr).map(|e| e.freshness.clone()))
+                        .unwrap_or_else(FreshnessToken::mint)
+                };
+                let control = listener.local_addr().map_err(|e| e.to_string())?;
+                vec![
+                    EndpointSlot { slot: "mesh".into(), addr: mesh_addr, freshness: token("mesh", mesh_addr) },
+                    EndpointSlot { slot: "control".into(), addr: control, freshness: token("control", control) },
+                ]
+            }),
             // Day 0: PublishRuntimeFactAndCurrentRuntimeMetadata sets them.
             runtime: adoption.is_none().then(|| runtime.clone()),
         },
@@ -1196,6 +1285,56 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         extra,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
     }));
+    // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
+    // the same logical node in the same Mesh.
+    {
+        let d = digest.lock().unwrap().clone();
+        nodes_storage
+            .put_own(&crate::storage::NodeRecord {
+                node_id: node_id.clone(),
+                name: name.clone(),
+                incarnation_id: incarnation.clone(),
+                transport_id: d.node.transport_id.clone(),
+                endpoints: d.node.endpoints.0.clone(),
+            })
+            .map_err(storage_err)?;
+        mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: cfg.mesh.clone() }).map_err(storage_err)?;
+    }
+    // nodes.storage contacts: the births this admin hears, as bootstrap hints for a later restart.
+    // A contact whose path another logical node now holds is dropped; nothing here is topology.
+    let contacts_task = {
+        let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
+        tokio::spawn(async move {
+            let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
+                nodes_storage.contacts().unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
+            loop {
+                let heard: Vec<MeshDigest> = book.current(SILENT_AFTER).into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me).collect();
+                for d in &heard {
+                    let r = crate::storage::NodeRecord {
+                        node_id: d.node.node_id.clone(),
+                        name: d.node.name.clone(),
+                        incarnation_id: d.node.incarnation.clone(),
+                        transport_id: d.node.transport_id.clone(),
+                        endpoints: d.node.endpoints.0.clone(),
+                    };
+                    if written.get(&r.node_id) != Some(&r) && nodes_storage.put_contact(&r).is_ok() {
+                        written.insert(r.node_id.clone(), r);
+                    }
+                }
+                let replaced: Vec<NodeId> = written
+                    .values()
+                    .filter(|w| heard.iter().any(|d| d.node.name == w.name && d.node.node_id != w.node_id))
+                    .map(|w| w.node_id.clone())
+                    .collect();
+                for id in replaced {
+                    if nodes_storage.remove_contact(&id).is_ok() {
+                        written.remove(&id);
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+    };
     if let Some(a) = adoption {
         a.publish(|f, dir| {
             let mut d = digest.lock().unwrap();
@@ -1219,7 +1358,7 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
         // The pipeline's assignment, not a re-minted one.
         digest.lock().unwrap().node.endpoints = EndpointSet(l.endpoints.clone());
     }
-    let mut tasks = Vec::new();
+    let mut tasks = vec![contacts_task];
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
     // becomes eligible for every seat) only once it can manage every birth it
     // holds: each live member publishes a runtime fact this admin's provider

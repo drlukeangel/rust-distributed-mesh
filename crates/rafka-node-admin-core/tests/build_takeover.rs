@@ -139,7 +139,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let accepted = Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test-admin"));
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin"), "test-admin".into()).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin"), "test-admin".into()).await.unwrap());
     Admin { endpoint, router, builds, _accepted: accepted }
 }
 

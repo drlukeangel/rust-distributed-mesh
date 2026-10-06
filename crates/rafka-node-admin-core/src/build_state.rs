@@ -378,6 +378,17 @@ impl FactLog {
         None
     }
 
+    /// Whether `f` adds anything to this log: acceptances, opens and claims are insert-and-fail on
+    /// their key, everything else deduplicates.
+    fn is_new(&self, f: &BuildFact) -> bool {
+        match f {
+            BuildFact::Accepted(i) => !self.known(&i.build_id),
+            BuildFact::Opened(o) => !self.is_opened(&o.build_id, o.attempt),
+            BuildFact::Claim(c) => self.claim_holder(&c.build_id, c.attempt).is_none(),
+            _ => !self.facts.contains(f),
+        }
+    }
+
     fn is_opened(&self, build_id: &BuildId, attempt: u32) -> bool {
         self.facts.iter().any(|f| matches!(f, BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt))
     }
@@ -419,14 +430,36 @@ impl MemoryBuildStateAdapter {
     pub fn absorb(&self, facts: &[BuildFact]) {
         let mut log = self.log.lock().unwrap();
         for f in facts {
-            let new = match f {
-                BuildFact::Accepted(i) => !log.known(&i.build_id),
-                BuildFact::Opened(o) => !log.is_opened(&o.build_id, o.attempt),
-                BuildFact::Claim(c) => log.claim_holder(&c.build_id, c.attempt).is_none(),
-                _ => !log.facts.contains(f),
-            };
-            if new {
+            if log.is_new(f) {
                 log.facts.push(f.clone());
+            }
+        }
+    }
+}
+
+/// The local fact log a Build-topic adapter holds and absorbs the fabric's facts into: in memory
+/// for runs that need no restart survival, or the admin's own journal (`builds.storage`).
+pub trait LocalBuildLog: BuildStateAdapter {
+    /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
+    /// insert-and-fail, receipts deduplicate).
+    fn absorb_facts(&self, facts: &[BuildFact]);
+}
+
+impl LocalBuildLog for MemoryBuildStateAdapter {
+    fn absorb_facts(&self, facts: &[BuildFact]) {
+        self.absorb(facts)
+    }
+}
+
+impl LocalBuildLog for FileJournal {
+    fn absorb_facts(&self, facts: &[BuildFact]) {
+        let mut log = self.log.lock().unwrap();
+        for f in facts {
+            if log.is_new(f) {
+                if let Err(e) = self.append(&mut log, f.clone()) {
+                    tracing::info_span!("rafka.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
+                        .in_scope(|| tracing::info!("a Build fact heard from the fabric could not be journaled"));
+                }
             }
         }
     }
@@ -499,8 +532,9 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 /// The journal file name inside an admin's own data dir.
 pub const JOURNAL_FILE: &str = "build-journal.jsonl";
 
-/// Optional local journal: the same facts, one JSON line each, in the
-/// admin's own data dir. Re-opening it replays to the same view.
+/// `builds.storage`: the same facts, one JSON line each, appended and fsynced in the admin's own
+/// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
+/// before an all-admin restart is still held after it.
 #[derive(Debug)]
 pub struct FileJournal {
     path: PathBuf,
@@ -806,7 +840,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") || text.contains("JOURNAL_FILE") {
                         offenders.push(p);

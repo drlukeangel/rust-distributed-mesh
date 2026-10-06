@@ -99,6 +99,8 @@ pub struct Estate {
     pub evidence: PathBuf,
     pub admin: String,
     bootstrap: Option<Child>,
+    /// Admins this estate restarted on their own data dirs.
+    restarted: Vec<Child>,
     http: reqwest::Client,
 }
 
@@ -125,7 +127,7 @@ impl Estate {
             ],
             "bootstrap node-admin",
         );
-        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), http: reqwest::Client::new() };
+        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -456,7 +458,19 @@ impl Estate {
         if let Some(mut c) = self.bootstrap.take() {
             let _ = tokio::task::spawn_blocking(move || c.wait()).await;
         }
+        // A restarted admin is stopped by the shutdown like any other; one still running when the
+        // bound passes is named and killed, so a stop never hangs on it.
         let until = Instant::now() + Duration::from_secs(30);
+        for mut c in std::mem::take(&mut self.restarted) {
+            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            if c.try_wait().ok().flatten().is_none() {
+                eprintln!("estate stop: restarted admin pid {} still ran when the shutdown bound passed; killed", c.id());
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
         while Instant::now() < until && !self.live_runtimes().is_empty() {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -466,6 +480,60 @@ impl Estate {
     /// adopted on day 0, so it has no provider `deployment.json`.
     pub fn bootstrap_pid(&self) -> Option<u32> {
         self.bootstrap.as_ref().map(|c| c.id())
+    }
+
+    /// The bootstrap admin's data dir.
+    pub fn bootstrap_data_dir(&self, mesh: &str) -> PathBuf {
+        self.root.join(format!("{mesh}.admin.1"))
+    }
+
+    /// Start a node-admin on `data_dir` it ran on before: it finds its own row in nodes.storage and
+    /// restarts as the same logical node. Only the operator's environment is given (provider,
+    /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its control
+    /// API base.
+    pub fn restart_admin(&mut self, data_dir: &Path) -> String {
+        let (child, base) = spawn_admin(
+            &[
+                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
+                ("RAFKA_DATA_DIR", data_dir.display().to_string()),
+                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
+            ],
+            &format!("restarted node-admin on {}", data_dir.display()),
+        );
+        self.restarted.push(child);
+        base
+    }
+
+    /// Stop every runtime of this estate with a local signal (SIGTERM), as an operator does when
+    /// no admin can stop the fabric, and wait for them.
+    pub async fn stop_locally(&mut self) {
+        let mut pids: Vec<u32> = self.restarted.iter().map(|c| c.id()).chain(self.bootstrap.as_ref().map(|c| c.id())).collect();
+        pids.extend(self.live_runtimes().into_iter().map(|(_, p)| p));
+        for p in &pids {
+            let _ = std::process::Command::new("kill").args(["-TERM", &p.to_string()]).status();
+        }
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists() && !std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default().contains(") Z ")) {
+            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
+                let _ = c.try_wait();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        for mut c in std::mem::take(&mut self.restarted).into_iter().chain(self.bootstrap.take()) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
+    pub fn kill_pid(&self, pid: u32) {
+        let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
+        assert!(ok, "kill -9 {pid}");
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until && Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// SIGKILL the bootstrap admin (a fault: it flushes nothing).

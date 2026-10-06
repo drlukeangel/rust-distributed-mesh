@@ -3,7 +3,7 @@
 //!
 //! Every node-admin of a fabric holds the same Build facts: each fact an admin
 //! appends (intent, attempt claim, step receipt, attempt receipt, forget) is
-//! applied to its own [`MemoryBuildStateAdapter`] and broadcast once on the
+//! applied to its own local log (`builds.storage`) and broadcast once on the
 //! fabric's Build topic over iroh-gossip; every other admin absorbs it. A
 //! successor therefore continues a Build from its own live projection, never
 //! from the executing admin's disk.
@@ -23,7 +23,7 @@ use crate::build::BuildId;
 use crate::accepted::AcceptedStore;
 use crate::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter,
-    BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter,
+    BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog,
 };
 use crate::fabric_storage::FabricRecord;
 use futures_lite::StreamExt as _;
@@ -118,7 +118,7 @@ pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStat
 
 /// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
 /// in append order.
-async fn active_facts(local: &MemoryBuildStateAdapter, also: Option<BuildId>) -> Vec<BuildFact> {
+async fn active_facts(local: &dyn LocalBuildLog, also: Option<BuildId>) -> Vec<BuildFact> {
     let mut active: std::collections::BTreeSet<BuildId> = match local.list_active().await {
         Ok(a) => a.into_iter().map(|b| b.build_id).collect(),
         Err(_) => return Vec::new(),
@@ -171,7 +171,7 @@ pub fn build_topic(fabric: &rafka_mesh_entity::FabricId) -> TopicId {
 
 /// A node-admin's Build state: its own copy of the fabric's Build facts.
 pub struct FabricBuildStateAdapter {
-    local: Arc<MemoryBuildStateAdapter>,
+    local: Arc<dyn LocalBuildLog>,
     sender: Arc<tokio::sync::RwLock<GossipSender>>,
     /// Every peer known on the Build topic (seeds, neighbours, admins heard).
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
@@ -191,6 +191,7 @@ impl FabricBuildStateAdapter {
         endpoint: &Endpoint,
         fabric: &rafka_mesh_entity::FabricId,
         peers: Vec<EndpointAddr>,
+        local: Arc<dyn LocalBuildLog>,
         accepted: Arc<AcceptedStore>,
         shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
@@ -209,7 +210,6 @@ impl FabricBuildStateAdapter {
         let topic = gossip.subscribe(build_topic(fabric), ids).await.map_err(|e| io(e.to_string()))?;
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
-        let local = Arc::new(MemoryBuildStateAdapter::new());
         let (absorb, shared, store, held_shutdown) = (local.clone(), sender.clone(), accepted.clone(), shutdown.clone());
         let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
         let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
@@ -233,7 +233,7 @@ impl FabricBuildStateAdapter {
                                             .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
                                     }
                                 }
-                                absorb.absorb(&w.facts);
+                                absorb.absorb_facts(&w.facts);
                                 if let Some(r) = heard_fabric {
                                     store.learn(r, &*absorb, &m.delivered_from.to_string()).await;
                                 } else if !w.facts.is_empty() {
@@ -260,7 +260,7 @@ impl FabricBuildStateAdapter {
                                 if let Some(r) = record.as_ref().and_then(|r| encode_fabric(r).ok()) {
                                     let _ = shared.read().await.clone().broadcast_neighbors(r).await;
                                 }
-                                let facts = active_facts(&absorb, pointer.clone()).await;
+                                let facts = active_facts(&*absorb, pointer.clone()).await;
                                 let _span = tracing::info_span!(
                                     "rafka.node_admin.build.update.via-neighbor-up",
                                     fabric = %fabric_name,
