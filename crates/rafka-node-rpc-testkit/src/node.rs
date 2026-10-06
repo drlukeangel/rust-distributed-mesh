@@ -45,8 +45,12 @@ pub struct RunningNode {
     pub server: NodeRpcServer,
     pub status: Arc<Mutex<MemberStatus>>,
     pub digest: MeshDigest,
+    /// This process's one Node RPC client and live resolver: every Node RPC
+    /// caller in the process takes it by clone.
+    pub node_rpc: crate::node_rpc::ProcessNodeRpc,
     gossip: iroh_gossip::net::Gossip,
     publisher: tokio::task::JoinHandle<()>,
+    node_rpc_feed: tokio::task::JoinHandle<()>,
 }
 
 /// The digest key carrying a node's in-flight handler count.
@@ -108,6 +112,7 @@ impl RunningNode {
         })
         .await;
         self.publisher.abort();
+        self.node_rpc_feed.abort();
         let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
@@ -175,6 +180,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, seeds).await?;
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start(ep0.clone(), &membership.book, &name);
     // Entry: take the launching admin's membership before marking ready. An
     // admin that cannot answer does not hold the node: its view fills from
     // gossip instead (the pull is named either way).
@@ -238,5 +244,5 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder) -> Serv
         d.extra.insert(IN_FLIGHT.into(), rafka_node_rpc::ServerStats::get(&stats.in_flight).to_string());
         d
     });
-    Ok(RunningNode { routers, membership, server, status, digest, gossip: g, publisher })
+    Ok(RunningNode { routers, membership, server, status, digest, node_rpc, gossip: g, publisher, node_rpc_feed })
 }

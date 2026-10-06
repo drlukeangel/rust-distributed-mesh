@@ -534,6 +534,8 @@ pub struct AdminRunner {
     pub node_id: NodeId,
     /// This admin's Iroh endpoint: it asks a node directly whether it answers.
     pub endpoint: Option<Endpoint>,
+    /// This process's one Node RPC client (and its live resolver).
+    pub node_rpc: Option<crate::node_rpc::ProcessNodeRpc>,
 }
 
 impl AdminRunner {
@@ -686,20 +688,10 @@ impl AdminRunner {
                 rafka_mesh_transport::entry::pull_once(ep, anchor, &self.me.to_string(), WITHIN).await.is_ok()
             }
             NodeKind::RpcNode => {
-                let (Some(ep), Some(transport_id), Some(incarnation)) = (&self.endpoint, &node.transport_id, &node.incarnation_id) else { return false };
-                let Ok(peer) = transport_id.0.parse::<iroh::PublicKey>() else { return false };
-                let resolver = Arc::new(rafka_node_rpc::StaticResolver::new());
-                resolver.insert(rafka_node_rpc::ResolvedNode {
-                    node_id: node.node_id.clone(),
-                    name: node.name.clone(),
-                    transport_id: peer,
-                    incarnation: incarnation.clone(),
-                    endpoints: node.endpoints.clone(),
-                });
-                let client = rafka_node_rpc::NodeRpcClient::new(ep.clone(), resolver);
+                let Some(node_rpc) = &self.node_rpc else { return false };
                 let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
                 let req = rafka_node_rpc_contract::echo::EchoRequest::Echo { traceparent: None, payload: b"fence".to_vec() };
-                let (out, _) = client.call::<rafka_node_rpc_contract::echo::Echo>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
+                let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::echo::Echo>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
                 out.reply().is_some()
             }
         }
@@ -868,6 +860,9 @@ pub struct Running {
     pub runner: Arc<AdminRunner>,
     pub membership: Membership,
     pub digest: Arc<Mutex<MeshDigest>>,
+    /// This process's one Node RPC client and live resolver: every Node RPC
+    /// caller in the process takes it by clone.
+    pub node_rpc: crate::node_rpc::ProcessNodeRpc,
     /// This admin's place on the backbone: while it leaves, its aggregate publication carries its
     /// own `Leaving` out of its mesh ([`Running::leave`]).
     backbone: Backbone,
@@ -1193,6 +1188,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start(endpoint.clone(), &book, &name.to_string());
     let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
 
     // The deployment hand (used while this admin is fabric primary).
@@ -1228,6 +1224,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         me: name.clone(),
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
+        node_rpc: Some(node_rpc.clone()),
     });
 
     // This birth's exact runtime. A launched admin takes the record its
@@ -1358,7 +1355,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         // The pipeline's assignment, not a re-minted one.
         digest.lock().unwrap().node.endpoints = EndpointSet(l.endpoints.clone());
     }
-    let mut tasks = vec![contacts_task];
+    let mut tasks = vec![contacts_task, node_rpc_feed];
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
     // becomes eligible for every seat) only once it can manage every birth it
     // holds: each live member publishes a runtime fact this admin's provider
@@ -1555,7 +1552,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks })
+    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks })
 }
 
 #[cfg(test)]

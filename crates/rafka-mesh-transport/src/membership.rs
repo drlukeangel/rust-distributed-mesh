@@ -659,9 +659,18 @@ impl CutOff {
 
 /// The latest digest heard per logical node: when it was taken, and whether
 /// it came forwarded by its mesh's primary.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DigestBook {
     inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, bool)>>>,
+    /// Ticks when a member's birth (`MeshDigest::node`) is first held or
+    /// changes; a fresher digest of the same birth does not tick.
+    births: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl Default for DigestBook {
+    fn default() -> Self {
+        Self { inner: Arc::default(), births: Arc::new(tokio::sync::watch::Sender::new(0)) }
+    }
 }
 
 /// How long `d` has been silent: since it was taken, or, for a forwarded
@@ -717,7 +726,12 @@ impl DigestBook {
                 return false;
             }
         }
+        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         inner.insert(d.node.node_id.to_string(), (d, Instant::now(), false));
+        drop(inner);
+        if birth_changed {
+            self.births.send_modify(|v| *v += 1);
+        }
         true
     }
 
@@ -740,8 +754,20 @@ impl DigestBook {
                 return false;
             }
         }
+        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
         inner.insert(d.node.node_id.to_string(), (d, Instant::now(), true));
+        drop(inner);
+        if birth_changed {
+            self.births.send_modify(|v| *v += 1);
+        }
         true
+    }
+
+    /// Ticks each time a member's birth is first held or changes (a new
+    /// incarnation, a moved slot, a runtime published): what a process's
+    /// live resolver is fed from. A fresher digest of the same birth does not.
+    pub fn birth_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.births.subscribe()
     }
 
     pub fn current(&self, fresh: Duration) -> Vec<MeshDigest> {
@@ -879,6 +905,20 @@ mod tests {
         assert!(book.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "an equal forwarded copy");
         assert!(book.get(id.as_str()).unwrap().1 < Duration::from_millis(30), "keeps the member heard");
         assert!(!book.record_forwarded(digest(&id, &birth, None, MemberStatus::Pending, 100)), "an older copy is not taken");
+    }
+
+    #[test]
+    fn a_new_or_changed_birth_ticks_and_a_fresher_digest_of_the_same_birth_does_not() {
+        let book = DigestBook::default();
+        let mut births = book.birth_changes();
+        let (id, first, second) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &first, None, MemberStatus::Pending, 100)));
+        assert!(births.has_changed().unwrap(), "first held");
+        births.borrow_and_update();
+        assert!(book.record(digest(&id, &first, None, MemberStatus::ReadyForTraffic, 200)));
+        assert!(!births.has_changed().unwrap(), "the same birth, fresher and with a new status");
+        assert!(book.record_forwarded(digest(&id, &second, Some(first.clone()), MemberStatus::Pending, 50)));
+        assert!(births.has_changed().unwrap(), "the next birth");
     }
 
     #[test]

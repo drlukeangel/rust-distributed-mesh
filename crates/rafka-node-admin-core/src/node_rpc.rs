@@ -1,0 +1,72 @@
+//! A process's one Node RPC client and the live resolver it dials through,
+//! fed by the process's own membership.
+//!
+//! This is process composition: membership (`rafka-mesh-transport`) and Node
+//! RPC (`rafka-node-rpc`) never depend on each other. Every process that
+//! calls Node RPC (node-admin, the rpc node) builds one [`ProcessNodeRpc`] on
+//! its endpoint when it starts, holds it in its running state and hands it to
+//! every caller by clone; nothing builds a resolver or a client per call.
+
+use rafka_mesh_entity::MeshDigest;
+use rafka_mesh_transport::membership::DigestBook;
+use rafka_node_rpc::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
+use std::sync::Arc;
+
+/// The process's resolver and client, shared by clone.
+#[derive(Clone)]
+pub struct ProcessNodeRpc {
+    pub resolver: Arc<LiveNodeResolver>,
+    pub client: Arc<NodeRpcClient>,
+}
+
+impl ProcessNodeRpc {
+    /// One resolver and one client on `endpoint`, fed from `book` for as long
+    /// as the returned task runs.
+    pub fn start(endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
+        let resolver = Arc::new(LiveNodeResolver::default());
+        let client = Arc::new(NodeRpcClient::new(endpoint, resolver.clone()));
+        let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
+        (Self { resolver, client }, feed)
+    }
+}
+
+/// The resolver's view of a held birth; `None` when its transport id is not an
+/// Iroh key (it cannot be dialed).
+pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
+    Some(ResolvedNode {
+        node_id: d.node.node_id.clone(),
+        name: d.node.name.clone(),
+        transport_id: d.node.transport_id.0.parse().ok()?,
+        incarnation: d.node.incarnation.clone(),
+        endpoints: d.node.endpoints.0.clone(),
+    })
+}
+
+/// Apply every birth `book` holds to `resolver`, naming what changed.
+pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
+    for d in book.all() {
+        let Some(birth) = resolved(&d) else { continue };
+        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());
+        match resolver.apply(birth, d.node.supersedes.as_ref()) {
+            Applied::Unchanged | Applied::Departed => {}
+            Applied::Refused(r) => tracing::info_span!("rafka.node_rpc.node.reject.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)
+                .in_scope(|| tracing::info!("a held birth the resolver does not take")),
+            change => tracing::info_span!("rafka.node_rpc.node.update.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, change = ?change)
+                .in_scope(|| tracing::info!("the resolver holds the birth")),
+        }
+    }
+}
+
+/// Feed `resolver` now and again on every birth change `book` holds.
+fn spawn_feed(book: DigestBook, resolver: Arc<LiveNodeResolver>, node: String) -> tokio::task::JoinHandle<()> {
+    let mut births = book.birth_changes();
+    tokio::spawn(async move {
+        loop {
+            births.borrow_and_update();
+            feed_once(&book, &resolver, &node);
+            if births.changed().await.is_err() {
+                return;
+            }
+        }
+    })
+}
