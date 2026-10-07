@@ -667,13 +667,19 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     assert!(left.is_empty(), "seed {seed}: no runtime of the estate is left running: {left:?}");
     assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "seed {seed}: no container of the estate is left running");
-    // Evidence: a 425 is never followed by a dispatch of the same request; the refusal spans say so.
+    // Evidence: a 425 is decided on the fence alone, before the context is read, so the refusal
+    // span is in no caller's trace (it starts its own) and carries no caller_system; nothing of
+    // that request is dispatched, which the dispatch cells prove and the trace confirms: no
+    // serve shares a refusal's trace.
     let spans = estate.spans();
     let stale = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target");
     for sp in &stale {
+        assert_eq!(sp["attributes"]["decided_by"], "target", "{sp}");
+        assert!(sp["attributes"].get("caller_system").is_none(), "a 425 owes nothing to section 1: {sp}");
+        assert_eq!(sp["parent_span_id"].as_str().unwrap_or("").trim_matches('0'), "", "a fence refusal starts its own trace: {sp}");
         let trace = &sp["trace_id"];
-        let served_after = spans.iter().any(|x| x["trace_id"] == *trace && x["name"] == "rdm.node_rpc.request.serve.via-direct" && x["start_unix_nano"].as_u64() > sp["start_unix_nano"].as_u64());
-        assert!(!served_after, "a stale fence was dispatched after its 425: {sp}");
+        let served = spans.iter().any(|x| x["trace_id"] == *trace && x["name"] == "rdm.node_rpc.request.serve.via-direct");
+        assert!(!served, "a stale fence was dispatched: {sp}");
     }
     assert!(round >= 3, "seed {seed}: only {round} rounds in {secs}s");
 }

@@ -131,6 +131,9 @@ pub enum RequestHead {
     TooLarge { op: u8, declared: u64, max: usize },
     /// The length prefix is not a valid varint: `424 PROTOCOL_VIOLATION`.
     BadLength { op: u8 },
+    /// The fence names a node this process is not: reset `425 STALE_TARGET`, no dispatch.
+    /// Decided on the fence alone, before the context or the length is read.
+    Stale { op: u8, fence: Fence },
     /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
     /// `op` is `None` when the fence itself could not be read.
     BadTarget { op: Option<u8> },
@@ -143,7 +146,7 @@ pub enum RequestHead {
 /// Read the request head. `ceiling(op)` is the protocol's
 /// `MAX_REQUEST_FRAME_BYTES`, or `None` when the op is not served.
 pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> RequestHead {
-    match parse_request_target(buf, ceiling) {
+    match parse_request_target(buf, ceiling, |_| true) {
         Ok(t) => parse_request_length(buf, t),
         Err(head) => head,
     }
@@ -161,9 +164,10 @@ pub struct TargetRead {
 }
 
 /// Stage one of the head: the fence, then the context. `Err` is `NeedMore`,
-/// `Unserved` or `BadTarget`. The fence is decoded and its op looked up before a
-/// byte of the context is read.
-pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<TargetRead, RequestHead> {
+/// `Unserved`, `Stale` or `BadTarget`. The fence is decoded, its op looked up and its
+/// target checked against `current` before a byte of the context is read: a `425` owes
+/// nothing to section 1, so it can carry nothing from it.
+pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>, current: impl Fn(&Fence) -> bool) -> Result<TargetRead, RequestHead> {
     let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
         Section::NeedMore => return Err(RequestHead::NeedMore),
         Section::Bad => return Err(RequestHead::BadTarget { op: None }),
@@ -174,6 +178,9 @@ pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -
     };
     let op = fence.op;
     let Some(max) = ceiling(op) else { return Err(RequestHead::Unserved { op }) };
+    if !current(&fence) {
+        return Err(RequestHead::Stale { op, fence });
+    }
     match decode_section(buf, at, MAX_CONTEXT_BYTES) {
         Section::NeedMore => Err(RequestHead::NeedMore),
         Section::Bad => Err(RequestHead::BadTarget { op: Some(op) }),

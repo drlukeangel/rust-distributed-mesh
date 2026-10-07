@@ -329,9 +329,11 @@ async fn context_never_reaches_the_fence_decision() {
     let (out, _) = c2.call::<Ping>(&NodeTarget::ExactNode(stale.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
     assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
-    // The refusal is still correlated with the caller's trace.
-    let refused = finished("rdm.node_rpc.connection.reject.via-stale-target", Some(&t.id));
-    assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").as_deref() == Some("rdm")), "{refused:?}");
+    // The refusal was decided on the fence alone: the context was never read, so the refusal
+    // is not in the caller's trace and carries no caller_system.
+    assert!(finished("rdm.node_rpc.connection.reject.via-stale-target", Some(&t.id)).is_empty(), "a 425 owes nothing to section 1");
+    let refused = finished("rdm.node_rpc.connection.reject.via-stale-target", None);
+    assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").is_none()), "{refused:?}");
     // The current client serves with the same context.
     let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");

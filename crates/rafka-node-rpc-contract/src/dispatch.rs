@@ -24,7 +24,7 @@ pub enum ServerAction {
     ResetUnserved { op: u8 },
     /// Reset the stream with `425 STALE_TARGET`: the fence names another node;
     /// no protocol dispatch.
-    ResetStale { op: u8, header: RequestHeader },
+    ResetStale { op: u8, fence: Fence },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
     RefuseMalformed { op: u8, kind: MalformedKind },
@@ -72,16 +72,14 @@ impl<'c> RequestAssembly<'c> {
         }
         self.buf.extend_from_slice(bytes);
         if self.head.is_none() {
-            let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
+            let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t), |f| (self.current)(f)) {
                 Ok(read) => read,
                 Err(RequestHead::Unserved { op }) => return self.end(ServerAction::ResetUnserved { op }),
+                Err(RequestHead::Stale { op, fence }) => return self.end(ServerAction::ResetStale { op, fence }),
                 Err(RequestHead::BadTarget { op }) => return self.end(ServerAction::ResetViolation { op, reason: "bad request fence" }),
                 Err(_) => return ServerAction::Continue,
             };
             if self.header.is_none() {
-                if !(self.current)(&read.header.fence) {
-                    return self.end(ServerAction::ResetStale { op: read.op, header: read.header });
-                }
                 self.header = Some(read.header.clone());
             }
             match parse_request_length(&self.buf, read) {
@@ -93,7 +91,7 @@ impl<'c> RequestAssembly<'c> {
                     return self.end(ServerAction::ResetViolation { op: Some(op), reason: "bad length prefix" })
                 }
                 RequestHead::Ready { op, payload_len, head_len, .. } => self.head = Some((op, payload_len, head_len)),
-                RequestHead::Unserved { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
+                RequestHead::Unserved { .. } | RequestHead::Stale { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
             }
         }
         let (op, len, head) = self.head.expect("set above");
@@ -254,8 +252,12 @@ mod tests {
             let mut a = assembly(&c);
             let mut f = encode_request(&stale, b"");
             f.pop();
-            // Only the op and target: decided before any length is read.
-            assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, header: stale.clone() });
+            // Only the op and target: decided before any length is read, and before the
+            // context: the fence alone, cut right after it, is already a 425.
+            let fence_end = 1 + f[0] as usize;
+            assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetStale { op: 0x01, fence: stale.fence.clone() });
+            let mut a = assembly(&c);
+            assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, fence: stale.fence.clone() });
             assert_eq!(a.finish(), ServerAction::Continue, "nothing after the decision");
         }
         // An oversize declaration behind a stale target is still 425: the target is checked first.
@@ -264,7 +266,7 @@ mod tests {
         let mut f = encode_request(&stale, b"");
         f.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
-        assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, header: stale });
+        assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, fence: stale.fence });
     }
 
     #[test]

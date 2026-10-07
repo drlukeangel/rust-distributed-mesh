@@ -387,9 +387,8 @@ impl NodeRpcServer {
                 let _ = send.reset(code(ResetCode::UnservedOp));
                 let _ = recv.stop(code(ResetCode::UnservedOp));
             }
-            ServerAction::ResetStale { op, header } => {
+            ServerAction::ResetStale { op, fence } => {
                 stats.stale.fetch_add(1, Ordering::SeqCst);
-                let fence = header.fence;
                 let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
                 let span = tracing::info_span!(
                     "rdm.node_rpc.connection.reject.via-stale-target",
@@ -400,16 +399,9 @@ impl NodeRpcServer {
                     op = fence.op,
                     mismatch,
                     receiver_node_id = %self.inner.birth.node_id,
-                    caller_system = tracing::field::Empty,
                 );
-                // Correlated with the caller's trace without reading or dispatching the body.
-                let (context, _) = header.context.sanitized();
-                if let Some(tp) = context.traceparent.as_deref() {
-                    rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
-                }
-                if let Some(s) = context.caller_system.as_deref() {
-                    span.record("caller_system", s);
-                }
+                // Decided on the fence alone: the context was never read, so the refusal carries
+                // no caller trace and no caller_system (node-rpc-envelope.md, the fence checks).
                 span.in_scope(|| tracing::info!("the request's fence is not this node: 425"));
                 let _ = send.reset(code(ResetCode::StaleTarget));
                 let _ = recv.stop(code(ResetCode::StaleTarget));
