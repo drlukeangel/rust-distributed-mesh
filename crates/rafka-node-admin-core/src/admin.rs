@@ -798,12 +798,19 @@ impl AdminRunner {
     /// satisfy the operation) or a backward move fails the step by name; so does a bound of
     /// attempts with no certainty, so `Build(shape)` never starts under an assumed state.
     fn pending_handoff_hook(&self, admin: &PathName) -> Result<crate::deployment::pipeline::BeforeReady, String> {
-        let mesh_id = self.records.meshes.lock().unwrap().get(&admin.mesh).map(|m| m.to_string()).ok_or_else(|| format!("{}: this admin holds no mesh id for {}, so no Pending can be applied", admin, admin.mesh))?;
         let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the Pending hand-off")) };
-        let (client, resolver, me, topology, mesh) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.topology.clone(), admin.mesh.clone());
+        let (client, resolver, me, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
-            let (client, resolver, me, topology, mesh, mesh_id) = (client.clone(), resolver.clone(), me.clone(), topology.clone(), mesh.clone(), mesh_id.clone());
-            Box::pin(async move { apply_mesh_pending(&client, &resolver, &me, &topology, &mesh, &mesh_id, &target).await })
+            let (client, resolver, me, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), topology.clone(), mesh.clone(), records.clone());
+            Box::pin(async move {
+                // The mesh's exact identity, as the launch took it: what this admin created, or else
+                // what its view holds from the mesh's members (a recovery never mints one).
+                let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
+                let Some(mesh_id) = records.meshes.lock().unwrap().get(&mesh).cloned().or(known).map(|m| m.to_string()) else {
+                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no Pending can be applied", target.name));
+                };
+                apply_mesh_pending(&client, &resolver, &me, &topology, &mesh, &mesh_id, &target).await
+            })
         }))
     }
 
