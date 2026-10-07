@@ -222,8 +222,17 @@ impl EndpointAllocator {
                 continue;
             }
             let free = match self.addressing {
+                // Claim first, probe after: a port another live admin claims is never probe-bound,
+                // so a probe here never holds, for an instant, a port another admin's birth is
+                // binding. A claimed port that a probe finds held is released again.
                 Addressing::SharedHost(_) => {
-                    UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok() && reserve_on_host(a)
+                    reserve_on_host(a) && {
+                        let unbound = UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok();
+                        if !unbound {
+                            release_on_host(a);
+                        }
+                        unbound
+                    }
                 }
                 Addressing::PerNode { .. } => true,
             };
