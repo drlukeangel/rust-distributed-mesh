@@ -94,6 +94,24 @@ pub fn leave_linger_from_env() -> Duration {
 /// How often a leaving node repeats its `Leaving` during the linger.
 pub const LEAVE_EVERY: Duration = Duration::from_millis(200);
 
+/// How long this process has spent runnable but waiting for a CPU since it started
+/// (`/proc/self/schedstat`, second field); `None` where the kernel does not expose it. The
+/// difference across a bounded operation says whether a late wakeup was the process waiting
+/// to run, from the process's own evidence.
+pub fn runqueue_wait() -> Option<Duration> {
+    let s = std::fs::read_to_string("/proc/self/schedstat").ok()?;
+    let ns: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
+    Some(Duration::from_nanos(ns))
+}
+
+/// The runqueue wait accrued since `since` (a [`runqueue_wait`] reading), in ms; 0 where unknown.
+pub fn runqueue_wait_since_ms(since: Option<Duration>) -> u64 {
+    match (since, runqueue_wait()) {
+        (Some(a), Some(b)) => b.saturating_sub(a).as_millis() as u64,
+        _ => 0,
+    }
+}
+
 /// Announce a departure: `say` the `Leaving` digest now and again every
 /// `every` until `linger` has passed, then return. Bounded by `linger`: a
 /// `say` that does not finish in time is abandoned. Returns how many

@@ -111,10 +111,12 @@ async fn pull_attempt(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, wit
         attempt,
         step = tracing::field::Empty,
         elapsed_ms = tracing::field::Empty,
+        runqueue_wait_ms = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
     let step = std::sync::Arc::new(std::sync::Mutex::new("connecting"));
     let started = std::time::Instant::now();
+    let waited = crate::membership::runqueue_wait();
     let work = {
         let step = step.clone();
         async move {
@@ -140,6 +142,7 @@ async fn pull_attempt(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, wit
     };
     span.record("step", *step.lock().unwrap());
     span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+    span.record("runqueue_wait_ms", crate::membership::runqueue_wait_since_ms(waited));
     span.record("outcome", match &r { Ok(_) => "answered".to_string(), Err(e) => format!("refused: {e}") }.as_str());
     span.in_scope(|| tracing::info!("one entry pull attempt"));
     r

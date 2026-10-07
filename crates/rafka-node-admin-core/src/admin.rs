@@ -1164,6 +1164,7 @@ impl Running {
         // leaves the mesh by the path every member's does (Luke 2026-10-05). No other admin is a
         // publisher of this admin's membership.
         let announcement = std::sync::atomic::AtomicU32::new(0);
+        let (linger_started, waited) = (std::time::Instant::now(), rafka_mesh_transport::membership::runqueue_wait());
         let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
             let d = say(MemberStatus::Leaving);
             let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -1192,7 +1193,12 @@ impl Running {
             }
         })
         .await;
-        tracing::info!(announcements = said, "said Leaving for the linger");
+        tracing::info!(
+            announcements = said,
+            linger_ms = linger_started.elapsed().as_millis() as u64,
+            runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
+            "said Leaving for the linger"
+        );
         for t in self.tasks {
             t.abort();
         }
