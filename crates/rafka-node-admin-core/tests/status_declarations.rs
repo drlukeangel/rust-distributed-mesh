@@ -47,6 +47,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
 
 struct Rig {
     admin: Birth,
+    server: rafka_node_rpc::NodeRpcServer,
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
@@ -100,7 +101,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
         node_id: admin.node.node_id.clone(),
         name: admin.node.name.clone(),
@@ -108,7 +109,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         transport_addr: addr,
         incarnation: admin.node.incarnation_id.clone().unwrap(),
     };
-    (Rig { admin, _router: router, resolved, authority, storage, topology, mesh_ids: rig_mesh_ids }, others)
+    (Rig { admin, server, _router: router, resolved, authority, storage, topology, mesh_ids: rig_mesh_ids }, others)
 }
 
 /// A birth's client to the authority, speaking as that birth.
@@ -242,4 +243,23 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "applied before the reply was lost");
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
+}
+
+
+/// Drain admission never prevents an authority from receiving the upward certainty calls
+/// that finish lifecycle work. The status handler must still enforce its own authority checks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draining_authority_accepts_upward_status_but_still_refuses_an_impostor() {
+    let (rig, b) = rig().await;
+    rig.server.drain();
+    for subject in [&b["rpc1"], &b["admin2"]] {
+        for state in [NodeState::Draining, NodeState::Leaving] {
+            let request = declare(subject, state);
+            assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::Applied);
+            assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::AlreadyApplied);
+        }
+    }
+    let forged = declare(&b["rpc1"], NodeState::Leaving);
+    assert!(matches!(reply(&call(&rig, &b["rpc2"], &forged).await),
+        StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
 }
