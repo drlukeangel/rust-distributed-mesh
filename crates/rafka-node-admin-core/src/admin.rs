@@ -1183,7 +1183,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
-    let _connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
+    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
         Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
     let restart = match (&cfg.launch, nodes_storage.own().await.map_err(storage_err)?) {
@@ -1496,7 +1496,18 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start(endpoint.clone(), &book, &name.to_string());
+    // This admin's own connections: hydrated from its storage, then kept by what its client
+    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
+        rafka_mesh_entity::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
+        connections_storage.clone(),
+        Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
+    ));
+    match connections.hydrate().await {
+        Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
+        Err(e) => return Err(format!("connections storage: {e}")),
+    }
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(Arc::new(rafka_node_rpc::LiveNodeResolver::default()), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
     let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.

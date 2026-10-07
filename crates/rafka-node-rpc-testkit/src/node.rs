@@ -195,7 +195,15 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
         .with_context(|| format!("the node cannot bind its assigned transport address {}", launch.transport_addr))?;
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
-    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
+    // This node's own connections: hydrated from its data dir, then kept by what its client
+    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
+        rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
+        Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).map_err(|e| anyhow!("connections storage: {e}"))?),
+        Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
+    ));
+    connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
+    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     let server = serve_kick(register(core_protocols(ServerBuilder::new()), resolver.clone(), client.clone()), subject.clone())

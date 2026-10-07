@@ -28,5 +28,6 @@ pub mod record_store;
 pub mod shutdown;
 pub mod status_declare;
 pub mod status_rpc;
+pub mod connections_writer;
 pub mod storage;
 pub mod topology;

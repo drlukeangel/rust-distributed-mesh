@@ -198,10 +198,15 @@ pub trait ConnectionsStorage: Send + Sync {
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError>;
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError>;
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError>;
+    /// Append `fact` to the raw connection log (connections.md section 3): the history every
+    /// fact joins, while the index above holds one entry per (source, destination, kind).
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError>;
+    /// The raw log, oldest first.
+    async fn history(&self) -> Result<Vec<NodeConnection>, StorageError>;
 }
 
 #[derive(Debug, Default)]
-pub struct MemoryConnectionsStorage(Mutex<BTreeMap<ConnectionIndex, NodeConnection>>);
+pub struct MemoryConnectionsStorage(Mutex<BTreeMap<ConnectionIndex, NodeConnection>>, Mutex<Vec<NodeConnection>>);
 
 #[async_trait]
 impl ConnectionsStorage for MemoryConnectionsStorage {
@@ -215,6 +220,13 @@ impl ConnectionsStorage for MemoryConnectionsStorage {
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.lock().unwrap().remove(index);
         Ok(())
+    }
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+        self.1.lock().unwrap().push(fact.clone());
+        Ok(())
+    }
+    async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
+        Ok(self.1.lock().unwrap().clone())
     }
 }
 
@@ -230,11 +242,12 @@ fn connection_key(i: &ConnectionIndex) -> String {
 
 /// `<data dir>/connections/<source>--<destination>--<kind>.json`.
 #[derive(Debug)]
-pub struct FileConnectionsStorage(FileRecords);
+pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, Mutex<()>);
 
 impl FileConnectionsStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self(FileRecords::open(own_data_dir, "connections")?))
+        let records = FileRecords::open(own_data_dir, "connections")?;
+        Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), Mutex::new(())))
     }
 }
 
@@ -248,6 +261,27 @@ impl ConnectionsStorage for FileConnectionsStorage {
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.remove(&connection_key(index))
+    }
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+        use std::io::Write as _;
+        let _g = self.2.lock().unwrap();
+        let io = |e: std::io::Error| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() };
+        let mut line = serde_json::to_vec(fact).map_err(|e| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() })?;
+        line.push(b'\n');
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.1).map_err(io)?;
+        f.write_all(&line).map_err(io)?;
+        f.sync_all().map_err(io)
+    }
+    async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
+        match std::fs::read_to_string(&self.1) {
+            Ok(text) => text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| serde_json::from_str(l).map_err(|e| StorageError::Unrecognised { file: self.1.display().to_string(), reason: e.to_string() }))
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() }),
+        }
     }
 }
 

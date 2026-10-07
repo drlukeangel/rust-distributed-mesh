@@ -9,7 +9,7 @@
 //! dials a second peer or target inside one call and never replays.
 
 use crate::pool::{DialError, DialSpec, Failpoint, Pool, PoolKey};
-use crate::resolve::{NodeResolver, NodeTarget};
+use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
 use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
 use iroh::Endpoint;
 use rafka_mesh_entity::NodeId;
@@ -72,10 +72,25 @@ pub struct CallEvidence {
     pub reused: bool,
 }
 
+/// What a source observes of its own Direct connections (connections.md section 9 and
+/// section 10): the pooled connection to an exact birth opened, a dial to it ended without a
+/// connection, or a pooled connection broke. The observer is the source-owned connections
+/// writer; the client reports facts and decides nothing.
+pub trait ConnectionObserver: Send + Sync {
+    /// A new pooled connection to `node` opened (a reused one is not reported).
+    fn direct_connected(&self, node: &ResolvedNode);
+    /// A dial to `node` ended with no connection: `reason` is the NotSent reason's text.
+    fn direct_failed(&self, node: &ResolvedNode, reason: &str);
+    /// The pooled connection to `node` broke after it had opened.
+    fn direct_broken(&self, node: &ResolvedNode, reason: &str);
+}
+
 pub struct NodeRpcClient {
     endpoint: Endpoint,
     resolver: Arc<dyn NodeResolver>,
     pool: Pool,
+    /// The source-owned connections writer, when the process has one.
+    observer: Option<Arc<dyn ConnectionObserver>>,
     /// The system this process originates calls for (`rdm`, `rafka`); observability only.
     caller_system: Option<String>,
 }
@@ -114,7 +129,14 @@ enum Committed {
 
 impl NodeRpcClient {
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
-        Self { endpoint, resolver, pool: Pool::default(), caller_system: None }
+        Self { endpoint, resolver, pool: Pool::default(), observer: None, caller_system: None }
+    }
+
+    /// Hand this client its source-owned connections writer: every Direct fact the client
+    /// observes about its own pooled connections is reported there.
+    pub fn with_connection_observer(mut self, observer: Arc<dyn ConnectionObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Name the originating system every call of this client carries (`rdm`, `rafka`).
@@ -223,6 +245,11 @@ impl NodeRpcClient {
             Ok((c, reused)) => {
                 evidence.connection = Some(c.stable_id());
                 evidence.reused = reused;
+                if !reused {
+                    if let Some(o) = &self.observer {
+                        o.direct_connected(&node);
+                    }
+                }
                 c
             }
             Err(DialError::Superseded) => {
@@ -231,13 +258,26 @@ impl NodeRpcClient {
                 stale_span("caller", &request_target, &format!("incarnation {} superseded by {now}", node.incarnation.0));
                 return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
             }
-            Err(DialError::Deadline) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
-            Err(DialError::Failed(e)) => return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence)),
+            Err(DialError::Deadline) => {
+                if let Some(o) = &self.observer {
+                    o.direct_failed(&node, "dial deadline");
+                }
+                return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
+            }
+            Err(DialError::Failed(e)) => {
+                if let Some(o) = &self.observer {
+                    o.direct_failed(&node, &e);
+                }
+                return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence));
+            }
         };
         let (mut send, mut recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 self.pool.broken(&key, &conn);
+                if let Some(o) = &self.observer {
+                    o.direct_broken(&node, &e.to_string());
+                }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
             }
             Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
