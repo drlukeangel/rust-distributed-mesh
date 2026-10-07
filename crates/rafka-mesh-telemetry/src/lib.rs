@@ -214,7 +214,8 @@ pub fn current_tracestate() -> Option<String> {
 }
 
 /// Writes every finished span as one JSON line to
-/// `<RAFKA_EVIDENCE_DIR>/<service>.<pid>.spans.jsonl` (`docs/i143/design.md` §6).
+/// `<RAFKA_EVIDENCE_DIR>/<service>.<pid>-<pid namespace inode>.spans.jsonl` (`docs/i143/design.md`
+/// §6): a pid names one process only within its pid namespace, and every container has its own.
 /// Causality is carried by `parent_span_id`; a consumer never infers it from
 /// timestamps.
 #[derive(Debug)]
@@ -226,7 +227,8 @@ pub struct JsonlSpanExporter {
 impl JsonlSpanExporter {
     pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(format!("{service}.{}.spans.jsonl", std::process::id()));
+        let ns = std::fs::read_link("/proc/self/ns/pid").ok().and_then(|l| l.to_string_lossy().trim_start_matches("pid:[").trim_end_matches(']').parse::<u64>().ok()).unwrap_or(0);
+        let path = dir.join(format!("{service}.{}-{ns}.spans.jsonl", std::process::id()));
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self { service: service.to_string(), file: std::sync::Arc::new(std::sync::Mutex::new(file)) })
     }
