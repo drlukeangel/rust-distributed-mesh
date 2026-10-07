@@ -136,7 +136,11 @@ async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, go
         .map(|n| (s(&n["name"]), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
-    wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), Duration::from_secs(30), || async {
+    // Silence is local receipt age, and gossip may still hand on the gone birth's last cached
+    // digests for one cache window after it died: the successor is announced within the staleness
+    // floor after that.
+    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
+    wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), silence_bound, || async {
         announced(&estate.spans(), c, &id, gone_id).then_some(())
     })
     .await;
@@ -212,6 +216,13 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     estate.kill_node(&killed).await;
     let (_succ, succ_id) = successor(&estate, &base1, &nodes, &rpc, &killed_id).await;
     build(&estate, &[("mesh1", 2, 3)]).await;
+    // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
+    // count, then for the seats.
+    wait_for("drift recovery restores three live rpc nodes", rafka_mesh_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), || async {
+        let live_rpc = live(&estate.nodes_at(&base1).await).iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").count();
+        (live_rpc == 3).then_some(())
+    })
+    .await;
     let nodes = settle(&estate, &base1, "the cohort is back at its desired count").await;
     estate.artifact("settled-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "live": nodes, "all": estate.nodes().await}));
     assert!(!nodes.iter().any(|n| n["node_id"] == killed_id.as_str()), "the killed birth {killed_id} is not live again: {nodes:#?}");
