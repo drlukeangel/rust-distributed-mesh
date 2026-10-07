@@ -152,28 +152,5 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert!(descends_from(&spans, boot, deploy), "the new process's boot span descends from DeployRuntime");
     estate.record_trace_url(created["trace_id"].as_str().unwrap());
 
-    // 12. A second restart of the same node is a later attempt of the same Build and runs
-    // afresh: the first restart's finished run hands it nothing, so a third incarnation boots.
-    let (status, again) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "second restart: {again}");
-    assert_eq!(again["build_id"].as_str(), Some(restart_build.as_str()), "{again}");
-    estate.await_build(&restart_build, SETTLE).await;
-    let second = wait_for("rpc.2 ready under a third incarnation", SETTLE, || async {
-        let n = estate.node(NODE).await;
-        (ready(&n) && n["incarnation_id"] != after["incarnation_id"] && n["incarnation_id"].as_str() != Some(incarnation_before.as_str())).then_some(n)
-    })
-    .await;
-    assert_eq!(second["node_id"], after["node_id"], "a restart keeps the node id");
-    // Each restart ran DeployRuntime itself; none was reused from the journal.
-    wait_for("both restarts' DeployRuntime steps exported as run", SETTLE, || async {
-        let ran = estate
-            .spans()
-            .iter()
-            .filter(|s| s["name"] == "rafka.node_admin.deployment.update.via-step" && s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "complete")
-            .count();
-        (ran >= 2).then_some(())
-    })
-    .await;
-
     estate.shutdown().await;
 }

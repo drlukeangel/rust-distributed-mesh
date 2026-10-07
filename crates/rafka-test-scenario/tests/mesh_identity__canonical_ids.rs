@@ -6,7 +6,8 @@
 //!   node's transport identity is never its product identity;
 //! - every birth's ready span names its node, mesh and fabric ids with
 //!   `id_format = "crockford60"`, equal to the views';
-//! - a restart keeps NodeId and FabricId under a new incarnation;
+//! - a restart keeps NodeId and FabricId under a new incarnation, and a second restart of the
+//!   same node restarts it again;
 //! - an intentional replacement mints new identity: a mesh removed and
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.
@@ -118,6 +119,31 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .expect("the restarted birth reports ready");
     assert_eq!(s(&reborn["attributes"]["fabric_id"]), fabric_id, "restart keeps the fabric id");
     assert_eq!(s(&reborn["attributes"]["node_id"]), s(&before["node_id"]));
+
+    // A second restart of the same node is a later attempt of the same Build: the first
+    // restart's finished run hands it nothing, so it restarts the node again.
+    let (status, again) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
+    assert_eq!(status, 202, "{again}");
+    assert_eq!(again["build_id"], a["build_id"], "a restart is an attempt of the accepted Build: {again}");
+    estate.await_build(again["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    let third = wait_for("mesh2.rpc.2 ready under a third incarnation", Duration::from_secs(30), || async {
+        let n = estate.node_opt("mesh2.rpc.2").await?;
+        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != after["incarnation_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+    })
+    .await;
+    assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
+    let restart_build = s(&again["build_id"]);
+    wait_for("each restart ran DeployRuntime itself, none reused", Duration::from_secs(30), || async {
+        let ran = named(&estate.spans(), "rafka.node_admin.deployment.update.via-step")
+            .into_iter()
+            .filter(|sp| {
+                let at = &sp["attributes"];
+                s(&at["build_id"]) == restart_build && at["node"] == "mesh2.rpc.2" && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
+            })
+            .count();
+        (ran >= 2).then_some(())
+    })
+    .await;
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids["mesh1.rpc.2"].clone();
