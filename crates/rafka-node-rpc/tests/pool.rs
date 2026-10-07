@@ -31,11 +31,12 @@ fn blackhole() -> (UdpSocket, SocketAddr) {
 }
 
 /// A node serving Ping from one endpoint and one socket.
-/// `hang` never replies; `slow` replies after 1.5 s; anything else echoes at once.
+/// `hang` never replies; `slow` replies once the test sends `release`; anything else echoes at once.
 struct Node {
     _router: Router,
     _server: rafka_node_rpc::NodeRpcServer,
     resolved: ResolvedNode,
+    release: tokio::sync::watch::Sender<bool>,
 }
 
 
@@ -44,26 +45,34 @@ async fn node() -> Node {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let (release, released) = tokio::sync::watch::channel(false);
     let server = ServerBuilder::new()
-        .serve::<Ping, _, _>(TagOwner::Core, |_peer, req: PingRequest| async move {
-            let PingRequest::Ping { payload, .. } = req;
-            match payload.as_slice() {
-                b"hang" => {
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
-                    unreachable!()
+        .serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
+            let mut released = released.clone();
+            async move {
+                let PingRequest::Ping { payload, .. } = req;
+                match payload.as_slice() {
+                    b"hang" => std::future::pending().await,
+                    b"slow" => {
+                        let _ = released.wait_for(|r| *r).await;
+                        Ok(PingReply::Pong { payload })
+                    }
+                    _ => Ok(PingReply::Pong { payload }),
                 }
-                b"slow" => {
-                    tokio::time::sleep(Duration::from_millis(1500)).await;
-                    Ok(PingReply::Pong { payload })
-                }
-                _ => Ok(PingReply::Pong { payload }),
             }
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
-    Node { _router: router, _server: server, resolved }
+    Node { _router: router, _server: server, resolved, release }
+}
+
+/// Until `client` holds a dial in flight (no timer: the dial is registered by the call's first poll).
+async fn until_dialing(client: &NodeRpcClient) {
+    while client.dialing().is_empty() {
+        tokio::task::yield_now().await;
+    }
 }
 
 struct Rig {
@@ -112,7 +121,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
     let started = Instant::now();
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        until_dialing(&rr.client).await;
         let rec = rr.record.clone();
         rr.resolver.insert(rec);
     });
@@ -126,7 +135,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
     let started = Instant::now();
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        until_dialing(&rr.client).await;
         let mut rec = rr.record.clone();
         rec.incarnation = IncarnationId::mint();
         rr.resolver.insert(rec);
@@ -182,6 +191,8 @@ async fn repeated_timeout_evicts_poisoned_connection_without_marking_node_unreac
             assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
             seen.push(ev.unwrap());
         }
+        // The long call is answered only after both timeouts evicted the connection it rides.
+        n.release.send_replace(true);
         seen
     };
     let ((long_out, _), seen) = tokio::join!(long, strikes);

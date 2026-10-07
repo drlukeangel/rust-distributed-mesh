@@ -24,24 +24,25 @@ struct Rig {
     client: NodeRpcClient,
     resolver: Arc<StaticResolver>,
     target: NodeTarget,
+    /// `slow` replies once this is sent.
+    release: tokio::sync::watch::Sender<bool>,
 }
 
 async fn rig(echo_cap: Option<Limits>) -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let h = handled.clone();
+    let (release, released) = tokio::sync::watch::channel(false);
     let mut b = ServerBuilder::new().serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
         let h = h.clone();
+        let mut released = released.clone();
         async move {
             h.fetch_add(1, Ordering::SeqCst);
             let PingRequest::Ping { payload, .. } = req;
             match payload.as_slice() {
-                b"hang" => {
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
-                    unreachable!()
-                }
+                b"hang" => std::future::pending().await,
                 b"slow" => {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let _ = released.wait_for(|r| *r).await;
                     Ok(PingReply::Pong { payload })
                 }
                 b"fault" => Err(HandlerFault::invariant_broken("test fault")),
@@ -68,7 +69,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
         incarnation,
     });
     let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    Rig { _router: router, stats, handled, client: NodeRpcClient::new(cep, resolver.clone()), resolver, target: NodeTarget::ExactNode(node_id) }
+    Rig { _router: router, stats, handled, client: NodeRpcClient::new(cep, resolver.clone()), resolver, target: NodeTarget::ExactNode(node_id), release }
 }
 
 fn echo(p: &[u8]) -> PingRequest {
@@ -202,6 +203,7 @@ async fn a_running_handler_is_counted_in_flight_until_it_finishes() {
         tokio::spawn(async move { r.client.call::<Ping>(&r.target, &echo(b"slow"), &CallOptions::default()).await.0.name() })
     };
     eventually("one handler in flight", || ServerStats::get(&r.stats.in_flight) == 1).await;
+    r.release.send_replace(true);
     assert_eq!(call.await.unwrap(), "Reply");
     eventually("no handler in flight", || ServerStats::get(&r.stats.in_flight) == 0).await;
 }

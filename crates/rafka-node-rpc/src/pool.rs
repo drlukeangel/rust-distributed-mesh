@@ -124,6 +124,11 @@ impl Pool {
         self.inner.conns.lock().unwrap().keys().cloned().collect()
     }
 
+    /// Every key with a dial in flight (diagnostics and tests).
+    pub fn dialing(&self) -> Vec<PoolKey> {
+        self.inner.dials.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Evict every pooled connection and cancel every dial of `node`'s peer
     /// whose target `node` no longer names.
     pub fn purge_stale(&self, node: &ResolvedNode) {

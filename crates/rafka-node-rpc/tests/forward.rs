@@ -137,7 +137,7 @@ async fn rig() -> Rig {
                 a.notify_one();
                 let ProbeRequest::Probe { payload } = req;
                 if payload == b"hold" {
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    std::future::pending::<()>().await;
                 }
                 Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.endpoint_id.to_string() })
             }

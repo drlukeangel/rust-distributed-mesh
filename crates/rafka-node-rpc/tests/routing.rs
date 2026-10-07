@@ -104,7 +104,7 @@ async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: Secre
             h.fetch_add(1, Ordering::SeqCst);
             let ProbeRequest::Probe { payload } = req;
             if payload == b"hold" {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                std::future::pending::<()>().await;
             }
             Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: me, caller: peer.endpoint_id.to_string() })
         }

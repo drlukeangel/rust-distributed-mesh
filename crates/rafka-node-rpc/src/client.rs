@@ -150,6 +150,11 @@ impl NodeRpcClient {
         self.pool.keys()
     }
 
+    /// Every key with a dial in flight.
+    pub fn dialing(&self) -> Vec<PoolKey> {
+        self.pool.dialing()
+    }
+
     /// Invoke protocol `P` on `target`.
     pub async fn call<P: NodeProtocol>(
         &self,
