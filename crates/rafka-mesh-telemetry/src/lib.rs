@@ -6,6 +6,7 @@ use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 pub mod logs;
+pub mod watchdog;
 
 pub struct TelemetryGuard {
     provider: TracerProvider,
@@ -376,5 +377,6 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .with(OpenTelemetryLayer::new(tracer).with_filter(otel_filter))
         .with(log_layer)
         .try_init();
+    let _ = watchdog::spawn();
     Some(TelemetryGuard { provider, logs })
 }
