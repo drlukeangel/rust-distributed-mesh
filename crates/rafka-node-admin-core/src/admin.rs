@@ -822,17 +822,29 @@ impl AdminRunner {
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, permanent, false).await
+        self.retire_with(build_id, attempt, node, permanent, false, false).await
     }
 
-    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool, observe_departure: bool) -> Result<Option<Node>, String> {
+    /// The retire half of a restart: the birth's addresses are claimed by this admin before its
+    /// runtime stops and stay held for the rebirth (a successor never launched it, and the claim
+    /// of the admin that did may name a dead process).
+    async fn retire_for_restart(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
+        self.retire_with(build_id, attempt, node, false, false, true).await
+    }
+
+    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool, observe_departure: bool, keep_endpoints: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
+        if keep_endpoints {
+            if let Some(held) = crate::deployment::endpoint::Assignment::of_node(&record) {
+                self.allocator.lock().unwrap().adopt(node, held);
+            }
+        }
         let template = self.template_for(node.kind, &node.mesh).await;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent, observe_departure };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent, observe_departure, keep_endpoints };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
@@ -928,7 +940,7 @@ impl AdminRunner {
             BuildOperation::RestartNode { node } => {
                 let span = tracing::info_span!("rafka.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 async {
-                    let prior = self.retire(build_id, attempt, node, false).await?;
+                    let prior = self.retire_for_restart(build_id, attempt, node).await?;
                     self.create(build_id, attempt, node, prior, None).await
                 }
                 .instrument(span)
@@ -952,7 +964,7 @@ impl AdminRunner {
                 // `Leaving`.
                 for node in retire_mesh_order(members, last_admin.as_ref()) {
                     let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                    self.retire_with(build_id, attempt, &node, true, true).instrument(span).await?;
+                    self.retire_with(build_id, attempt, &node, true, true, false).instrument(span).await?;
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
                 Ok(())

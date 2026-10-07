@@ -482,6 +482,10 @@ pub struct RetireRequest {
     /// Part of a whole-mesh retire: hold the local cleanup until this admin's own membership view
     /// has heard the birth's `Leaving` ([`RetireStep::ObserveDeparture`]).
     pub observe_departure: bool,
+    /// A restart: the next birth binds the same addresses, so they stay held (and claimed on the
+    /// host) through the retire; releasing them would let another admin hand them out between the
+    /// runtime's exit and the rebirth.
+    pub keep_endpoints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1083,7 +1087,11 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleted(&op).await;
         }
         self.step(&mut run, RetireStep::ReleaseEndpoints.name(), async {
-            self.allocator.lock().unwrap().release(name);
+            if req.keep_endpoints {
+                tracing::info!(node = %name, "a restart keeps its addresses: held for the next birth, never released");
+            } else {
+                self.allocator.lock().unwrap().release(name);
+            }
             Ok(())
         })
         .await?;
