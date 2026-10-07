@@ -152,7 +152,7 @@ impl EndpointAllocator {
         }
     }
 
-    /// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>` (default `41000-48999`) on `127.0.0.1`.
+    /// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>` (default `20000-29999`) on `127.0.0.1`.
     pub fn from_env() -> Self {
         let (first, last) = port_range_from_env();
         Self::new(IpAddr::from([127, 0, 0, 1]), first, last)
@@ -381,15 +381,31 @@ fn release_on_host(addr: SocketAddr) {
     });
 }
 
-/// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>`, default `41000-48999`.
+/// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>`, default `20000-29999`: below the kernel's ephemeral
+/// range, so a port handed to a birth cannot be taken between its assignment and its bind by any
+/// process that binds port 0. A configured range that overlaps the ephemeral range is named.
 pub fn port_range_from_env() -> (u16, u16) {
-    std::env::var("RAFKA_ENDPOINT_PORT_RANGE")
+    let (first, last) = std::env::var("RAFKA_ENDPOINT_PORT_RANGE")
         .ok()
         .and_then(|r| {
             let (a, b) = r.split_once('-')?;
             Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
         })
-        .unwrap_or((41000, 48999))
+        .unwrap_or((20000, 29999));
+    if let Some((lo, hi)) = ephemeral_range() {
+        if first <= hi && last >= lo {
+            tracing::info_span!("rafka.node_admin.endpoint.reject.via-ephemeral-overlap", first, last, ephemeral_first = lo, ephemeral_last = hi)
+                .in_scope(|| tracing::warn!("the endpoint port range overlaps the kernel's ephemeral range: a port assigned here can be taken by any port-0 bind before the birth binds it"));
+        }
+    }
+    (first, last)
+}
+
+/// The kernel's ephemeral port range (`/proc/sys/net/ipv4/ip_local_port_range`), when readable.
+pub fn ephemeral_range() -> Option<(u16, u16)> {
+    let s = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").ok()?;
+    let mut it = s.split_whitespace().filter_map(|v| v.parse::<u16>().ok());
+    Some((it.next()?, it.next()?))
 }
 
 /// Is something on this host holding UDP `addr`? A bind that fails with
@@ -497,6 +513,18 @@ mod tests {
         let node = p("mesh1.admin.2");
         a.adopt(&node, Assignment { transport: "127.0.0.1:27999".parse().unwrap(), listeners: vec![] });
         assert_eq!(a.assign(&node, &NODE_ADMIN, true), Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: "control".into() }));
+    }
+
+    #[test]
+    fn the_default_range_lies_below_the_ephemeral_range() {
+        if std::env::var("RAFKA_ENDPOINT_PORT_RANGE").is_ok() {
+            return;
+        }
+        let (first, last) = port_range_from_env();
+        assert_eq!((first, last), (20000, 29999));
+        if let Some((lo, hi)) = ephemeral_range() {
+            assert!(last < lo || first > hi, "{first}-{last} overlaps the ephemeral range {lo}-{hi}");
+        }
     }
 
     #[test]
