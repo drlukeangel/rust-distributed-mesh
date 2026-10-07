@@ -9,7 +9,7 @@ pub mod catalog;
 pub mod codes;
 pub mod context;
 pub mod dispatch;
-pub mod echo;
+pub mod ping;
 pub mod forward;
 pub mod framing;
 pub mod outcome;

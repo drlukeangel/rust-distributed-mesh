@@ -18,7 +18,7 @@
 //!
 //! ```compile_fail
 //! use rafka_node_rpc_contract::outcome::Committed;
-//! let skipped_the_commit_cut = Committed { tag: 0x11 };
+//! let skipped_the_commit_cut = Committed { tag: 0x01 };
 //! ```
 
 use crate::codes::ResetCode;
@@ -395,11 +395,11 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::echo::{Echo, EchoReply, EchoRequest};
+    use crate::ping::{Ping, PingReply, PingRequest};
     use crate::protocol::NodeProtocol;
 
     fn committed() -> Committed {
-        PreCommit::begin(Echo::TAG).commit(RequestFinished::after_clean_finish(10, 10, true).unwrap())
+        PreCommit::begin(Ping::TAG).commit(RequestFinished::after_clean_finish(10, 10, true).unwrap())
     }
 
     #[test]
@@ -411,31 +411,31 @@ mod tests {
 
     #[test]
     fn not_sent_comes_only_from_pre_commit() {
-        let o: RpcOutcome<EchoReply> = PreCommit::begin(0x11).not_sent(NotSentReason::Deadline);
+        let o: RpcOutcome<PingReply> = PreCommit::begin(0x01).not_sent(NotSentReason::Deadline);
         assert_eq!(o.name(), "NotSent");
         assert!(o.proves_not_dispatched());
-        let (code, cut): (_, RpcOutcome<EchoReply>) = PreCommit::begin(0x11).cut_before_finish();
+        let (code, cut): (_, RpcOutcome<PingReply>) = PreCommit::begin(0x01).cut_before_finish();
         assert_eq!(code.code(), 499);
         assert!(matches!(&cut, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
     }
 
     #[test]
     fn an_early_refusal_is_its_typed_reply_or_not_sent() {
-        let bytes = Echo::encode_reply(&Echo::malformed(MalformedKind::TooLarge)).unwrap();
-        let o = PreCommit::begin(0x11).stopped_before_finish().reply::<Echo>(Some(&bytes));
+        let bytes = Ping::encode_reply(&Ping::malformed(MalformedKind::TooLarge)).unwrap();
+        let o = PreCommit::begin(0x01).stopped_before_finish().reply::<Ping>(Some(&bytes));
         assert_eq!(o.reply().unwrap().class(), ReplyKind::Malformed(MalformedKind::TooLarge));
-        let o = PreCommit::begin(0x11).stopped_before_finish().reply::<Echo>(None);
+        let o = PreCommit::begin(0x01).stopped_before_finish().reply::<Ping>(None);
         assert!(matches!(&o, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
     }
 
     #[test]
     fn unserved_comes_only_from_a_421_after_commit() {
-        let target = crate::framing::Fence { target_node_id: "n1".into(), op: 0x11 };
-        let o: RpcOutcome<EchoReply> = committed().reset(421, &target);
-        assert!(matches!(&o, RpcOutcome::Unserved(u) if u.tag() == 0x11));
+        let target = crate::framing::Fence { target_node_id: "n1".into(), op: 0x01 };
+        let o: RpcOutcome<PingReply> = committed().reset(421, &target);
+        assert!(matches!(&o, RpcOutcome::Unserved(u) if u.tag() == 0x01));
         assert!(o.proves_not_dispatched());
         for code in [422u64, 423, 424, 499, 0, 501] {
-            let o: RpcOutcome<EchoReply> = committed().reset(code, &target);
+            let o: RpcOutcome<PingReply> = committed().reset(code, &target);
             assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(code)), "{code}");
             assert!(!o.proves_not_dispatched());
         }
@@ -443,23 +443,23 @@ mod tests {
 
     #[test]
     fn reply_comes_from_a_decoded_reply_with_its_class() {
-        let bytes = Echo::encode_reply(&EchoReply::Echoed { payload: b"x".to_vec() }).unwrap();
-        let o = committed().reply::<Echo>(&bytes);
+        let bytes = Ping::encode_reply(&PingReply::Pong { payload: b"x".to_vec() }).unwrap();
+        let o = committed().reply::<Ping>(&bytes);
         let r = o.reply().expect("Reply");
         assert_eq!(r.class(), ReplyKind::Success);
-        let refusal = Echo::encode_reply(&Echo::busy("full".into())).unwrap();
-        assert_eq!(committed().reply::<Echo>(&refusal).reply().unwrap().class(), ReplyKind::Busy, "a refusal is a classified Reply");
+        let refusal = Ping::encode_reply(&Ping::busy("full".into())).unwrap();
+        assert_eq!(committed().reply::<Ping>(&refusal).reply().unwrap().class(), ReplyKind::Busy, "a refusal is a classified Reply");
     }
 
     #[test]
     fn an_unknown_or_corrupt_reply_after_dispatch_is_indeterminate() {
         let mut unknown = Vec::new();
         crate::framing::encode_varint(999, &mut unknown);
-        let o = committed().reply::<Echo>(&unknown);
+        let o = committed().reply::<Ping>(&unknown);
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::UnsupportedReplyVariant));
-        let o = committed().reply::<Echo>(&[0, 0xff, 0xff]);
+        let o = committed().reply::<Ping>(&[0, 0xff, 0xff]);
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::CorruptReply));
         assert!(!o.proves_not_dispatched(), "Indeterminate is never safe to replay");
-        let _ = EchoRequest::Echo { payload: vec![] };
+        let _ = PingRequest::Ping { payload: vec![] };
     }
 }

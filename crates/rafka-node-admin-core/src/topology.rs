@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn dead_nodes_neither_hold_nor_need_a_primary() {
         let mut t = mn();
-        t.nodes[0].status = NodeStatus::Dead;
+        t.nodes[0].status = NodeStatus::PendingReconnect;
         let v = t.violations();
         assert!(v.contains(&TopologyViolation::PrimaryNotLive("mesh1.admin.1".parse().unwrap())), "{v:?}");
         assert!(v.contains(&TopologyViolation::NoCohortPrimary { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }), "{v:?}");

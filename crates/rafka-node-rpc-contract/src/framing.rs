@@ -296,13 +296,13 @@ mod tests {
     }
 
     fn t() -> RequestHeader {
-        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x11 })
+        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x01 })
     }
 
     #[test]
     fn request_round_trips() {
         let frame = encode_request(&t(), b"hello");
-        assert_eq!(decode_request(&frame, |_| Some(64)), Ok((0x11, t(), &b"hello"[..])));
+        assert_eq!(decode_request(&frame, |_| Some(64)), Ok((0x01, t(), &b"hello"[..])));
         assert_eq!(peek_fence(&frame), Some(t().fence), "the fence is the first section");
     }
 
@@ -311,9 +311,9 @@ mod tests {
         let frame = encode_request(&t(), b"hello");
         let fence_end = 1 + frame[0] as usize;
         let context_end = fence_end + 1 + frame[fence_end] as usize;
-        assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { tag: 0x11, header: t() });
+        assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { tag: 0x01, header: t() });
         assert_eq!(parse_request_head(&frame[..context_end - 1], |_| Some(64)), RequestHead::NeedMore);
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x11).then_some(64)), RequestHead::Unserved { tag: 0x11 }, "an unserved op is decided on the fence, before the context");
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x01).then_some(64)), RequestHead::Unserved { tag: 0x01 }, "an unserved op is decided on the fence, before the context");
         // A context at its bounds fits the header ceiling; one byte past the ceiling is a violation.
         let full = RequestHeader {
             context: CallContext {
@@ -325,7 +325,7 @@ mod tests {
             ..t()
         };
         let frame = encode_request(&full, b"hello");
-        assert!(matches!(decode_request(&frame, |_| Some(64)), Ok((0x11, h, _)) if h == full), "a context at its bounds rides the header");
+        assert!(matches!(decode_request(&frame, |_| Some(64)), Ok((0x01, h, _)) if h == full), "a context at its bounds rides the header");
         // An oversize fence is refused before its op is known.
         let mut big = Vec::new();
         encode_varint(MAX_FENCE_BYTES as u64 + 1, &mut big);
@@ -337,7 +337,7 @@ mod tests {
         let fence_end = frame.len() - 2; // `0x00` context, `0x00` payload
         frame.truncate(fence_end);
         encode_varint(MAX_CONTEXT_BYTES as u64 + 1, &mut frame);
-        assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { tag: Some(0x11) });
+        assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { tag: Some(0x01) });
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         let unserved = RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 });
         let frame = encode_request(&unserved, b"");
         let fence_end = frame.len() - 2;
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x11).then_some(64)), RequestHead::Unserved { tag: 0x42 }, "decided before a byte of context arrives");
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x01).then_some(64)), RequestHead::Unserved { tag: 0x42 }, "decided before a byte of context arrives");
     }
 
     #[test]
@@ -353,18 +353,20 @@ mod tests {
         let mut head = encode_request(&t(), b"");
         head.pop(); // the zero length
         encode_varint(1 << 30, &mut head); // a 1 GiB declaration, no body at all
-        assert_eq!(parse_request_head(&head, |_| Some(1024)), RequestHead::TooLarge { tag: 0x11, declared: 1 << 30, max: 1024 });
+        assert_eq!(parse_request_head(&head, |_| Some(1024)), RequestHead::TooLarge { tag: 0x01, declared: 1 << 30, max: 1024 });
     }
 
     #[test]
     fn partial_heads_need_more_and_bad_lengths_are_violations() {
         assert_eq!(parse_request_head(&[], |_| Some(1)), RequestHead::NeedMore);
-        assert_eq!(parse_request_head(&[0x11], |_| Some(1)), RequestHead::NeedMore);
-        assert_eq!(parse_request_head(&[0x11, 0x80], |_| Some(1)), RequestHead::NeedMore);
+        let whole = encode_request(&t(), b"");
+        for cut in 1..whole.len() - 1 {
+            assert_eq!(parse_request_head(&whole[..cut], |_| Some(1)), RequestHead::NeedMore, "a prefix of {cut} bytes needs more");
+        }
         let mut bad = encode_request(&t(), b"");
         bad.pop();
         bad.extend([0xff; 11]);
-        assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { tag: 0x11 });
+        assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { tag: 0x01 });
         let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame[..frame.len() - 1], |_| Some(64)), Err(RequestHead::NeedMore));
     }

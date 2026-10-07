@@ -15,17 +15,17 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::TagOwner;
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-fn echo() -> EchoRequest {
-    EchoRequest::Echo { payload: b"ping".to_vec() }
+fn echo() -> PingRequest {
+    PingRequest::Ping { payload: b"ping".to_vec() }
 }
 
-/// A process serving Echo from one endpoint and one socket; it counts dispatched calls.
+/// A process serving Ping from one endpoint and one socket; it counts dispatched calls.
 struct Process {
     _router: Router,
     endpoint: iroh::Endpoint,
@@ -41,11 +41,11 @@ async fn process(key: &SecretKey) -> Process {
     let dispatched = Arc::new(AtomicU64::new(0));
     let d = dispatched.clone();
     let server = ServerBuilder::new()
-        .serve::<Echo, _, _>(TagOwner::Core, move |_peer, req: EchoRequest| {
+        .serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
             d.fetch_add(1, Ordering::SeqCst);
             async move {
-                let EchoRequest::Echo { payload, .. } = req;
-                Ok(EchoReply::Echoed { payload })
+                let PingRequest::Ping { payload, .. } = req;
+                Ok(PingReply::Pong { payload })
             }
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
@@ -71,12 +71,12 @@ async fn caller(records: &[&ResolvedNode]) -> Caller {
 }
 
 impl Caller {
-    async fn on(&self, node: &ResolvedNode) -> (RpcOutcome<EchoReply>, Option<rafka_node_rpc::CallEvidence>) {
-        self.client.call::<Echo>(&NodeTarget::ExactNode(node.node_id.clone()), &echo(), &CallOptions::default()).await
+    async fn on(&self, node: &ResolvedNode) -> (RpcOutcome<PingReply>, Option<rafka_node_rpc::CallEvidence>) {
+        self.client.call::<Ping>(&NodeTarget::ExactNode(node.node_id.clone()), &echo(), &CallOptions::default()).await
     }
 }
 
-fn stale(out: &RpcOutcome<EchoReply>, node_id: &NodeId) -> bool {
+fn stale(out: &RpcOutcome<PingReply>, node_id: &NodeId) -> bool {
     matches!(out, RpcOutcome::RejectedStale(s) if s.target_node_id() == node_id.to_string())
 }
 

@@ -21,7 +21,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
 use rafka_node_rpc_contract::context::{CallContext, MAX_BAGGAGE_BYTES, MAX_TRACESTATE_BYTES};
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
@@ -75,11 +75,11 @@ fn finished(named: &str, trace: Option<&str>) -> Vec<SpanData> {
         .collect()
 }
 
-fn echo(payload: &[u8]) -> EchoRequest {
-    EchoRequest::Echo { payload: payload.to_vec() }
+fn echo(payload: &[u8]) -> PingRequest {
+    PingRequest::Ping { payload: payload.to_vec() }
 }
 
-/// A forwardable test family on a ledgered test tag (Echo is not forwardable by design).
+/// A forwardable test family on a ledgered test tag (Ping is not forwardable by design).
 struct Probe;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,7 +143,7 @@ fn test_ledger() -> Vec<LedgerEntry> {
     vec![LedgerEntry { tag: Probe::TAG, family: "probe".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }]
 }
 
-/// A process serving Echo on `rpc-0`; the handler keeps the PeerContext each call brought.
+/// A process serving Ping on `rpc-0`; the handler keeps the PeerContext each call brought.
 struct Process {
     _router: Router,
     resolved: ResolvedNode,
@@ -159,11 +159,11 @@ async fn process(name: &str) -> Process {
     let (s, s2) = (seen.clone(), seen.clone());
     let server = ServerBuilder::new()
         .ledger(test_ledger())
-        .serve::<Echo, _, _>(TagOwner::Core, move |peer, req: EchoRequest| {
+        .serve::<Ping, _, _>(TagOwner::Core, move |peer, req: PingRequest| {
             s.lock().unwrap().push(peer);
             async move {
-                let EchoRequest::Echo { payload } = req;
-                Ok(EchoReply::Echoed { payload })
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
             }
         })
         .serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer, req: ProbeRequest| {
@@ -212,7 +212,7 @@ async fn a_direct_call_continues_the_callers_trace_and_records_only_allowlisted_
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(None, &[&p.resolved]).await;
     let t = trace();
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"direct"), &with(full(&t))).await;
+    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"direct"), &with(full(&t))).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
 
     // The whole context reaches the handler: baggage and tracestate propagate whole.
@@ -246,7 +246,7 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     let out = {
         let _g = caller.enter();
         tracing::Instrument::instrument(
-            c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"implicit"), &CallOptions::default()),
+            c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"implicit"), &CallOptions::default()),
             caller.clone(),
         )
         .await
@@ -266,7 +266,7 @@ async fn missing_context_is_valid_and_starts_a_new_trace() {
     spans();
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(None, &[&p.resolved]).await;
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"none"), &with(CallContext::default())).await;
+    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"none"), &with(CallContext::default())).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen[0].context, CallContext::default());
@@ -292,8 +292,8 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
         tracestate: Some("rojo=1".into()),
         baggage: Some(format!("test_case={}", "x".repeat(MAX_BAGGAGE_BYTES))),
     };
-    let (out, ev) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"bad"), &with(bad)).await;
-    assert!(matches!(&out, RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { payload } if payload == b"bad")), "the call proceeds: {out:?}");
+    let (out, ev) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"bad"), &with(bad)).await;
+    assert!(matches!(&out, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { payload } if payload == b"bad")), "the call proceeds: {out:?}");
     assert!(ev.unwrap().committed);
     // The caller dropped every bad part before sending, named on its own span...
     let dropped = finished("rafka.node_rpc.request.update.via-context-dropped", None);
@@ -307,7 +307,7 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     // A tracestate over its bound travels with a valid traceparent and is dropped alone.
     let t = trace();
     let ts = CallContext { tracestate: Some("k=".to_string() + &"v".repeat(MAX_TRACESTATE_BYTES)), ..full(&t) };
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"ts"), &with(ts)).await;
+    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"ts"), &with(ts)).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen[1].context, CallContext { tracestate: None, ..full(&t) });
@@ -326,14 +326,14 @@ async fn context_never_reaches_the_fence_decision() {
     let (c2, _) = client(None, &[&stale]).await;
     let t = trace();
     let ctx = CallContext { baggage: Some("operation=make-it-current".into()), ..full(&t) };
-    let (out, _) = c2.call::<Echo>(&NodeTarget::ExactNode(stale.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
+    let (out, _) = c2.call::<Ping>(&NodeTarget::ExactNode(stale.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
     assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
     // The refusal is still correlated with the caller's trace.
     let refused = finished("rafka.node_rpc.connection.reject.via-stale-target", Some(&t.id));
     assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").as_deref() == Some("rdm")), "{refused:?}");
     // The current client serves with the same context.
-    let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
+    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
 }
 
@@ -341,7 +341,7 @@ async fn context_never_reaches_the_fence_decision() {
 async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop() {
     spans();
     let target = process("mesh1.rpc.3").await;
-    // The carrier calls out as itself (`caller_system = "carrier"`), serving Forward for Echo.
+    // The carrier calls out as itself (`caller_system = "carrier"`), serving Forward for Ping.
     let carrier_key = SecretKey::generate();
     let carrier_ep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let carrier_addr = carrier_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

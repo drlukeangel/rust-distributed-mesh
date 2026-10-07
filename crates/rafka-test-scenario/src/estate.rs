@@ -219,7 +219,7 @@ impl Estate {
                     let seen_by = Instant::now() + Duration::from_secs(10);
                     while Instant::now() < seen_by {
                         let v = self.http_get(&base, "/api/nodes").await.1;
-                        if v["nodes"].as_array().is_some_and(|ns| ns.iter().any(|n| n["name"] == name && n["status"] != "dead")) {
+                        if v["nodes"].as_array().is_some_and(|ns| ns.iter().any(|n| n["name"] == name && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))) {
                             break;
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -447,7 +447,7 @@ impl Estate {
                 let mut candidates = vec![entry.clone()];
                 if let Ok(r) = self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await {
                     let v: Value = r.json().await.unwrap_or(Value::Null);
-                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && n["status"] != "dead").filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
+                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
                 }
                 for c in candidates {
                     let Ok(r) = self.http.get(format!("{c}/api/fabric")).timeout(Duration::from_secs(2)).send().await else { continue };

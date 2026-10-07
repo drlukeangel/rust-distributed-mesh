@@ -84,7 +84,7 @@ async fn accepted_build(estate: &Estate, (status, v): (u16, Value)) {
 /// The view without the rows of births proven dead: drift recovery restores a killed birth's
 /// count at a free path, so the dead birth's own row is not replaced at its path.
 fn live(nodes: &[Value]) -> Vec<Value> {
-    nodes.iter().filter(|n| n["status"] != "dead").cloned().collect()
+    nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).cloned().collect()
 }
 
 /// Every live node is ready and every seat is the computed one.
@@ -142,8 +142,8 @@ async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, go
     .await;
     // Another admin may announce first: `base`'s own view holds the killed birth dead before
     // anything is read from it.
-    wait_for(&format!("{base} no longer hears {gone_id}"), Duration::from_secs(30), || async {
-        (!estate.nodes_at(base).await.iter().any(|n| n["node_id"] == gone_id && n["status"] != "dead")).then_some(())
+    wait_for(&format!("{base} no longer hears {gone_id}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
+        (!estate.nodes_at(base).await.iter().any(|n| n["node_id"] == gone_id && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))).then_some(())
     })
     .await;
     (name, id)
@@ -326,7 +326,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     // once the killed birth is dead in it; whoever holds the seat then is the computed one.
     let nodes = wait_for("the view holds the killed birth dead", Duration::from_secs(30), || async {
         let nodes = estate.nodes().await;
-        (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && n["status"] != "dead") && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
+        (!nodes.iter().any(|n| n["node_id"] == p_id.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) && primary_of(&nodes, &admin2).is_some()).then_some(nodes)
     })
     .await;
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));

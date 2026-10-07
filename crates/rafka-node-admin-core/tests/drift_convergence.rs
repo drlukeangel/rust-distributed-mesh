@@ -230,7 +230,7 @@ async fn hear(world: &World, view: &RwLock<Topology>) {
     let mut v = view.write().await;
     let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.mesh.clone()).collect();
     let mut changed = false;
-    for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::Dead && forwarded.contains(&n.mesh)) {
+    for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::PendingReconnect && forwarded.contains(&n.mesh)) {
         if world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
             n.status = NodeStatus::ReadyForTraffic;
             changed = true;
@@ -250,7 +250,7 @@ impl Estate {
     async fn unheard(&self, paths: &[&str]) {
         let mut v = self.view.write().await;
         for n in v.nodes.iter_mut().filter(|n| paths.contains(&n.name.to_string().as_str())) {
-            n.status = NodeStatus::Dead;
+            n.status = NodeStatus::PendingReconnect;
         }
         rafka_node_admin_core::election::resolve(&mut v.nodes);
     }

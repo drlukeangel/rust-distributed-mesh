@@ -82,7 +82,7 @@ async fn lose_a(topology: &RwLock<Topology>) {
     for n in t.nodes.iter_mut() {
         match n.name.to_string().as_str() {
             "mesh1.admin.1" => {
-                n.status = NodeStatus::Dead;
+                n.status = NodeStatus::PendingReconnect;
                 n.is_primary = false;
                 n.is_fabric_primary = false;
             }

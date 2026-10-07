@@ -167,17 +167,17 @@ pub fn replay_verdict<R>(outcome: &RpcOutcome<R>, mutating: bool) -> ReplayVerdi
 mod tests {
     use super::*;
     use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, TagOwner};
-    use crate::echo::{Echo, EchoReply, EchoRequest};
+    use crate::ping::{Ping, PingReply, PingRequest};
     use crate::framing::{encode_request, encode_varint};
     use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
     fn catalog() -> SealedCatalog {
-        CatalogBuilder::new().serve(CatalogEntry::canonical::<Echo>(TagOwner::Core, Shape::Unary)).seal().unwrap()
+        CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(TagOwner::Core, Shape::Unary)).seal().unwrap()
     }
 
     fn target() -> RequestHeader {
-        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x11 })
+        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x01 })
     }
 
     fn current(f: &Fence) -> bool {
@@ -189,8 +189,8 @@ mod tests {
     }
 
     fn echo_frame(payload: &[u8]) -> Vec<u8> {
-        let req = EchoRequest::Echo { payload: payload.to_vec() };
-        encode_request(&target(), &Echo::encode_request(&req).unwrap())
+        let req = PingRequest::Ping { payload: payload.to_vec() };
+        encode_request(&target(), &Ping::encode_request(&req).unwrap())
     }
 
     // ---- PRD §13 dispatch table ----
@@ -204,9 +204,9 @@ mod tests {
         assert_eq!(a.push(&f[3..]), ServerAction::Continue, "a complete frame waits for FIN");
         match a.finish() {
             ServerAction::Dispatch { tag, header: t, payload } => {
-                assert_eq!(tag, 0x11);
+                assert_eq!(tag, 0x01);
                 assert_eq!(t, target(), "the dispatched request carries the target it named");
-                assert!(matches!(Echo::decode_request(&payload), Ok(EchoRequest::Echo { .. })));
+                assert!(matches!(Ping::decode_request(&payload), Ok(PingRequest::Ping { .. })));
             }
             other => panic!("expected dispatch, got {other:?}"),
         }
@@ -222,9 +222,9 @@ mod tests {
         a.push(&f);
         let ServerAction::Dispatch { payload, .. } = a.finish() else { panic!() };
         // Decode is the dispatcher's first step; its failure is the typed reply.
-        assert_eq!(Echo::decode_request(&payload), Err(DecodeFailure::UnknownVariant));
-        let reply = Echo::malformed(DecodeFailure::UnknownVariant.into());
-        assert_eq!(Echo::classify_reply(&reply), ReplyKind::Malformed(MalformedKind::UnknownVariant));
+        assert_eq!(Ping::decode_request(&payload), Err(DecodeFailure::UnknownVariant));
+        let reply = Ping::malformed(DecodeFailure::UnknownVariant.into());
+        assert_eq!(Ping::classify_reply(&reply), ReplyKind::Malformed(MalformedKind::UnknownVariant));
     }
 
     #[test]
@@ -243,33 +243,33 @@ mod tests {
         let mut a = assembly(&c);
         let mut head = encode_request(&target(), b"");
         head.pop();
-        encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
-        assert_eq!(a.push(&head), ServerAction::RefuseMalformed { tag: 0x11, kind: MalformedKind::TooLarge });
+        encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
+        assert_eq!(a.push(&head), ServerAction::RefuseMalformed { tag: 0x01, kind: MalformedKind::TooLarge });
     }
 
     #[test]
     fn a_stale_or_unknown_target_is_425_before_the_length_or_body() {
         let c = catalog();
-        for stale in [RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x11 }), RequestHeader::fence(Fence { target_node_id: "".into(), op: 0x11 })] {
+        for stale in [RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 }), RequestHeader::fence(Fence { target_node_id: "".into(), op: 0x01 })] {
             let mut a = assembly(&c);
             let mut f = encode_request(&stale, b"");
             f.pop();
             // Only the tag and target: decided before any length is read.
-            assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, header: stale.clone() });
+            assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x01, header: stale.clone() });
             assert_eq!(a.finish(), ServerAction::Continue, "nothing after the decision");
         }
         // An oversize declaration behind a stale target is still 425: the target is checked first.
         let mut a = assembly(&c);
-        let stale = RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x11 });
+        let stale = RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 });
         let mut f = encode_request(&stale, b"");
         f.pop();
-        encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
-        assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, header: stale });
+        encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
+        assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x01, header: stale });
     }
 
     #[test]
     fn a_non_forwardable_family_is_marked_in_the_catalog() {
-        assert!(!catalog().lookup(Echo::TAG).unwrap().forwardable, "carriers refuse it by type (e6.s4)");
+        assert!(!catalog().lookup(Ping::TAG).unwrap().forwardable, "carriers refuse it by type (e6.s4)");
     }
 
     // ---- complete-send certainty table ----
@@ -286,7 +286,7 @@ mod tests {
         let mut b = assembly(&c);
         b.push(&f);
         assert!(matches!(b.reset(499), ServerAction::Drop { .. }));
-        let (code, outcome): (_, RpcOutcome<EchoReply>) = PreCommit::begin(0x11).cut_before_finish();
+        let (code, outcome): (_, RpcOutcome<PingReply>) = PreCommit::begin(0x01).cut_before_finish();
         assert_eq!(code, ResetCode::FrameNotSent);
         assert!(matches!(&outcome, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
     }
@@ -305,51 +305,51 @@ mod tests {
     }
 
     fn committed() -> crate::outcome::Committed {
-        PreCommit::begin(0x11).commit(RequestFinished::after_clean_finish(1, 1, true).unwrap())
+        PreCommit::begin(0x01).commit(RequestFinished::after_clean_finish(1, 1, true).unwrap())
     }
 
     #[test]
     fn complete_request_and_valid_reply_is_reply() {
-        let bytes = Echo::encode_reply(&EchoReply::Echoed { payload: vec![1] }).unwrap();
-        assert_eq!(committed().reply::<Echo>(&bytes).name(), "Reply");
+        let bytes = Ping::encode_reply(&PingReply::Pong { payload: vec![1] }).unwrap();
+        assert_eq!(committed().reply::<Ping>(&bytes).name(), "Reply");
     }
 
     #[test]
     fn complete_request_and_unserved_proof_is_unserved() {
-        assert_eq!(committed().reset::<EchoReply>(421, &target().fence).name(), "Unserved");
+        assert_eq!(committed().reset::<PingReply>(421, &target().fence).name(), "Unserved");
     }
 
     #[test]
     fn complete_request_and_stale_proof_is_rejected_stale_never_not_sent() {
-        let out = committed().reset::<EchoReply>(425, &target().fence);
+        let out = committed().reset::<PingReply>(425, &target().fence);
         assert!(matches!(&out, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{out:?}");
         assert!(out.proves_not_dispatched());
         assert_eq!(replay_verdict(&out, true), ReplayVerdict::SafeToRetry);
-        let early: RpcOutcome<EchoReply> = PreCommit::begin(0x11).stale_before_finish(&target().fence);
+        let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&target().fence);
         assert_eq!(early.name(), "RejectedStale");
     }
 
     #[test]
     fn complete_request_and_reply_loss_or_unknown_reply_version_is_indeterminate() {
-        let lost: RpcOutcome<EchoReply> = committed().indeterminate(IndeterminateReason::ReplyLost("stream reset".into()));
+        let lost: RpcOutcome<PingReply> = committed().indeterminate(IndeterminateReason::ReplyLost("stream reset".into()));
         assert_eq!(lost.name(), "Indeterminate");
         let mut unknown = Vec::new();
         encode_varint(42, &mut unknown);
         assert!(matches!(
-            committed().reply::<Echo>(&unknown),
+            committed().reply::<Ping>(&unknown),
             RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::UnsupportedReplyVariant
         ));
     }
 
     #[test]
     fn no_mutating_indeterminate_is_silently_replayed() {
-        let ind: RpcOutcome<EchoReply> = committed().indeterminate(IndeterminateReason::ReplyDeadline);
+        let ind: RpcOutcome<PingReply> = committed().indeterminate(IndeterminateReason::ReplyDeadline);
         assert_eq!(replay_verdict(&ind, true), ReplayVerdict::MustNotReplay);
         assert_eq!(replay_verdict(&ind, false), ReplayVerdict::ReadMayRepeat);
-        let ns: RpcOutcome<EchoReply> = PreCommit::begin(0x11).not_sent(NotSentReason::Deadline);
+        let ns: RpcOutcome<PingReply> = PreCommit::begin(0x01).not_sent(NotSentReason::Deadline);
         assert_eq!(replay_verdict(&ns, true), ReplayVerdict::SafeToRetry);
-        assert_eq!(replay_verdict(&committed().reset::<EchoReply>(421, &target().fence), true), ReplayVerdict::SafeToRetry);
-        let bytes = Echo::encode_reply(&Echo::busy("x".into())).unwrap();
-        assert_eq!(replay_verdict(&committed().reply::<Echo>(&bytes), true), ReplayVerdict::Answered);
+        assert_eq!(replay_verdict(&committed().reset::<PingReply>(421, &target().fence), true), ReplayVerdict::SafeToRetry);
+        let bytes = Ping::encode_reply(&Ping::busy("x".into())).unwrap();
+        assert_eq!(replay_verdict(&committed().reply::<Ping>(&bytes), true), ReplayVerdict::Answered);
     }
 }

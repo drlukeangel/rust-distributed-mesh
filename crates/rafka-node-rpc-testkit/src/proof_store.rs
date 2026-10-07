@@ -1,6 +1,6 @@
 //! The proof store: a testkit-only key/value oracle on tag `0x70` (i143.e7.s3).
 //!
-//! Echo proves a call reached a node; the proof store proves WHICH birth it
+//! Ping proves a call reached a node; the proof store proves WHICH birth it
 //! reached and what state that birth holds. Its file lives in the node's data
 //! dir, so a same-node restart (same data dir) still holds every value and a
 //! replacement (fresh data dir) holds none. Every reply names the executing

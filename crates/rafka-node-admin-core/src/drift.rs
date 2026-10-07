@@ -39,10 +39,10 @@ impl std::fmt::Display for Shortfall {
     }
 }
 
-/// The births of `t` the authority may have to prove: the ones it no longer
-/// hears (`Dead` in its view). Only these are inspected.
+/// The births of `t` the authority may have to prove: the ones it no longer hears
+/// (`PendingReconnect`, or `Dead` once its offline tickle found no path). Only these are inspected.
 pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
-    t.nodes.iter().filter(|n| n.status == NodeStatus::Dead).collect()
+    t.nodes.iter().filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).collect()
 }
 
 /// The cohorts of `topology` that `t` holds fewer births for than it names,
@@ -97,10 +97,11 @@ mod tests {
 
     #[test]
     fn a_silent_birth_is_held_until_its_exact_runtime_is_proven_exited() {
-        use NodeStatus::{Dead, ReadyForTraffic as R};
-        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", Dead), node("mesh1.rpc.3", R)]);
+        use NodeStatus::{Dead, PendingReconnect, ReadyForTraffic as R};
+        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", PendingReconnect), node("mesh1.rpc.3", R)]);
         let d = desired(1, 3);
         assert_eq!(unheard(&t).len(), 1);
+        assert_eq!(unheard(&view(vec![node("mesh1.rpc.2", Dead)])).len(), 1, "a Dead birth is unheard too");
         // Unreachable, partitioned or in another control domain: no drift.
         assert!(shortfall(&d, &t, &HashSet::new()).is_empty());
         // Its runtime inspected and exited: one rpc node short.
@@ -118,7 +119,7 @@ mod tests {
         let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R)]);
         assert!(shortfall(&desired(1, 3), &t, &HashSet::new()).is_empty());
         // At or above desired with an exited birth: not short.
-        let mut t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", NodeStatus::Dead)]);
+        let mut t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), node("mesh1.rpc.2", NodeStatus::PendingReconnect)]);
         t.nodes.push(node("mesh1.rpc.3", R));
         let exited: HashSet<_> = [t.nodes[2].incarnation_id.clone().unwrap()].into();
         assert!(shortfall(&desired(1, 2), &t, &exited).is_empty());

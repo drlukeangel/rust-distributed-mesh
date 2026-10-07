@@ -136,17 +136,17 @@ fn refeed(
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
     neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>>,
 ) {
-    use rafka_mesh_transport::membership::{PUBLISH_EVERY, SILENT_AFTER};
+    use rafka_mesh_transport::membership::{backbone_gossip_interval, staleness_floor};
     tokio::spawn(async move {
         let mut alone_since: Option<std::time::Instant> = None;
         loop {
-            tokio::time::sleep(PUBLISH_EVERY).await;
+            tokio::time::sleep(backbone_gossip_interval()).await;
             if !neighbors.lock().unwrap().is_empty() {
                 alone_since = None;
                 continue;
             }
             let since = *alone_since.get_or_insert_with(std::time::Instant::now);
-            if since.elapsed() < SILENT_AFTER {
+            if since.elapsed() < staleness_floor() {
                 continue;
             }
             let mut peers = known.lock().unwrap().clone();

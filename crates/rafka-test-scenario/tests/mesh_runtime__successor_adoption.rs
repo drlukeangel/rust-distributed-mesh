@@ -79,7 +79,7 @@ async fn a_successor_manages_births_it_never_launched() {
         let me = v.iter().find(|n| n["name"] == "mesh1.admin.2")?;
         // The killed birth is gone: dead, or already replaced by the drift
         // recovery the fabric authority starts for it (rafka-v2#2851).
-        let gone = v.iter().any(|n| n["name"] == "mesh1.admin.1" && (n["status"] == "dead" || n["incarnation_id"] != launcher["incarnation_id"]));
+        let gone = v.iter().any(|n| n["name"] == "mesh1.admin.1" && (matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")) || n["incarnation_id"] != launcher["incarnation_id"]));
         (gone && me["is_primary"] == true && me["is_fabric_primary"] == true).then_some(v)
     })
     .await;
@@ -105,7 +105,7 @@ async fn a_successor_manages_births_it_never_launched() {
     // The admins that hold mesh1 now: the successor, and the drift recovery's rebirth of the
     // killed launcher's path, a new NodeId that may take the seat back by NodeId order.
     let admins_now: Vec<String> =
-        estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] != "dead").map(|n| s(&n["node_id"])).collect();
+        estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| s(&n["node_id"])).collect();
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.

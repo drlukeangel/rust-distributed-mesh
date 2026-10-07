@@ -69,7 +69,7 @@ const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
 
 /// Every live admin's control API, from the entry admin's view.
 fn admin_bases(nodes: &[Value]) -> Vec<String> {
-    nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] != "dead").filter_map(|n| n["admin_api_base"].as_str().map(String::from)).collect()
+    nodes.iter().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)).collect()
 }
 
 /// A read that may hit an admin whose process just died: `None`, never a panic.
@@ -107,7 +107,7 @@ async fn invariants(estate: &Estate, round: usize, build_id: &str) -> Vec<String
     let nodes = estate.nodes().await;
     // One current birth per path.
     let mut per_path: BTreeMap<String, usize> = BTreeMap::new();
-    for n in nodes.iter().filter(|n| n["status"] != "dead") {
+    for n in nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) {
         *per_path.entry(s(&n["name"])).or_default() += 1;
     }
     for (p, c) in per_path.iter().filter(|(_, c)| **c > 1) {
@@ -213,7 +213,7 @@ async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, Str
         let theirs = v["nodes"].as_array().cloned().unwrap_or_default();
         let at_path: Vec<String> = theirs.iter().filter(|n| n["name"] == path).map(|n| format!("{}/{}:{}", s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["status"]))).collect();
         let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
-        let old_live: Vec<String> = theirs.iter().filter(|n| n["incarnation_id"] == old && n["status"] != "dead").map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
+        let old_live: Vec<String> = theirs.iter().filter(|n| n["incarnation_id"] == old && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
         if !holds {
             return Err(format!("{base} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", birth.0, birth.1));
         }
@@ -252,7 +252,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let mut build_id = s(&a["build_id"]);
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     estate.settled_shape(&SHAPE, Duration::from_secs(60)).await;
-    rafka_test_scenario::estate::wait_for("every live admin holds the same births", Duration::from_secs(60), || converged_everywhere(&estate)).await;
+    rafka_test_scenario::estate::wait_for("every live admin holds the same births", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(60), || converged_everywhere(&estate)).await;
 
     let ops = ["node-restart", "admin-restart", "runtime-kill", "replace", "mesh-primary-loss", "fabric-primary-loss"];
     let deadline = Instant::now() + Duration::from_secs(secs);

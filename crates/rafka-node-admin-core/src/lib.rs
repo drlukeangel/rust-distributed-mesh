@@ -22,6 +22,7 @@ pub mod http;
 pub mod lifecycle;
 pub mod model;
 pub mod node_rpc;
+pub mod offline;
 pub mod readiness;
 pub mod record_store;
 pub mod shutdown;

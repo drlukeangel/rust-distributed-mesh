@@ -28,7 +28,7 @@ pub enum FenceOutcome {
 /// The questions the fence asks of the world.
 #[async_trait::async_trait]
 pub trait PathProbe: Send + Sync {
-    /// Does this birth answer directly (Node RPC Echo for an rpc node, an entry pull for an admin)?
+    /// Does this birth answer directly (Node RPC Ping for an rpc node, an entry pull for an admin)?
     async fn answers(&self, node: &Node) -> bool;
     /// The provider's inspection of this birth's exact runtime; `Err` names why it has none.
     async fn inspect(&self, node: &Node) -> Result<DeploymentStatus, String>;

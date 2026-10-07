@@ -514,7 +514,7 @@ mod tests {
         // A dead (unheard) birth's path is planned again — the create pipeline's fence then holds a
         // runtime that still runs; a live node outside the topology is retired.
         let mut o = mn();
-        o.nodes[3].status = NodeStatus::Dead;
+        o.nodes[3].status = NodeStatus::PendingReconnect;
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         assert_eq!(
             plan(&cur, &o, None).operations,

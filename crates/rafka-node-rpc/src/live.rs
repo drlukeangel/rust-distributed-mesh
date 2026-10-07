@@ -152,8 +152,12 @@ impl LiveNodeResolver {
     /// departed retention, and the path passes to another live node heard at
     /// it, if any.
     pub fn depart(&self, node_id: &NodeId, incarnation: &IncarnationId, path: &PathName) -> Applied {
+        self.depart_at(node_id, incarnation, path, Instant::now())
+    }
+
+    /// [`Self::depart`], accepted at `now`.
+    pub fn depart_at(&self, node_id: &NodeId, incarnation: &IncarnationId, path: &PathName, now: Instant) -> Applied {
         let mut live = self.live.write().unwrap();
-        let now = Instant::now();
         live.expire(self.retention, now);
         if live.departed.contains_key(node_id) {
             return Applied::Unchanged;
@@ -173,24 +177,32 @@ impl LiveNodeResolver {
     }
 }
 
-impl NodeResolver for LiveNodeResolver {
-    fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure> {
+impl LiveNodeResolver {
+    /// [`NodeResolver::resolve`] as of `now`.
+    pub fn resolve_at(&self, target: &NodeTarget, now: Instant) -> Result<ResolvedNode, ResolveFailure> {
         let live = self.live.read().unwrap();
         match target {
             NodeTarget::ExactNode(id) => live.nodes.get(id).cloned().ok_or_else(|| {
                 match live.departed.get(id) {
-                    Some(at) if at.elapsed() < self.retention => ResolveFailure::Gone,
+                    Some(at) if now.saturating_duration_since(*at) < self.retention => ResolveFailure::Gone,
                     _ => ResolveFailure::Unknown,
                 }
             }),
             NodeTarget::CurrentPath(p) => live.by_path.get(p).and_then(|id| live.nodes.get(id)).cloned().ok_or(ResolveFailure::Unknown),
         }
     }
+}
+
+impl NodeResolver for LiveNodeResolver {
+    fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure> {
+        self.resolve_at(target, Instant::now())
+    }
 
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         Some(self.changed.subscribe())
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -285,10 +297,11 @@ mod tests {
         let r = LiveNodeResolver::new(Duration::from_millis(30));
         let a = birth("mesh1.rpc.1", 7000);
         r.apply(a.clone(), None);
-        r.depart(&a.node_id, &a.incarnation, &a.name);
-        assert_eq!(exact(&r, &a), Err(ResolveFailure::Gone));
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(exact(&r, &a), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
+        let t0 = Instant::now();
+        r.depart_at(&a.node_id, &a.incarnation, &a.name, t0);
+        assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), t0), Err(ResolveFailure::Gone));
+        let after = t0 + Duration::from_millis(50);
+        assert_eq!(r.resolve_at(&NodeTarget::ExactNode(a.node_id.clone()), after), Err(ResolveFailure::Unknown), "Gone is what this process holds now, not an archive");
     }
 
     #[tokio::test]

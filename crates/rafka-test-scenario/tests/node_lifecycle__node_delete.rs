@@ -72,7 +72,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // node found, live and not routable.
     let overlay = wait_for("the pre-notice overlay is visible while the node still lives", Duration::from_secs(30), || async {
         let n = estate.nodes().await.into_iter().find(|n| n["name"] == VICTIM)?;
-        (n["routable"] == false && n["status"] != "dead" && n["node_id"] == victim["node_id"]).then_some(n)
+        (n["routable"] == false && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")) && n["node_id"] == victim["node_id"]).then_some(n)
     })
     .await;
     estate.artifact("overlay.json", &overlay);

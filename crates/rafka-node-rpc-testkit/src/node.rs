@@ -9,7 +9,7 @@ use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcServer, ServerBuilder};
 use rafka_node_rpc_contract::catalog::TagOwner;
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,11 +31,11 @@ pub fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey> {
     Ok(key)
 }
 
-/// Core Echo is served by every rpc node.
+/// Core Ping is served by every rpc node.
 pub fn core_protocols(b: ServerBuilder) -> ServerBuilder {
-    b.serve::<Echo, _, _>(TagOwner::Core, |_peer, req: EchoRequest| async move {
-        let EchoRequest::Echo { payload, .. } = req;
-        Ok(EchoReply::Echoed { payload })
+    b.serve::<Ping, _, _>(TagOwner::Core, |_peer, req: PingRequest| async move {
+        let PingRequest::Ping { payload, .. } = req;
+        Ok(PingReply::Pong { payload })
     })
 }
 
@@ -161,8 +161,11 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
-    let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
+    // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
+    let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
+    let server = serve_kick(register(core_protocols(ServerBuilder::new()), resolver.clone()), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
+        .carry::<rafka_node_rpc_contract::status::Status>()
         .serve_forward(client.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
@@ -252,8 +255,9 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     )
         .in_scope(|| tracing::info!("ready for traffic"));
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone() }));
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
-    let publisher = membership.publish_every(Duration::from_millis(500), move || {
+    let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
         d.emitted_unix_ms = now_ms();
@@ -271,7 +275,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
                 if owed.lock().unwrap().is_some() {
                     declare_once(&node, &membership, &client, &owed).await;
                 }
-                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
         })
     };
@@ -289,7 +293,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.to_string(), incarnation: me.incarnation.0.clone(), state };
     let mut admins: Vec<MeshDigest> = membership
         .book
-        .current(rafka_mesh_transport::membership::SILENT_AFTER)
+        .current(membership.book.staleness_floor())
         .into_iter()
         .filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == me.name.mesh)
         .collect();
@@ -315,4 +319,62 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
         }
     }
     last
+}
+
+
+/// What this node needs to answer a node-admin's status kick about itself.
+pub struct Kicked {
+    membership: Membership,
+    digest: MeshDigest,
+    status: Arc<Mutex<MemberStatus>>,
+}
+
+type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
+
+fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState {
+    use rafka_node_rpc_contract::status::NodeState as N;
+    match s {
+        MemberStatus::Pending => N::Pending,
+        MemberStatus::ReadyForTraffic => N::ReadyForTraffic,
+        MemberStatus::Draining => N::Draining,
+        MemberStatus::Leaving => N::Leaving,
+    }
+}
+
+/// Serve `Status` on an rpc node (fabric-node-lifecycle.md §7.3): a node-admin's status kick
+/// about this node (sent after its offline tickle's ping answered) makes it re-publish its presence
+/// (its peers handed to its mesh channel again, its digest published) and answer its status. An rpc
+/// node is never an authority: every declaration is refused by name. Until it has joined: NotReady.
+fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
+    use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
+    b.serve::<Status, _, _>(TagOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
+        let slot = slot.clone();
+        async move {
+            let Some(me) = slot.get().cloned() else {
+                return Ok(StatusReply::NotReady { reason: "this node has not joined its mesh yet".into() });
+            };
+            let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
+            let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
+            match req {
+                StatusRequest::DeclareNodeState { node_id, .. } if node_id == me.digest.node.node_id.as_str() && from_admin => {
+                    let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
+                    let _ = me.membership.join_peers(peers).await;
+                    let status = *me.status.lock().unwrap();
+                    let mut d = me.digest.clone();
+                    d.status = status;
+                    d.emitted_unix_ms = now_ms();
+                    let _ = me.membership.publish(&d).await;
+                    tracing::info_span!(
+                        "rafka.node_admin.status.update.via-kick",
+                        node = %me.digest.node.name,
+                        sender = %sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default(),
+                        state = ?node_state_of(status),
+                    )
+                    .in_scope(|| tracing::info!("kicked by a node-admin: presence re-published, status answered"));
+                    Ok(StatusReply::Current { node_id: me.digest.node.node_id.to_string(), incarnation: me.digest.node.incarnation.0.clone(), state: node_state_of(status) })
+                }
+                _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
+            }
+        }
+    })
 }
