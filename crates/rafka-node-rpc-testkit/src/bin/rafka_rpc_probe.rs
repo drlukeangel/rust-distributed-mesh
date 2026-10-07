@@ -233,7 +233,7 @@ async fn run(a: Args) -> Result<Value, String> {
             (out, leg.token())
         }
         Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
-        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::TAG).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
+        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
     };
     Ok(match &out {
         RpcOutcome::Reply(r) => json!({"outcome": out.name(), "route": leg, "reply": reply(r.value())}),

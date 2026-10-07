@@ -1,18 +1,18 @@
-//! The resolve probe: a testkit-only oracle on tag `0x71` that answers what
+//! The resolve probe: a testkit-only oracle on op `0x71` that answers what
 //! the executing node's own live resolver says about a target.
 //!
 //! The probe binary resolves from an admin's `/api/nodes` view, which is
 //! current-only: it can never say `Gone`. This protocol asks a real node,
 //! whose `LiveNodeResolver` is fed by its own membership, so a scenario proves
 //! `Found` / `Gone` / `Unknown` where they are decided. Testkit range only
-//! ([`TESTKIT_TAGS`]); never a product binary.
+//! ([`TESTKIT_OPS`]); never a product binary.
 //!
-//! [`TESTKIT_TAGS`]: rafka_node_rpc_contract::catalog::TESTKIT_TAGS
+//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{NodeId, PathName};
 use rafka_node_rpc::{LiveNodeResolver, NodeResolver, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, ResolveFailure};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
@@ -69,7 +69,7 @@ impl ResolveReply {
 }
 
 impl NodeProtocol for ResolveProbe {
-    const TAG: u8 = 0x71;
+    const OP: u8 = 0x71;
     const NAME: &'static str = "resolve-probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 2048;
@@ -117,7 +117,7 @@ impl NodeProtocol for ResolveProbe {
 /// Serve the probe on this node's own live `resolver`.
 pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch) -> ServerBuilder {
     let by = AnsweredBy { node_id: launch.node_id.to_string(), node: launch.name.to_string(), incarnation_id: launch.incarnation.to_string() };
-    b.serve::<ResolveProbe, _, _>(TagOwner::Testkit, move |_peer: PeerContext, req: ResolveRequest| {
+    b.serve::<ResolveProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ResolveRequest| {
         let (by, resolver) = (by.clone(), resolver.clone());
         async move {
             let ResolveRequest::Resolve { target, .. } = req;

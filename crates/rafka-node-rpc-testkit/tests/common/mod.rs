@@ -159,7 +159,7 @@ impl NodeObserver for LiveMesh {
             },
             RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
             RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
-            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.tag()) },
+            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
             RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
         }
     }

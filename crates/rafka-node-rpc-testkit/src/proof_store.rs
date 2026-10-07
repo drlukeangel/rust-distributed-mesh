@@ -1,4 +1,4 @@
-//! The proof store: a testkit-only key/value oracle on tag `0x70` (i143.e7.s3).
+//! The proof store: a testkit-only key/value oracle on op `0x70` (i143.e7.s3).
 //!
 //! Ping proves a call reached a node; the proof store proves WHICH birth it
 //! reached and what state that birth holds. Its file lives in the node's data
@@ -8,16 +8,16 @@
 //! arrived on, and the op, so a test reads where a call landed from the reply
 //! itself.
 //!
-//! `0x70` is in the RDM testkit range ([`TESTKIT_TAGS`]): only the testkit rpc
+//! `0x70` is in the RDM testkit range ([`TESTKIT_OPS`]): only the testkit rpc
 //! node serves it, never a product binary. Each mutation writes the whole
 //! store to a temp file, fsyncs it and renames it over the store file before
 //! it answers, so an answered mutation survives a crash.
 //!
-//! [`TESTKIT_TAGS`]: rafka_node_rpc_contract::catalog::TESTKIT_TAGS
+//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
 use rafka_mesh_entity::launch::Launch;
 use rafka_node_rpc::{HandlerFault, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,7 @@ impl ProofReply {
 }
 
 impl NodeProtocol for ProofStore {
-    const TAG: u8 = 0x70;
+    const OP: u8 = 0x70;
     const NAME: &'static str = "proof-store";
     // A compare-and-swap carries a key and two values.
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_KEY_BYTES + 2 * MAX_VALUE_BYTES + 1024;
@@ -306,7 +306,7 @@ impl FileProofStore {
 pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> ServerBuilder {
     let (node_id, node, mesh, incarnation) =
         (launch.node_id.to_string(), launch.name.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string());
-    b.serve::<ProofStore, _, _>(TagOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
+    b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
         let at = Provenance {
             node_id: node_id.clone(),
             node: node.clone(),
@@ -454,8 +454,8 @@ mod tests {
 
     #[test]
     fn the_protocol_is_testkit_forwardable_and_every_variant_round_trips() {
-        assert_eq!(ProofStore::TAG, 0x70);
-        assert!(rafka_node_rpc_contract::catalog::TESTKIT_TAGS.contains(&ProofStore::TAG));
+        assert_eq!(ProofStore::OP, 0x70);
+        assert!(rafka_node_rpc_contract::catalog::TESTKIT_OPS.contains(&ProofStore::OP));
         assert!(ProofStore::FORWARDABLE);
         let a = at(ProofOp::Get);
         let replies = vec![

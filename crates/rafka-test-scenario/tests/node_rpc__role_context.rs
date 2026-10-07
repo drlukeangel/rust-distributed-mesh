@@ -44,8 +44,8 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     let root = named(&spans, "rafka.node_rpc.proof_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put").cloned().expect("the probe's call span");
     let carried = named(&spans, "rafka.node_rpc.request.serve.via-carried-inner").into_iter().find(|s| s["attributes"]["target"] == broker_id.as_str()).cloned().expect("the gateway's carried inner invocation");
     let served = named(&spans, "rafka.node_rpc.proof_store.serve.via-request").into_iter().find(|s| s["attributes"]["incarnation_id"] == broker["incarnation_id"]).cloned().expect("the broker's serve span");
-    let tag_is = |v: &Value, tag: u64| v.as_u64() == Some(tag) || v.as_str() == Some(&tag.to_string());
-    let broker_direct: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.request.serve.via-direct" && s["service"] == "rafka-broker" && s["trace_id"] == root["trace_id"] && tag_is(&s["attributes"]["tag"], 0x70)).collect();
+    let op_is = |v: &Value, op: u64| v.as_u64() == Some(op) || v.as_str() == Some(&op.to_string());
+    let broker_direct: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.request.serve.via-direct" && s["service"] == "rafka-broker" && s["trace_id"] == root["trace_id"] && op_is(&s["attributes"]["op"], 0x70)).collect();
     assert_eq!(broker_direct.len(), 1, "the broker served the one carried request in the probe's trace: {broker_direct:?}");
     assert_eq!(broker_direct[0]["attributes"]["caller_system"], "rdm", "the originating system rode through the carrier unchanged: {}", broker_direct[0]);
     assert_eq!(carried["trace_id"], root["trace_id"], "one trace");

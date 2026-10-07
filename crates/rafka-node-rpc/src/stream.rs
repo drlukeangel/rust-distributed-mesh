@@ -17,7 +17,7 @@ use crate::client::{CallEvidence, CallOptions, NodeRpcClient, Opened, Phase};
 use crate::resolve::NodeTarget;
 use crate::server::{BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
 use iroh::endpoint::{ReadError, RecvStream, SendStream, VarInt};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, Shape, TagOwner};
+use rafka_node_rpc_contract::catalog::{CatalogEntry, Shape, OpOwner};
 use rafka_node_rpc_contract::codes::ResetCode;
 use rafka_node_rpc_contract::framing::{decode_frame, encode_frame, FrameError};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, PreCommit, RpcOutcome};
@@ -238,7 +238,7 @@ where
             let span = tracing::info_span!(
                 "rafka.node_rpc.stream.serve.via-direct",
                 protocol = P::NAME,
-                tag = P::TAG,
+                op = P::OP,
                 peer = %peer.endpoint_id,
                 caller_system = tracing::field::Empty,
                 context_dropped = tracing::field::Empty,
@@ -258,14 +258,14 @@ where
 
 impl ServerBuilder {
     /// Serve server-streaming protocol `P` (owned by `owner`) with handler `f`.
-    pub fn serve_stream<P, F, Fut>(mut self, owner: TagOwner, f: F) -> Self
+    pub fn serve_stream<P, F, Fut>(mut self, owner: OpOwner, f: F) -> Self
     where
         P: StreamingProtocol,
         F: Fn(PeerContext, P::Request, ReplySink<P, NotStarted>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
     {
         self.catalog = self.catalog.serve(CatalogEntry::canonical::<P>(owner, Shape::ServerStreaming));
-        self.handlers.insert(P::TAG, Arc::new(TypedStream::<P, F> { f: Arc::new(f), _p: PhantomData }));
+        self.handlers.insert(P::OP, Arc::new(TypedStream::<P, F> { f: Arc::new(f), _p: PhantomData }));
         self
     }
 }
@@ -354,9 +354,9 @@ impl NodeRpcClient {
     ) -> Result<(ReplyStream<P>, CallEvidence), (RpcOutcome<P::Reply>, Option<CallEvidence>)> {
         let payload = match P::encode_request(req) {
             Ok(p) => p,
-            Err(e) => return Err((PreCommit::begin(P::TAG).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
+            Err(e) => return Err((PreCommit::begin(P::OP).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
         };
-        match self.open::<P::Reply, _>(target, P::TAG, payload, P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)).await {
+        match self.open::<P::Reply, _>(target, P::OP, payload, P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)).await {
             Phase::Done(out, evidence) => Err((out, evidence)),
             Phase::Committed(Opened { recv, evidence, reply_deadline, .. }) => Ok((
                 ReplyStream { recv, buf: Vec::new(), order: FrameOrder::new(), deadline: reply_deadline, done: false, _p: PhantomData },

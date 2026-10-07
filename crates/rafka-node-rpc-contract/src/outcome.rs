@@ -18,7 +18,7 @@
 //!
 //! ```compile_fail
 //! use rafka_node_rpc_contract::outcome::Committed;
-//! let skipped_the_commit_cut = Committed { tag: 0x01 };
+//! let skipped_the_commit_cut = Committed { op: 0x01 };
 //! ```
 
 use crate::codes::ResetCode;
@@ -42,7 +42,7 @@ pub enum ReplyKind {
 pub enum MalformedKind {
     /// Declared length over the protocol ceiling; body never read.
     TooLarge,
-    /// A known tag carrying an operation variant this build does not know.
+    /// A known op carrying an operation variant this build does not know.
     UnknownVariant,
     /// Undecodable bytes.
     Corrupt,
@@ -65,7 +65,7 @@ pub enum NotSentReason {
     /// A carrier proved the inner call never committed at the final target.
     Carried(String),
     /// The protocol is not forwardable, so it never travels through a carrier.
-    NotForwardable { tag: u8 },
+    NotForwardable { op: u8 },
     /// Connections chose no route to the exact target: no leg was started.
     NoActiveRoute,
 }
@@ -127,12 +127,12 @@ impl NotSent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unserved {
-    tag: u8,
+    op: u8,
 }
 
 impl Unserved {
-    pub fn tag(&self) -> u8 {
-        self.tag
+    pub fn op(&self) -> u8 {
+        self.op
     }
 }
 
@@ -168,7 +168,7 @@ pub enum RpcOutcome<R> {
     Reply(Replied<R>),
     /// The request never reached dispatch.
     NotSent(NotSent),
-    /// The receiver's `421 UNSERVED_TAG` proves the tag was never dispatched.
+    /// The receiver's `421 UNSERVED_OP` proves the op was never dispatched.
     Unserved(Unserved),
     /// The receiver's `425 STALE_TARGET` proves the request was never dispatched:
     /// it reached a process that is not the fenced node. It
@@ -206,7 +206,7 @@ impl<R> RpcOutcome<R> {
 /// A call that has not crossed its commit cut.
 #[derive(Debug)]
 pub struct PreCommit {
-    tag: u8,
+    op: u8,
 }
 
 /// Proof that the complete request frame was written and the request send
@@ -227,16 +227,16 @@ impl RequestFinished {
 /// A call past its commit cut.
 #[derive(Debug)]
 pub struct Committed {
-    tag: u8,
+    op: u8,
 }
 
 impl PreCommit {
-    pub fn begin(tag: u8) -> Self {
-        Self { tag }
+    pub fn begin(op: u8) -> Self {
+        Self { op }
     }
 
-    pub fn tag(&self) -> u8 {
-        self.tag
+    pub fn op(&self) -> u8 {
+        self.op
     }
 
     /// End before the cut.
@@ -252,7 +252,7 @@ impl PreCommit {
 
     /// Cross the cut. From here no outcome may be `NotSent`.
     pub fn commit(self, _proof: RequestFinished) -> Committed {
-        Committed { tag: self.tag }
+        Committed { op: self.op }
     }
 
     /// The server stopped the request direction (`422 REQUEST_STOP`) before
@@ -260,13 +260,13 @@ impl PreCommit {
     /// Draining, ...). The request never had its FIN, so it was never
     /// dispatched; a valid typed reply is that refusal (node-rpc.md §27).
     pub fn stopped_before_finish(self) -> EarlyRefusal {
-        EarlyRefusal { tag: self.tag }
+        EarlyRefusal { op: self.op }
     }
 
-    /// The receiver answered the unfinished request with `421 UNSERVED_TAG`:
-    /// proof that its tag was never dispatched.
+    /// The receiver answered the unfinished request with `421 UNSERVED_OP`:
+    /// proof that its op was never dispatched.
     pub fn unserved_before_finish<R>(self) -> RpcOutcome<R> {
-        RpcOutcome::Unserved(Unserved { tag: self.tag })
+        RpcOutcome::Unserved(Unserved { op: self.op })
     }
 
     /// The fence is stale: the caller found its target superseded
@@ -281,12 +281,12 @@ impl PreCommit {
 /// A request the server refused before the caller could finish it.
 #[derive(Debug)]
 pub struct EarlyRefusal {
-    tag: u8,
+    op: u8,
 }
 
 impl EarlyRefusal {
-    pub fn tag(&self) -> u8 {
-        self.tag
+    pub fn op(&self) -> u8 {
+        self.op
     }
 
     /// A valid typed reply is the refusal (`Reply`); without one the request
@@ -311,8 +311,8 @@ impl EarlyRefusal {
 }
 
 impl Committed {
-    pub fn tag(&self) -> u8 {
-        self.tag
+    pub fn op(&self) -> u8 {
+        self.op
     }
 
     /// Decode the reply direction with protocol `P`'s codec and classifier.
@@ -332,7 +332,7 @@ impl Committed {
     /// the call `Indeterminate`.
     pub fn reset<R>(self, code: u64, fence: &crate::framing::Fence) -> RpcOutcome<R> {
         match ResetCode::from_code(code) {
-            Some(ResetCode::UnservedTag) => RpcOutcome::Unserved(Unserved { tag: self.tag }),
+            Some(ResetCode::UnservedOp) => RpcOutcome::Unserved(Unserved { op: self.op }),
             Some(ResetCode::StaleTarget) => {
                 RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
             }
@@ -360,7 +360,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
     let reply = match outer {
         RpcOutcome::Reply(r) => r.into_value(),
         RpcOutcome::NotSent(n) => return RpcOutcome::NotSent(n),
-        RpcOutcome::Unserved(_) => return RpcOutcome::Unserved(Unserved { tag: Forward::TAG }),
+        RpcOutcome::Unserved(_) => return RpcOutcome::Unserved(Unserved { op: Forward::OP }),
         RpcOutcome::RejectedStale(s) => return RpcOutcome::RejectedStale(s),
         RpcOutcome::Indeterminate(i) => return RpcOutcome::Indeterminate(i),
     };
@@ -376,10 +376,10 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
             Err(DecodeFailure::Corrupt) => indeterminate(IndeterminateReason::CorruptReply),
         },
         ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
-        ForwardReply::InnerUnserved { tag } => RpcOutcome::Unserved(Unserved { tag }),
+        ForwardReply::InnerUnserved { op } => RpcOutcome::Unserved(Unserved { op }),
         ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id: target_node_id.into() }),
         ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
-        ForwardReply::NotForwardable { tag } => not_sent(NotSentReason::NotForwardable { tag }),
+        ForwardReply::NotForwardable { op } => not_sent(NotSentReason::NotForwardable { op }),
         // The carrier refused the forward itself, before any inner call.
         ForwardReply::PeerUnresolved { reason }
         | ForwardReply::NotReady { reason }
@@ -399,7 +399,7 @@ mod tests {
     use crate::protocol::NodeProtocol;
 
     fn committed() -> Committed {
-        PreCommit::begin(Ping::TAG).commit(RequestFinished::after_clean_finish(10, 10, true).unwrap())
+        PreCommit::begin(Ping::OP).commit(RequestFinished::after_clean_finish(10, 10, true).unwrap())
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
     fn unserved_comes_only_from_a_421_after_commit() {
         let target = crate::framing::Fence { target_node_id: "n1".into(), op: 0x01 };
         let o: RpcOutcome<PingReply> = committed().reset(421, &target);
-        assert!(matches!(&o, RpcOutcome::Unserved(u) if u.tag() == 0x01));
+        assert!(matches!(&o, RpcOutcome::Unserved(u) if u.op() == 0x01));
         assert!(o.proves_not_dispatched());
         for code in [422u64, 423, 424, 499, 0, 501] {
             let o: RpcOutcome<PingReply> = committed().reset(code, &target);

@@ -8,7 +8,7 @@ use iroh::{EndpointAddr, SecretKey};
 use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcServer, ServerBuilder};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ pub fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey> {
 
 /// Core Ping is served by every rpc node.
 pub fn core_protocols(b: ServerBuilder) -> ServerBuilder {
-    b.serve::<Ping, _, _>(TagOwner::Core, |_peer, req: PingRequest| async move {
+    b.serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
         let PingRequest::Ping { payload, .. } = req;
         Ok(PingReply::Pong { payload })
     })
@@ -389,7 +389,7 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// repeat. A stale incarnation is refused with the one held.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
-    b.serve::<Status, _, _>(TagOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
+    b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
         let slot = slot.clone();
         async move {
             let Some(me) = slot.get().cloned() else {

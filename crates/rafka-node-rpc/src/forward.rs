@@ -12,18 +12,18 @@ use crate::client::{CallEvidence, CallOptions, Decode, NodeRpcClient};
 use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
 use rafka_mesh_entity::NodeId;
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
 use rafka_node_rpc_contract::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::sync::Arc;
 
 impl ServerBuilder {
-    /// Carry protocol `P` for others: a forward naming its tag is executed only when `P` is
+    /// Carry protocol `P` for others: a forward naming its op is executed only when `P` is
     /// forwardable. A protocol that is not forwardable is never carried, whatever is declared.
     pub fn carry<P: NodeProtocol>(mut self) -> Self {
         if P::FORWARDABLE {
-            self.carried.insert(P::TAG, P::MAX_REPLY_FRAME_BYTES);
+            self.carried.insert(P::OP, P::MAX_REPLY_FRAME_BYTES);
         }
         self
     }
@@ -32,7 +32,7 @@ impl ServerBuilder {
     pub fn serve_forward(mut self, client: Arc<NodeRpcClient>) -> Self {
         let table = Arc::new(std::sync::OnceLock::new());
         self.carried_table = Some(table.clone());
-        self.serve::<Forward, _, _>(TagOwner::Core, move |peer: PeerContext, req: ForwardRequest| {
+        self.serve::<Forward, _, _>(OpOwner::Core, move |peer: PeerContext, req: ForwardRequest| {
             let (client, table) = (client.clone(), table.clone());
             async move { Ok(carry_once(&client, &table, &peer, req).await) }
         })
@@ -45,23 +45,23 @@ async fn carry_once(
     peer: &PeerContext,
     req: ForwardRequest,
 ) -> ForwardReply {
-    let ForwardRequest::Forward { target, inner_tag, inner, .. } = req;
-    let Some(&max_reply) = table.get().and_then(|t| t.get(&inner_tag)) else {
+    let ForwardRequest::Forward { target, inner_op, inner, .. } = req;
+    let Some(&max_reply) = table.get().and_then(|t| t.get(&inner_op)) else {
         tracing::info_span!(
             "rafka.node_rpc.request.reject.via-not-forwardable",
-            inner_tag,
+            inner_op,
             target = %target,
             caller = %peer.endpoint_id
         )
         .in_scope(|| tracing::info!("the inner protocol is not forwardable through this carrier"));
-        return ForwardReply::NotForwardable { tag: inner_tag };
+        return ForwardReply::NotForwardable { op: inner_op };
     };
     let node_id = target.clone();
     // The hop is a child span of the origin's trace; the inner call carries the origin's
     // context unchanged, so the target sees the origin's caller_system and causal parent.
     let span = tracing::info_span!(
         "rafka.node_rpc.request.serve.via-carried-inner",
-        inner_tag,
+        inner_op,
         target = %target,
         caller = %peer.endpoint_id,
         caller_system = peer.context.caller_system.as_deref().unwrap_or(""),
@@ -72,7 +72,7 @@ async fn carry_once(
     }
     let opts = CallOptions { context: Some(peer.context.clone()), ..CallOptions::default() };
     let (out, _evidence) = client
-        .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_tag, inner, max_reply, &opts, |d| match d {
+        .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_op, inner, max_reply, &opts, |d| match d {
             Decode::Committed(c, bytes) => c.relayed(bytes),
             Decode::Early(e, bytes) => e.relayed(bytes),
         })
@@ -82,7 +82,7 @@ async fn carry_once(
     match out {
         RpcOutcome::Reply(r) => ForwardReply::Relayed { inner: r.into_value() },
         RpcOutcome::NotSent(n) => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
-        RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { tag: u.tag() },
+        RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { op: u.op() },
         RpcOutcome::RejectedStale(r) => match NodeId::parse(r.target_node_id()) {
             Ok(target_node_id) => ForwardReply::InnerRejectedStale { target_node_id },
             Err(e) => ForwardReply::InnerIndeterminate { reason: format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()) },
@@ -101,9 +101,9 @@ impl NodeRpcClient {
         req: &P::Request,
         opts: &CallOptions,
     ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>) {
-        let pre = PreCommit::begin(P::TAG);
+        let pre = PreCommit::begin(P::OP);
         if !P::FORWARDABLE {
-            return (pre.not_sent(NotSentReason::NotForwardable { tag: P::TAG }), None);
+            return (pre.not_sent(NotSentReason::NotForwardable { op: P::OP }), None);
         }
         let inner = match P::encode_request(req) {
             Ok(b) => b,
@@ -111,7 +111,7 @@ impl NodeRpcClient {
         };
         let forward = ForwardRequest::Forward {
             target: target.clone(),
-            inner_tag: P::TAG,
+            inner_op: P::OP,
             inner,
         };
         let (outer, evidence) = self.call::<Forward>(carrier, &forward, opts).await;

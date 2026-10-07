@@ -25,7 +25,7 @@ pub enum PingReply {
 }
 
 impl NodeProtocol for Ping {
-    const TAG: u8 = 0x01;
+    const OP: u8 = 0x01;
     const NAME: &'static str = "ping";
     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024 + 64;
@@ -78,8 +78,8 @@ mod tests {
         let req = PingRequest::Ping { payload: b"ping".to_vec() };
         let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x01 });
         let frame = encode_request(&header, &Ping::encode_request(&req).unwrap());
-        let (tag, at, body) = decode_request(&frame, |t| (t == Ping::TAG).then_some(Ping::MAX_REQUEST_FRAME_BYTES)).unwrap();
-        assert_eq!((tag, at), (0x01, header));
+        let (op, at, body) = decode_request(&frame, |t| (t == Ping::OP).then_some(Ping::MAX_REQUEST_FRAME_BYTES)).unwrap();
+        assert_eq!((op, at), (0x01, header));
         let back = Ping::decode_request(body).unwrap();
         assert_eq!(back, req);
     }

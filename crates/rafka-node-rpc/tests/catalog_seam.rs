@@ -1,12 +1,12 @@
 //! The one sealed effective catalog per process (ownership amendment §12): a product composes its
 //! transitional adapters into the server's catalog, reads the sealed catalog back for its own
-//! dispatcher, and on this server's ALPN an adapter's tag is unserved (421), never dispatched.
+//! dispatcher, and on this server's ALPN an adapter's op is unserved (421), never dispatched.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, TagOwner};
+use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, OpOwner};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_alpn() {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = ServerBuilder::new()
-        .serve::<Ping, _, _>(TagOwner::Core, |_peer, req: PingRequest| async move {
+        .serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
             let PingRequest::Ping { payload } = req;
             Ok(PingReply::Pong { payload })
         })
@@ -24,9 +24,9 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
         .unwrap();
     // The product's dispatcher reads the same sealed catalog.
     let held = server.catalog().lookup(0x12).expect("the adapter is catalogued");
-    assert_eq!(held.owner, TagOwner::Product("rafka".into()));
+    assert_eq!(held.owner, OpOwner::Product("rafka".into()));
     assert!(matches!(&held.kind, EntryKind::Transitional { migration_unit } if migration_unit == "i142 U6"));
-    assert!(server.catalog().lookup(0x11).is_none(), "a retired tag is never catalogued");
+    assert!(server.catalog().lookup(0x11).is_none(), "a retired op is never catalogued");
     assert!(server.catalog().lookup(0x01).is_some(), "core ping is served");
 
     let key = SecretKey::generate();
@@ -40,14 +40,14 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
     let client = NodeRpcClient::new(cep, resolver);
     let target = NodeTarget::ExactNode(node_id);
 
-    // On the Node RPC ALPN the adapter's tag has no handler: unserved, as the catalog's 421.
+    // On the Node RPC ALPN the adapter's op has no handler: unserved, as the catalog's 421.
     let (out, _) = client
         .invoke_raw::<PingReply, _>(&target, 0x12, vec![1, 2, 3], 1024, &CallOptions::default(), |d| match d {
             Decode::Committed(c, b) => c.reply::<Ping>(b),
             Decode::Early(e, b) => e.reply::<Ping>(b),
         })
         .await;
-    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.tag() == 0x12), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == 0x12), "{out:?}");
     assert_eq!(rafka_node_rpc::ServerStats::get(&stats.dispatched), 0);
     // Core ping is dispatched.
     let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"x".to_vec() }, &CallOptions::default()).await;
@@ -58,7 +58,7 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
 #[test]
 fn a_core_owned_transitional_entry_is_refused_at_seal() {
     let mut entry = CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 1024);
-    entry.owner = TagOwner::Core;
+    entry.owner = OpOwner::Core;
     let errors = ServerBuilder::new().adapter(entry).seal(ServedBirth { node_id: "n".into(), incarnation: "i".into() }).err().expect("refused");
-    assert!(errors.iter().any(|e| matches!(e, rafka_node_rpc_contract::catalog::SealError::OwnerMismatch { tag: 0x12, .. } | rafka_node_rpc_contract::catalog::SealError::CoreTransitional { tag: 0x12, .. })), "{errors:?}");
+    assert!(errors.iter().any(|e| matches!(e, rafka_node_rpc_contract::catalog::SealError::OwnerMismatch { op: 0x12, .. } | rafka_node_rpc_contract::catalog::SealError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
 }

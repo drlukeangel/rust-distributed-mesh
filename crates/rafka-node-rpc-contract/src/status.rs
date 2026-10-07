@@ -1,4 +1,4 @@
-//! The lifecycle/status declaration protocol on tag `0x1B`, RDM's control family (the core
+//! The lifecycle/status declaration protocol on op `0x1B`, RDM's control family (the core
 //! families stay exactly Ping and Forward) (node-rpc.md §38; fabric-mesh-ops.md §3; i143.e6.s7).
 //!
 //! A node or a primary declares a committed state upward to its authority and gets the typed
@@ -172,7 +172,7 @@ impl StatusReply {
 }
 
 impl NodeProtocol for Status {
-    const TAG: u8 = 0x1B;
+    const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 1024;

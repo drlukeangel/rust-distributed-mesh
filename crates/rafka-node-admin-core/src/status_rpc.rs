@@ -1,7 +1,7 @@
 //! The lifecycle/status declarations node-admin applies as an authority (i143.e6.s7;
 //! node-rpc.md §38; fabric-mesh-ops.md §3).
 //!
-//! A declaration reaches this admin over Node RPC (`Status`, tag `0x1B`). The sender is never
+//! A declaration reaches this admin over Node RPC (`Status`, op `0x1B`). The sender is never
 //! read from the request: it is the authenticated peer, resolved to a birth in this admin's own
 //! view. The admin applies a declaration only when it holds the seat the declaration needs and
 //! the sender is the subject (or the subject's primary), idempotently on the natural key, forward
@@ -15,7 +15,7 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId
 use crate::topology::Topology;
 use crate::storage::NodeRecord;
 use rafka_node_rpc::{PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -318,7 +318,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
 pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -> ServerBuilder {
-    b.serve::<Status, _, _>(TagOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
+    b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
         let authority = authority.clone();
         async move {
             let Some(auth) = authority.get().cloned() else {

@@ -123,25 +123,25 @@ pub fn encode_frame(payload: &[u8]) -> Vec<u8> {
 pub enum RequestHead {
     /// Not enough bytes yet.
     NeedMore,
-    /// The fence's op has no catalog entry: reset `421 UNSERVED_TAG`, no dispatch.
+    /// The fence's op has no catalog entry: reset `421 UNSERVED_OP`, no dispatch.
     /// Decided on the fence alone, before the context or the length is read.
-    Unserved { tag: u8 },
-    /// A served tag declaring more than its protocol ceiling: typed
+    Unserved { op: u8 },
+    /// A served op declaring more than its protocol ceiling: typed
     /// `Malformed(TooLarge)`, body never read.
-    TooLarge { tag: u8, declared: u64, max: usize },
+    TooLarge { op: u8, declared: u64, max: usize },
     /// The length prefix is not a valid varint: `424 PROTOCOL_VIOLATION`.
-    BadLength { tag: u8 },
+    BadLength { op: u8 },
     /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
-    /// `tag` is `None` when the fence itself could not be read.
-    BadTarget { tag: Option<u8> },
+    /// `op` is `None` when the fence itself could not be read.
+    BadTarget { op: Option<u8> },
     /// The fence and context are read and the length is not yet.
-    Targeted { tag: u8, header: RequestHeader },
-    /// A served tag within its ceiling; the body is `payload_len` bytes after `head_len`.
-    Ready { tag: u8, header: RequestHeader, payload_len: usize, head_len: usize },
+    Targeted { op: u8, header: RequestHeader },
+    /// A served op within its ceiling; the body is `payload_len` bytes after `head_len`.
+    Ready { op: u8, header: RequestHeader, payload_len: usize, head_len: usize },
 }
 
-/// Read the request head. `ceiling(tag)` is the protocol's
-/// `MAX_REQUEST_FRAME_BYTES`, or `None` when the tag is not served.
+/// Read the request head. `ceiling(op)` is the protocol's
+/// `MAX_REQUEST_FRAME_BYTES`, or `None` when the op is not served.
 pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> RequestHead {
     match parse_request_target(buf, ceiling) {
         Ok(t) => parse_request_length(buf, t),
@@ -152,7 +152,7 @@ pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> 
 /// The fence and context of a request, read; the length is next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRead {
-    pub tag: u8,
+    pub op: u8,
     pub header: RequestHeader,
     /// Where the length prefix starts.
     pub at: usize,
@@ -166,20 +166,20 @@ pub struct TargetRead {
 pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<TargetRead, RequestHead> {
     let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
         Section::NeedMore => return Err(RequestHead::NeedMore),
-        Section::Bad => return Err(RequestHead::BadTarget { tag: None }),
+        Section::Bad => return Err(RequestHead::BadTarget { op: None }),
         Section::Read(bytes, at) => match postcard::from_bytes::<Fence>(bytes) {
             Ok(f) => (f, at),
-            Err(_) => return Err(RequestHead::BadTarget { tag: None }),
+            Err(_) => return Err(RequestHead::BadTarget { op: None }),
         },
     };
-    let tag = fence.op;
-    let Some(max) = ceiling(tag) else { return Err(RequestHead::Unserved { tag }) };
+    let op = fence.op;
+    let Some(max) = ceiling(op) else { return Err(RequestHead::Unserved { op }) };
     match decode_section(buf, at, MAX_CONTEXT_BYTES) {
         Section::NeedMore => Err(RequestHead::NeedMore),
-        Section::Bad => Err(RequestHead::BadTarget { tag: Some(tag) }),
+        Section::Bad => Err(RequestHead::BadTarget { op: Some(op) }),
         Section::Read(bytes, at) => match postcard::from_bytes::<CallContext>(bytes) {
-            Ok(context) => Ok(TargetRead { tag, header: RequestHeader { fence, context }, at, max }),
-            Err(_) => Err(RequestHead::BadTarget { tag: Some(tag) }),
+            Ok(context) => Ok(TargetRead { op, header: RequestHeader { fence, context }, at, max }),
+            Err(_) => Err(RequestHead::BadTarget { op: Some(op) }),
         },
     }
 }
@@ -222,12 +222,12 @@ fn decode_section(buf: &[u8], from: usize, max: usize) -> Section<'_> {
 
 /// Stage two of the head: the declared length after the header.
 pub fn parse_request_length(buf: &[u8], t: TargetRead) -> RequestHead {
-    let TargetRead { tag, header, at, max } = t;
+    let TargetRead { op, header, at, max } = t;
     match decode_varint(&buf[at..]) {
-        Varint::NeedMore => RequestHead::Targeted { tag, header },
-        Varint::Overflow => RequestHead::BadLength { tag },
-        Varint::Complete { value, .. } if value > max as u64 => RequestHead::TooLarge { tag, declared: value, max },
-        Varint::Complete { value, len } => RequestHead::Ready { tag, header, payload_len: value as usize, head_len: at + len },
+        Varint::NeedMore => RequestHead::Targeted { op, header },
+        Varint::Overflow => RequestHead::BadLength { op },
+        Varint::Complete { value, .. } if value > max as u64 => RequestHead::TooLarge { op, declared: value, max },
+        Varint::Complete { value, len } => RequestHead::Ready { op, header, payload_len: value as usize, head_len: at + len },
     }
 }
 
@@ -268,11 +268,11 @@ pub fn decode_single_frame(buf: &[u8], max: usize) -> Result<&[u8], FrameError> 
     }
 }
 
-/// Split a complete request direction into `(tag, header, payload)`.
+/// Split a complete request direction into `(op, header, payload)`.
 pub fn decode_request(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<(u8, RequestHeader, &[u8]), RequestHead> {
     match parse_request_head(buf, ceiling) {
-        RequestHead::Ready { tag, header, payload_len, head_len } if buf.len() == head_len + payload_len => {
-            Ok((tag, header, &buf[head_len..]))
+        RequestHead::Ready { op, header, payload_len, head_len } if buf.len() == head_len + payload_len => {
+            Ok((op, header, &buf[head_len..]))
         }
         RequestHead::Ready { .. } | RequestHead::Targeted { .. } => Err(RequestHead::NeedMore),
         other => Err(other),
@@ -311,9 +311,9 @@ mod tests {
         let frame = encode_request(&t(), b"hello");
         let fence_end = 1 + frame[0] as usize;
         let context_end = fence_end + 1 + frame[fence_end] as usize;
-        assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { tag: 0x01, header: t() });
+        assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { op: 0x01, header: t() });
         assert_eq!(parse_request_head(&frame[..context_end - 1], |_| Some(64)), RequestHead::NeedMore);
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x01).then_some(64)), RequestHead::Unserved { tag: 0x01 }, "an unserved op is decided on the fence, before the context");
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x01).then_some(64)), RequestHead::Unserved { op: 0x01 }, "an unserved op is decided on the fence, before the context");
         // A context at its bounds fits the header ceiling; one byte past the ceiling is a violation.
         let full = RequestHeader {
             context: CallContext {
@@ -329,15 +329,15 @@ mod tests {
         // An oversize fence is refused before its op is known.
         let mut big = Vec::new();
         encode_varint(MAX_FENCE_BYTES as u64 + 1, &mut big);
-        assert_eq!(parse_request_head(&big, |_| Some(64)), RequestHead::BadTarget { tag: None });
+        assert_eq!(parse_request_head(&big, |_| Some(64)), RequestHead::BadTarget { op: None });
         let garbage = [0x02, 0xff, 0xff];
-        assert_eq!(parse_request_head(&garbage, |_| Some(64)), RequestHead::BadTarget { tag: None });
+        assert_eq!(parse_request_head(&garbage, |_| Some(64)), RequestHead::BadTarget { op: None });
         // An oversize context is refused with the op the fence named.
         let mut frame = encode_request(&t(), b"");
         let fence_end = frame.len() - 2; // `0x00` context, `0x00` payload
         frame.truncate(fence_end);
         encode_varint(MAX_CONTEXT_BYTES as u64 + 1, &mut frame);
-        assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { tag: Some(0x01) });
+        assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { op: Some(0x01) });
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         let unserved = RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 });
         let frame = encode_request(&unserved, b"");
         let fence_end = frame.len() - 2;
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x01).then_some(64)), RequestHead::Unserved { tag: 0x42 }, "decided before a byte of context arrives");
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x01).then_some(64)), RequestHead::Unserved { op: 0x42 }, "decided before a byte of context arrives");
     }
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
         let mut head = encode_request(&t(), b"");
         head.pop(); // the zero length
         encode_varint(1 << 30, &mut head); // a 1 GiB declaration, no body at all
-        assert_eq!(parse_request_head(&head, |_| Some(1024)), RequestHead::TooLarge { tag: 0x01, declared: 1 << 30, max: 1024 });
+        assert_eq!(parse_request_head(&head, |_| Some(1024)), RequestHead::TooLarge { op: 0x01, declared: 1 << 30, max: 1024 });
     }
 
     #[test]
@@ -366,7 +366,7 @@ mod tests {
         let mut bad = encode_request(&t(), b"");
         bad.pop();
         bad.extend([0xff; 11]);
-        assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { tag: 0x01 });
+        assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { op: 0x01 });
         let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame[..frame.len() - 1], |_| Some(64)), Err(RequestHead::NeedMore));
     }

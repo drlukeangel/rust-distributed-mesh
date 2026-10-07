@@ -13,7 +13,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use std::net::{SocketAddr, UdpSocket};
@@ -47,7 +47,7 @@ async fn node() -> Node {
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let (release, released) = tokio::sync::watch::channel(false);
     let server = ServerBuilder::new()
-        .serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
+        .serve::<Ping, _, _>(OpOwner::Core, move |_peer, req: PingRequest| {
             let mut released = released.clone();
             async move {
                 let PingRequest::Ping { payload, .. } = req;

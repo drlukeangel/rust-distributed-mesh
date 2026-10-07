@@ -1,7 +1,7 @@
-//! Generic one-hop carried execution (node-rpc.md §36.1; i143.e6.s4) on core tag `0x1A`.
+//! Generic one-hop carried execution (node-rpc.md §36.1; i143.e6.s4) on core op `0x1A`.
 //!
 //! The origin asks a carrier to make exactly one direct inner call to an exact final target. The
-//! request carries the target, the inner protocol tag and the opaque inner request bytes; no origin
+//! request carries the target, the inner protocol op and the opaque inner request bytes; no origin
 //! identity rides in it, because the target authenticates the carrier, never a copied origin.
 //!
 //! The carrier verifies the inner protocol is forwardable, makes one direct inner call, never
@@ -23,7 +23,7 @@ pub enum ForwardRequest {
     Forward {
         /// The exact final target's logical NodeId.
         target: NodeId,
-        inner_tag: u8,
+        inner_op: u8,
         inner: Vec<u8>,
     },
 }
@@ -34,14 +34,14 @@ pub enum ForwardReply {
     Relayed { inner: Vec<u8> },
     /// The carrier proved the inner call never committed at the target.
     InnerNotSent { reason: String },
-    /// The target does not serve the inner tag.
-    InnerUnserved { tag: u8 },
+    /// The target does not serve the inner op.
+    InnerUnserved { op: u8 },
     /// The target refused the inner call's fence (`425 STALE_TARGET`): it is not that node.
     InnerRejectedStale { target_node_id: NodeId },
     /// The inner call committed at the target and its outcome is unknown.
     InnerIndeterminate { reason: String },
     /// The inner protocol is not forwardable through this carrier.
-    NotForwardable { tag: u8 },
+    NotForwardable { op: u8 },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
@@ -51,7 +51,7 @@ pub enum ForwardReply {
 }
 
 impl NodeProtocol for Forward {
-    const TAG: u8 = 0x1A;
+    const OP: u8 = 0x1A;
     const NAME: &'static str = "forward";
     const MAX_REQUEST_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
     const MAX_REPLY_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn the_forward_protocol_is_never_itself_forwardable() {
         assert!(!Forward::FORWARDABLE);
-        assert_eq!(Forward::TAG, 0x1A);
+        assert_eq!(Forward::OP, 0x1A);
     }
 
     #[test]
@@ -114,10 +114,10 @@ mod tests {
         let replies = [
             ForwardReply::Relayed { inner: vec![1] },
             ForwardReply::InnerNotSent { reason: "r".into() },
-            ForwardReply::InnerUnserved { tag: 7 },
+            ForwardReply::InnerUnserved { op: 7 },
             ForwardReply::InnerRejectedStale { target_node_id: NodeId::mint() },
             ForwardReply::InnerIndeterminate { reason: "r".into() },
-            ForwardReply::NotForwardable { tag: 0x01 },
+            ForwardReply::NotForwardable { op: 0x01 },
             ForwardReply::PeerUnresolved { reason: "p".into() },
             ForwardReply::NotReady { reason: "n".into() },
             ForwardReply::Busy { reason: "b".into() },

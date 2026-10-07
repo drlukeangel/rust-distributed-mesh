@@ -4,8 +4,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum ResetCode {
-    /// No catalog entry serves the tag; proves no protocol dispatch.
-    UnservedTag = 421,
+    /// No catalog entry serves the op; proves no protocol dispatch.
+    UnservedOp = 421,
     /// The server stops the request body after a typed early refusal;
     /// flow-control hygiene, never result certainty.
     RequestStop = 422,
@@ -25,7 +25,7 @@ pub const RETIRED_CODES: [u32; 3] = [413, 501, 503];
 
 impl ResetCode {
     pub const ALL: [ResetCode; 6] =
-        [Self::UnservedTag, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleTarget, Self::FrameNotSent];
+        [Self::UnservedOp, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleTarget, Self::FrameNotSent];
 
     pub fn code(self) -> u32 {
         self as u32
@@ -34,7 +34,7 @@ impl ResetCode {
     /// The code's canonical name.
     pub fn name(self) -> &'static str {
         match self {
-            Self::UnservedTag => "UNSERVED_TAG",
+            Self::UnservedOp => "UNSERVED_OP",
             Self::RequestStop => "REQUEST_STOP",
             Self::InternalRpcFailure => "INTERNAL_RPC_FAILURE",
             Self::ProtocolViolation => "PROTOCOL_VIOLATION",

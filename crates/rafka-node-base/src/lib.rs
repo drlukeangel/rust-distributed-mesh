@@ -21,26 +21,26 @@ pub mod families;
 pub mod leadership;
 
 use anyhow::{anyhow, Result};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, TagOwner};
+use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, OpOwner};
 use std::sync::Arc;
 
 /// The product family every role's own tags are ledgered under.
 pub const PRODUCT: &str = "rdm-roles";
 
-/// One live legacy tag a product serves through a transitional adapter until its named cut. The
-/// proof product keeps one (the data-frame tag), so the adapter seam is exercised.
+/// One live legacy op a product serves through a transitional adapter until its named cut. The
+/// proof product keeps one (the data-frame op), so the adapter seam is exercised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LegacyAdapter {
-    pub tag: u8,
+    pub op: u8,
     pub name: &'static str,
-    /// The product the core ledger reserves the tag for: a transitional entry seals under the
+    /// The product the core ledger reserves the op for: a transitional entry seals under the
     /// ledger's owner, never under the composing product's name.
     pub owner: &'static str,
     pub migration_unit: &'static str,
 }
 
 /// The proof product's transitional adapters: the ledgered Rafka reservations it stands in for.
-pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter { tag: 0x12, name: "data-frame", owner: "rafka", migration_unit: "i142 U6" }];
+pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter { op: 0x12, name: "data-frame", owner: "rafka", migration_unit: "i142 U6" }];
 
 /// The role this process is: its kind decides its path.name segment and which product families
 /// it serves (`families::for_kind`).
@@ -83,7 +83,7 @@ pub fn launch_for(role: Role) -> Result<Launch> {
 /// transitional adapters, into the one builder that seals once (i141 PRD §16).
 pub fn compose(role: Role, served_by: &str, b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClient>) -> ServerBuilder {
     let b = families::for_kind(role.kind, served_by, b, client);
-    LEGACY_ADAPTERS.iter().fold(b, |b, a| b.adapter(CatalogEntry::transitional(a.tag, a.name, a.owner, a.migration_unit, 64 * 1024)))
+    LEGACY_ADAPTERS.iter().fold(b, |b, a| b.adapter(CatalogEntry::transitional(a.op, a.name, a.owner, a.migration_unit, 64 * 1024)))
 }
 
 /// The testkit's oracles the proof estate's probe speaks, served by every role exactly as the
@@ -152,16 +152,16 @@ pub async fn run(role: Role) -> Result<()> {
     Ok(())
 }
 
-/// What the sealed catalog of a `role` process holds, by tag: core, the role's families, the
+/// What the sealed catalog of a `role` process holds, by op: core, the role's families, the
 /// adapters. Pure: the composition sealed without a process (a throwaway client on a loopback
 /// endpoint, used by nothing).
-pub async fn catalog_of(role: Role) -> Result<Vec<(u8, String, TagOwner, EntryKind)>> {
+pub async fn catalog_of(role: Role) -> Result<Vec<(u8, String, OpOwner, EntryKind)>> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await?;
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep.clone(), Arc::new(rafka_node_rpc::StaticResolver::new())));
     let sealed = compose(role, "catalog", rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new()), client)
         .seal(rafka_node_rpc::ServedBirth { node_id: "catalog".into(), incarnation: "catalog".into() })
         .map_err(|e| anyhow!("the role's catalog does not seal: {e:?}"))?;
-    let mut out: Vec<_> = sealed.catalog().entries().map(|e| (e.tag, e.name.clone(), e.owner.clone(), e.kind.clone())).collect();
+    let mut out: Vec<_> = sealed.catalog().entries().map(|e| (e.op, e.name.clone(), e.owner.clone(), e.kind.clone())).collect();
     out.sort_by_key(|e| e.0);
     ep.close().await;
     Ok(out)

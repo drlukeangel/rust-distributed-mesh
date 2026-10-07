@@ -8,7 +8,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_base::{compose, Role, LEGACY_ADAPTERS};
 use rafka_node_rpc::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::catalog::{EntryKind, TagOwner};
+use rafka_node_rpc_contract::catalog::{EntryKind, OpOwner};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -87,8 +87,8 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
             Decode::Early(e, b) => e.reply::<Ping>(b),
         })
         .await;
-    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.tag() == absent), "{out:?}");
-    assert_eq!(rafka_node_rpc::ServerStats::get(&gateway.running.server.stats().dispatched), 0, "an unserved tag is never dispatched");
+    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == absent), "{out:?}");
+    assert_eq!(rafka_node_rpc::ServerStats::get(&gateway.running.server.stats().dispatched), 0, "an unserved op is never dispatched");
     gateway.running.stop(Duration::ZERO).await;
 }
 
@@ -96,17 +96,17 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
 async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() {
     let compute = born(Role::compute(), "mesh1.compute.1").await;
     let adapter = &LEGACY_ADAPTERS[0];
-    let held = compute.running.server.catalog().lookup(adapter.tag).expect("the adapter is catalogued");
-    assert_eq!(held.owner, TagOwner::Product(adapter.owner.into()), "sealed under the ledger's owner");
+    let held = compute.running.server.catalog().lookup(adapter.op).expect("the adapter is catalogued");
+    assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "sealed under the ledger's owner");
     assert!(matches!(&held.kind, EntryKind::Transitional { migration_unit } if migration_unit == adapter.migration_unit));
     let (client, target) = compute.peer().await;
     let (out, _) = client
-        .invoke_raw::<PingReply, _>(&target, adapter.tag, vec![1, 2, 3], 1024, &CallOptions::default(), |d| match d {
+        .invoke_raw::<PingReply, _>(&target, adapter.op, vec![1, 2, 3], 1024, &CallOptions::default(), |d| match d {
             Decode::Committed(c, b) => c.reply::<Ping>(b),
             Decode::Early(e, b) => e.reply::<Ping>(b),
         })
         .await;
-    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.tag() == adapter.tag), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == adapter.op), "{out:?}");
     compute.running.stop(Duration::ZERO).await;
 }
 
@@ -147,12 +147,12 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "k".into(), offset: 0, served_by: served_by.clone() }), "{out:?}");
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "k".into() }, &CallOptions::default()).await;
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Value { key: "k".into(), value: Some(b"v1".to_vec()), served_by }), "{out:?}");
-    assert!(broker.running.server.catalog().lookup(BrokerData::TAG).is_some());
+    assert!(broker.running.server.catalog().lookup(BrokerData::OP).is_some());
 
     let (client, target) = compute.peer().await;
-    assert!(compute.running.server.catalog().lookup(BrokerData::TAG).is_none(), "the compute carries the family for others and serves no handler for it");
+    assert!(compute.running.server.catalog().lookup(BrokerData::OP).is_none(), "the compute carries the family for others and serves no handler for it");
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "k".into() }, &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.tag() == BrokerData::TAG), "a compute serves no broker_data: {out:?}");
+    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == BrokerData::OP), "a compute serves no broker_data: {out:?}");
     assert_eq!(rafka_node_rpc::ServerStats::get(&compute.running.server.stats().dispatched), 0);
     broker.running.stop(Duration::ZERO).await;
     compute.running.stop(Duration::ZERO).await;

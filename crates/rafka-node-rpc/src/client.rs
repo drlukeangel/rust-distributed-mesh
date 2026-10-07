@@ -162,12 +162,12 @@ impl NodeRpcClient {
         req: &P::Request,
         opts: &CallOptions,
     ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>) {
-        let pre = PreCommit::begin(P::TAG);
+        let pre = PreCommit::begin(P::OP);
         let payload = match P::encode_request(req) {
             Ok(p) => p,
             Err(e) => return (pre.not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None),
         };
-        self.invoke_raw::<P::Reply, _>(target, P::TAG, payload, P::MAX_REPLY_FRAME_BYTES, opts, |d| match d {
+        self.invoke_raw::<P::Reply, _>(target, P::OP, payload, P::MAX_REPLY_FRAME_BYTES, opts, |d| match d {
             Decode::Committed(c, bytes) => c.reply::<P>(bytes),
             Decode::Early(e, bytes) => e.reply::<P>(bytes),
         })
@@ -180,7 +180,7 @@ impl NodeRpcClient {
     pub(crate) async fn open<R, E>(
         &self,
         target: &NodeTarget,
-        tag: u8,
+        op: u8,
         payload: Vec<u8>,
         max_reply: usize,
         opts: &CallOptions,
@@ -194,7 +194,7 @@ impl NodeRpcClient {
             Budget::Overall(d) => (start + d, Some(start + d)),
             Budget::Split { send, .. } => (start + send, None),
         };
-        let pre = PreCommit::begin(tag);
+        let pre = PreCommit::begin(op);
         let node = match self.resolver.resolve(target) {
             Ok(n) => n,
             Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
@@ -202,7 +202,7 @@ impl NodeRpcClient {
         // Whatever this node's record no longer names leaves the pool now.
         self.pool.purge_stale(&node);
         // The fence: the node the caller resolved and the op, never a dial target.
-        let request_target = Fence { target_node_id: node.node_id.to_string(), op: tag };
+        let request_target = Fence { target_node_id: node.node_id.to_string(), op: op };
         let mut evidence = CallEvidence {
             node_id: node.node_id.clone(),
             addr: node.transport_addr,
@@ -257,7 +257,7 @@ impl NodeRpcClient {
             // The server refused before this request finished (node-rpc.md §27):
             // a healthy answer on a healthy connection.
             self.pool.healthy(&key);
-            if stop.into_inner() == u64::from(ResetCode::UnservedTag.code()) {
+            if stop.into_inner() == u64::from(ResetCode::UnservedOp.code()) {
                 return Phase::Done(pre.unserved_before_finish(), Some(evidence));
             }
             if stop.into_inner() == u64::from(ResetCode::StaleTarget.code()) {
@@ -300,11 +300,11 @@ impl NodeRpcClient {
         Phase::Committed(Opened { committed, recv, evidence, key, conn, reply_deadline, target: request_target })
     }
 
-    /// Invoke a raw tag (any tag, served or not) — the unknown-tag cell uses it.
+    /// Invoke a raw op (any op, served or not) — the unknown-op cell uses it.
     pub async fn invoke_raw<R, D>(
         &self,
         target: &NodeTarget,
-        tag: u8,
+        op: u8,
         payload: Vec<u8>,
         max_reply: usize,
         opts: &CallOptions,
@@ -316,7 +316,7 @@ impl NodeRpcClient {
         let decode = std::sync::Mutex::new(Some(decode));
         let take = || decode.lock().unwrap().take().expect("decode runs once");
         let Opened { committed, mut recv, evidence, key, conn, reply_deadline, target: request_target } =
-            match self.open(target, tag, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
+            match self.open(target, op, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
                 Phase::Done(out, evidence) => return (out, evidence),
                 Phase::Committed(o) => o,
             };

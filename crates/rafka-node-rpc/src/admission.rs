@@ -33,7 +33,7 @@ pub struct Admission {
 /// Held for the whole supervised invocation; released on every exit path.
 #[derive(Debug)]
 pub struct Permit {
-    tag: u8,
+    op: u8,
     caller: String,
     counts: Arc<Mutex<Counts>>,
 }
@@ -41,35 +41,35 @@ pub struct Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         let mut c = self.counts.lock().unwrap();
-        if let Some(n) = c.node.get_mut(&self.tag) {
+        if let Some(n) = c.node.get_mut(&self.op) {
             *n -= 1;
         }
-        if let Some(n) = c.caller.get_mut(&(self.tag, self.caller.clone())) {
+        if let Some(n) = c.caller.get_mut(&(self.op, self.caller.clone())) {
             *n -= 1;
         }
     }
 }
 
 impl Admission {
-    pub fn set(&mut self, tag: u8, limits: Limits) {
-        self.limits.insert(tag, limits);
+    pub fn set(&mut self, op: u8, limits: Limits) {
+        self.limits.insert(op, limits);
     }
 
     /// `Err(reason)` is the typed `Busy` reason.
-    pub fn try_admit(&self, tag: u8, caller: &str) -> Result<Permit, String> {
-        let l = self.limits.get(&tag).copied().unwrap_or_default();
+    pub fn try_admit(&self, op: u8, caller: &str) -> Result<Permit, String> {
+        let l = self.limits.get(&op).copied().unwrap_or_default();
         let mut c = self.counts.lock().unwrap();
-        let node = *c.node.get(&tag).unwrap_or(&0);
+        let node = *c.node.get(&op).unwrap_or(&0);
         if node >= l.node_wide {
             return Err(format!("node-wide in-flight cap {} reached", l.node_wide));
         }
-        let key = (tag, caller.to_string());
+        let key = (op, caller.to_string());
         let per = *c.caller.get(&key).unwrap_or(&0);
         if per >= l.per_caller {
             return Err(format!("per-caller in-flight cap {} reached", l.per_caller));
         }
-        *c.node.entry(tag).or_default() += 1;
+        *c.node.entry(op).or_default() += 1;
         *c.caller.entry(key).or_default() += 1;
-        Ok(Permit { tag, caller: caller.to_string(), counts: self.counts.clone() })
+        Ok(Permit { op, caller: caller.to_string(), counts: self.counts.clone() })
     }
 }

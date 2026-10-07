@@ -14,7 +14,7 @@ use rafka_mesh_entity::connections::{
 };
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use rafka_node_rpc::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, RouteChoice, RouteLeg, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
+use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::outcome::{MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
@@ -42,7 +42,7 @@ enum ProbeReply {
 }
 
 impl NodeProtocol for Probe {
-    const TAG: u8 = 0x5E;
+    const OP: u8 = 0x5E;
     const NAME: &'static str = "probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 4096;
@@ -83,7 +83,7 @@ impl NodeProtocol for Probe {
 }
 
 fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { tag: Probe::TAG, family: "probe".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }]
+    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
 }
 
 struct Node {
@@ -98,7 +98,7 @@ async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: Secre
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let handled = Arc::new(AtomicU64::new(0));
     let (h, me) = (handled.clone(), name.to_string());
-    let mut b = ServerBuilder::new().ledger(test_ledger()).serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
+    let mut b = ServerBuilder::new().ledger(test_ledger()).serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
         let (h, me) = (h.clone(), me.clone());
         async move {
             h.fetch_add(1, Ordering::SeqCst);
@@ -200,9 +200,9 @@ async fn an_exact_target_is_preserved_over_via_peer_and_the_carrier_cannot_subst
     assert_eq!(leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
     assert_eq!(ev.unwrap().node_id, r.p.resolved.node_id, "the one leg the origin ran went to the carrier");
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst)), (1, 0), "P carried to B, never to C");
-    // The carrier is handed the exact final target; a Forward tag is itself never forwardable, so
+    // The carrier is handed the exact final target; a Forward op is itself never forwardable, so
     // P cannot be asked to carry a carry (recursion is refused by type at the origin).
-    let (out, _) = r.origin.call_via::<rafka_node_rpc_contract::forward::Forward>(&NodeTarget::ExactNode(r.p.resolved.node_id.clone()), &target.resolved.node_id, &rafka_node_rpc_contract::forward::ForwardRequest::Forward { target: target.resolved.node_id.clone(), inner_tag: Probe::TAG, inner: vec![] }, &CallOptions::default()).await;
+    let (out, _) = r.origin.call_via::<rafka_node_rpc_contract::forward::Forward>(&NodeTarget::ExactNode(r.p.resolved.node_id.clone()), &target.resolved.node_id, &rafka_node_rpc_contract::forward::ForwardRequest::Forward { target: target.resolved.node_id.clone(), inner_op: Probe::OP, inner: vec![] }, &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::NotForwardable { .. })), "{out:?}");
     // The carrier is exact: a route naming a carrier process the resolver no longer knows (its path
     // taken by another birth) is not sent to the path's holder.

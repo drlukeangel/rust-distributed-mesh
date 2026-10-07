@@ -102,7 +102,7 @@ impl NodeRpcClient {
                 let (out, ev) = self.call_via::<P>(&NodeTarget::ExactNode(carrier.clone()), target, req, opts).await;
                 (out, ev, RouteLeg::ViaPeer { carrier: path.to_string() })
             }
-            RouteChoice::NoActiveRoute => (PreCommit::begin(P::TAG).not_sent(NotSentReason::NoActiveRoute), None, RouteLeg::None),
+            RouteChoice::NoActiveRoute => (PreCommit::begin(P::OP).not_sent(NotSentReason::NoActiveRoute), None, RouteLeg::None),
         };
         span.record("outcome", out.name());
         span.in_scope(|| tracing::info!(leg = leg.token(), "one exact target, one route, executed as chosen"));

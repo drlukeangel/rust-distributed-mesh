@@ -19,7 +19,7 @@ use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
 use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
+use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::context::{CallContext, MAX_BAGGAGE_BYTES, MAX_TRACESTATE_BYTES};
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
@@ -79,7 +79,7 @@ fn echo(payload: &[u8]) -> PingRequest {
     PingRequest::Ping { payload: payload.to_vec() }
 }
 
-/// A forwardable test family on a ledgered test tag (Ping is not forwardable by design).
+/// A forwardable test family on a ledgered test op (Ping is not forwardable by design).
 struct Probe;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,7 +99,7 @@ enum ProbeReply {
 }
 
 impl NodeProtocol for Probe {
-    const TAG: u8 = 0x5E;
+    const OP: u8 = 0x5E;
     const NAME: &'static str = "probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 4096;
@@ -140,7 +140,7 @@ impl NodeProtocol for Probe {
 }
 
 fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { tag: Probe::TAG, family: "probe".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }]
+    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
 }
 
 /// A process serving Ping on `rpc-0`; the handler keeps the PeerContext each call brought.
@@ -159,14 +159,14 @@ async fn process(name: &str) -> Process {
     let (s, s2) = (seen.clone(), seen.clone());
     let server = ServerBuilder::new()
         .ledger(test_ledger())
-        .serve::<Ping, _, _>(TagOwner::Core, move |peer, req: PingRequest| {
+        .serve::<Ping, _, _>(OpOwner::Core, move |peer, req: PingRequest| {
             s.lock().unwrap().push(peer);
             async move {
                 let PingRequest::Ping { payload } = req;
                 Ok(PingReply::Pong { payload })
             }
         })
-        .serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer, req: ProbeRequest| {
+        .serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer, req: ProbeRequest| {
             s2.lock().unwrap().push(peer);
             async move {
                 let ProbeRequest::Probe { payload } = req;

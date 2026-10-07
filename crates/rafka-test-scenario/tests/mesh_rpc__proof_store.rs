@@ -1,4 +1,4 @@
-//! i143.e7.s3 process E2E: the testkit proof store on tag `0x70`.
+//! i143.e7.s3 process E2E: the testkit proof store on op `0x70`.
 //!
 //! From public surfaces (node-admin's control API and `rafka-rpc-probe` over
 //! real Node RPC) and the estate's span evidence only:

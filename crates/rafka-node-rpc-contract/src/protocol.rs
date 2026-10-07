@@ -1,7 +1,7 @@
 //! The protocol family trait (node-rpc.md §8, §25–§26).
 //!
 //! Node RPC is a runtime, not a wire protocol: every family owns one stable
-//! tag and its codec. Requests and replies are top-level enums whose variants
+//! op and its codec. Requests and replies are top-level enums whose variants
 //! are append-only; a discriminant past the declared variant count is
 //! `UnknownVariant`, anything else undecodable is `Corrupt`.
 
@@ -45,7 +45,7 @@ pub fn encode<T: Serialize>(v: &T) -> Result<Vec<u8>, EncodeFailure> {
 
 /// One protocol family.
 pub trait NodeProtocol: 'static + Send + Sync {
-    const TAG: u8;
+    const OP: u8;
     const NAME: &'static str;
     const MAX_REQUEST_FRAME_BYTES: usize;
     const MAX_REPLY_FRAME_BYTES: usize;

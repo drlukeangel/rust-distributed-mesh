@@ -1,4 +1,4 @@
-//! The declare probe: a testkit-only oracle on tag `0x72` that makes the executing rpc node
+//! The declare probe: a testkit-only oracle on op `0x72` that makes the executing rpc node
 //! declare its own lifecycle state to an authority over the real `Status` protocol and hands the
 //! typed reply back.
 //!
@@ -6,14 +6,14 @@
 //! probe binary cannot declare on a node's behalf: it asks the node to. Two testkit-only
 //! overrides exist so a scenario can prove the refusals: a `node_id` that is not the node's
 //! (`RejectedNotAuthority: sender-not-subject`) and an `incarnation` that is not its birth's
-//! (`RejectedStaleBirth`). Testkit range only ([`TESTKIT_TAGS`]); never a product binary.
+//! (`RejectedStaleBirth`). Testkit range only ([`TESTKIT_OPS`]); never a product binary.
 //!
-//! [`TESTKIT_TAGS`]: rafka_node_rpc_contract::catalog::TESTKIT_TAGS
+//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
@@ -48,7 +48,7 @@ pub enum DeclareReply {
 }
 
 impl NodeProtocol for DeclareProbe {
-    const TAG: u8 = 0x72;
+    const OP: u8 = 0x72;
     const NAME: &'static str = "declare-probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 2048;
@@ -94,7 +94,7 @@ impl NodeProtocol for DeclareProbe {
 /// the node runs.
 pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNodeRpc>>, launch: &Launch) -> ServerBuilder {
     let (own_id, own_inc) = (launch.node_id.to_string(), launch.incarnation.0.clone());
-    b.serve::<DeclareProbe, _, _>(TagOwner::Testkit, move |_peer: PeerContext, req: DeclareRequest| {
+    b.serve::<DeclareProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: DeclareRequest| {
         let (client, own_id, own_inc) = (client.clone(), own_id.clone(), own_inc.clone());
         async move {
             let DeclareRequest::Declare { to, state, node_id, incarnation } = req;

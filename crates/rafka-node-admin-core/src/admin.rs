@@ -533,7 +533,7 @@ impl NodeObserver for MembershipObserver {
             },
             RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
             RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
-            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.tag()) },
+            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
             RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
         };
         tracing::info_span!("rafka.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
@@ -1331,7 +1331,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // Node RPC on the admin's one endpoint: the status declarations it applies as an authority
     // (`status_rpc`). The authority is filled once this admin holds a view; until then NotReady.
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
-    let core = rafka_node_rpc::ServerBuilder::new().serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::TagOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
+    let core = rafka_node_rpc::ServerBuilder::new().serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
         let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
         Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
     });

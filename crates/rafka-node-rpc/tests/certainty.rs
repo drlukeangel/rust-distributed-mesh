@@ -9,7 +9,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::admission::Limits;
 use rafka_node_rpc::{ServedBirth, Budget, CallOptions, Decode, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -33,7 +33,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let h = handled.clone();
     let (release, released) = tokio::sync::watch::channel(false);
-    let mut b = ServerBuilder::new().serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
+    let mut b = ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, move |_peer, req: PingRequest| {
         let h = h.clone();
         let mut released = released.clone();
         async move {
@@ -52,7 +52,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
         }
     });
     if let Some(l) = echo_cap {
-        b = b.limits(Ping::TAG, l);
+        b = b.limits(Ping::OP, l);
     }
     let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).unwrap();
     let stats = server.stats();
@@ -143,7 +143,7 @@ async fn an_unknown_tag_is_unserved_by_421() {
             Decode::Early(e, b) => e.reply::<Ping>(b),
         })
         .await;
-    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.tag() == 0x42), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == 0x42), "{out:?}");
     assert_eq!(ServerStats::get(&r.stats.unserved), 1);
     assert_eq!(ServerStats::get(&r.stats.dispatched), 0);
 }

@@ -20,21 +20,21 @@ use crate::outcome::{MalformedKind, RpcOutcome};
 pub enum ServerAction {
     /// Keep reading.
     Continue,
-    /// Reset the stream with `421 UNSERVED_TAG`; no protocol dispatch.
-    ResetUnserved { tag: u8 },
+    /// Reset the stream with `421 UNSERVED_OP`; no protocol dispatch.
+    ResetUnserved { op: u8 },
     /// Reset the stream with `425 STALE_TARGET`: the fence names another node;
     /// no protocol dispatch.
-    ResetStale { tag: u8, header: RequestHeader },
+    ResetStale { op: u8, header: RequestHeader },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
-    RefuseMalformed { tag: u8, kind: MalformedKind },
+    RefuseMalformed { op: u8, kind: MalformedKind },
     /// Reset with `424 PROTOCOL_VIOLATION`; the handler never runs.
-    ResetViolation { tag: Option<u8>, reason: &'static str },
+    ResetViolation { op: Option<u8>, reason: &'static str },
     /// The sender reset the unfinished request (`499`) or the direction ended
     /// without a complete frame: drop it, never dispatch.
     Drop { reason: &'static str },
     /// The complete, cleanly finished request: decode and dispatch.
-    Dispatch { tag: u8, header: RequestHeader, payload: Vec<u8> },
+    Dispatch { op: u8, header: RequestHeader, payload: Vec<u8> },
 }
 
 /// The request direction, fed by the transport.
@@ -59,12 +59,12 @@ impl<'c> RequestAssembly<'c> {
         Self { catalog, current, buf: Vec::new(), header: None, head: None, done: false }
     }
 
-    /// The tag, once the head has been read, the tag is served and the target is current.
-    pub fn head_tag(&self) -> Option<u8> {
+    /// The op, once the head has been read, the op is served and the target is current.
+    pub fn head_op(&self) -> Option<u8> {
         self.head.map(|(t, _, _)| t)
     }
 
-    /// Bytes arrived. Head decisions (unserved tag, stale target, oversize
+    /// Bytes arrived. Head decisions (unserved op, stale target, oversize
     /// declaration) are made as soon as the head is readable — before the body.
     pub fn push(&mut self, bytes: &[u8]) -> ServerAction {
         if self.done {
@@ -74,31 +74,31 @@ impl<'c> RequestAssembly<'c> {
         if self.head.is_none() {
             let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
                 Ok(read) => read,
-                Err(RequestHead::Unserved { tag }) => return self.end(ServerAction::ResetUnserved { tag }),
-                Err(RequestHead::BadTarget { tag }) => return self.end(ServerAction::ResetViolation { tag, reason: "bad request fence" }),
+                Err(RequestHead::Unserved { op }) => return self.end(ServerAction::ResetUnserved { op }),
+                Err(RequestHead::BadTarget { op }) => return self.end(ServerAction::ResetViolation { op, reason: "bad request fence" }),
                 Err(_) => return ServerAction::Continue,
             };
             if self.header.is_none() {
                 if !(self.current)(&read.header.fence) {
-                    return self.end(ServerAction::ResetStale { tag: read.tag, header: read.header });
+                    return self.end(ServerAction::ResetStale { op: read.op, header: read.header });
                 }
                 self.header = Some(read.header.clone());
             }
             match parse_request_length(&self.buf, read) {
                 RequestHead::Targeted { .. } | RequestHead::NeedMore => return ServerAction::Continue,
-                RequestHead::TooLarge { tag, .. } => {
-                    return self.end(ServerAction::RefuseMalformed { tag, kind: MalformedKind::TooLarge })
+                RequestHead::TooLarge { op, .. } => {
+                    return self.end(ServerAction::RefuseMalformed { op, kind: MalformedKind::TooLarge })
                 }
-                RequestHead::BadLength { tag } => {
-                    return self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "bad length prefix" })
+                RequestHead::BadLength { op } => {
+                    return self.end(ServerAction::ResetViolation { op: Some(op), reason: "bad length prefix" })
                 }
-                RequestHead::Ready { tag, payload_len, head_len, .. } => self.head = Some((tag, payload_len, head_len)),
+                RequestHead::Ready { op, payload_len, head_len, .. } => self.head = Some((op, payload_len, head_len)),
                 RequestHead::Unserved { .. } | RequestHead::BadTarget { .. } => unreachable!("decided in stage one"),
             }
         }
-        let (tag, len, head) = self.head.expect("set above");
+        let (op, len, head) = self.head.expect("set above");
         if self.buf.len() > head + len {
-            return self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "bytes past the declared request length" });
+            return self.end(ServerAction::ResetViolation { op: Some(op), reason: "bytes past the declared request length" });
         }
         ServerAction::Continue
     }
@@ -109,14 +109,14 @@ impl<'c> RequestAssembly<'c> {
             return ServerAction::Continue;
         }
         match self.head {
-            Some((tag, len, head)) if self.buf.len() == head + len => {
+            Some((op, len, head)) if self.buf.len() == head + len => {
                 let payload = self.buf.split_off(head);
                 let header = self.header.clone().expect("a head is set only after its header");
-                self.end(ServerAction::Dispatch { tag, header, payload })
+                self.end(ServerAction::Dispatch { op, header, payload })
             }
-            Some((tag, _, _)) => self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "FIN before the declared length" }),
+            Some((op, _, _)) => self.end(ServerAction::ResetViolation { op: Some(op), reason: "FIN before the declared length" }),
             None if self.buf.is_empty() => self.end(ServerAction::Drop { reason: "empty request direction" }),
-            None => self.end(ServerAction::ResetViolation { tag: self.buf.first().copied(), reason: "FIN inside the request head" }),
+            None => self.end(ServerAction::ResetViolation { op: self.buf.first().copied(), reason: "FIN inside the request head" }),
         }
     }
 
@@ -166,14 +166,14 @@ pub fn replay_verdict<R>(outcome: &RpcOutcome<R>, mutating: bool) -> ReplayVerdi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, TagOwner};
+    use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, OpOwner};
     use crate::ping::{Ping, PingReply, PingRequest};
     use crate::framing::{encode_request, encode_varint};
     use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
     fn catalog() -> SealedCatalog {
-        CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(TagOwner::Core, Shape::Unary)).seal().unwrap()
+        CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(OpOwner::Core, Shape::Unary)).seal().unwrap()
     }
 
     fn target() -> RequestHeader {
@@ -203,8 +203,8 @@ mod tests {
         assert_eq!(a.push(&f[..3]), ServerAction::Continue);
         assert_eq!(a.push(&f[3..]), ServerAction::Continue, "a complete frame waits for FIN");
         match a.finish() {
-            ServerAction::Dispatch { tag, header: t, payload } => {
-                assert_eq!(tag, 0x01);
+            ServerAction::Dispatch { op, header: t, payload } => {
+                assert_eq!(op, 0x01);
                 assert_eq!(t, target(), "the dispatched request carries the target it named");
                 assert!(matches!(Ping::decode_request(&payload), Ok(PingRequest::Ping { .. })));
             }
@@ -233,7 +233,7 @@ mod tests {
         let mut a = assembly(&c);
         let f = encode_request(&RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 }), b"body");
         let fence_end = f.len() - 1 - 1 - 4; // before the context, the length and the body
-        assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetUnserved { tag: 0x42 }, "decided on the fence alone");
+        assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetUnserved { op: 0x42 }, "decided on the fence alone");
         assert_eq!(a.push(&f[fence_end..]), ServerAction::Continue, "nothing after the decision");
     }
 
@@ -244,7 +244,7 @@ mod tests {
         let mut head = encode_request(&target(), b"");
         head.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
-        assert_eq!(a.push(&head), ServerAction::RefuseMalformed { tag: 0x01, kind: MalformedKind::TooLarge });
+        assert_eq!(a.push(&head), ServerAction::RefuseMalformed { op: 0x01, kind: MalformedKind::TooLarge });
     }
 
     #[test]
@@ -254,8 +254,8 @@ mod tests {
             let mut a = assembly(&c);
             let mut f = encode_request(&stale, b"");
             f.pop();
-            // Only the tag and target: decided before any length is read.
-            assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x01, header: stale.clone() });
+            // Only the op and target: decided before any length is read.
+            assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, header: stale.clone() });
             assert_eq!(a.finish(), ServerAction::Continue, "nothing after the decision");
         }
         // An oversize declaration behind a stale target is still 425: the target is checked first.
@@ -264,12 +264,12 @@ mod tests {
         let mut f = encode_request(&stale, b"");
         f.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
-        assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x01, header: stale });
+        assert_eq!(a.push(&f), ServerAction::ResetStale { op: 0x01, header: stale });
     }
 
     #[test]
     fn a_non_forwardable_family_is_marked_in_the_catalog() {
-        assert!(!catalog().lookup(Ping::TAG).unwrap().forwardable, "carriers refuse it by type (e6.s4)");
+        assert!(!catalog().lookup(Ping::OP).unwrap().forwardable, "carriers refuse it by type (e6.s4)");
     }
 
     // ---- complete-send certainty table ----

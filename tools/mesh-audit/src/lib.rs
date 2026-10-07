@@ -8,6 +8,7 @@ pub mod address_lookup;
 pub mod admin_ui;
 pub mod deps;
 pub mod legacy;
+pub mod lock;
 pub mod parity;
 
 use std::path::{Path, PathBuf};

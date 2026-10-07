@@ -3,7 +3,7 @@
 //! unserved (`421`) everywhere else in the same sealed catalog.
 
 use rafka_node_rpc::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
+use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use rafka_mesh_entity::NodeKind;
@@ -36,7 +36,7 @@ pub enum BrokerDataReply {
 }
 
 impl NodeProtocol for BrokerData {
-    const TAG: u8 = 0x20;
+    const OP: u8 = 0x20;
     const NAME: &'static str = "broker-data";
     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
@@ -84,7 +84,7 @@ pub const PROOF_FAULT: &str = "proof:fault";
 
 /// The product's ledger rows: its own allocations, beside the core ledger.
 pub fn product_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { tag: BrokerData::TAG, family: BrokerData::NAME.into(), owner: TagOwner::Product(crate::PRODUCT.into()), state: TagState::Live }]
+    vec![LedgerEntry { op: BrokerData::OP, family: BrokerData::NAME.into(), owner: OpOwner::Product(crate::PRODUCT.into()), state: OpState::Live }]
 }
 
 /// The families `kind` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every kind carries the forwardable families
@@ -95,7 +95,7 @@ pub fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<
         NodeKind::Broker => {
             let store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<Vec<u8>>>>> = Default::default();
             let me = served_by.to_string();
-            b.serve::<BrokerData, _, _>(TagOwner::Product(crate::PRODUCT.into()), move |_peer: PeerContext, req: BrokerDataRequest| {
+            b.serve::<BrokerData, _, _>(OpOwner::Product(crate::PRODUCT.into()), move |_peer: PeerContext, req: BrokerDataRequest| {
                 let (store, me) = (store.clone(), me.clone());
                 async move {
                     let mut s = store.lock().map_err(|e| HandlerFault::invariant_broken(format!("store: {e}")))?;

@@ -5,7 +5,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
+use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A forwardable test family on a ledgered test tag.
+/// A forwardable test family on a ledgered test op.
 struct Probe;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ enum ProbeReply {
 }
 
 impl NodeProtocol for Probe {
-    const TAG: u8 = 0x5E;
+    const OP: u8 = 0x5E;
     const NAME: &'static str = "probe";
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 4096;
@@ -78,7 +78,7 @@ impl NodeProtocol for Probe {
 
 /// The builder starts from the core ledger; the test family adds its own row.
 fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { tag: Probe::TAG, family: "probe".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }]
+    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
 }
 
 struct Node {
@@ -130,7 +130,7 @@ async fn rig() -> Rig {
     let target_birth = birth();
     let target_server = ServerBuilder::new()
         .ledger(test_ledger())
-        .serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer, req: ProbeRequest| {
+        .serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer, req: ProbeRequest| {
             let (h, a) = (h.clone(), a.clone());
             async move {
                 h.fetch_add(1, Ordering::SeqCst);
@@ -142,7 +142,7 @@ async fn rig() -> Rig {
                 Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.endpoint_id.to_string() })
             }
         })
-        .serve::<Ping, _, _>(TagOwner::Core, |_p, req: PingRequest| async move {
+        .serve::<Ping, _, _>(OpOwner::Core, |_p, req: PingRequest| async move {
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
@@ -204,16 +204,16 @@ async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_ca
     let r = rig().await;
     let echo = PingRequest::Ping { payload: b"x".to_vec() };
     let (out, _) = r.origin.call_via::<Ping>(&carrier_of(&r), &r.target.resolved.node_id, &echo, &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NotForwardable { tag: Ping::TAG }), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NotForwardable { op: Ping::OP }), "{out:?}");
 
-    // A forward built by hand for a non-forwardable tag: the carrier refuses it by type.
+    // A forward built by hand for a non-forwardable op: the carrier refuses it by type.
     let forward = ForwardRequest::Forward {
         target: r.target.resolved.node_id.clone(),
-        inner_tag: Ping::TAG,
+        inner_op: Ping::OP,
         inner: Ping::encode_request(&echo).unwrap(),
     };
     let (out, _) = r.origin.call::<Forward>(&carrier_of(&r), &forward, &CallOptions::default()).await;
-    assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { tag: Ping::TAG }));
+    assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { op: Ping::OP }));
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 

@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::stream::{SinkError, StreamFailure, StreamItem};
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
+use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use rafka_node_rpc_contract::streaming::{FrameKind, StreamingProtocol};
@@ -48,7 +48,7 @@ enum CountFrame {
 }
 
 impl NodeProtocol for Count {
-    const TAG: u8 = 0x5D;
+    const OP: u8 = 0x5D;
     const NAME: &'static str = "count";
     const MAX_REQUEST_FRAME_BYTES: usize = 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 256 * 1024;
@@ -115,8 +115,8 @@ async fn rig() -> Rig {
     let (p, g, fin) = (produced.clone(), caller_gone.clone(), finished.clone());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = ServerBuilder::new()
-        .ledger([LedgerEntry { tag: Count::TAG, family: "count".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }])
-        .serve_stream::<Count, _, _>(TagOwner::Product("test".into()), move |_peer, req: CountRequest, sink| {
+        .ledger([LedgerEntry { op: Count::OP, family: "count".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }])
+        .serve_stream::<Count, _, _>(OpOwner::Product("test".into()), move |_peer, req: CountRequest, sink| {
             let (p, g, fin) = (p.clone(), g.clone(), fin.clone());
             async move {
                 let CountRequest::Count { n, size, mode } = req;

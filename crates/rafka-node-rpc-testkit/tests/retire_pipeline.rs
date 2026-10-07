@@ -12,7 +12,6 @@ mod common;
 
 use common::{add_node, admin_side, publish_build, template, Published, Spans};
 use rafka_mesh_entity::{FabricId, MemberStatus};
-use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};

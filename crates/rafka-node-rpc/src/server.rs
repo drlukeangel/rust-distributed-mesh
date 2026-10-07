@@ -11,7 +11,7 @@
 use crate::admission::{Admission, Limits, Permit};
 use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use rafka_node_rpc_contract::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, TagOwner};
+use rafka_node_rpc_contract::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
 use rafka_node_rpc_contract::codes::ResetCode;
 use rafka_node_rpc_contract::dispatch::{RequestAssembly, ServerAction};
 use rafka_node_rpc_contract::framing::encode_frame;
@@ -96,7 +96,7 @@ where
             let span = tracing::info_span!(
                 "rafka.node_rpc.request.serve.via-direct",
                 protocol = P::NAME,
-                tag = P::TAG,
+                op = P::OP,
                 peer = %peer.endpoint_id,
                 caller_system = tracing::field::Empty,
                 context_dropped = tracing::field::Empty,
@@ -187,7 +187,7 @@ pub struct ServerBuilder {
     pub(crate) catalog: CatalogBuilder,
     pub(crate) handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
-    /// Forwardable protocols this node carries, tag -> max inner reply (node-rpc.md §36.1).
+    /// Forwardable protocols this node carries, op -> max inner reply (node-rpc.md §36.1).
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at seal for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
@@ -205,14 +205,14 @@ impl ServerBuilder {
     }
 
     /// Serve unary protocol `P` (owned by `owner`) with handler `f`.
-    pub fn serve<P, F, Fut>(mut self, owner: TagOwner, f: F) -> Self
+    pub fn serve<P, F, Fut>(mut self, owner: OpOwner, f: F) -> Self
     where
         P: NodeProtocol,
         F: Fn(PeerContext, P::Request) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
     {
         self.catalog = self.catalog.serve(CatalogEntry::canonical::<P>(owner, Shape::Unary));
-        self.handlers.insert(P::TAG, Arc::new(Typed::<P, F> { f: Arc::new(f), _p: std::marker::PhantomData }));
+        self.handlers.insert(P::OP, Arc::new(Typed::<P, F> { f: Arc::new(f), _p: std::marker::PhantomData }));
         self
     }
 
@@ -223,16 +223,16 @@ impl ServerBuilder {
 
     /// Compose a product's transitional adapter (`CatalogEntry::transitional`) into this
     /// process's one sealed catalog (node-rpc-rdm-ownership.md §12). The server runs no handler
-    /// for it: the product's own dispatcher serves the tag on its legacy framing and consults
+    /// for it: the product's own dispatcher serves the op on its legacy framing and consults
     /// [`NodeRpcServer::catalog`] to refuse what the catalog does not hold. On this server's
-    /// own ALPN the tag is unserved (`421`), as any catalogued tag without a handler is.
+    /// own ALPN the op is unserved (`421`), as any catalogued op without a handler is.
     pub fn adapter(mut self, entry: CatalogEntry) -> Self {
         self.catalog = self.catalog.serve(entry);
         self
     }
 
-    pub fn limits(mut self, tag: u8, limits: Limits) -> Self {
-        self.admission.set(tag, limits);
+    pub fn limits(mut self, op: u8, limits: Limits) -> Self {
+        self.admission.set(op, limits);
         self
     }
 
@@ -332,8 +332,8 @@ impl NodeRpcServer {
         self.inner.draining.store(true, Ordering::SeqCst);
     }
 
-    async fn refuse(&self, tag: u8, r: Refusal, mut send: SendStream, mut recv: RecvStream) {
-        if let Some(h) = self.inner.handlers.get(&tag) {
+    async fn refuse(&self, op: u8, r: Refusal, mut send: SendStream, mut recv: RecvStream) {
+        if let Some(h) = self.inner.handlers.get(&op) {
             let bytes = encode_frame(&h.refusal(r));
             let _ = send.write_all(&bytes).await;
             let _ = send.finish();
@@ -358,21 +358,21 @@ impl NodeRpcServer {
             if action != ServerAction::Continue {
                 break action;
             }
-            // Constant-cost guards once the tag is known, before the body.
+            // Constant-cost guards once the op is known, before the body.
             if permit.is_none() {
-                if let Some(tag) = asm.head_tag() {
+                if let Some(op) = asm.head_op() {
                     // Draining refuses every new call except the lifecycle control the catalog
                     // marks served while draining: the authority's probe and apply still land.
-                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(tag).is_some_and(|e| e.served_while_draining) {
+                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_draining) {
                         stats.draining.fetch_add(1, Ordering::SeqCst);
-                        return self.refuse(tag, Refusal::Draining("node is draining".into()), send, recv).await;
+                        return self.refuse(op, Refusal::Draining("node is draining".into()), send, recv).await;
                     }
-                    match self.inner.admission.try_admit(tag, &peer.to_string()) {
+                    match self.inner.admission.try_admit(op, &peer.to_string()) {
                         Ok(p) => permit = Some(p),
                         Err(reason) => {
                             stats.busy.fetch_add(1, Ordering::SeqCst);
-                            tracing::debug_span!("rafka.node_rpc.request.reject.via-busy", tag, %reason).in_scope(|| tracing::debug!("busy"));
-                            return self.refuse(tag, Refusal::Busy(reason), send, recv).await;
+                            tracing::debug_span!("rafka.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
+                            return self.refuse(op, Refusal::Busy(reason), send, recv).await;
                         }
                     }
                 }
@@ -380,21 +380,21 @@ impl NodeRpcServer {
         };
         match action {
             ServerAction::Continue => unreachable!("loop breaks only on a decision"),
-            ServerAction::ResetUnserved { tag } => {
+            ServerAction::ResetUnserved { op } => {
                 stats.unserved.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-unserved-tag", tag, peer = %peer)
-                    .in_scope(|| tracing::info!(tag, "unserved tag: 421"));
-                let _ = send.reset(code(ResetCode::UnservedTag));
-                let _ = recv.stop(code(ResetCode::UnservedTag));
+                tracing::info_span!("rafka.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
+                    .in_scope(|| tracing::info!(op, "unserved op: 421"));
+                let _ = send.reset(code(ResetCode::UnservedOp));
+                let _ = recv.stop(code(ResetCode::UnservedOp));
             }
-            ServerAction::ResetStale { tag, header } => {
+            ServerAction::ResetStale { op, header } => {
                 stats.stale.fetch_add(1, Ordering::SeqCst);
                 let fence = header.fence;
                 let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
                 let span = tracing::info_span!(
                     "rafka.node_rpc.connection.reject.via-stale-target",
                     decided_by = "target",
-                    tag,
+                    op,
                     peer = %peer,
                     node_id = %fence.target_node_id,
                     op = fence.op,
@@ -414,15 +414,15 @@ impl NodeRpcServer {
                 let _ = send.reset(code(ResetCode::StaleTarget));
                 let _ = recv.stop(code(ResetCode::StaleTarget));
             }
-            ServerAction::RefuseMalformed { tag, kind } => {
+            ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", tag, kind = ?kind)
+                tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", op, kind = ?kind)
                     .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
-                self.refuse(tag, Refusal::Malformed(kind), send, recv).await;
+                self.refuse(op, Refusal::Malformed(kind), send, recv).await;
             }
-            ServerAction::ResetViolation { tag, reason } => {
+            ServerAction::ResetViolation { op, reason } => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-protocol-violation", tag = ?tag, reason)
+                tracing::info_span!("rafka.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
                     .in_scope(|| tracing::info!(reason, "protocol violation: 424"));
                 let _ = send.reset(code(ResetCode::ProtocolViolation));
                 let _ = recv.stop(code(ResetCode::ProtocolViolation));
@@ -433,16 +433,16 @@ impl NodeRpcServer {
                     .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
                 let _ = send.reset(code(ResetCode::RequestStop));
             }
-            ServerAction::Dispatch { tag, header, payload } => {
-                let Some(h) = self.inner.handlers.get(&tag).cloned() else {
-                    let _ = send.reset(code(ResetCode::UnservedTag));
+            ServerAction::Dispatch { op, header, payload } => {
+                let Some(h) = self.inner.handlers.get(&op).cloned() else {
+                    let _ = send.reset(code(ResetCode::UnservedOp));
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
                 // Bad or over-bound context is dropped here, named, and the call proceeds.
                 let (context, dropped) = header.context.sanitized();
                 if !dropped.is_empty() {
-                    tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "target", tag, peer = %peer, context_dropped = %dropped_as_str(&dropped))
+                    tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
                         .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
                 }
                 let ctx = PeerContext { endpoint_id: peer, context };

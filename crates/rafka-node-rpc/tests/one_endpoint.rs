@@ -14,7 +14,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::TagOwner;
+use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::net::SocketAddr;
@@ -41,7 +41,7 @@ async fn process(key: &SecretKey) -> Process {
     let dispatched = Arc::new(AtomicU64::new(0));
     let d = dispatched.clone();
     let server = ServerBuilder::new()
-        .serve::<Ping, _, _>(TagOwner::Core, move |_peer, req: PingRequest| {
+        .serve::<Ping, _, _>(OpOwner::Core, move |_peer, req: PingRequest| {
             d.fetch_add(1, Ordering::SeqCst);
             async move {
                 let PingRequest::Ping { payload, .. } = req;

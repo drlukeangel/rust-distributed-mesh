@@ -1,82 +1,82 @@
-//! The sealed protocol catalog and tag ledger (ownership amendment §10–§11,
+//! The sealed protocol catalog and op ledger (ownership amendment §10–§11,
 //! §14; node-rpc.md §9, §12; PRD §1.21).
 //!
-//! The ledger is the tag-allocation authority: every tag that is or was ever
-//! used is recorded with its owner, and a retired tag stays reserved forever.
+//! The ledger is the op-allocation authority: every op that is or was ever
+//! used is recorded with its owner, and a retired op stays reserved forever.
 //! A process composes RDM core protocols, product protocols and transitional
 //! legacy adapters into one [`CatalogBuilder`] and seals it once, before the
 //! first accepted stream is dispatched. The sealed catalog is the only
-//! dispatch table: a tag it does not hold is `421 UNSERVED_TAG`, even when the
-//! ledger reserves that tag for a product family. There is no second switch
+//! dispatch table: an op it does not hold is `421 UNSERVED_OP`, even when the
+//! ledger reserves that op for a product family. There is no second switch
 //! and no fallthrough to legacy code after seal.
 
 use crate::protocol::NodeProtocol;
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// Who owns a tag allocation.
+/// Who owns an op allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TagOwner {
+pub enum OpOwner {
     /// RDM core (generic substrate).
     Core,
     /// A product family (e.g. Rafka), named.
     Product(String),
     /// RDM's proof testkit: served only by the testkit rpc node, never by a
-    /// product binary, and only on a tag in [`TESTKIT_TAGS`].
+    /// product binary, and only on an op in [`TESTKIT_OPS`].
     Testkit,
 }
 
 /// The tags reserved for RDM's proof testkit, permanently. No core or product
 /// family is ever allocated one, and no testkit family lives outside them.
-pub const TESTKIT_TAGS: std::ops::RangeInclusive<u8> = 0x70..=0x7F;
+pub const TESTKIT_OPS: std::ops::RangeInclusive<u8> = 0x70..=0x7F;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TagState {
+pub enum OpState {
     Live,
     /// Reserved forever; never served, never reassigned.
     Retired,
 }
 
-/// One tag-ledger row.
+/// One op-ledger row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerEntry {
-    pub tag: u8,
+    pub op: u8,
     pub family: String,
-    pub owner: TagOwner,
-    pub state: TagState,
+    pub owner: OpOwner,
+    pub state: OpState,
 }
 
 /// RDM's ledger: core allocations plus the product reservations entering
 /// migration (ownership amendment §10), so RDM never allocates them.
 pub fn core_ledger() -> Vec<LedgerEntry> {
-    let rafka = |tag: u8, family: &str| LedgerEntry {
-        tag,
+    let rafka = |op: u8, family: &str| LedgerEntry {
+        op,
         family: family.into(),
-        owner: TagOwner::Product("rafka".into()),
-        state: TagState::Live,
+        owner: OpOwner::Product("rafka".into()),
+        state: OpState::Live,
     };
     vec![
-        LedgerEntry { tag: 0x01, family: "ping".into(), owner: TagOwner::Core, state: TagState::Live },
+        LedgerEntry { op: 0x01, family: "ping".into(), owner: OpOwner::Core, state: OpState::Live },
         rafka(0x10, "legacy-control"),
-        LedgerEntry { tag: 0x11, family: "echo".into(), owner: TagOwner::Core, state: TagState::Retired },
+        LedgerEntry { op: 0x11, family: "echo".into(), owner: OpOwner::Core, state: OpState::Retired },
         rafka(0x12, "data-frame"),
         rafka(0x13, "snapshot"),
         rafka(0x14, "control"),
         rafka(0x15, "credential-resolve"),
         LedgerEntry {
-            tag: 0x16,
+            op: 0x16,
             family: "layout-reprovision".into(),
-            owner: TagOwner::Product("rafka".into()),
-            state: TagState::Retired,
+            owner: OpOwner::Product("rafka".into()),
+            state: OpState::Retired,
         },
         rafka(0x17, "forward-write"),
         rafka(0x18, "forward-read"),
         rafka(0x19, "peer-tickle"),
-        LedgerEntry { tag: 0x1A, family: "forward".into(), owner: TagOwner::Core, state: TagState::Live },
-        LedgerEntry { tag: 0x1B, family: "status".into(), owner: TagOwner::Product("rdm".into()), state: TagState::Live },
-        LedgerEntry { tag: 0x70, family: "proof-store".into(), owner: TagOwner::Testkit, state: TagState::Live },
-        LedgerEntry { tag: 0x71, family: "resolve-probe".into(), owner: TagOwner::Testkit, state: TagState::Live },
-        LedgerEntry { tag: 0x72, family: "declare-probe".into(), owner: TagOwner::Testkit, state: TagState::Live },
+        LedgerEntry { op: 0x1A, family: "forward".into(), owner: OpOwner::Core, state: OpState::Live },
+        LedgerEntry { op: 0x1B, family: "status".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live },
+        LedgerEntry { op: 0x70, family: "proof-store".into(), owner: OpOwner::Testkit, state: OpState::Live },
+        LedgerEntry { op: 0x71, family: "resolve-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
+        LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
     ]
 }
 
@@ -86,7 +86,7 @@ pub enum Shape {
     ServerStreaming,
 }
 
-/// How a cataloged tag is executed.
+/// How a cataloged op is executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryKind {
     /// A canonical Node RPC protocol.
@@ -99,9 +99,9 @@ pub enum EntryKind {
 /// One served catalog entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogEntry {
-    pub tag: u8,
+    pub op: u8,
     pub name: String,
-    pub owner: TagOwner,
+    pub owner: OpOwner,
     pub kind: EntryKind,
     pub shape: Shape,
     pub max_request_frame_bytes: usize,
@@ -113,9 +113,9 @@ pub struct CatalogEntry {
 
 impl CatalogEntry {
     /// The entry for a canonical protocol `P`.
-    pub fn canonical<P: NodeProtocol>(owner: TagOwner, shape: Shape) -> Self {
+    pub fn canonical<P: NodeProtocol>(owner: OpOwner, shape: Shape) -> Self {
         Self {
-            tag: P::TAG,
+            op: P::OP,
             name: P::NAME.into(),
             owner,
             kind: EntryKind::Canonical,
@@ -128,11 +128,11 @@ impl CatalogEntry {
     }
 
     /// A product's transitional legacy adapter.
-    pub fn transitional(tag: u8, name: &str, product: &str, migration_unit: &str, max_request_frame_bytes: usize) -> Self {
+    pub fn transitional(op: u8, name: &str, product: &str, migration_unit: &str, max_request_frame_bytes: usize) -> Self {
         Self {
-            tag,
+            op,
             name: name.into(),
-            owner: TagOwner::Product(product.into()),
+            owner: OpOwner::Product(product.into()),
             kind: EntryKind::Transitional { migration_unit: migration_unit.into() },
             shape: Shape::Unary,
             max_request_frame_bytes,
@@ -146,22 +146,22 @@ impl CatalogEntry {
 /// Why a catalog refuses to seal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealError {
-    DuplicateTag { tag: u8, first: String, second: String },
-    RetiredTag { tag: u8, name: String },
-    /// The tag has no ledger row: allocate it in the ledger before serving it.
-    UnledgeredTag { tag: u8, name: String },
-    /// The ledger names a different owner for this tag.
-    OwnerMismatch { tag: u8, name: String, ledger: TagOwner, entry: TagOwner },
+    DuplicateTag { op: u8, first: String, second: String },
+    RetiredTag { op: u8, name: String },
+    /// The op has no ledger row: allocate it in the ledger before serving it.
+    UnledgeredTag { op: u8, name: String },
+    /// The ledger names a different owner for this op.
+    OwnerMismatch { op: u8, name: String, ledger: OpOwner, entry: OpOwner },
     /// A transitional adapter must be a product family, never core.
-    CoreTransitional { tag: u8, name: String },
+    CoreTransitional { op: u8, name: String },
     /// A server-streaming protocol may not be forwardable (node-rpc.md §36.3).
-    ForwardableStream { tag: u8, name: String },
-    /// Two ledger rows for one tag.
-    DuplicateLedgerRow { tag: u8 },
-    ZeroCeiling { tag: u8, name: String },
+    ForwardableStream { op: u8, name: String },
+    /// Two ledger rows for one op.
+    DuplicateLedgerRow { op: u8 },
+    ZeroCeiling { op: u8, name: String },
     /// A ledger row breaks the testkit range: a testkit family outside
-    /// [`TESTKIT_TAGS`], or a core/product family inside it.
-    TestkitRange { tag: u8, family: String, owner: TagOwner },
+    /// [`TESTKIT_OPS`], or a core/product family inside it.
+    TestkitRange { op: u8, family: String, owner: OpOwner },
     /// Op `0` is reserved as invalid: a zeroed fence is never served.
     ReservedZero { name: String },
 }
@@ -169,21 +169,21 @@ pub enum SealError {
 impl fmt::Display for SealError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DuplicateTag { tag, first, second } => write!(f, "tag {tag:#04x} registered twice ({first}, {second})"),
-            Self::RetiredTag { tag, name } => write!(f, "tag {tag:#04x} ({name}) is retired forever"),
-            Self::UnledgeredTag { tag, name } => write!(f, "tag {tag:#04x} ({name}) has no tag-ledger row"),
-            Self::OwnerMismatch { tag, name, ledger, entry } => {
-                write!(f, "tag {tag:#04x} ({name}) is owned by {ledger:?} in the ledger, registered by {entry:?}")
+            Self::DuplicateTag { op, first, second } => write!(f, "op {op:#04x} registered twice ({first}, {second})"),
+            Self::RetiredTag { op, name } => write!(f, "op {op:#04x} ({name}) is retired forever"),
+            Self::UnledgeredTag { op, name } => write!(f, "op {op:#04x} ({name}) has no op-ledger row"),
+            Self::OwnerMismatch { op, name, ledger, entry } => {
+                write!(f, "op {op:#04x} ({name}) is owned by {ledger:?} in the ledger, registered by {entry:?}")
             }
-            Self::CoreTransitional { tag, name } => write!(f, "tag {tag:#04x} ({name}): core runs no transitional adapter"),
-            Self::ForwardableStream { tag, name } => write!(f, "tag {tag:#04x} ({name}): streaming families are not forwardable"),
-            Self::DuplicateLedgerRow { tag } => write!(f, "the tag ledger has two rows for {tag:#04x}"),
-            Self::ZeroCeiling { tag, name } => write!(f, "tag {tag:#04x} ({name}) declares a zero frame ceiling"),
-            Self::TestkitRange { tag, family, owner } => write!(
+            Self::CoreTransitional { op, name } => write!(f, "op {op:#04x} ({name}): core runs no transitional adapter"),
+            Self::ForwardableStream { op, name } => write!(f, "op {op:#04x} ({name}): streaming families are not forwardable"),
+            Self::DuplicateLedgerRow { op } => write!(f, "the op ledger has two rows for {op:#04x}"),
+            Self::ZeroCeiling { op, name } => write!(f, "op {op:#04x} ({name}) declares a zero frame ceiling"),
+            Self::TestkitRange { op, family, owner } => write!(
                 f,
-                "tag {tag:#04x} ({family}, {owner:?}) breaks the testkit range {:#04x}..={:#04x}: only testkit families live there, and only there",
-                TESTKIT_TAGS.start(),
-                TESTKIT_TAGS.end()
+                "op {op:#04x} ({family}, {owner:?}) breaks the testkit range {:#04x}..={:#04x}: only testkit families live there, and only there",
+                TESTKIT_OPS.start(),
+                TESTKIT_OPS.end()
             ),
             Self::ReservedZero { name } => write!(f, "op 0 ({name}) is reserved as invalid: a zeroed fence is never served"),
         }
@@ -219,54 +219,54 @@ impl CatalogBuilder {
         let mut errors = Vec::new();
         let mut ledger: BTreeMap<u8, &LedgerEntry> = BTreeMap::new();
         for row in &self.ledger {
-            if row.tag == 0 {
+            if row.op == 0 {
                 errors.push(SealError::ReservedZero { name: row.family.clone() });
             }
-            if ledger.insert(row.tag, row).is_some() {
-                errors.push(SealError::DuplicateLedgerRow { tag: row.tag });
+            if ledger.insert(row.op, row).is_some() {
+                errors.push(SealError::DuplicateLedgerRow { op: row.op });
             }
-            if TESTKIT_TAGS.contains(&row.tag) != (row.owner == TagOwner::Testkit) {
-                errors.push(SealError::TestkitRange { tag: row.tag, family: row.family.clone(), owner: row.owner.clone() });
+            if TESTKIT_OPS.contains(&row.op) != (row.owner == OpOwner::Testkit) {
+                errors.push(SealError::TestkitRange { op: row.op, family: row.family.clone(), owner: row.owner.clone() });
             }
         }
         let mut served: BTreeMap<u8, CatalogEntry> = BTreeMap::new();
         for e in self.entries {
-            let named = |e: &CatalogEntry| (e.tag, e.name.clone());
-            if e.tag == 0 {
+            let named = |e: &CatalogEntry| (e.op, e.name.clone());
+            if e.op == 0 {
                 errors.push(SealError::ReservedZero { name: e.name.clone() });
                 continue;
             }
-            if let Some(first) = served.get(&e.tag) {
-                errors.push(SealError::DuplicateTag { tag: e.tag, first: first.name.clone(), second: e.name.clone() });
+            if let Some(first) = served.get(&e.op) {
+                errors.push(SealError::DuplicateTag { op: e.op, first: first.name.clone(), second: e.name.clone() });
                 continue;
             }
-            match ledger.get(&e.tag) {
+            match ledger.get(&e.op) {
                 None => {
-                    let (tag, name) = named(&e);
-                    errors.push(SealError::UnledgeredTag { tag, name });
+                    let (op, name) = named(&e);
+                    errors.push(SealError::UnledgeredTag { op, name });
                 }
-                Some(row) if row.state == TagState::Retired => {
-                    let (tag, name) = named(&e);
-                    errors.push(SealError::RetiredTag { tag, name });
+                Some(row) if row.state == OpState::Retired => {
+                    let (op, name) = named(&e);
+                    errors.push(SealError::RetiredTag { op, name });
                 }
                 Some(row) if row.owner != e.owner => errors.push(SealError::OwnerMismatch {
-                    tag: e.tag,
+                    op: e.op,
                     name: e.name.clone(),
                     ledger: row.owner.clone(),
                     entry: e.owner.clone(),
                 }),
                 Some(_) => {}
             }
-            if matches!(e.kind, EntryKind::Transitional { .. }) && e.owner == TagOwner::Core {
-                errors.push(SealError::CoreTransitional { tag: e.tag, name: e.name.clone() });
+            if matches!(e.kind, EntryKind::Transitional { .. }) && e.owner == OpOwner::Core {
+                errors.push(SealError::CoreTransitional { op: e.op, name: e.name.clone() });
             }
             if e.forwardable && e.shape == Shape::ServerStreaming {
-                errors.push(SealError::ForwardableStream { tag: e.tag, name: e.name.clone() });
+                errors.push(SealError::ForwardableStream { op: e.op, name: e.name.clone() });
             }
             if e.max_request_frame_bytes == 0 || e.max_reply_frame_bytes == 0 {
-                errors.push(SealError::ZeroCeiling { tag: e.tag, name: e.name.clone() });
+                errors.push(SealError::ZeroCeiling { op: e.op, name: e.name.clone() });
             }
-            served.insert(e.tag, e);
+            served.insert(e.op, e);
         }
         if errors.is_empty() {
             Ok(SealedCatalog { served })
@@ -283,15 +283,15 @@ pub struct SealedCatalog {
 }
 
 impl SealedCatalog {
-    /// The entry serving `tag`; `None` means `421 UNSERVED_TAG`, whatever the
+    /// The entry serving `op`; `None` means `421 UNSERVED_OP`, whatever the
     /// ledger reserves.
-    pub fn lookup(&self, tag: u8) -> Option<&CatalogEntry> {
-        self.served.get(&tag)
+    pub fn lookup(&self, op: u8) -> Option<&CatalogEntry> {
+        self.served.get(&op)
     }
 
     /// The request ceiling for framing (`framing::parse_request_head`).
-    pub fn request_ceiling(&self, tag: u8) -> Option<usize> {
-        self.lookup(tag).map(|e| e.max_request_frame_bytes)
+    pub fn request_ceiling(&self, op: u8) -> Option<usize> {
+        self.lookup(op).map(|e| e.max_request_frame_bytes)
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &CatalogEntry> {
@@ -306,7 +306,7 @@ mod tests {
     use crate::framing::{parse_request_head, RequestHead};
 
     fn echo() -> CatalogEntry {
-        CatalogEntry::canonical::<Ping>(TagOwner::Core, Shape::Unary)
+        CatalogEntry::canonical::<Ping>(OpOwner::Core, Shape::Unary)
     }
 
     #[test]
@@ -315,15 +315,15 @@ mod tests {
         assert_eq!(c.lookup(0x01).unwrap().name, "ping");
         assert_eq!(c.request_ceiling(0x01), Some(64 * 1024));
         assert_eq!(c.lookup(0x11), None, "0x11 (echo) is retired");
-        for tag in [0x10u8, 0x12, 0x17, 0x19, 0x42] {
-            assert_eq!(c.lookup(tag), None, "ledger-reserved or free, an unregistered tag is unserved: {tag:#x}");
+        for op in [0x10u8, 0x12, 0x17, 0x19, 0x42] {
+            assert_eq!(c.lookup(op), None, "ledger-reserved or free, an unregistered op is unserved: {op:#x}");
         }
     }
 
     #[test]
     fn a_duplicate_tag_refuses_the_seal() {
         let err = CatalogBuilder::new().serve(echo()).serve(echo()).seal().unwrap_err();
-        assert_eq!(err, vec![SealError::DuplicateTag { tag: 0x01, first: "ping".into(), second: "ping".into() }]);
+        assert_eq!(err, vec![SealError::DuplicateTag { op: 0x01, first: "ping".into(), second: "ping".into() }]);
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
             .serve(CatalogEntry::transitional(0x16, "layout-reprovision", "rafka", "never", 1024))
             .seal()
             .unwrap_err();
-        assert_eq!(err, vec![SealError::RetiredTag { tag: 0x16, name: "layout-reprovision".into() }]);
+        assert_eq!(err, vec![SealError::RetiredTag { op: 0x16, name: "layout-reprovision".into() }]);
     }
 
     #[test]
@@ -345,18 +345,18 @@ mod tests {
         assert_eq!(
             err,
             vec![
-                SealError::UnledgeredTag { tag: 0x42, name: "mystery".into() },
+                SealError::UnledgeredTag { op: 0x42, name: "mystery".into() },
                 SealError::OwnerMismatch {
-                    tag: 0x01,
+                    op: 0x01,
                     name: "ping-legacy".into(),
-                    ledger: TagOwner::Core,
-                    entry: TagOwner::Product("rafka".into())
+                    ledger: OpOwner::Core,
+                    entry: OpOwner::Product("rafka".into())
                 },
             ]
         );
-        // A product allocates a new tag through the ledger first.
+        // A product allocates a new op through the ledger first.
         let ok = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x42, family: "mystery".into(), owner: TagOwner::Product("rafka".into()), state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0x42, family: "mystery".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
             .serve(CatalogEntry::transitional(0x42, "mystery", "rafka", "u9", 1024))
             .seal();
         assert!(ok.is_ok());
@@ -373,43 +373,43 @@ mod tests {
         // 0x17 is reserved for rafka forward-write in the ledger but not registered:
         // the sealed catalog is the only table, so it is unserved — no legacy fallthrough.
         let unserved = crate::framing::encode_request(&crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x17 }), &[]);
-        assert_eq!(parse_request_head(&unserved, |t| c.request_ceiling(t)), RequestHead::Unserved { tag: 0x17 });
+        assert_eq!(parse_request_head(&unserved, |t| c.request_ceiling(t)), RequestHead::Unserved { op: 0x17 });
         let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x12 });
         let head = crate::framing::encode_request(&header, &[0]);
         assert_eq!(
             parse_request_head(&head, |t| c.request_ceiling(t)),
-            RequestHead::Ready { tag: 0x12, header, payload_len: 1, head_len: head.len() - 1 }
+            RequestHead::Ready { op: 0x12, header, payload_len: 1, head_len: head.len() - 1 }
         );
     }
 
     #[test]
     fn structural_rules_are_named() {
         let mut core_t = CatalogEntry::transitional(0x01, "ping", "rafka", "x", 10);
-        core_t.owner = TagOwner::Core;
+        core_t.owner = OpOwner::Core;
         let mut stream = echo();
         stream.shape = Shape::ServerStreaming;
         stream.forwardable = true;
         let mut zero = echo();
-        zero.tag = 0x13;
-        zero.owner = TagOwner::Product("rafka".into());
+        zero.op = 0x13;
+        zero.owner = OpOwner::Product("rafka".into());
         zero.max_request_frame_bytes = 0;
         let e1 = CatalogBuilder::new().serve(core_t).seal().unwrap_err();
-        assert!(e1.contains(&SealError::CoreTransitional { tag: 0x01, name: "ping".into() }), "{e1:?}");
+        assert!(e1.contains(&SealError::CoreTransitional { op: 0x01, name: "ping".into() }), "{e1:?}");
         let e2 = CatalogBuilder::new().serve(stream).seal().unwrap_err();
-        assert!(e2.contains(&SealError::ForwardableStream { tag: 0x01, name: "ping".into() }), "{e2:?}");
+        assert!(e2.contains(&SealError::ForwardableStream { op: 0x01, name: "ping".into() }), "{e2:?}");
         let e3 = CatalogBuilder::new().serve(zero).seal().unwrap_err();
-        assert!(e3.contains(&SealError::ZeroCeiling { tag: 0x13, name: "ping".into() }), "{e3:?}");
+        assert!(e3.contains(&SealError::ZeroCeiling { op: 0x13, name: "ping".into() }), "{e3:?}");
         let e4 = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x11, family: "dup".into(), owner: TagOwner::Core, state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0x11, family: "dup".into(), owner: OpOwner::Core, state: OpState::Live }])
             .seal()
             .unwrap_err();
-        assert_eq!(e4, vec![SealError::DuplicateLedgerRow { tag: 0x11 }]);
+        assert_eq!(e4, vec![SealError::DuplicateLedgerRow { op: 0x11 }]);
     }
 
     #[test]
     fn op_zero_is_reserved_and_never_sealed() {
         let e = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0, family: "zeroed".into(), owner: TagOwner::Product("rdm".into()), state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0, family: "zeroed".into(), owner: OpOwner::Product("rdm".into()), state: OpState::Live }])
             .serve(CatalogEntry::transitional(0, "zeroed", "rdm", "x", 16))
             .seal()
             .unwrap_err();
@@ -419,36 +419,36 @@ mod tests {
     #[test]
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
-        let tags: Vec<u8> = l.iter().map(|r| r.tag).collect();
+        let tags: Vec<u8> = l.iter().map(|r| r.op).collect();
         assert_eq!(tags, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x70, 0x71, 0x72]);
-        assert_eq!(l.iter().find(|r| r.tag == 0x11).map(|r| r.state), Some(TagState::Retired), "echo is retired forever; ping took op 1");
-        assert!(l.iter().all(|r| r.tag != 0), "op 0 is reserved as invalid");
-        assert_eq!(l.iter().find(|r| r.tag == 0x1B).map(|r| r.owner.clone()), Some(TagOwner::Product("rdm".into())), "status is RDM's control family, not core");
-        let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core && r.state == TagState::Live).map(|r| r.tag).collect();
+        assert_eq!(l.iter().find(|r| r.op == 0x11).map(|r| r.state), Some(OpState::Retired), "echo is retired forever; ping took op 1");
+        assert!(l.iter().all(|r| r.op != 0), "op 0 is reserved as invalid");
+        assert_eq!(l.iter().find(|r| r.op == 0x1B).map(|r| r.owner.clone()), Some(OpOwner::Product("rdm".into())), "status is RDM's control family, not core");
+        let core: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Core && r.state == OpState::Live).map(|r| r.op).collect();
         assert_eq!(core, vec![0x01, 0x1A], "the live core ops are exactly ping and Forward");
-        let testkit: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Testkit).map(|r| r.tag).collect();
+        let testkit: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Testkit).map(|r| r.op).collect();
         assert_eq!(testkit, vec![0x70, 0x71, 0x72], "the testkit tags are the proof store, the resolve probe and the declare probe");
     }
 
     #[test]
     fn the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else() {
         let product_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x73, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()), state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0x73, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
             .seal()
             .unwrap_err();
         assert_eq!(
             product_inside,
-            vec![SealError::TestkitRange { tag: 0x73, family: "sneaky".into(), owner: TagOwner::Product("rafka".into()) }]
+            vec![SealError::TestkitRange { op: 0x73, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()) }]
         );
         let testkit_outside = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x42, family: "stray".into(), owner: TagOwner::Testkit, state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0x42, family: "stray".into(), owner: OpOwner::Testkit, state: OpState::Live }])
             .seal()
             .unwrap_err();
-        assert_eq!(testkit_outside, vec![SealError::TestkitRange { tag: 0x42, family: "stray".into(), owner: TagOwner::Testkit }]);
+        assert_eq!(testkit_outside, vec![SealError::TestkitRange { op: 0x42, family: "stray".into(), owner: OpOwner::Testkit }]);
         let core_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { tag: 0x7F, family: "core-probe".into(), owner: TagOwner::Core, state: TagState::Live }])
+            .ledger([LedgerEntry { op: 0x7F, family: "core-probe".into(), owner: OpOwner::Core, state: OpState::Live }])
             .seal()
             .unwrap_err();
-        assert_eq!(core_inside, vec![SealError::TestkitRange { tag: 0x7F, family: "core-probe".into(), owner: TagOwner::Core }]);
+        assert_eq!(core_inside, vec![SealError::TestkitRange { op: 0x7F, family: "core-probe".into(), owner: OpOwner::Core }]);
     }
 }
