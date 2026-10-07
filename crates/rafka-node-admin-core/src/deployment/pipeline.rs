@@ -369,16 +369,30 @@ impl RuntimeEvidence {
     }
 }
 
+/// The last attempt before `attempt` whose run of `operation` ended: it failed a step, or it
+/// reached its `Complete` step. Only runs after it were cut short (their executor died) and hand
+/// their receipts on: a failed run decided nothing worth keeping, and a finished run's work is
+/// done, so a later attempt of the same operation (a second restart of one node) runs afresh.
+fn last_ended_attempt(receipts: &[&BuildStepReceipt], operation: &str, attempt: u32) -> u32 {
+    receipts
+        .iter()
+        .filter(|r| r.operation == operation && r.attempt < attempt)
+        .filter(|r| matches!(r.outcome, StepOutcome::Failed { .. }) || (r.step == CreateStep::Complete.name() && r.outcome == StepOutcome::Complete))
+        .map(|r| r.attempt)
+        .max()
+        .unwrap_or(0)
+}
+
 /// The prerequisites of [`READY_PREREQUISITES`] that `receipts` holds no
-/// `Complete` receipt for: of `operation`, from the latest run after its
-/// last failed attempt, up to and including `attempt`.
+/// `Complete` receipt for: of `operation`, from the runs after its last
+/// ended attempt ([`last_ended_attempt`]), up to and including `attempt`.
 pub fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &str, attempt: u32) -> Vec<&'static str> {
     let ours: Vec<&BuildStepReceipt> = receipts.iter().filter(|r| r.operation == operation && r.attempt <= attempt).collect();
-    let last_failed = ours.iter().filter(|r| matches!(r.outcome, StepOutcome::Failed { .. }) && r.attempt < attempt).map(|r| r.attempt).max().unwrap_or(0);
+    let ended = last_ended_attempt(&ours, operation, attempt);
     READY_PREREQUISITES
         .iter()
         .map(|s| s.name())
-        .filter(|s| !ours.iter().any(|r| r.attempt > last_failed && r.step == *s && r.outcome == StepOutcome::Complete))
+        .filter(|s| !ours.iter().any(|r| r.attempt > ended && r.step == *s && r.outcome == StepOutcome::Complete))
         .collect()
 }
 
@@ -572,17 +586,16 @@ struct Run<'r> {
 impl DeploymentPipeline<'_> {
     /// The decisions earlier attempts made for this operation and may hand
     /// on: the `Complete` receipts of runs that were cut short (the executor
-    /// died mid-run). A run that failed a step decided nothing worth
-    /// keeping, so the first attempt after the latest failure starts afresh
-    /// and later attempts build on that run.
+    /// died mid-run), after the last attempt whose run ended
+    /// ([`last_ended_attempt`]): failed, or finished.
     async fn begin<'r>(&self, build_id: &'r BuildId, attempt: u32, node: &'r PathName, operation: String) -> Run<'r> {
         let done = match self.builds.read_build(build_id).await {
             Ok(view) => {
                 let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
-                let last_failed = earlier.iter().filter(|r| matches!(r.outcome, StepOutcome::Failed { .. })).map(|r| r.attempt).max().unwrap_or(0);
+                let ended = last_ended_attempt(&earlier.iter().collect::<Vec<_>>(), &operation, attempt);
                 earlier
                     .into_iter()
-                    .filter(|r| r.attempt > last_failed && r.outcome == StepOutcome::Complete)
+                    .filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete)
                     .map(|r| (r.step, r.output))
                     .collect()
             }
@@ -1111,6 +1124,12 @@ mod tests {
         assert_eq!(ready_prerequisites_missing(&failed, op, 3).len(), 4);
         // An attempt cut short (no failure) hands its receipts on.
         assert!(ready_prerequisites_missing(&all, op, 2).is_empty());
+        // A finished run hands nothing on: attempt 5 of the same operation (a second restart
+        // of one node) stands on its own receipts only.
+        let mut finished = all.clone();
+        finished.push(receipt(1, CreateStep::Complete.name(), StepOutcome::Complete));
+        assert_eq!(ready_prerequisites_missing(&finished, op, 5).len(), 4);
+        assert!(ready_prerequisites_missing(&finished, op, 1).is_empty(), "the finished run itself is ready");
         // A Failed receipt is no Complete one.
         let mut half = lost.clone();
         half.push(receipt(1, "MakeRuntimeFactAvailableToBirth", StepOutcome::Failed { reason: "disk".into() }));
