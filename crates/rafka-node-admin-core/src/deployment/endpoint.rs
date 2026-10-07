@@ -567,7 +567,44 @@ pub fn tcp_port_is_held(addr: SocketAddr) -> bool {
 /// command). "no socket" means the kernel lists none on the port, so a refused bind had another
 /// cause. For the error that names a port the operating system still holds after a runtime
 /// exited: the holder is a fact, never a guess.
+/// One socket on a port, as `/proc` lists it: its state, inode and the live process (if any)
+/// whose fd table holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortHolder {
+    pub state: String,
+    pub inode: u64,
+    pub pid: Option<u32>,
+    pub comm: String,
+}
+
+/// Whether a port a runtime held is now released by it: no socket at all, or every socket on it
+/// is kernel-owned (the dead process's lingering connections, which a bind rides over) or held
+/// by a live process other than `exited_pid`. A port another live process listens on is proof the
+/// exited runtime no longer holds it, however the probe's bind fares; only a socket still held by
+/// the exited pid (its group still tearing down) keeps the port "still held".
+pub fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Option<u32>) -> bool {
+    let holders = port_holders(addr, transport);
+    !holders.iter().any(|h| h.pid.is_some() && h.pid == exited_pid)
+        && (holders.iter().any(|h| h.pid.is_some()) || !match transport {
+            SlotTransport::Udp => udp_port_is_held(addr),
+            SlotTransport::Tcp => tcp_port_is_held(addr),
+        })
+}
+
 pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
+    let holders = port_holders(addr, transport);
+    if holders.is_empty() {
+        return "no socket".to_string();
+    }
+    holders
+        .iter()
+        .map(|h| format!("{} inode {} held by {}", h.state, h.inode, match h.pid { Some(p) => format!("pid {p} {}", h.comm), None => "no process (kernel-owned)".to_string() }))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Every socket on `addr`'s port for `transport`, with its holder (see [`port_holder`]).
+pub fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Vec<PortHolder> {
     let tables: &[&str] = match transport {
         SlotTransport::Tcp => &["/proc/net/tcp", "/proc/net/tcp6"],
         SlotTransport::Udp => &["/proc/net/udp", "/proc/net/udp6"],
@@ -599,9 +636,9 @@ pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
         }
     }
     if sockets.is_empty() {
-        return "no socket".to_string();
+        return Vec::new();
     }
-    let mut owners: BTreeMap<u64, String> = BTreeMap::new();
+    let mut owners: BTreeMap<u64, (u32, String)> = BTreeMap::new();
     if let Ok(procs) = std::fs::read_dir("/proc") {
         for p in procs.flatten() {
             let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
@@ -612,7 +649,7 @@ pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
                     if let Some(inode) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']')).and_then(|n| n.parse::<u64>().ok()) {
                         if sockets.iter().any(|(_, i)| *i == inode) {
                             let comm = std::fs::read_to_string(p.path().join("comm")).map(|c| c.trim().to_string()).unwrap_or_default();
-                            owners.entry(inode).or_insert_with(|| format!("pid {pid} {comm}"));
+                            owners.entry(inode).or_insert((pid, comm));
                         }
                     }
                 }
@@ -620,10 +657,12 @@ pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
         }
     }
     sockets
-        .iter()
-        .map(|(state, inode)| format!("{state} inode {inode} held by {}", owners.get(inode).map(String::as_str).unwrap_or("no process (kernel-owned)")))
-        .collect::<Vec<_>>()
-        .join("; ")
+        .into_iter()
+        .map(|(state, inode)| {
+            let (pid, comm) = owners.get(&inode).cloned().map(|(p, c)| (Some(p), c)).unwrap_or((None, String::new()));
+            PortHolder { state, inode, pid, comm }
+        })
+        .collect()
 }
 
 /// `WaitForBind`: every assigned socket (the transport and each listener) is
@@ -662,6 +701,20 @@ mod tests {
         drop(l);
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
         assert_eq!(port_holder(free, SlotTransport::Tcp), "no socket");
+    }
+
+    /// CONTRACT: a port another live process listens on is released by the exited runtime (its
+    /// pid is not among the holders); a port this very process still listens on is not released
+    /// when this process is the one said to have exited; a free port is released.
+    #[test]
+    fn a_port_another_live_process_listens_on_is_released_by_the_exited_runtime() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        assert!(released_by(addr, SlotTransport::Tcp, Some(1)), "another live pid listens: released");
+        assert!(!released_by(addr, SlotTransport::Tcp, Some(std::process::id())), "the exited pid itself still listens: not released");
+        drop(l);
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        assert!(released_by(free, SlotTransport::Tcp, Some(1)));
     }
 
     fn p(s: &str) -> PathName {

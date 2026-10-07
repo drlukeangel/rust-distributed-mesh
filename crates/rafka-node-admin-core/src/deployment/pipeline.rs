@@ -1144,10 +1144,10 @@ impl DeploymentPipeline<'_> {
             }
             held.extend(node.listeners.iter().map(|(n, a)| (n.clone(), *a, super::endpoint::SlotTransport::Tcp)));
             let until = Instant::now() + Duration::from_secs(3);
-            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| match h.2 {
-                super::endpoint::SlotTransport::Udp => super::endpoint::udp_port_is_held(h.1),
-                super::endpoint::SlotTransport::Tcp => super::endpoint::tcp_port_is_held(h.1),
-            };
+            // Still held by the exited runtime: not released per `/proc` (a port another live
+            // process was handed meanwhile, as estates sharing one block do, is released).
+            let exited_pid = handle.pid;
+            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| !super::endpoint::released_by(h.1, h.2, exited_pid);
             let started = Instant::now();
             loop {
                 held.retain(|h| still(h));
