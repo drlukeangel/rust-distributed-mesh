@@ -273,6 +273,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
     tracing::info_span!(
         "rafka.mesh.node.update.via-ready",
         node = %name,
+        kind = launch.name.kind.name(),
         incarnation_id = %launch.incarnation.0,
         meshes = membership.meshes_held(),
         node_id = %launch.node_id,

@@ -3790,6 +3790,7 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
+ "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-rpc",
  "rafka-node-rpc-contract",
@@ -3863,6 +3864,7 @@ version = "0.1.0"
 dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-transport",
+ "rafka-node-admin-client",
  "reqwest",
  "serde",
  "serde_json",

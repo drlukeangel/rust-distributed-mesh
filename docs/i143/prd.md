@@ -830,33 +830,42 @@ e11.s3  role binaries on the base: broker/gateway/compute/registry build on node
         RuntimeFact and the kind's status like any rpc node
         cell: a Build of {node_admin:1, broker:1, gateway:1, compute:1} converges; each birth's ready
         span names its kind; a second Build removes the compute and the path is retired
-e11.s4  leadership, lite: every role cohort elects its lowest ReadyForTraffic NodeId through the
-        imported LeadershipResolver; a product reads the mesh primary from the public view and never
-        computes it
-        cell: kill the broker primary; the next-lowest broker is primary in every view; no
-        product-side comparator exists (grep gate)
-e11.s5  exact target + fence: a gateway calls a broker by ExactNode and by CurrentPath; after the
-        broker restarts, the old incarnation's pooled connection is evicted and a call to it is
-        RejectedStale (425), never dispatched
-        cell: `node_rpc__restart_fence` on the role shape
+e11.s4  leadership, lite: every role cohort's seat is the one election (`rafka-node-admin-core`
+        `election.rs`, lowest ReadyForTraffic NodeId per (mesh, kind) cohort); a product reads a
+        cohort's primary from node-admin's public view (`rafka-node-admin-client` `nodes()`,
+        `is_primary`) and never computes it
+        cell: kill the broker primary; the next-lowest broker is announced and is the view's primary;
+        node-base holds no comparator (a cell reads its own source)
+e11.s5  exact target + fence: a gateway calls a broker by ExactNode and by CurrentPath through its
+        one client; after the broker restarts (same NodeId, new incarnation), the gateway evicts
+        the old incarnation's pooled connection and the next call reaches the new birth; a dial to
+        a birth that moves before it is pooled is RejectedStale (425), never dispatched
+        cell: `node_rpc__restart_fence` on the role shape (the gateway carries the probe's calls);
+        the in-flight arm is `rafka-node-rpc/tests/pool.rs`
 e11.s6  certainty: a request cut before FIN is NotSent (499) and never applied; a reply lost after
         commit is Indeterminate; a handler fault is 423; the reply budget alone is not death proof
-        cell: the four outcomes on a gateway->broker call, each asserted on its span reason
+        cell: the four outcomes on a gateway->broker call over the gateway's own client, the
+        broker staged by the proof family's keys (`proof:hang`, `proof:fault`), each asserted on
+        its typed reason (`rafka-node-base/tests/role_process.rs`)
 e11.s7  routing/proxy, lite: a gateway that cannot reach a broker directly invokes it ViaPeer through
         another gateway; the carrier makes exactly one inner invocation and never changes the final
         target; NoActiveRoute starts no leg
         cell: Direct, ViaPeer and NoActiveRoute, each on the role shape, with the carrier's
         `rafka.node_rpc.request.serve.via-forward` span
 e11.s8  product family: a product-owned unary family (`broker_data`, forwardable) composed beside the
-        core, served only by the broker; a gateway's call to a compute for it is 421
+        core, ledgered under the product, served only by the broker and carried by every other role;
+        a call to a compute for it is 421
         cell: the family round-trips to a broker and is unserved at a compute
 e11.s9  observability pass-through: caller_system and W3C traceparent/tracestate/baggage ride the
         request header; a malformed value is dropped (`via-context-dropped`) and the outcome is
-        unchanged; the broker's serve span is a child of the gateway's call span in Jaeger
-        cell: one call, one trace, two services
+        unchanged; a carrier hands the original context through verbatim, so the broker's serve
+        span and the gateway's carried invocation both descend from the caller's span in Jaeger
+        cell: one call, one trace, three services (`node_rpc__role_context`); the malformed arm on
+        the gateway's own client (`rafka-node-base/tests/role_process.rs`)
 e11.s10 status/lifecycle on a role: a broker declares ReadyForTraffic to its mesh primary over the
-        status op; a wedged broker is tickled (ping, then the status kick) and marked
-        pending-reconnect then dead; drift rebirths it at the same path
+        status op; a wedged broker is marked pending-reconnect at the floor, tickled (one connect,
+        direct then via a peer) and marked dead; its runtime still runs, so it is held, never
+        replaced; thawed, the same birth is back ready
         cell: `mesh_runtime__role_wedge`
 ```
 

@@ -18,6 +18,7 @@ pub use rafka_node_rpc::{NodeRpcClient, ServerBuilder};
 pub use rafka_node_rpc_testkit::node::{drain_deadline_from_env, leave_linger_from_env, RunningNode};
 
 pub mod families;
+pub mod leadership;
 
 use anyhow::{anyhow, Result};
 use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, TagOwner};
@@ -80,9 +81,30 @@ pub fn launch_for(role: Role) -> Result<Launch> {
 
 /// Compose this process's catalog beyond the core: the role's own families and the product's
 /// transitional adapters, into the one builder that seals once (i141 PRD §16).
-pub fn compose(role: Role, b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClient>) -> ServerBuilder {
-    let b = families::for_kind(role.kind, b, client);
+pub fn compose(role: Role, served_by: &str, b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClient>) -> ServerBuilder {
+    let b = families::for_kind(role.kind, served_by, b, client);
     LEGACY_ADAPTERS.iter().fold(b, |b, a| b.adapter(CatalogEntry::transitional(a.tag, a.name, a.owner, a.migration_unit, 64 * 1024)))
+}
+
+/// The testkit's oracles the proof estate's probe speaks, served by every role exactly as the
+/// generic rpc node serves them: the proof store (the data-dir KV oracle), the resolve probe and
+/// the declare probe. Proof families, nothing of a product's domain.
+pub struct Oracles {
+    pub store: Arc<rafka_node_rpc_testkit::proof_store::FileProofStore>,
+    /// The declare oracle calls out through the process's one client, set once the node runs.
+    pub declare_client: Arc<std::sync::OnceLock<rafka_node_rpc_testkit::node_rpc::ProcessNodeRpc>>,
+}
+
+impl Oracles {
+    pub fn open(launch: &Launch) -> Result<Self> {
+        let store = rafka_node_rpc_testkit::proof_store::FileProofStore::open(&launch.data_dir).map_err(|e| anyhow!("the proof store refused to open: {e}"))?;
+        Ok(Self { store: Arc::new(store), declare_client: Arc::new(std::sync::OnceLock::new()) })
+    }
+
+    pub fn serve(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder {
+        use rafka_node_rpc_testkit::{declare_probe, proof_store, resolve_probe};
+        declare_probe::serve(resolve_probe::serve(proof_store::serve(b, self.store.clone(), launch), resolver, launch), self.declare_client.clone(), launch)
+    }
 }
 
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
@@ -100,9 +122,10 @@ pub async fn run(role: Role) -> Result<()> {
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_mesh_telemetry::set_parent(&boot, &tp);
     }
+    let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        rafka_node_rpc_testkit::node::start_with_client(&launch, |b, _resolver, client| compose(role, b, client))
+        rafka_node_rpc_testkit::node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver))
             .instrument(tracing::Span::none())
             .await
             .map_err(|e| {
@@ -110,6 +133,7 @@ pub async fn run(role: Role) -> Result<()> {
                 e
             })?
     };
+    let _ = oracles.declare_client.set(running.node_rpc.clone());
     let served = running.server.catalog().entries().count();
     boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
     drop(boot);
@@ -134,7 +158,7 @@ pub async fn run(role: Role) -> Result<()> {
 pub async fn catalog_of(role: Role) -> Result<Vec<(u8, String, TagOwner, EntryKind)>> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await?;
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep.clone(), Arc::new(rafka_node_rpc::StaticResolver::new())));
-    let sealed = compose(role, rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new()), client)
+    let sealed = compose(role, "catalog", rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new()), client)
         .seal(rafka_node_rpc::ServedBirth { node_id: "catalog".into(), incarnation: "catalog".into() })
         .map_err(|e| anyhow!("the role's catalog does not seal: {e:?}"))?;
     let mut out: Vec<_> = sealed.catalog().entries().map(|e| (e.tag, e.name.clone(), e.owner.clone(), e.kind.clone())).collect();

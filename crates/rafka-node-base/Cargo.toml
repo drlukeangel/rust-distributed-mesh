@@ -13,6 +13,7 @@ rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 tokio = { workspace = true }
 tracing = { workspace = true }

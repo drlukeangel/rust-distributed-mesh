@@ -70,3 +70,44 @@ re-derived client-side from gossip.
 its provider does. rafka-v2's roles are born by node-admin's providers already (i138); i141 e4
 keeps that, and the harness births that spawn a role by hand must write the record first or go
 through node-admin.
+
+## 6. A role is born by node-admin under its kind, and nothing else changes
+
+node-admin resolves the executable per `NodeKind` (`crates/rafka-node-admin-core/src/admin.rs`,
+`rafka-broker`/`rafka-gateway`/`rafka-compute` beside `rafka-rpc-node`), plans counts per kind
+from `MeshDesired` (`build.rs::MeshDesired::counts`), elects per `(mesh, kind)` cohort
+(`election.rs`) and retires a role's path by the same Build diff as an rpc node's
+(`crates/rafka-test-scenario/tests/mesh_shapes__role_build.rs`). The role's boot span
+(`rafka.mesh.node.create.via-deployment`) and ready span (`rafka.mesh.node.update.via-ready`)
+carry `kind`. rafka-v2's node-admin equivalents (`node_type`, `display_prefix_for_node_type`,
+the per-type spawn in `rafka-node-admin`) collapse onto `NodeKind` in i141 e4; the `brk_`/`gtw_`/
+`cmp_` display prefixes are the REST rendering of the same kind, not a second enum.
+
+## 7. What the role base takes from the testkit, and what stays product
+
+- The probe (`rafka-rpc-probe`) speaks the testkit's oracles (proof store 0x70, resolve probe,
+  declare probe). A role that the proof estate's cells call must serve them exactly as the
+  generic rpc node does (`rafka_node_base::Oracles`); carrying a forwardable family catalogues it
+  for forwarding but serves no handler (`SealedCatalog::lookup` lists served tags only), so a
+  carried oracle answers 421. rafka-v2's roles serve no testkit oracle: its e2e harness calls
+  product families, and i141 e9 decides which proof oracles, if any, ride a Rafka node.
+- A product family's handler names its serving node from the launch (`served_by`), never from the
+  environment; the launch is the one input a role process has.
+- The seat a role reads is node-admin's view (`rafka-node-admin-client` `nodes()`,
+  `is_primary`), one read, no comparator (`rafka_node_base::leadership`, its grep cell). rafka-v2's
+  `compute_self_is_primary` and every `is_primary` computation outside node-admin go in i141 e3.
+- The certainty outcomes a product sees are the client's typed `RpcOutcome` reasons; staging a
+  hang or a fault for a cell is the proof family's own key convention, nothing in the substrate.
+
+## 8. Observability and silence need nothing from the product
+
+- One call through a carrier is one trace across three processes: the caller's span is the
+  root, the carrier's inner invocation and the target's serve span descend from it, and
+  `caller_system` rides the header verbatim (`node_rpc__role_context`). rafka-v2's gateway and
+  broker spans join this trace by using the imported client and server; nothing product-side
+  propagates context by hand (every `TRACEPARENT`/`traceparent` plumbing outside the substrate is
+  i141 e6 deletion).
+- A wedged role is marked, tickled, held and returned by node-admin alone
+  (`mesh_runtime__role_wedge`); the role declares its readiness through the testkit's declare loop
+  in `start_with_client`. rafka-v2's own offline ladder (`node-admin/src/lib.rs::OfflineTickle`)
+  and its readiness declarations are what i141 e3/e6 replace with the imported ones.

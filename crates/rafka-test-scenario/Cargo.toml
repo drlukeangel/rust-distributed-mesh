@@ -14,6 +14,7 @@ yaml_serde = "0.10"
 
 [dev-dependencies]
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 
 [[bin]]

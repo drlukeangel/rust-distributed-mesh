@@ -77,24 +77,38 @@ impl NodeProtocol for BrokerData {
     }
 }
 
+/// Appending under this key never replies: the reply-loss arm of a certainty cell.
+pub const PROOF_HANG: &str = "proof:hang";
+/// Appending under this key is a handler fault (423): the fault arm of a certainty cell.
+pub const PROOF_FAULT: &str = "proof:fault";
+
 /// The product's ledger rows: its own allocations, beside the core ledger.
 pub fn product_ledger() -> Vec<LedgerEntry> {
     vec![LedgerEntry { tag: BrokerData::TAG, family: BrokerData::NAME.into(), owner: TagOwner::Product(crate::PRODUCT.into()), state: TagState::Live }]
 }
 
-/// The families `kind` serves, composed into `b`. Every kind carries the forwardable families
+/// The families `kind` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every kind carries the forwardable families
 /// for others (a gateway is the carrier of `broker_data`); only a broker serves it.
-pub fn for_kind(kind: NodeKind, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
+pub fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
     let b = b.ledger(product_ledger()).carry::<BrokerData>();
     match kind {
         NodeKind::Broker => {
             let store: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Vec<Vec<u8>>>>> = Default::default();
-            let me = std::env::var(rafka_mesh_entity::launch::ENV_NODE_ID).unwrap_or_default();
+            let me = served_by.to_string();
             b.serve::<BrokerData, _, _>(TagOwner::Product(crate::PRODUCT.into()), move |_peer: PeerContext, req: BrokerDataRequest| {
                 let (store, me) = (store.clone(), me.clone());
                 async move {
                     let mut s = store.lock().map_err(|e| HandlerFault::invariant_broken(format!("store: {e}")))?;
                     Ok(match req {
+                        // The proof family's staging keys (i143.e11.s6): a certainty cell asks the
+                        // broker to hang or to fault by the key it appends under.
+                        BrokerDataRequest::Append { key, .. } if key == PROOF_HANG => {
+                            drop(s);
+                            std::future::pending().await
+                        }
+                        BrokerDataRequest::Append { key, .. } if key == PROOF_FAULT => {
+                            return Err(HandlerFault::invariant_broken("the proof fault key"));
+                        }
                         BrokerDataRequest::Append { key, value } => {
                             let log = s.entry(key.clone()).or_default();
                             log.push(value);
