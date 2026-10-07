@@ -50,6 +50,7 @@ A fresh session resumes from this file plus the open issues on that milestone.
 | e1.s7 | #2851 | `5d20559` | current `DesiredTopology` (bounded, revisioned, fork-fenced) hydrated at entry and on the fabric control topic, kept across Build forget; proven-drift reconciliation Builds; E2E `mesh_desired__desired_topology` |
 | e4.s16 | #2850 | `ae12e9c`, `951a471` | exact `RuntimeFact` published with each birth, successor adoption from membership; runtime prerequisites as named pipeline steps, Ready gated on their receipts; E2E `mesh_runtime__successor_adoption` |
 | e6.s8 fence (ruled 2026-10-06) | — | `7db6cb5`, `5c73e46` | the per-call fence is `{target_node_id, op}` read first and alone; freshness, slots/ports and the per-call birth leave the wire; `TransportId` → `EndpointId`; envelope schemas + OpenRPC op ledger in `schemas/node-rpc/` (`docs/i143/node-rpc-envelope.md`); provider liveness reads every task of the thread group; gate 26/26 |
+| e4.s11 (part 1) | #2805 | `2c1bf3a` | births declare their own lifecycle state to their authority (`owed_state` loop, RFT at birth, Draining at drain, Leaving at stop); node-admin `status_declare::Declarer` owes its own RFT, its Mesh RFT as mesh primary, and the fabric RFT event at every mesh primary as fabric primary; `node_rpc__status` proves births declaring; part 2 = self-authority apply + Pending hand-off before Build(shape) |
 
 ## In progress
 
