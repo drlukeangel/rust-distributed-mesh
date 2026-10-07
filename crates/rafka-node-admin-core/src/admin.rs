@@ -275,6 +275,11 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.routable = n.status.is_live() && book.routable(d.node.node_id.as_str());
         n.declared = records.declared.lock().unwrap().node(&n.node_id).filter(|(inc, _)| Some(inc) == n.incarnation_id.as_ref()).map(|(_, s)| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
+        // A node-admin's control API is its one listener: the view carries it, so whichever admin
+        // restarts it keeps the address its launch was assigned.
+        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
+            n.listeners = vec![("control".to_string(), addr)];
+        }
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
@@ -2059,6 +2064,21 @@ mod tests {
         let empty = view(&[]);
         assert!(empty.fabric_primary().is_none());
         assert_eq!(empty.fabric.status, ScopeStatus::Pending);
+    }
+
+    /// Whichever admin restarts a node-admin keeps its control address: the view carries the
+    /// control listener from the admin's own digest (found by the 30-minute soak: a restart by an
+    /// admin that had not launched it came up with no `control` listener).
+    #[test]
+    fn the_view_carries_a_node_admins_control_listener() {
+        let book = DigestBook::default();
+        let mut admin = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+        admin.admin_api_base = Some("http://127.0.0.1:41777".into());
+        book.record(admin.clone());
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let n = t.node(&admin.node.name).expect("held");
+        assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
+        assert!(crate::deployment::endpoint::Assignment::of_node(n).is_some_and(|a| a.listeners.len() == 1));
     }
 
     #[test]

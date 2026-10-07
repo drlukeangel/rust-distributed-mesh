@@ -213,10 +213,14 @@ impl EndpointAllocator {
     pub fn assign(&mut self, node: &PathName, spec: &KindSpec, restart: bool) -> Result<Assignment, AllocationError> {
         if restart {
             let prior = self.held.get(node).cloned().ok_or_else(|| AllocationError::NoPriorAssignment { node: node.clone(), socket: "transport".into() })?;
+            // A restart keeps every socket its kind declares: one the prior assignment lacks is
+            // refused by name, never launched without.
+            if let Some(missing) = spec.listeners.iter().find(|l| !prior.listeners.iter().any(|(n, _)| n == *l)) {
+                return Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: missing.to_string() });
+            }
             self.held.insert(node.clone(), prior.clone());
             return Ok(prior);
         }
-        let _ = spec;
         self.release(node);
         let ip = self.node_ip(node)?;
         let mut taken = Vec::new();
@@ -485,6 +489,14 @@ mod tests {
             a.assign(&p("mesh1.rpc.9"), &RPC_NODE, true),
             Err(AllocationError::NoPriorAssignment { node: p("mesh1.rpc.9"), socket: "transport".into() })
         );
+    }
+
+    #[test]
+    fn a_restart_missing_a_declared_listener_is_refused_by_name() {
+        let mut a = alloc();
+        let node = p("mesh1.admin.2");
+        a.adopt(&node, Assignment { transport: "127.0.0.1:27999".parse().unwrap(), listeners: vec![] });
+        assert_eq!(a.assign(&node, &NODE_ADMIN, true), Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: "control".into() }));
     }
 
     #[test]
