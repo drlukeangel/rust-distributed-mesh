@@ -1,0 +1,992 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "rafka Node RPC",
+    "version": "0.1.0",
+    "description": "Every call is one QUIC bi-stream: frame 0 the fence (schemas/node-rpc/fence.schema.json), frame 1 the context and this JSON-RPC 2.0 request (invocation.schema.json). The fence's op code names the family a method belongs to; the op ledger (x-op-ledger) is the one registry of codes, owners and methods. Named params only. Every refusal names the receiver and the refused field."
+  },
+  "methods": [
+    {
+      "name": "core.echo",
+      "summary": "Round-trip a payload; the liveness probe behind every fence check.",
+      "x-op": 17,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "payload",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "maxLength": 87384
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "payload"
+          ],
+          "properties": {
+            "payload": {
+              "type": "string",
+              "contentEncoding": "base64"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "core.forward",
+      "summary": "Carry one invocation to an exact final target this carrier can reach; the inner fence and body travel verbatim and the target's reply comes back verbatim.",
+      "x-op": 26,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/NodeId"
+          }
+        },
+        {
+          "name": "inner_fence",
+          "required": true,
+          "schema": {
+            "$ref": "fence.schema.json"
+          }
+        },
+        {
+          "name": "inner",
+          "required": true,
+          "schema": {
+            "$ref": "invocation.schema.json"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "relayed"
+              ],
+              "properties": {
+                "relayed": {
+                  "$ref": "invocation.schema.json#/$defs/response"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "outcome"
+              ],
+              "properties": {
+                "outcome": {
+                  "type": "string",
+                  "enum": [
+                    "inner-not-sent",
+                    "inner-indeterminate",
+                    "not-forwardable",
+                    "peer-unresolved",
+                    "not-ready",
+                    "busy",
+                    "draining"
+                  ]
+                }
+              },
+              "additionalProperties": true
+            }
+          ]
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "rdm.status.declare_node_state",
+      "summary": "A birth declares its own lifecycle state to its authority (its mesh's primary).",
+      "x-op": 27,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "subject",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/NodeId"
+          }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/NodeState"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StatusOutcome"
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "rdm.status.declare_mesh_state",
+      "summary": "A mesh's current primary declares its Mesh's state to the fabric-primary.",
+      "x-op": 27,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "mesh_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/MeshId"
+          }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/MeshState"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StatusOutcome"
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "rdm.status.apply_mesh_state",
+      "summary": "The fabric-primary applies a Mesh state at that mesh's bootstrap admin.",
+      "x-op": 27,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "mesh_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/MeshId"
+          }
+        },
+        {
+          "name": "mesh_name",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/MeshState"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StatusOutcome"
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "rdm.status.apply_fabric_event",
+      "summary": "The fabric-primary applies a Fabric event at a mesh primary.",
+      "x-op": 27,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "fabric_id",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/FabricId"
+          }
+        },
+        {
+          "name": "event",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/FabricEvent"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/StatusOutcome"
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.proof_store.get",
+      "summary": "Testkit KV oracle: read a key.",
+      "x-op": 112,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "value",
+                "absent",
+                "store-failed"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.proof_store.put",
+      "summary": "Testkit KV oracle: write a key.",
+      "x-op": 112,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "value",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "contentEncoding": "base64",
+            "maxLength": 87384
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "stored",
+                "too-large",
+                "store-failed"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.proof_store.delete",
+      "summary": "Testkit KV oracle: delete a key.",
+      "x-op": 112,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "deleted",
+                "absent",
+                "store-failed"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.proof_store.compare_and_swap",
+      "summary": "Testkit KV oracle: swap when the current value is the expected one.",
+      "x-op": 112,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "key",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        {
+          "name": "expected",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "new",
+          "required": true,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "swapped",
+                "mismatch",
+                "too-large",
+                "store-failed"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.resolve_probe.resolve",
+      "summary": "Ask a node what its resolver holds for a target.",
+      "x-op": 113,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "target",
+          "required": true,
+          "schema": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "node_id"
+                ],
+                "properties": {
+                  "node_id": {
+                    "$ref": "#/components/schemas/NodeId"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "path"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "found",
+                "gone",
+                "unknown",
+                "unavailable",
+                "bad-target"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    },
+    {
+      "name": "testkit.declare_probe.declare",
+      "summary": "Make a node declare a state to a target on the probe's behalf.",
+      "x-op": 114,
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "to",
+          "required": true,
+          "schema": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "state",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/NodeState"
+          }
+        },
+        {
+          "name": "subject",
+          "required": true,
+          "schema": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NodeId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "type": "object",
+          "required": [
+            "outcome"
+          ],
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "enum": [
+                "answered",
+                "bad-target"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "errors": [
+        {
+          "code": -32025,
+          "message": "stale target"
+        },
+        {
+          "code": -32026,
+          "message": "unknown port"
+        },
+        {
+          "code": -32027,
+          "message": "unserved op"
+        },
+        {
+          "code": -32028,
+          "message": "method not under op"
+        }
+      ]
+    }
+  ],
+  "components": {
+    "schemas": {
+      "NodeId": {
+        "type": "string",
+        "pattern": "^[0-9a-hjkmnp-tv-z]{12}$",
+        "description": "minted node id, 12 lowercase Crockford characters"
+      },
+      "MeshId": {
+        "type": "string",
+        "pattern": "^[0-9a-hjkmnp-tv-z]{12}$"
+      },
+      "FabricId": {
+        "type": "string",
+        "pattern": "^[0-9a-hjkmnp-tv-z]{12}$"
+      },
+      "NodeState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "ready-for-traffic",
+          "draining",
+          "leaving"
+        ]
+      },
+      "MeshState": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "ready-for-traffic",
+          "draining",
+          "retired"
+        ]
+      },
+      "FabricEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "event"
+            ],
+            "properties": {
+              "event": {
+                "const": "ready-for-traffic"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "event",
+              "initiated_by"
+            ],
+            "properties": {
+              "event": {
+                "const": "shutdown-initiated"
+              },
+              "initiated_by": {
+                "$ref": "#/components/schemas/NodeId"
+              }
+            }
+          }
+        ]
+      },
+      "StatusOutcome": {
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "already-applied",
+              "rejected-stale-birth",
+              "rejected-not-authority",
+              "rejected-invalid-transition",
+              "peer-unresolved",
+              "not-ready",
+              "busy",
+              "draining",
+              "unauthorized"
+            ]
+          },
+          "held": {
+            "type": "string",
+            "description": "rejected-stale-birth: what the receiver holds"
+          },
+          "why": {
+            "type": "string",
+            "enum": [
+              "receiver-not-primary",
+              "sender-not-subject",
+              "subject-unknown"
+            ]
+          },
+          "needed": {
+            "type": "string"
+          },
+          "sender": {
+            "$ref": "#/components/schemas/NodeId"
+          },
+          "current": {
+            "type": "string",
+            "description": "rejected-invalid-transition: the state held"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "x-op-ledger": {
+    "description": "The one registry of op codes. A code names a family and its owner; methods register under a code; the fence carries the code and the body the method name. Core = exactly echo and forward. 0x70-0x7F is the testkit range. Retired codes are never reissued.",
+    "rows": [
+      {
+        "op": 17,
+        "hex": "0x11",
+        "family": "echo",
+        "owner": "core",
+        "state": "live",
+        "methods": [
+          "core.echo"
+        ]
+      },
+      {
+        "op": 26,
+        "hex": "0x1A",
+        "family": "forward",
+        "owner": "core",
+        "state": "live",
+        "methods": [
+          "core.forward"
+        ]
+      },
+      {
+        "op": 27,
+        "hex": "0x1B",
+        "family": "status",
+        "owner": "rdm",
+        "state": "live",
+        "methods": [
+          "rdm.status.declare_node_state",
+          "rdm.status.declare_mesh_state",
+          "rdm.status.apply_mesh_state",
+          "rdm.status.apply_fabric_event"
+        ]
+      },
+      {
+        "op": 16,
+        "hex": "0x10",
+        "family": "legacy-control",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 18,
+        "hex": "0x12",
+        "family": "data-frame",
+        "owner": "rafka",
+        "state": "transitional",
+        "plane": "data",
+        "encoding": "binary",
+        "methods": []
+      },
+      {
+        "op": 19,
+        "hex": "0x13",
+        "family": "snapshot",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 20,
+        "hex": "0x14",
+        "family": "control",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 21,
+        "hex": "0x15",
+        "family": "credential-resolve",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 22,
+        "hex": "0x16",
+        "family": "layout-reprovision",
+        "owner": "rafka",
+        "state": "retired",
+        "methods": []
+      },
+      {
+        "op": 23,
+        "hex": "0x17",
+        "family": "forward-write",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 24,
+        "hex": "0x18",
+        "family": "forward-read",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 25,
+        "hex": "0x19",
+        "family": "peer-tickle",
+        "owner": "rafka",
+        "state": "transitional",
+        "methods": []
+      },
+      {
+        "op": 112,
+        "hex": "0x70",
+        "family": "proof-store",
+        "owner": "testkit",
+        "state": "live",
+        "methods": [
+          "testkit.proof_store.get",
+          "testkit.proof_store.put",
+          "testkit.proof_store.delete",
+          "testkit.proof_store.compare_and_swap"
+        ]
+      },
+      {
+        "op": 113,
+        "hex": "0x71",
+        "family": "resolve-probe",
+        "owner": "testkit",
+        "state": "live",
+        "methods": [
+          "testkit.resolve_probe.resolve"
+        ]
+      },
+      {
+        "op": 114,
+        "hex": "0x72",
+        "family": "declare-probe",
+        "owner": "testkit",
+        "state": "live",
+        "methods": [
+          "testkit.declare_probe.declare"
+        ]
+      }
+    ]
+  }
+}
