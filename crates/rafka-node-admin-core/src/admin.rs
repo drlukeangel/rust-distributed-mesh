@@ -282,8 +282,10 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         }
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
+        // The birth's own published runtime fact names its deployment, whichever admin launched it.
+        n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
         if let Some(r) = recorded.get(&name).filter(|r| r.incarnation_id == n.incarnation_id) {
-            n.deployment_id = r.deployment_id.clone();
+            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
             n.data_dir = r.data_dir.clone();
         }
         // One birth per path: the newest digest wins over a superseded one.
