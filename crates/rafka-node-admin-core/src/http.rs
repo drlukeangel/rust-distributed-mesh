@@ -34,6 +34,10 @@ pub struct ControlPlane {
     /// This admin's path.name: topology is accepted only while it is the fabric-primary.
     pub me: PathName,
     pub topology: Arc<RwLock<Topology>>,
+    /// Why the view lacks a name right now: what the digest book, the removed set and the
+    /// records hold for it (set once by the admin that owns them). An unknown-node refusal from
+    /// the live view carries it, so the refusal names the exclusion instead of hiding it.
+    pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
@@ -59,6 +63,7 @@ impl ControlPlane {
             build_submitted: Arc::new(Notify::new()),
             shutdown: Arc::new(Notify::new()),
             fabric_shutdown: std::sync::OnceLock::new(),
+            absence: std::sync::OnceLock::new(),
         }
     }
 
@@ -140,7 +145,15 @@ impl ControlPlane {
         }
         let from_incarnation = {
             let t = self.topology.read().await;
-            let n = t.node(&path).ok_or_else(|| Refusal::Reject(BuildReject::UnknownNode { node: path.to_string() }))?;
+            let Some(n) = t.node(&path) else {
+                let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
+                let reject = BuildReject::UnknownNode { node: path.to_string() };
+                drop(t);
+                drop(_g);
+                tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject, view = %why)
+                    .in_scope(|| tracing::info!(%reject, %why, "build refused: the live view lacks the node"));
+                return Err(Refusal::Reject(reject));
+            };
             if !n.status.is_live() {
                 return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
             }

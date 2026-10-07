@@ -235,6 +235,47 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     project_at(fabric, fabric_id, provider, book, records, std::time::Instant::now())
 }
 
+/// Why [`project`] lacks `name` right now, from the same inputs: every digest the book holds for
+/// the name (incarnation, status, unheard age, predecessor, forwarded, departed, routable), the
+/// removed set's entries for it, and the records' entry. The text of an unknown-node refusal from
+/// the live view, so the exclusion is named where it happens.
+pub fn describe_absence(book: &DigestBook, records: &Records, name: &PathName) -> String {
+    let now = std::time::Instant::now();
+    let digests: Vec<String> = book
+        .all()
+        .into_iter()
+        .filter(|d| &d.node.name == name)
+        .map(|d| {
+            let age = book.get_at(d.node.node_id.as_str(), now).map(|(_, a)| a.as_millis() as u64).unwrap_or(0);
+            format!(
+                "digest{{incarnation {}, status {:?}, unheard {} ms, supersedes {}, departed {}, routable {}, floor {} ms}}",
+                d.node.incarnation.0,
+                d.status,
+                age,
+                d.node.supersedes.as_ref().map(|s| s.0.clone()).unwrap_or_else(|| "none".into()),
+                book.is_departed(d.node.node_id.as_str()),
+                book.routable(d.node.node_id.as_str()),
+                book.staleness_floor().as_millis()
+            )
+        })
+        .collect();
+    let removed: Vec<String> = records
+        .removed
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(n, _)| n == name)
+        .map(|(_, inc)| inc.as_ref().map(|i| i.0.clone()).unwrap_or_else(|| "none".into()))
+        .collect();
+    let recorded = records.nodes.lock().unwrap().get(name).map(|n| format!("incarnation {}, status {:?}", n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_else(|| "none".into()), n.status));
+    format!(
+        "book: [{}]; removed: [{}]; records: {}",
+        if digests.is_empty() { "no digest for the name".to_string() } else { digests.join(", ") },
+        removed.join(", "),
+        recorded.unwrap_or_else(|| "none".into())
+    )
+}
+
 /// [`project`] as of `now`.
 pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book: &DigestBook, records: &Records, now: std::time::Instant) -> Topology {
     let removed = records.removed.lock().unwrap().clone();
@@ -1555,6 +1596,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let book = membership.book.clone();
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(node_rpc_resolver.clone(), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
     let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
+    {
+        let (book, records) = (book.clone(), records.clone());
+        let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
+    }
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
