@@ -8,6 +8,10 @@
 //! ```text
 //! Applied | AlreadyApplied          done
 //! RejectedNotAuthority             the seat moved or the view is early: resolve again next round
+//!
+//! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
+//! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
+//! new holder owes it from its own view.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
 //! NotSent | Indeterminate | other  retry the same declaration next round (never a negative state)
@@ -89,6 +93,7 @@ impl Declarer {
     /// view names this admin, the declaration goes through this admin's own door (`authority`),
     /// decided exactly as a peer's would be; no seat is assumed.
     pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>) {
+        self.withdraw_unowned(me, view);
         // A key answered by an authority the view no longer names is owed to the current one.
         {
             let mut done = self.done.lock().unwrap();
@@ -170,6 +175,35 @@ impl Declarer {
         }
     }
 
+    /// Withdraw every key whose owing seat the view no longer gives this admin: a Mesh key once
+    /// it is not its Mesh's admin primary, a fabric event once it is not the fabric-primary. A
+    /// key withdrawn is forgotten whole, so holding the seat again owes it afresh. A view that
+    /// names no holder of the seat withdraws nothing: the seat is unknown, not moved.
+    pub fn withdraw_unowned(&self, me: &PathName, view: &Topology) {
+        let holder = |key: &Key| match key {
+            Key::OwnState(..) => None,
+            Key::Mesh(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
+            Key::FabricEventAt(..) => Some(view.fabric_primary()),
+        };
+        let lost: Vec<(Key, String)> = self
+            .requests
+            .lock()
+            .unwrap()
+            .keys()
+            .filter_map(|k| match holder(k) {
+                Some(Some(n)) if &n.name != me => Some((k.clone(), n.name.to_string())),
+                _ => None,
+            })
+            .collect();
+        for (key, held_by) in lost {
+            self.requests.lock().unwrap().remove(&key);
+            self.done.lock().unwrap().remove(&key);
+            self.pending.lock().unwrap().remove(&key);
+            tracing::info_span!("rafka.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
+                .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
+        }
+    }
+
     fn note(&self, key: &Key, add: u32, last: &str) {
         if let Some(p) = self.pending.lock().unwrap().get_mut(key) {
             p.attempts += add;
@@ -213,5 +247,81 @@ pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_rea
                 StatusRequest::ApplyFabricEvent { fabric_id: view.fabric.id.to_string(), event: FabricEvent::ReadyForTraffic },
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::*;
+
+    fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = NodeStatus::ReadyForTraffic;
+        n.is_primary = primary;
+        n.is_fabric_primary = fabric_primary;
+        n
+    }
+
+    fn view(mesh_primary: &str, fabric_primary: &str) -> Topology {
+        let names = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.admin.1"];
+        Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: names.iter().map(|n| node(n, *n == mesh_primary || *n == "mesh2.admin.1", *n == fabric_primary)).collect(),
+        }
+    }
+
+    fn owe_all(d: &Declarer) {
+        d.owe(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareNodeState { node_id: "n".into(), incarnation: "inc".into(), state: NodeState::ReadyForTraffic });
+        d.owe(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: "m1".into(), state: MeshState::ReadyForTraffic });
+        d.owe(Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), Authority::MeshPrimaryOf("mesh2".into()), StatusRequest::ApplyFabricEvent { fabric_id: "f".into(), event: FabricEvent::ReadyForTraffic });
+    }
+
+    #[test]
+    fn a_former_mesh_primary_withdraws_its_mesh_declaration() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        d.withdraw_unowned(&me, &view("mesh1.admin.1", "mesh1.admin.1"));
+        assert_eq!(d.owed(), 3, "every seat is still this admin's");
+
+        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh1.admin.1"));
+        let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
+        assert_eq!(left, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "the Mesh key is the new mesh primary's");
+
+        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh2.admin.1"));
+        let left: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
+        assert_eq!(left, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "the fabric event is the new fabric-primary's; its own birth stays owed");
+    }
+
+    #[test]
+    fn a_withdrawn_key_is_owed_afresh_when_the_seat_returns() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), ("applied".into(), NodeId::mint()));
+        d.pending.lock().unwrap().remove(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic));
+        d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh1.admin.1"));
+        assert_eq!(d.answered(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic)), None, "forgotten whole");
+        owe_all(&d);
+        assert!(d.pending.lock().unwrap().contains_key(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic)), "owed again once the seat is back");
+    }
+
+    #[test]
+    fn a_view_naming_no_holder_withdraws_nothing() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        let mut v = view("mesh1.admin.1", "mesh1.admin.1");
+        for n in &mut v.nodes {
+            n.is_primary = false;
+            n.is_fabric_primary = false;
+        }
+        d.withdraw_unowned(&me, &v);
+        assert_eq!(d.owed(), 3);
     }
 }
