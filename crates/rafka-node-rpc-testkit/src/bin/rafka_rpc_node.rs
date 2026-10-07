@@ -16,7 +16,7 @@ async fn main() {
         }
     };
     let boot = tracing::info_span!(
-        "rafka.mesh.node.create.via-deployment",
+        "rdm.mesh.node.create.via-deployment",
         node = %launch.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
@@ -57,7 +57,7 @@ async fn main() {
     node::wait_for_signal("rafka-rpc-node").await;
     let deadline = node::drain_deadline_from_env();
     let drain = tracing::info_span!(
-        "rafka.mesh.node.update.via-drain",
+        "rdm.mesh.node.update.via-drain",
         node = %launch.name,
         incarnation_id = %launch.incarnation,
         deadline_ms = deadline.as_millis() as u64,
@@ -69,7 +69,7 @@ async fn main() {
     };
     drain.record("in_flight_at_deadline", left);
     drop(drain);
-    tracing::info_span!("rafka.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation)
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation)
         .in_scope(|| tracing::info!("stopping"));
     running.stop(node::leave_linger_from_env()).await;
 }

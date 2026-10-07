@@ -103,7 +103,7 @@ impl StreamOut {
             Ok(StreamEnd::Final { kind, payload }) if payload.len() > g.max => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
                 let _ = send.reset(code(ResetCode::ProtocolViolation));
-                tracing::info_span!("rafka.node_rpc.stream.reject.via-protocol-violation", reason = "final frame over the reply limit", ?kind)
+                tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = "final frame over the reply limit", ?kind)
                     .in_scope(|| tracing::info!("424"));
             }
             Ok(StreamEnd::Final { kind, payload }) => match final_frame(&mut g.order, kind) {
@@ -111,7 +111,7 @@ impl StreamOut {
                     let _ = send.write_all(&encode_frame(&payload)).await;
                     let _ = send.finish();
                     tracing::info_span!(
-                        "rafka.node_rpc.stream.serve.via-terminal",
+                        "rdm.node_rpc.stream.serve.via-terminal",
                         frames = frames + 1,
                         bytes,
                         caller_cancelled = gone.is_some(),
@@ -122,20 +122,20 @@ impl StreamOut {
                 Err(reason) => {
                     stats.violations.fetch_add(1, Ordering::SeqCst);
                     let _ = send.reset(code(ResetCode::ProtocolViolation));
-                    tracing::info_span!("rafka.node_rpc.stream.reject.via-protocol-violation", reason = %reason)
+                    tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = %reason)
                         .in_scope(|| tracing::info!("424"));
                 }
             },
             Ok(StreamEnd::Fault(fault)) => {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
                 let _ = send.reset(code(ResetCode::InternalRpcFailure));
-                tracing::info_span!("rafka.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
                     .in_scope(|| tracing::info!("423"));
             }
             Err(_panic) => {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
                 let _ = send.reset(code(ResetCode::InternalRpcFailure));
-                tracing::info_span!("rafka.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
                     .in_scope(|| tracing::info!("423"));
             }
         }
@@ -236,7 +236,7 @@ where
                 }
             };
             let span = tracing::info_span!(
-                "rafka.node_rpc.stream.serve.via-direct",
+                "rdm.node_rpc.stream.serve.via-direct",
                 protocol = P::NAME,
                 op = P::OP,
                 peer = %peer.endpoint_id,

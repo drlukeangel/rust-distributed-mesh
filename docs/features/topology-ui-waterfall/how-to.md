@@ -45,4 +45,4 @@ curl -s "http://localhost:19090/api/heartbeat?service=gateway"
 http://localhost:16686/search?service=topology-ui&lookback=15m
 ```
 
-Every browser request fires `rafka.ui.http.request`; every Jaeger query fires `rafka.ui.jaeger.query`.
+Every browser request fires `rdm.ui.http.request`; every Jaeger query fires `rdm.ui.jaeger.query`.

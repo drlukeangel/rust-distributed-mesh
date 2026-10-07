@@ -15,7 +15,7 @@ ps  # or PowerShell Get-Process rafka-*
 
 ### Mode 2 — Browser shows "no boot trace found for X"
 
-**Cause:** The chosen node hasn't booted recently (no `rafka.mesh.node.ready` trace in 10m lookback).
+**Cause:** The chosen node hasn't booted recently (no `rdm.mesh.node.ready` trace in 10m lookback).
 
 **Recovery:** Restart that node, or via CLI:
 ```bash

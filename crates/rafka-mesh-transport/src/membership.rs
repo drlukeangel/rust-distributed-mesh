@@ -265,7 +265,7 @@ impl Channel {
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
-        tracing::info_span!("rafka.mesh.membership.update.via-subscribe", node, channel, fabric, peers = peers.len())
+        tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node, channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, mut receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
@@ -298,7 +298,7 @@ impl Channel {
                 };
                 neighbors.lock().unwrap().clear();
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
-                let span = tracing::info_span!("rafka.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
+                let span = tracing::info_span!("rdm.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
                 let reopened = match gossip.subscribe(topic, peers).await {
                     Ok(t) => t,
@@ -372,7 +372,7 @@ impl Channel {
                 }
                 let sender = me.sender.read().await.clone();
                 let joined = sender.join_peers(peers.clone()).await.is_ok();
-                tracing::info_span!("rafka.mesh.connection.update.via-refeed", node = %node, channel = %channel, peers = peers.len(), joined)
+                tracing::info_span!("rdm.mesh.connection.update.via-refeed", node = %node, channel = %channel, peers = peers.len(), joined)
                     .in_scope(|| tracing::info!("no neighbour: every known peer handed to the channel again"));
                 alone_since = Some(Instant::now());
             }
@@ -523,17 +523,17 @@ impl Membership {
                 heard_others |= others > 0;
                 let off = heard_others && others == 0;
                 if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
-                    tracing::info_span!("rafka.mesh.membership.update.via-cut-off", node = %node, role)
+                    tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role)
                         .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
                 }
                 let now: BTreeSet<String> = current.into_iter().map(|d| d.node.name.mesh).collect();
                 for m in now.difference(&held) {
                     let v = via.lock().unwrap().get(m).copied().unwrap_or("mesh-channel");
-                    tracing::info_span!("rafka.mesh.membership.update.via-mesh-learned", node = %node, mesh = %m, via = v)
+                    tracing::info_span!("rdm.mesh.membership.update.via-mesh-learned", node = %node, mesh = %m, via = v)
                         .in_scope(|| tracing::info!("this node holds the mesh"));
                 }
                 for m in held.difference(&now) {
-                    tracing::info_span!("rafka.mesh.membership.update.via-mesh-silent", node = %node, mesh = %m)
+                    tracing::info_span!("rdm.mesh.membership.update.via-mesh-silent", node = %node, mesh = %m)
                         .in_scope(|| tracing::info!("no member of the mesh is heard"));
                     via.lock().unwrap().remove(m);
                 }
@@ -706,11 +706,11 @@ impl Backbone {
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         if let Some(role) = Self::role(&self.publishing, primary) {
-            tracing::info_span!("rafka.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
+            tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh aggregate publication"));
         }
         if let Some(role) = Self::role(&self.forwarding, primary) {
-            tracing::info_span!("rafka.mesh.backbone.update.via-forwarder", node = %self.node, mesh = %self.mesh, role)
+            tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
         }
     }
@@ -718,7 +718,7 @@ impl Backbone {
     /// Be (or stop being) the fabric-status publisher: the fabric primary.
     pub fn set_fabric_primary(&self, primary: bool) {
         if let Some(role) = Self::role(&self.status_publishing, primary) {
-            tracing::info_span!("rafka.mesh.fabric.update.via-status-publisher", node = %self.node, fabric = %self.fabric, role)
+            tracing::info_span!("rdm.mesh.fabric.update.via-status-publisher", node = %self.node, fabric = %self.fabric, role)
                 .in_scope(|| tracing::info!("fabric status publication"));
         }
     }
@@ -770,7 +770,7 @@ impl Backbone {
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) {
         if let Ok(n) = self.channel.join_peers(admins).await {
             if n > 0 {
-                tracing::info_span!("rafka.mesh.connection.update.via-backbone-peers-joined", node = %self.node, peers = n)
+                tracing::info_span!("rdm.mesh.connection.update.via-backbone-peers-joined", node = %self.node, peers = n)
                     .in_scope(|| tracing::info!("backbone peers joined"));
             }
         }
@@ -854,7 +854,7 @@ impl Default for DigestBook {
 /// Why a digest was not taken.
 fn reject_departed(d: &MeshDigest, via: &'static str) {
     tracing::info_span!(
-        "rafka.mesh.membership.reject.via-departed-birth",
+        "rdm.mesh.membership.reject.via-departed-birth",
         node = %d.node.name,
         node_id = %d.node.node_id,
         incarnation_id = %d.node.incarnation.0,
@@ -885,7 +885,7 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
         && held.node.runtime != d.node.runtime;
     if changed {
         tracing::info_span!(
-            "rafka.mesh.runtime.reject.via-locator-changed",
+            "rdm.mesh.runtime.reject.via-locator-changed",
             node = %d.node.name,
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.0,
@@ -967,7 +967,7 @@ impl DigestBook {
         self.in_flight.lock().unwrap().remove(&op.key());
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
-            "rafka.mesh.membership.remove.via-node-deleted",
+            "rdm.mesh.membership.remove.via-node-deleted",
             node = %op.name,
             node_id = %op.node_id,
             incarnation_id = %op.incarnation.0,
@@ -991,7 +991,7 @@ impl DigestBook {
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
             tracing::info_span!(
-                "rafka.mesh.membership.update.via-node-deleting",
+                "rdm.mesh.membership.update.via-node-deleting",
                 node = %op.name,
                 node_id = %op.node_id,
                 build_id = %op.build_id,

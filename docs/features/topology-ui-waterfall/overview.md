@@ -1,6 +1,6 @@
 # topology-ui-waterfall — overview
 
-> **Source:** Operator UI feature. The boot-waterfall slice of the topology UI; renders any node's `rafka.mesh.node.ready` trace as a horizontal cascade.
+> **Source:** Operator UI feature. The boot-waterfall slice of the topology UI; renders any node's `rdm.mesh.node.ready` trace as a horizontal cascade.
 
 ## What it is
 
@@ -13,7 +13,7 @@ Per D-008: vanilla HTML+CSS+JS only. No React/Vue/Svelte/transpilation. Inline `
 `topology-ui/src/main.rs` axum server:
 - `GET /` → static HTML (inline const)
 - `GET /api/nodes` → proxies Jaeger `/api/services`, filters to `{gateway, broker, compute, registry}`
-- `GET /api/boot-trace?service=X` → proxies Jaeger `/api/traces?service=X&operation=rafka.mesh.node.ready&limit=1`
+- `GET /api/boot-trace?service=X` → proxies Jaeger `/api/traces?service=X&operation=rdm.mesh.node.ready&limit=1`
 - `GET /api/heartbeat?service=X` → proxies Jaeger heartbeat query, returns latest peer_count + age
 - `GET /api/health` → trivial `{"status":"ok"}` for monitoring
 
@@ -24,19 +24,19 @@ Frontend JS:
 
 ## Locked spans
 
-- `rafka.ui.http.request{method, path, otel.kind="server"}` — every inbound HTTP request, set_parent from W3C traceparent if present
-- `rafka.ui.jaeger.query{endpoint, service, otel.kind="client"}` — every outbound Jaeger call
+- `rdm.ui.http.request{method, path, otel.kind="server"}` — every inbound HTTP request, set_parent from W3C traceparent if present
+- `rdm.ui.jaeger.query{endpoint, service, otel.kind="client"}` — every outbound Jaeger call
 
 ## Color palette (per phase prefix)
 
 | Phase | Color |
 |---|---|
-| `rafka.mesh.node.ready` | dark blue (root) |
-| `rafka.mesh.boot.identity_*` | green |
-| `rafka.mesh.boot.endpoint_created` | amber |
-| `rafka.mesh.boot.alpn_registered` | purple |
-| `rafka.mesh.boot.gossip_started` | teal |
-| `rafka.mesh.boot.accept_loop_started` | red |
+| `rdm.mesh.node.ready` | dark blue (root) |
+| `rdm.mesh.boot.identity_*` | green |
+| `rdm.mesh.boot.endpoint_created` | amber |
+| `rdm.mesh.boot.alpn_registered` | purple |
+| `rdm.mesh.boot.gossip_started` | teal |
+| `rdm.mesh.boot.accept_loop_started` | red |
 
 ## Invariants
 

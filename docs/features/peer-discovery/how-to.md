@@ -28,7 +28,7 @@ RAFKA_SEED_NODES=<broker_hex>@127.0.0.1:14820 rafka-gateway
 ## View pairwise handshakes in Jaeger
 
 ```
-http://localhost:16686/search?service=gateway&operation=rafka.mesh.peer.connected&lookback=15m
+http://localhost:16686/search?service=gateway&operation=rdm.mesh.peer.connected&lookback=15m
 ```
 
 Each trace's `peer_id` tag identifies the counterpart. For an N-node mesh: N×(N-1)/2 pairs, 2 spans per pair (one inbound, one outbound).
@@ -37,11 +37,11 @@ Each trace's `peer_id` tag identifies the counterpart. For an N-node mesh: N×(N
 
 ```bash
 rfa mesh node remove <name>
-# survivors emit rafka.mesh.peer.disconnected within ~30s (QUIC idle timeout)
+# survivors emit rdm.mesh.peer.disconnected within ~30s (QUIC idle timeout)
 ```
 
 ```
-http://localhost:16686/search?service=broker&operation=rafka.mesh.peer.disconnected&lookback=15m
+http://localhost:16686/search?service=broker&operation=rdm.mesh.peer.disconnected&lookback=15m
 ```
 
 The disconnect span's `reason` tag is the iroh `Connection::closed()` reason (e.g., `timed_out`, `application_closed`).

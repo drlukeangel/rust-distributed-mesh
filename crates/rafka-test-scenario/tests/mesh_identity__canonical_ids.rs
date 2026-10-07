@@ -90,7 +90,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // Evidence: each birth's ready span names the ids the views show.
     let spans = estate.spans();
     for n in &nodes {
-        let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == n["name"] && sp["attributes"]["incarnation_id"] == n["incarnation_id"])
             .unwrap_or_else(|| panic!("{} reports ready", n["name"]));
@@ -113,7 +113,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     let spans = estate.spans();
-    let reborn = named(&spans, "rafka.mesh.node.update.via-ready")
+    let reborn = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
         .expect("the restarted birth reports ready");
@@ -134,7 +134,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     let restart_build = s(&again["build_id"]);
     wait_for("each restart ran DeployRuntime itself, none reused", Duration::from_secs(30), || async {
-        let ran = named(&estate.spans(), "rafka.node_admin.deployment.update.via-step")
+        let ran = named(&estate.spans(), "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .filter(|sp| {
                 let at = &sp["attributes"];

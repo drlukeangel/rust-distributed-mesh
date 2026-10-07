@@ -254,7 +254,7 @@ async fn main() {
             std::process::exit(2);
         }
     };
-    let span = tracing::info_span!("rafka.node_rpc.proof_store.resolve.via-probe", op = %args.op, target = %args.target);
+    let span = tracing::info_span!("rdm.node_rpc.proof_store.resolve.via-probe", op = %args.op, target = %args.target);
     let out = {
         use tracing::Instrument;
         run(args).instrument(span).await

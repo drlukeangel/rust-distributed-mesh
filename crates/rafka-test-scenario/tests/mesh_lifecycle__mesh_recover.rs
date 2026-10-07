@@ -138,8 +138,8 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     estate.artifact("nodes.json", &json!(after));
     estate.stop().await;
     let spans = estate.spans();
-    let accepted = named(&spans, "rafka.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).unwrap().clone();
-    let takeover = named(&spans, "rafka.node_admin.build.update.via-reconcile")
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == b.as_str()).unwrap().clone();
+    let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|r| {
             let a = &r["attributes"];
@@ -151,7 +151,7 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     // Each recovered admin held every surviving member's runtime before it
     // committed Ready (i143.e4.s16): mesh2's five births at least.
     for admin in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin") {
-        let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == admin["name"] && sp["attributes"]["incarnation_id"] == admin["incarnation_id"])
             .unwrap_or_else(|| panic!("{} reports ready", admin["name"]))

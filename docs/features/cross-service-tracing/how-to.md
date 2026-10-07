@@ -10,7 +10,7 @@ rfa mesh node add --type broker
 ## Inspect the unified trace
 
 ```bash
-TID=$(curl -s "http://localhost:16686/api/traces?service=rfa&operation=rafka.cli.command&limit=1&lookback=1m" | python -c "import sys,json; print(json.load(sys.stdin)['data'][0]['traceID'])")
+TID=$(curl -s "http://localhost:16686/api/traces?service=rfa&operation=rdm.cli.command&limit=1&lookback=1m" | python -c "import sys,json; print(json.load(sys.stdin)['data'][0]['traceID'])")
 echo "trace: http://localhost:16686/trace/$TID"
 
 # count spans + services in the trace

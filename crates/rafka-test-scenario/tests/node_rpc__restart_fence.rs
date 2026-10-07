@@ -6,10 +6,10 @@
 //! 1. By `ExactNode` and by `CurrentPath`, the gateway reaches the broker: it served, nobody else.
 //! 2. The broker restarts (same NodeId, new incarnation, same transport address).
 //! 3. The next call through the gateway reaches the new birth: the gateway evicted the old
-//!    incarnation's connection (`rafka.node_rpc.connection.evict.via-incarnation-superseded`,
+//!    incarnation's connection (`rdm.node_rpc.connection.evict.via-incarnation-superseded`,
 //!    naming the old incarnation) and dialed the new one; the value written before the restart is
 //!    read back from the broker's own data dir. Every call was the gateway's one inner invocation
-//!    of exactly the broker (`rafka.node_rpc.request.serve.via-carried-inner`).
+//!    of exactly the broker (`rdm.node_rpc.request.serve.via-carried-inner`).
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as
 //! `RejectedStale`, never dispatched — is `crates/rafka-node-rpc/tests/pool.rs`.
 
@@ -72,12 +72,12 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let evicted = named(&spans, "rafka.node_rpc.connection.evict.via-incarnation-superseded")
+    let evicted = named(&spans, "rdm.node_rpc.connection.evict.via-incarnation-superseded")
         .into_iter()
         .find(|sp| sp["attributes"]["incarnation_id"] == old_birth.as_str())
         .cloned()
         .unwrap_or_else(|| panic!("the gateway never evicted the old birth {old_birth}"));
-    let carried: Vec<&Value> = named(&spans, "rafka.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| sp["attributes"]["target"] == broker_id.as_str()).collect();
+    let carried: Vec<&Value> = named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| sp["attributes"]["target"] == broker_id.as_str()).collect();
     assert_eq!(carried.len(), 3, "the gateway carried the three calls to the broker: {carried:?}");
     estate.record_trace_url(evicted["trace_id"].as_str().unwrap_or(""));
 }

@@ -157,7 +157,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     estate.stop().await;
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
-    let drift = named(&spans, "rafka.node_admin.build.update.via-proven-drift");
+    let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift");
     // 5: nothing while the stopped birth was only silent.
     assert!(drift.iter().all(|sp| at(sp) < quiet_from || at(sp) > quiet_until), "a silent, live birth opened a repair: {drift:?}");
     // 7: exactly one repair, of the accepted Build, as its next attempt.
@@ -167,21 +167,21 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!(d["attempt"], (attempts_before + 1).to_string());
     assert_eq!(d["scope"], "mesh1.rpc_node: 3 present of 4 accepted (exited: mesh1.rpc.2)");
     assert_eq!(d["reason"], "proven-drift");
-    let ran = named(&spans, "rafka.node_admin.build.update.via-reconcile");
+    let ran = named(&spans, "rdm.node_admin.build.update.via-reconcile");
     let repaired = ran
         .iter()
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "proven-drift" && sp["attributes"]["outcome"] == "converged")
         .unwrap_or_else(|| panic!("the repair attempt of {r4} converged: {ran:?}"));
     assert_eq!(repaired["attributes"]["attempt"], (attempts_before + 1).to_string());
     assert!(
-        named(&spans, "rafka.node_admin.node.create.via-build").iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2"),
+        named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2"),
         "the repair created mesh1.rpc.2 under the same Build"
     );
     // 8: the restart ran as an attempt of the same Build.
     assert!(ran.iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "restart" && sp["attributes"]["outcome"] == "converged"), "{ran:?}");
     // 4 and 6: the pointer moved on every admin by the fabric control topic.
-    let moved = named(&spans, "rafka.node_admin.fabric.update.via-build-accepted");
+    let moved = named(&spans, "rdm.node_admin.fabric.update.via-build-accepted");
     assert!(moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["build_id"] == c.as_str()), "the late admin took the pointer: {moved:?}");
     assert!(moved.iter().any(|sp| sp["attributes"]["node"] == quiet_name.as_str() && sp["attributes"]["build_id"] == r4.as_str() && at(sp) > resumed_at), "{quiet_name} caught up after it resumed: {moved:?}");
-    assert!(named(&spans, "rafka.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
+    assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
 }

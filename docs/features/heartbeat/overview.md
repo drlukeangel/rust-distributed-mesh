@@ -4,7 +4,7 @@
 
 ## What it is
 
-Every node fires a `rafka.mesh.heartbeat` span every 5 seconds, carrying the current peer count read from the in-process `PeerRegistry`. Operators (and the topology-ui status panel) detect a dead/silent node when heartbeats stop arriving in Jaeger.
+Every node fires a `rdm.mesh.heartbeat` span every 5 seconds, carrying the current peer count read from the in-process `PeerRegistry`. Operators (and the topology-ui status panel) detect a dead/silent node when heartbeats stop arriving in Jaeger.
 
 ## How it works
 
@@ -12,13 +12,13 @@ Every node fires a `rafka.mesh.heartbeat` span every 5 seconds, carrying the cur
 
 1. Sleep on `tokio::time::interval(5s)`.
 2. `let peer_count = registry.len() as i64;` — read current peer count from the shared DashMap.
-3. Emit `info_span!("rafka.mesh.heartbeat", node_id, peer_count)` and an `info!("heartbeat")` log event in scope.
+3. Emit `info_span!("rdm.mesh.heartbeat", node_id, peer_count)` and an `info!("heartbeat")` log event in scope.
 
 **Critical:** the loop function is NOT `#[instrument]`-decorated. A wrapping span would never close (loop is infinite); OTel batch processor would hold child heartbeat spans waiting for the parent, dropping all but the first on shutdown. Each tick is its own root span instead.
 
 ## Locked spans (Principle #10)
 
-- `rafka.mesh.heartbeat{node_id, peer_count}` — fires every 5s, no other attributes
+- `rdm.mesh.heartbeat{node_id, peer_count}` — fires every 5s, no other attributes
 
 ## Invariants
 

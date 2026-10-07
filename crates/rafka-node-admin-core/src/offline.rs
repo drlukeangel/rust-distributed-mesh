@@ -98,7 +98,7 @@ impl OfflineTickle {
         self.first_seen.retain(|id, _| silent_ids.contains(id));
         self.offline.retain(|id| silent_ids.contains(id));
         for id in returned {
-            tracing::info_span!("rafka.node_admin.node.update.via-offline-returned", node_id = %id, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
             report.returned.push(id);
         }
@@ -130,7 +130,7 @@ impl OfflineTickle {
                 Ok(()) => {
                     self.hold_down.remove(&id);
                     self.settled.insert(id.clone());
-                    tracing::info_span!("rafka.node_admin.node.resolve.via-offline-tickle-answered", node_id = %id, path = %path, "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.node.resolve.via-offline-tickle-answered", node_id = %id, path = %path, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!(node_id = %id, "offline tickle answered — reachable-silent, recorded, no action"));
                     report.reachable_silent.push(id);
                 }
@@ -138,12 +138,12 @@ impl OfflineTickle {
                     ViaPeerVerdict::Answered { via } => {
                         self.hold_down.remove(&id);
                         self.settled.insert(id.clone());
-                        tracing::info_span!("rafka.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, "otel.kind" = "internal")
+                        tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!(node_id = %id, via = %via, error = %e, "offline tickle failed direct but answered via peer — unreachable from me, no record"));
                         report.reachable_silent.push(id);
                     }
                     ViaPeerVerdict::CandidatesUnreadable(reason) => {
-                        tracing::info_span!("rafka.node_admin.node.reject.via-peer-tickle-candidates-unreadable", node_id = %id, path = %path, reason = %reason, error = %e, "otel.kind" = "internal")
+                        tracing::info_span!("rdm.node_admin.node.reject.via-peer-tickle-candidates-unreadable", node_id = %id, path = %path, reason = %reason, error = %e, "otel.kind" = "internal")
                             .in_scope(|| tracing::warn!(node_id = %id, reason = %reason, error = %e, "via-peer candidates unreadable — no status change, hold-down left as it was"));
                     }
                     ViaPeerVerdict::NoPath { asked } => {
@@ -151,7 +151,7 @@ impl OfflineTickle {
                             self.settled.insert(id.clone());
                             self.offline.insert(id.clone());
                             tracing::info_span!(
-                                "rafka.node_admin.node.resolve.via-offline-tickle-failed",
+                                "rdm.node_admin.node.resolve.via-offline-tickle-failed",
                                 node_id = %id,
                                 path = %path,
                                 error = %e,
@@ -164,7 +164,7 @@ impl OfflineTickle {
                         } else {
                             self.hold_down.insert(id.clone(), now_ms);
                             let asked = asked.join(",");
-                            tracing::info_span!("rafka.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, "otel.kind" = "internal")
+                            tracing::info_span!("rdm.node_admin.node.update.via-offline-hold-down-opened", node_id = %id, path = %path, asked = %asked, "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!(node_id = %id, asked = %asked, "offline hold down opened after round 1 no path"));
                         }
                     }

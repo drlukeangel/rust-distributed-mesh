@@ -11,7 +11,7 @@
 //! drains its own Mesh the same way, waits until every Mesh holds no live runtime but its
 //! mesh-primary (gone from the view, not merely `Leaving`), stops the other mesh-primaries, and
 //! stops itself last. A runtime it cannot stop or that stays live past the bound is named
-//! (`rafka.node_admin.fabric.update.via-shutdown-incomplete`, and the progress `/api/fabric`
+//! (`rdm.node_admin.fabric.update.via-shutdown-incomplete`, and the progress `/api/fabric`
 //! shows); it is never inferred stopped.
 
 use crate::fabric_storage::{FabricShutdown, FabricStorage, FabricStorageError};
@@ -99,7 +99,7 @@ impl ShutdownControl {
     }
 
     fn incomplete(&self, node: &str, reason: String) {
-        tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown-incomplete", observer = %self.node, node, reason = %reason)
+        tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-incomplete", observer = %self.node, node, reason = %reason)
             .in_scope(|| tracing::info!("a runtime was not stopped"));
         if let Some(p) = self.progress.lock().unwrap().as_mut() {
             p.incomplete.push(Incomplete { node: node.to_string(), reason });
@@ -116,7 +116,7 @@ impl ShutdownControl {
         *self.progress.lock().unwrap() =
             Some(ShutdownProgress { initiated_by: held.initiated_by.clone(), phase: ShutdownPhase::Frozen, incomplete: Vec::new() });
         tracing::info_span!(
-            "rafka.node_admin.fabric.update.via-shutdown-learned",
+            "rdm.node_admin.fabric.update.via-shutdown-learned",
             node = %self.node,
             initiated_by = %held.initiated_by,
             via,
@@ -203,7 +203,7 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
     if !i_am_mesh_primary {
         return false;
     }
-    tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown-drain", node = %me, mesh = %me.mesh)
+    tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-drain", node = %me, mesh = %me.mesh)
         .in_scope(|| tracing::info!("freeze barrier holds: draining this mesh"));
     let (members, admins) = own_mesh_drain(&view, &me);
     for group in [members, admins] {

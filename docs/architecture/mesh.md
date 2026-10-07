@@ -106,7 +106,7 @@ So: heavy compute can't HOL-block control. Network saturation throttles everythi
 | postcard wire codec | ✅ | commit `24a19ee` |
 | **1-byte tag stream demux** | ⏳ Phase 1.2 | |
 | **Property-tested framer crate** | ⏳ Phase 1.1 | `rafka-mesh-ops::framer` |
-| **iroh-gossip wiring** | ⏳ Phase 1.3 | currently a misleading `rafka.mesh.boot.gossip_started` span over plain mdns |
+| **iroh-gossip wiring** | ⏳ Phase 1.3 | currently a misleading `rdm.mesh.boot.gossip_started` span over plain mdns |
 | Pointer Gossip pattern | ⏳ Phase 2 | needs `0x01` handler + payload cache |
 | Heavy compute data plane | ⏳ Phase 2+ | needs broker + WAL layers |
 | Backpressure tests (D-027) | ⏳ Phase 1.3 gate | 1000 msg/s sustained, 10k burst, slow-consumer isolation; merge-blocking |

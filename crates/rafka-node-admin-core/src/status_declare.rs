@@ -160,7 +160,7 @@ impl Declarer {
                 (o, f, "node-rpc")
             };
             tracing::info_span!(
-                "rafka.node_admin.status.update.via-declare",
+                "rdm.node_admin.status.update.via-declare",
                 node = %me,
                 key = ?p.key,
                 to = %target.name,
@@ -203,7 +203,7 @@ impl Declarer {
             self.requests.lock().unwrap().remove(&key);
             self.done.lock().unwrap().remove(&key);
             self.pending.lock().unwrap().remove(&key);
-            tracing::info_span!("rafka.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
+            tracing::info_span!("rdm.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
                 .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
         }
     }

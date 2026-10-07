@@ -480,7 +480,7 @@ impl LocalBuildLog for FileJournal {
         for f in facts {
             if log.is_new(f) {
                 if let Err(e) = self.append(&mut log, f.clone()) {
-                    tracing::info_span!("rafka.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
                         .in_scope(|| tracing::info!("a Build fact heard from the fabric could not be journaled"));
                 }
             }

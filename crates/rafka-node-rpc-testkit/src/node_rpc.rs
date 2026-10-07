@@ -59,7 +59,7 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
 pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     for op in book.departed() {
         if resolver.depart(&op.node_id, &op.incarnation, &op.name) == Applied::Departed {
-            tracing::info_span!("rafka.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
+            tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
@@ -68,9 +68,9 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
         let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {
             Applied::Unchanged | Applied::Departed => {}
-            Applied::Refused(r) => tracing::info_span!("rafka.node_rpc.node.reject.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)
+            Applied::Refused(r) => tracing::info_span!("rdm.node_rpc.node.reject.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)
                 .in_scope(|| tracing::info!("a held birth the resolver does not take")),
-            change => tracing::info_span!("rafka.node_rpc.node.update.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, change = ?change)
+            change => tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, change = ?change)
                 .in_scope(|| tracing::info!("the resolver holds the birth")),
         }
     }

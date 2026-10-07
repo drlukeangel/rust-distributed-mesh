@@ -66,7 +66,7 @@ impl ControlPlane {
     async fn authority(&self, route: &'static str) -> Result<(), Refusal> {
         let primary = self.topology.read().await.fabric_primary().map(|n| n.name.clone());
         if primary.as_ref() != Some(&self.me) {
-            tracing::info_span!("rafka.node_admin.build.reject.via-not-authority", route, node = %self.me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-authority", route, node = %self.me, fabric_primary = %primary.as_ref().map(|p| p.to_string()).unwrap_or_default())
                 .in_scope(|| tracing::info!("topology is changed only by the fabric-primary"));
             return Err(Refusal::NotAuthority(primary.map(|p| p.to_string())));
         }
@@ -88,7 +88,7 @@ impl ControlPlane {
     /// it, move `Fabric.build_id`, and broadcast both. One accepted topology, one Build in flight.
     pub async fn submit(&self, route: &'static str, change: TopologyChange) -> Result<BuildId, Refusal> {
         let span = tracing::info_span!(
-            "rafka.node_admin.build.create.via-rest",
+            "rdm.node_admin.build.create.via-rest",
             route,
             build_id = tracing::field::Empty,
             change = %serde_json::to_string(&change).unwrap_or_default(),
@@ -128,7 +128,7 @@ impl ControlPlane {
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<BuildId, Refusal> {
-        let span = tracing::info_span!("rafka.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
         let _g = span.enter();
         self.authority(route).await?;
         let current = self.current_settled().await?;
@@ -165,13 +165,13 @@ impl ControlPlane {
 }
 
 fn reject_span(route: &'static str, reject: &BuildReject) {
-    // One honest name per reason (PRD §16): rafka.node_admin.build.reject.via-<reason>.
+    // One honest name per reason (PRD §16): rdm.node_admin.build.reject.via-<reason>.
     macro_rules! emit {
         ($($reason:literal),*) => {
             match reject.reason() {
-                $( $reason => tracing::info_span!(concat!("rafka.node_admin.build.reject.via-", $reason), route, detail = %reject)
+                $( $reason => tracing::info_span!(concat!("rdm.node_admin.build.reject.via-", $reason), route, detail = %reject)
                     .in_scope(|| tracing::info!(%reject, "build refused")), )*
-                _ => tracing::info_span!("rafka.node_admin.build.reject.via-invalid-intent", route, detail = %reject)
+                _ => tracing::info_span!("rdm.node_admin.build.reject.via-invalid-intent", route, detail = %reject)
                     .in_scope(|| tracing::info!(%reject, "build refused")),
             }
         };
@@ -363,7 +363,7 @@ async fn shutdown(State(cp): State<Shared>) -> Response {
     };
     let primary = cp.topology.read().await.fabric_primary().map(|n| n.name.to_string());
     if primary.as_deref() != Some(seat.me.to_string().as_str()) {
-        tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-not-authority", node = %seat.me, fabric_primary = primary.as_deref().unwrap_or(""))
+        tracing::info_span!("rdm.node_admin.fabric.reject.via-shutdown-not-authority", node = %seat.me, fabric_primary = primary.as_deref().unwrap_or(""))
             .in_scope(|| tracing::info!("a fabric shutdown is begun only by the fabric-primary"));
         return (
             StatusCode::CONFLICT,
@@ -382,7 +382,7 @@ async fn shutdown(State(cp): State<Shared>) -> Response {
     };
     match seat.control.initiate(begun).await {
         Ok(held) => {
-            tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown", node = %seat.me, initiated_by = %held.initiated_by)
+            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown", node = %seat.me, initiated_by = %held.initiated_by)
                 .in_scope(|| tracing::info!("fabric shutdown begun"));
             (StatusCode::ACCEPTED, Json(json!({ "shutdown": "accepted", "initiated_by": held.initiated_by }))).into_response()
         }

@@ -33,7 +33,7 @@ impl IrohMeshTransport {
     /// iroh 0.98 API: the builder takes a `presets::Preset` value;
     /// address lookup services are added AFTER `bind()` rather than
     /// during construction.
-    #[instrument(skip(secret_key))]
+    #[instrument(name = "rdm.mesh.endpoint.create.via-bind", skip(secret_key))]
     pub async fn new(secret_key: SecretKey, bind_addr: SocketAddrV4, mdns_enable: bool) -> Result<Self> {
 
         let endpoint = Endpoint::builder(presets::Minimal)

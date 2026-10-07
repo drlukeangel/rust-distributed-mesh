@@ -34,7 +34,7 @@ cargo run -p rafka-gateway
 
 ```bash
 # Bridge emits one peer.connected per peer in each mesh
-http://localhost:16686/search?service=gateway&operation=rafka.mesh.cross.peer_connected&lookback=15m
+http://localhost:16686/search?service=gateway&operation=rdm.mesh.cross.peer_connected&lookback=15m
 ```
 
 ## View both meshes in topology-ui

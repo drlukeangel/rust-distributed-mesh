@@ -4,9 +4,9 @@
 
 ## What it is
 
-When `rfa` (client) calls `topology-ui` (server), the outbound HTTP request carries a `traceparent` header encoding the current OTel context. topology-ui's axum middleware extracts the header on inbound, calls `set_parent` on the `rafka.ui.http.request` span, and all subsequent spans in topology-ui's handler chain inherit the same trace_id.
+When `rfa` (client) calls `topology-ui` (server), the outbound HTTP request carries a `traceparent` header encoding the current OTel context. topology-ui's axum middleware extracts the header on inbound, calls `set_parent` on the `rdm.ui.http.request` span, and all subsequent spans in topology-ui's handler chain inherit the same trace_id.
 
-Result: an operator clicks any `rafka.cli.command` trace in Jaeger and sees the full causal chain through the HTTP boundary into the subprocess.spawned span — one trace, multiple services.
+Result: an operator clicks any `rdm.cli.command` trace in Jaeger and sees the full causal chain through the HTTP boundary into the subprocess.spawned span — one trace, multiple services.
 
 ## How it works
 
@@ -28,7 +28,7 @@ Called inside each `http_get`/`http_post`/`http_delete` async block (inside `.in
 `topology-ui/src/main.rs::trace_middleware`:
 ```rust
 let parent_ctx = global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(req.headers())));
-let span = info_span!("rafka.ui.http.request", ...);
+let span = info_span!("rdm.ui.http.request", ...);
 span.set_parent(parent_ctx);
 next.run(req).instrument(span).await
 ```
@@ -37,10 +37,10 @@ Axum middleware wraps every incoming request.
 ## Verified end-to-end trace
 
 ```
-rafka.cli.command           svc=rfa            (parent — CLI invocation)
-  rafka.cli.http.request    svc=rfa            (outbound POST)
-    rafka.ui.http.request   svc=topology-ui    (inbound, parented via traceparent)
-      rafka.ui.subprocess.spawned svc=topology-ui (spawned child process)
+rdm.cli.command           svc=rfa            (parent — CLI invocation)
+  rdm.cli.http.request    svc=rfa            (outbound POST)
+    rdm.ui.http.request   svc=topology-ui    (inbound, parented via traceparent)
+      rdm.ui.subprocess.spawned svc=topology-ui (spawned child process)
 ```
 
 All four under one `trace_id`. Sprint-10 fix commit a618aba landed this.

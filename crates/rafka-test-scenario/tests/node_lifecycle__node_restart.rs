@@ -125,27 +125,27 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     // 11. OTLP evidence: Build -> deployment -> node lifecycle, linked by ParentSpanId.
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
-        let boot = named(&spans, "rafka.mesh.node.create.via-deployment")
+        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
             .any(|s| s["attributes"]["incarnation_id"] == after["incarnation_id"]);
         boot.then_some(spans)
     })
     .await;
-    let created = named(&spans, "rafka.node_admin.build.create.via-rest")
+    let created = named(&spans, "rdm.node_admin.build.create.via-rest")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str())
-        .expect("rafka.node_admin.build.create.via-rest for the restart Build");
-    let node_op = named(&spans, "rafka.node_admin.node.update.via-build")
+        .expect("rdm.node_admin.build.create.via-rest for the restart Build");
+    let node_op = named(&spans, "rdm.node_admin.node.update.via-build")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
-        .expect("rafka.node_admin.node.update.via-build for rpc.2");
+        .expect("rdm.node_admin.node.update.via-build for rpc.2");
     assert!(descends_from(&spans, node_op, created), "node.update.via-build descends from build.create.via-rest");
-    let deploy = named(&spans, "rafka.node_admin.deployment.update.via-step")
+    let deploy = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == "DeployRuntime")
         .expect("the DeployRuntime step span of the restart");
     assert!(descends_from(&spans, deploy, node_op), "the deployment step descends from the node Build operation");
-    let boot = named(&spans, "rafka.mesh.node.create.via-deployment")
+    let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
         .into_iter()
         .find(|s| s["attributes"]["incarnation_id"] == after["incarnation_id"])
         .unwrap();

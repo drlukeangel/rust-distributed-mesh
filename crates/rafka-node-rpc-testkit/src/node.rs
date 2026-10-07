@@ -151,7 +151,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
 pub async fn wait_for_signal(binary: &str) {
     let stopped = async {
         let reason = rafka_mesh_transport::membership::until_transport_stopped().await;
-        tracing::info_span!("rafka.mesh.node.delete.via-transport-stopped", reason = %reason)
+        tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
             .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
         eprintln!("{binary}: the mesh transport stopped: {reason}");
         std::process::exit(4);
@@ -272,7 +272,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
     };
     // Born full: this node is published only now, its entry taken.
     tracing::info_span!(
-        "rafka.mesh.node.update.via-ready",
+        "rdm.mesh.node.update.via-ready",
         node = %name,
         kind = launch.name.kind.name(),
         incarnation_id = %launch.incarnation.0,
@@ -343,7 +343,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
             },
             other => (format!("{}: {other:?}", other.name()), false),
         };
-        tracing::info_span!("rafka.node_rpc.status.update.via-declare-own", node = %me.name, state = ?state, to = %a.node.name, outcome = %outcome, definitive)
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %me.name, state = ?state, to = %a.node.name, outcome = %outcome, definitive)
             .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
         last = Some(outcome.clone());
         if definitive {
@@ -418,7 +418,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     d.emitted_unix_ms = now_ms();
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
-                        "rafka.node_admin.status.update.via-probe",
+                        "rdm.node_admin.status.update.via-probe",
                         node = %me.digest.node.name,
                         sender = %sender_name,
                         state = ?node_state_of(status),
@@ -438,7 +438,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     d.in_flight = Some(in_flight);
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
-                        "rafka.node_admin.status.update.via-apply-draining",
+                        "rdm.node_admin.status.update.via-apply-draining",
                         node = %me.digest.node.name,
                         sender = %sender_name,
                         in_flight,

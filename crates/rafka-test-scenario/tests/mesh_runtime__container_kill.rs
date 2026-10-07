@@ -88,14 +88,14 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let is_drift = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id && s(&sp["attributes"]["scope"]) == SCOPE;
     let spans = wait_for("the drift attempt's spans are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        named(&spans, "rafka.node_admin.build.update.via-proven-drift").iter().any(is_drift).then_some(spans)
+        named(&spans, "rdm.node_admin.build.update.via-proven-drift").iter().any(is_drift).then_some(spans)
     })
     .await;
-    let drift = named(&spans, "rafka.node_admin.build.update.via-proven-drift").into_iter().find(|sp| is_drift(sp)).unwrap();
-    let born = named(&spans, "rafka.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"]);
+    let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().find(|sp| is_drift(sp)).unwrap();
+    let born = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"]);
     assert!(born, "the re-created container's own boot span landed beside the admin's");
     let attempt = s(&drift["attributes"]["attempt"]);
-    let deployed = named(&spans, "rafka.node_admin.deployment.update.via-step").into_iter().any(|sp| {
+    let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];
         s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node"] == NODE && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
     });

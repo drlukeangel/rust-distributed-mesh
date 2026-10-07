@@ -8,7 +8,7 @@
 
 **Detection:**
 ```bash
-TID=$(curl -s "http://localhost:16686/api/traces?service=rfa&operation=rafka.cli.command&limit=1&lookback=1m" | python -c "import sys,json; print(json.load(sys.stdin)['data'][0]['traceID'])")
+TID=$(curl -s "http://localhost:16686/api/traces?service=rfa&operation=rdm.cli.command&limit=1&lookback=1m" | python -c "import sys,json; print(json.load(sys.stdin)['data'][0]['traceID'])")
 curl -s "http://localhost:16686/api/traces/$TID" | python -c "import sys,json; d=json.load(sys.stdin); proc=d['data'][0]['processes']; print(sorted(set(proc.get(s.get('processID'),{}).get('serviceName','?') for s in d['data'][0]['spans'])))"
 # expect ['rfa', 'topology-ui']; if only ['rfa'], propagation broken
 ```

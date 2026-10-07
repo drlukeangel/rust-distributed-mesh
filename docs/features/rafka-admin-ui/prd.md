@@ -44,11 +44,11 @@ laid out properly and broke whenever a Jaeger query stalled.
 Edges in `/api/topology` are derived from Jaeger spans, NOT synthesized from
 mesh_id labels:
 
-1. `rafka.mesh.heartbeat` spans (every 5 s) provide a `node_id → node_name`
+1. `rdm.mesh.heartbeat` spans (every 5 s) provide a `node_id → node_name`
    resolver.
-2. `rafka.mesh.peer.connected` spans (10-min lookback) carry `node_id` (self)
+2. `rdm.mesh.peer.connected` spans (10-min lookback) carry `node_id` (self)
    + `peer_id` → resolved to (from_name, to_name); becomes an edge.
-3. `rafka.mesh.frame.sent` spans (60-s lookback) provide the `frame_count`
+3. `rdm.mesh.frame.sent` spans (60-s lookback) provide the `frame_count`
    weighting per edge AND the `frames_per_min` per node.
 
 If either endpoint of a pair hasn't emitted a heartbeat yet, the edge is
@@ -149,7 +149,7 @@ respawn it. This keeps the mesh-spanning topology stable.
 | chaos-soak-9prim-5min | chaos | 5-min soak, balanced primitive distribution |
 | mesh-five-types-present | chaos | spawn 5 types, all visible in topology + heartbeats fresh |
 | remove-resilience | chaos | kill 3 of 6, survivors detect within 15 s |
-| gossip-swarm-forms | chaos | `rafka.mesh.gossip.received` spans fire — Plumtree swarm formed |
+| gossip-swarm-forms | chaos | `rdm.mesh.gossip.received` spans fire — Plumtree swarm formed |
 | gossip-mesh-to-mesh | chaos | mesh-A and mesh-B gossip isolated; cross.peer_connected fires |
 
 Every run writes `E:/tmp/rafka-tests/<name>-<seed>.json`. The Tests tab polls

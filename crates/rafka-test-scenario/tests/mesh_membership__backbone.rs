@@ -115,7 +115,7 @@ fn holders(events: &[(u64, String, String, String)], scope: &str, dead: &BTreeMa
 /// The latest learned/silent verdict each ordinary node holds about `mesh`.
 fn verdicts(spans: &[Value], node: &str, mesh: &str) -> Option<String> {
     let mut v: Vec<(u64, &str)> = Vec::new();
-    for (name, verdict) in [("rafka.mesh.membership.update.via-mesh-learned", "learned"), ("rafka.mesh.membership.update.via-mesh-silent", "silent")] {
+    for (name, verdict) in [("rdm.mesh.membership.update.via-mesh-learned", "learned"), ("rdm.mesh.membership.update.via-mesh-silent", "silent")] {
         v.extend(named(spans, name).into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "mesh") == mesh).map(|sp| (start(sp), verdict)));
     }
     v.sort();
@@ -144,7 +144,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // ...through its own mesh channel only; every admin is on the backbone.
     let spans = estate.spans();
     let subs: Vec<(String, String)> =
-        named(&spans, "rafka.mesh.membership.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
+        named(&spans, "rdm.mesh.membership.update.via-subscribe").into_iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
     for n in &rpcs {
         let mesh = n.split('.').next().unwrap();
         let mine: BTreeSet<&str> = subs.iter().filter(|(x, _)| x == n).map(|(_, c)| c.as_str()).collect();
@@ -162,7 +162,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
             let spans = estate.spans();
             let (p, none) = (p.clone(), none.clone());
             async move {
-                let ev = roles(&spans, "rafka.mesh.backbone.update.via-aggregate-publisher", "mesh");
+                let ev = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
                 (holders(&ev, m, &none) == [p].into_iter().collect()).then_some(())
             }
         })
@@ -173,12 +173,12 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // its cohort is ready, then hands it over. What must hold: it publishes only while it is its
     // mesh's primary in its own view, and none of its publishing intervals is still open.
     let spans = estate.spans();
-    let ev = roles(&spans, "rafka.mesh.backbone.update.via-aggregate-publisher", "mesh");
+    let ev = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
     for n in admins.iter().filter(|n| ["mesh1", "mesh2"].iter().all(|m| s(&primary(&nodes, m)["name"]) != **n)) {
         let mine: Vec<&(u64, String, String, String)> = ev.iter().filter(|e| &e.1 == n).collect();
         assert!(mine.last().is_none_or(|e| e.3 == "stop"), "the non-primary admin {n} has stopped publishing: {mine:?}");
         for e in mine.iter().filter(|e| e.3 == "start") {
-            let seat = named(&spans, "rafka.mesh.election.resolve.via-mesh-primary")
+            let seat = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
                 .into_iter()
                 .filter(|sp| attr(sp, "observer") == *n && start(sp) <= e.0)
                 .max_by_key(|sp| start(sp))
@@ -203,8 +203,8 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         let spans = estate.spans();
         let (successor, dead) = (successor.clone(), dead.clone());
         async move {
-            let publ = roles(&spans, "rafka.mesh.backbone.update.via-aggregate-publisher", "mesh");
-            let fwd = roles(&spans, "rafka.mesh.backbone.update.via-forwarder", "mesh");
+            let publ = roles(&spans, "rdm.mesh.backbone.update.via-aggregate-publisher", "mesh");
+            let fwd = roles(&spans, "rdm.mesh.backbone.update.via-forwarder", "mesh");
             let one: BTreeSet<String> = [successor].into_iter().collect();
             (holders(&publ, "mesh2", &dead) == one && holders(&fwd, "mesh2", &dead) == one).then_some(())
         }
@@ -229,7 +229,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         let estate = &estate;
         async move {
             let fp = estate.nodes().await.into_iter().find(|n| n["is_fabric_primary"] == true)?;
-            let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
+            let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
             (holders(&ev, &fabric_id, &dead) == [s(&fp["name"])].into_iter().collect()).then_some(fp)
         }
     })
@@ -264,14 +264,14 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         // Tracked by NodeId: drift recovery may rebirth the lost path under a new NodeId.
         let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
         // Status publication is keyed by the Fabric's id, the backbone's key.
-        let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
+        let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
         (holders(&ev, &s(&fabric["id"]), &dead) == [next.clone()].into_iter().collect()).then_some(next)
     })
     .await;
     // The seat moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of
     // the lost path may hold it on the way: the lost primary was the last to start publishing
     // before the loss, and the last to start after it is the seat holder the view names.
-    let ev = roles(&estate.spans(), "rafka.mesh.fabric.update.via-status-publisher", "fabric");
+    let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
     let before = ev.iter().filter(|e| e.0 < lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
     let after = ev.iter().filter(|e| e.0 >= lost_at && e.3 == "start").max_by_key(|e| e.0).map(|e| e.1.clone());
     assert_eq!(before.as_deref(), Some(fp_name.as_str()), "the lost primary published before the loss: {ev:?}");
@@ -308,13 +308,13 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     })
     .await;
     let spans = estate.spans();
-    let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+    let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| attr(sp, "incarnation_id") == reborn)
         .unwrap_or_else(|| panic!("the reborn mesh2.rpc.1 reports ready"))
         .clone();
     assert_eq!(attr(&ready, "meshes"), "2", "ready holding both meshes: {ready}");
-    let pulled = named(&spans, "rafka.mesh.entry.update.via-membership-pulled")
+    let pulled = named(&spans, "rdm.mesh.entry.update.via-membership-pulled")
         .into_iter()
         .filter(|sp| attr(sp, "node") == "mesh2.rpc.1")
         .map(start)
@@ -333,7 +333,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     tokio::time::sleep(Duration::from_secs(6)).await;
     drop(cut);
     let spans = estate.spans();
-    let lost: Vec<String> = named(&spans, "rafka.mesh.membership.update.via-mesh-silent")
+    let lost: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-mesh-silent")
         .into_iter()
         .filter(|sp| start(sp) > cut_at && attr(sp, "mesh") == "mesh1" && rpcs2.contains(&attr(sp, "node")))
         .map(|sp| attr(sp, "node"))
@@ -353,7 +353,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
-            named(&spans, "rafka.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "start").then_some(())
+            named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "start").then_some(())
         }
     })
     .await;
@@ -366,7 +366,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     assert_eq!(status, 202, "{a}");
     let b = s(&a["build_id"]);
     tokio::time::sleep(Duration::from_secs(5)).await;
-    let by_lone: Vec<String> = named(&estate.spans(), "rafka.node_admin.build.update.via-reconcile")
+    let by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|sp| attr(sp, "build_id") == b && attr(sp, "executor") == lone_name)
         .map(|sp| attr(sp, "operations"))
@@ -392,7 +392,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
-            named(&spans, "rafka.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "stop").then_some(())
+            named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| attr(sp, "node") == lone_name && attr(sp, "role") == "stop").then_some(())
         }
     })
     .await;

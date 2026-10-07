@@ -8,7 +8,7 @@
 
 **Detection:**
 ```bash
-curl -s "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.heartbeat&limit=1&lookback=5m" | python -c "import sys,json; d=json.load(sys.stdin); print([(t['type'],t['value']) for t in d['data'][0]['spans'][0]['tags'] if t['key']=='peer_count'])"
+curl -s "http://localhost:16686/api/traces?service=gateway&operation=rdm.mesh.heartbeat&limit=1&lookback=5m" | python -c "import sys,json; d=json.load(sys.stdin); print([(t['type'],t['value']) for t in d['data'][0]['spans'][0]['tags'] if t['key']=='peer_count'])"
 ```
 
 Expected: `[('int64', N)]`. If `('string', '0')` — regression.
@@ -22,7 +22,7 @@ Expected: `[('int64', N)]`. If `('string', '0')` — regression.
 **Detection:**
 ```bash
 # Should be ≥10 heartbeats over a 1-min run
-COUNT=$(curl -s "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.heartbeat&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
+COUNT=$(curl -s "http://localhost:16686/api/traces?service=gateway&operation=rdm.mesh.heartbeat&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
 echo "$COUNT heartbeats in 1m"
 ```
 

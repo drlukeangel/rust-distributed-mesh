@@ -88,13 +88,13 @@ where
             let req = match P::decode_request(&payload) {
                 Ok(r) => r,
                 Err(d) => {
-                    tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d)
+                    tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d)
                         .in_scope(|| tracing::info!(?d, "request does not decode"));
                     return P::encode_reply(&P::malformed(d.into())).map_err(|e| HandlerFault::invariant_broken(e.0));
                 }
             };
             let span = tracing::info_span!(
-                "rafka.node_rpc.request.serve.via-direct",
+                "rdm.node_rpc.request.serve.via-direct",
                 protocol = P::NAME,
                 op = P::OP,
                 peer = %peer.endpoint_id,
@@ -371,7 +371,7 @@ impl NodeRpcServer {
                         Ok(p) => permit = Some(p),
                         Err(reason) => {
                             stats.busy.fetch_add(1, Ordering::SeqCst);
-                            tracing::debug_span!("rafka.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
+                            tracing::debug_span!("rdm.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
                             return self.refuse(op, Refusal::Busy(reason), send, recv).await;
                         }
                     }
@@ -382,7 +382,7 @@ impl NodeRpcServer {
             ServerAction::Continue => unreachable!("loop breaks only on a decision"),
             ServerAction::ResetUnserved { op } => {
                 stats.unserved.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
                     .in_scope(|| tracing::info!(op, "unserved op: 421"));
                 let _ = send.reset(code(ResetCode::UnservedOp));
                 let _ = recv.stop(code(ResetCode::UnservedOp));
@@ -392,7 +392,7 @@ impl NodeRpcServer {
                 let fence = header.fence;
                 let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
                 let span = tracing::info_span!(
-                    "rafka.node_rpc.connection.reject.via-stale-target",
+                    "rdm.node_rpc.connection.reject.via-stale-target",
                     decided_by = "target",
                     op,
                     peer = %peer,
@@ -416,20 +416,20 @@ impl NodeRpcServer {
             }
             ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-malformed", op, kind = ?kind)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", op, kind = ?kind)
                     .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
                 self.refuse(op, Refusal::Malformed(kind), send, recv).await;
             }
             ServerAction::ResetViolation { op, reason } => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
                     .in_scope(|| tracing::info!(reason, "protocol violation: 424"));
                 let _ = send.reset(code(ResetCode::ProtocolViolation));
                 let _ = recv.stop(code(ResetCode::ProtocolViolation));
             }
             ServerAction::Drop { reason } => {
                 stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rafka.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
                     .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
                 let _ = send.reset(code(ResetCode::RequestStop));
             }
@@ -442,7 +442,7 @@ impl NodeRpcServer {
                 // Bad or over-bound context is dropped here, named, and the call proceeds.
                 let (context, dropped) = header.context.sanitized();
                 if !dropped.is_empty() {
-                    tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
+                    tracing::info_span!("rdm.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
                         .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
                 }
                 let ctx = PeerContext { endpoint_id: peer, context };
@@ -480,13 +480,13 @@ impl NodeRpcServer {
                     }
                     Ok(Err(fault)) => {
                         stats.faults.fetch_add(1, Ordering::SeqCst);
-                        tracing::info_span!("rafka.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                        tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
                             .in_scope(|| tracing::info!("handler fault: 423"));
                         let _ = send.reset(code(ResetCode::InternalRpcFailure));
                     }
                     Err(_panic) => {
                         stats.faults.fetch_add(1, Ordering::SeqCst);
-                        tracing::info_span!("rafka.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                        tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
                             .in_scope(|| tracing::info!("handler panicked: 423"));
                         let _ = send.reset(code(ResetCode::InternalRpcFailure));
                     }

@@ -25,9 +25,9 @@
 //! a replacement has a new NodeId and wins or not by that id.
 //!
 //! An admin reports each change it owns (`ElectionLog`):
-//! `rafka.mesh.election.resolve.via-recompute` (its mesh's cohorts),
-//! `rafka.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
-//! while it is a mesh primary, `rafka.mesh.election.resolve.via-fabric-recompute`: on each change
+//! `rdm.mesh.election.resolve.via-recompute` (its mesh's cohorts),
+//! `rdm.mesh.election.resolve.via-mesh-primary` (its mesh's primary), and,
+//! while it is a mesh primary, `rdm.mesh.election.resolve.via-fabric-recompute`: on each change
 //! of the fabric seat, and on becoming a mesh primary, when it takes ownership of the seat it was
 //! tracking.
 
@@ -148,7 +148,7 @@ impl ElectionLog {
             let inputs: Vec<String> = t.cohort(&mesh, *kind).map(|n| format!("{}={}:{:?}", n.name, n.node_id, n.status)).collect();
             let span = tracing::info_span!(
                 parent: None,
-                "rafka.mesh.election.resolve.via-recompute",
+                "rdm.mesh.election.resolve.via-recompute",
                 election_level = "node_type",
                 observer = %self.observer,
                 mesh = %mesh,
@@ -177,7 +177,7 @@ impl ElectionLog {
             let previous = last_mesh.clone().flatten();
             let span = tracing::info_span!(
                 parent: None,
-                "rafka.mesh.election.resolve.via-mesh-primary",
+                "rdm.mesh.election.resolve.via-mesh-primary",
                 election_level = "mesh_primary",
                 observer = %self.observer,
                 mesh = %mesh,
@@ -207,7 +207,7 @@ impl ElectionLog {
             let inputs: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| format!("{}={}:{:?}{}", n.name, n.node_id, n.status, if n.is_primary { ":primary" } else { "" })).collect();
             let span = tracing::info_span!(
                 parent: None,
-                "rafka.mesh.election.resolve.via-fabric-recompute",
+                "rdm.mesh.election.resolve.via-fabric-recompute",
                 election_level = "fabric_primary",
                 observer = %self.observer,
                 fabric = %t.fabric.name,

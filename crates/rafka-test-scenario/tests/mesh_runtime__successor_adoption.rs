@@ -13,7 +13,7 @@
 //!
 //! Evidence: the bootstrap admin's ready span names its own self-adopted
 //! runtime (day 0); each rpc node's ready span names the runtime its provider
-//! recorded; the successor's `rafka.node_admin.runtime.update.via-adopt`
+//! recorded; the successor's `rdm.node_admin.runtime.update.via-adopt`
 //! names the same locator fingerprint, `source = self-published-membership`,
 //! and the successor as adopter and executor.
 //!
@@ -113,12 +113,12 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.stop().await;
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
-    let boot = named(&spans, "rafka.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
+    let boot = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
     assert_eq!(boot["attributes"]["runtime_locator_kind"], if estate.owner.provider == "container" { "container-id" } else { "process-pid-start" });
     assert_eq!(boot["attributes"]["source"], "self-published-membership");
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
     let steps_of = |node: &str, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
-        let mut v: Vec<Value> = named(&spans, "rafka.node_admin.deployment.update.via-step")
+        let mut v: Vec<Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .filter(|sp| sp["attributes"]["node"] == node && pipeline_step(sp))
             .cloned()
@@ -138,11 +138,11 @@ async fn a_successor_manages_births_it_never_launched() {
     // WaitForNodeReady begins.
     const PREREQUISITES: [&str; 4] =
         ["RegisterExactRuntimeHandle", "ResolveProviderControlDomain", "MakeRuntimeFactAvailableToBirth", "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata"];
-    let launched: Vec<&Value> = named(&spans, "rafka.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "WaitForNodeReady").collect();
+    let launched: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "WaitForNodeReady").collect();
     // The killed bootstrap admin is desired (2 node-admins): once its exact
     // runtime is proven exited, the successor may recreate it under a new
     // proven-drift Build before the test stops.
-    let recoveries = named(&spans, "rafka.node_admin.build.create.via-proven-drift");
+    let recoveries = named(&spans, "rdm.node_admin.build.create.via-proven-drift");
     assert!(recoveries.len() <= 1, "one recovery at most for one exited birth");
     for r in &recoveries {
         assert_eq!(r["attributes"]["scope"], "mesh1.node_admin: 1 present of 2 desired (exited: mesh1.admin.1)");
@@ -158,12 +158,12 @@ async fn a_successor_manages_births_it_never_launched() {
     }
     for birth in [&restarted, &retired] {
         let name = s(&birth["name"]);
-        let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .cloned()
             .unwrap_or_else(|| panic!("{name} reports ready"));
-        let adopted = named(&spans, "rafka.node_admin.runtime.update.via-adopt")
+        let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .cloned()

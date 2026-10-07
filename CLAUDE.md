@@ -87,77 +87,77 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 
 | Span | Required attributes |
 |---|---|
-| `rafka.mesh.node.ready` (root boot) | `node_id`, `node_type`, `bind_addr`, `version` |
-| `rafka.mesh.boot.identity_loaded` | `node_id`, `path` |
-| `rafka.mesh.boot.identity_minted` | `node_id`, `path` |
-| `rafka.mesh.boot.endpoint_created` | `node_id`, `bind_addr` |
-| `rafka.mesh.boot.alpn_registered` | `node_id`, `alpn` (e.g. `"rafka-mesh-v1"`) |
-| `rafka.mesh.boot.gossip_started` | `node_id` |
-| `rafka.mesh.boot.accept_loop_started` | `node_id` |
-| `rafka.mesh.heartbeat` | `node_id`, `peer_count`, `cpu_used`, `cpu_budget`, `ram_used`, `ram_budget` |
-| `rafka.mesh.node.stopping` | `node_id`, `reason` |
-| `rafka.mesh.peer.discovered` | `node_id` (local), `peer_id` (remote), `peer_node_type` |
-| `rafka.mesh.peer.connected` | `node_id`, `peer_id`, `peer_node_type` |
-| `rafka.mesh.peer.disconnected` | `node_id`, `peer_id`, `reason` |
-| `rafka.mesh.peer.staleness_timeout` | `node_id`, `peer_id`, `last_seen_ms_ago` |
-| `rafka.mesh.frame.sent` | `node_id` (src), `peer_id` (dst), `op_kind`, `bytes`, `trace_id` |
-| `rafka.mesh.frame.received` | `node_id` (dst), `peer_id` (src), `op_kind`, `bytes`, `trace_id` |
-| `rafka.mesh.frame.decode_failed` | `node_id`, `peer_id`, `bytes`, `error` |
+| `rdm.mesh.node.ready` (root boot) | `node_id`, `node_type`, `bind_addr`, `version` |
+| `rdm.mesh.boot.identity_loaded` | `node_id`, `path` |
+| `rdm.mesh.boot.identity_minted` | `node_id`, `path` |
+| `rdm.mesh.boot.endpoint_created` | `node_id`, `bind_addr` |
+| `rdm.mesh.boot.alpn_registered` | `node_id`, `alpn` (e.g. `"rafka-mesh-v1"`) |
+| `rdm.mesh.boot.gossip_started` | `node_id` |
+| `rdm.mesh.boot.accept_loop_started` | `node_id` |
+| `rdm.mesh.heartbeat` | `node_id`, `peer_count`, `cpu_used`, `cpu_budget`, `ram_used`, `ram_budget` |
+| `rdm.mesh.node.stopping` | `node_id`, `reason` |
+| `rdm.mesh.peer.discovered` | `node_id` (local), `peer_id` (remote), `peer_node_type` |
+| `rdm.mesh.peer.connected` | `node_id`, `peer_id`, `peer_node_type` |
+| `rdm.mesh.peer.disconnected` | `node_id`, `peer_id`, `reason` |
+| `rdm.mesh.peer.staleness_timeout` | `node_id`, `peer_id`, `last_seen_ms_ago` |
+| `rdm.mesh.frame.sent` | `node_id` (src), `peer_id` (dst), `op_kind`, `bytes`, `trace_id` |
+| `rdm.mesh.frame.received` | `node_id` (dst), `peer_id` (src), `op_kind`, `bytes`, `trace_id` |
+| `rdm.mesh.frame.decode_failed` | `node_id`, `peer_id`, `bytes`, `error` |
 
-**i143 Mesh product spans (PRD §16 five-segment grammar `rafka.<component>.<entity>.<action>.<reason>`, whitelist verbs only; full list in `docs/i143/design.md` §7):**
+**i143 Mesh product spans (PRD §16 five-segment grammar `rdm.<component>.<entity>.<action>.<reason>`, whitelist verbs only; full list in `docs/i143/design.md` §7):**
 
 | Span | Required attributes |
 |---|---|
-| `rafka.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
-| `rafka.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `provider-mismatch`, `invalid-intent`) | `route`, `detail` |
-| `rafka.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `desired_revision` (0: a Build from before desired topology), `reason` (`requested-change` / `proven-drift`), `operations`, `outcome` (`converged` / `failed` / `lost` / `finished` / `handed-off`: the attempt stopped at an operation another admin executes) |
-| `rafka.node_admin.build.create.via-proven-drift` (the fabric primary proved a desired cohort short, an exact runtime exited, and started a new reconciliation Build against the unchanged revision; `docs/i143/design.md` §2.2) | `fabric_id`, `desired_revision`, `source_build_id`, `reconcile_build_id`, `scope` (each short cohort and its exited births), `authority`, `authority_node_id`, `reason` (`proven-drift`) |
-| `rafka.node_admin.build.reject.via-desired-revision-conflict` (a Build whose desired revision lost a fork is refused before it runs) | `build_id`, `desired_revision`, `detail` |
-| `rafka.node_admin.desired_topology.update.via-build` (a topology-changing request proposed the next desired revision) | `fabric_id`, `desired_revision`, `previous_revision`, `source_build_id`, `reason` |
-| `rafka.node_admin.desired_topology.update.via-day-0` / `via-hydration` (entry pull) / `via-catch-up` (fabric control topic: a new revision or a neighbour's catch-up) (an admin took a desired revision) | `node`, `fabric_id`, `desired_revision`, `previous_revision`, `source_build_id`, `from` |
-| `rafka.node_admin.desired_topology.reject.via-revision-conflict` (two revisions from one base: the branch whose first revision has the lower source Build holds) / `via-fork-beyond-lineage` (a fork deeper than the 16-revision lineage: refused, the held revision stays) | `node`, `fabric_id`, `desired_revision` / `held`, `winner` / `offered`, `loser`, `from` |
-| `rafka.node_admin.node.create.via-build` / `node.update.via-build` (restart) / `node.delete.via-build` (child of `via-reconcile`; parent of the deployment pipeline and the node's lifecycle transition) | `build_id`, `node`, `attempt` |
-| `rafka.node_admin.fabric.update.via-join` (a launched admin pulled its entry from the admin that launched it; it may now execute Builds) | `node`, `joined` (the answering admin) |
-| `rafka.mesh.entry.serve.via-pull` (node-admin answered an entry pull over QUIC, ALPN `rafka-mesh-entry/1`: fabric policy and the membership digests it hears) | `node`, `served_by`, `members` |
-| `rafka.mesh.entry.update.via-membership-pulled` (a launched node recorded its admin's membership as heard, before ready) | `node`, `served_by`, `members`, `attempt` |
-| `rafka.mesh.entry.reject.via-membership-pull-failed` (no answer after the retries; an rpc node continues, an admin refuses to start) | `node`, `reason`, `attempts` |
-| `rafka.mesh.membership.update.via-subscribe` (a membership channel was joined: the node's mesh channel `mesh_topic(fabric_id, mesh_id)`, or the admin-only `backbone_topic(fabric_id)`) | `node`, `channel` (`mesh:<mesh>` / `backbone`), `fabric`, `peers` |
-| `rafka.mesh.membership.update.via-mesh-learned` / `via-mesh-silent` (a mesh's members became heard, or none of them is heard for `SILENT_AFTER`) | `node`, `mesh`, `via` (learned only: `mesh-channel` / `forwarded` / `backbone`) |
-| `rafka.mesh.membership.update.via-cut-off` (a node that heard others now hears none; while cut off, and for `SILENT_AFTER` after it heals, an admin executes no Build and publishes as no primary) | `node`, `role` (`start` / `stop`) |
-| `rafka.mesh.backbone.update.via-aggregate-publisher` (the mesh primary starts or stops publishing its mesh's packed members on the backbone) | `node`, `mesh`, `role` (`start` / `stop`) |
-| `rafka.mesh.backbone.update.via-forwarder` (the mesh primary starts or stops forwarding peer meshes from the backbone onto its mesh channel) | `node`, `mesh`, `role` (`start` / `stop`) |
-| `rafka.mesh.fabric.update.via-status-publisher` (the fabric primary starts or stops publishing fabric status on the backbone) | `node`, `fabric`, `role` (`start` / `stop`) |
-| `rafka.mesh.connection.update.via-backbone-peers-joined` (an admin joined the other meshes' admins on the backbone) | `node`, `peers` |
-| `rafka.mesh.connection.update.via-refeed` (a channel, or the fabric Build topic, had no neighbour for `SILENT_AFTER`: every peer it knows is handed to it again through `join_peers`, once per window while that holds; `gossip.md` §6) | `channel` (`mesh:<mesh>` / `backbone` / `builds`), `node` (membership channels) or `fabric` (Build topic), `peers`, `joined` |
-| `rafka.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held; a node-admin also authority-capable; the birth's identity and runtime evidence) | `node`, `incarnation_id`, `meshes`, `node_id`, `mesh_id`, `fabric_id`, `id_format` (`crockford60`), `deployment_id`, `provider`, `provider_control_domain_fingerprint`, `runtime_locator_kind` (`process-pid-start` / `container-id`), `runtime_locator_fingerprint`, `source` (`self-published-membership`); node-admin: `runtime_facts_held` |
-| `rafka.node_admin.runtime.update.via-adopt` (a node-admin adopted a runtime it did not launch, from the birth's published `RuntimeFact`; `docs/i143/design.md` §2.1) | `node`, `node_id`, `incarnation_id`, `deployment_id`, `provider`, `provider_control_domain_fingerprint`, `runtime_locator_kind`, `runtime_locator_fingerprint`, `source`, `adopter`, `adopter_node_id`, `execution_node_id` |
-| `rafka.node_admin.runtime.reject.via-unpublished` / `via-other-provider` / `via-foreign-control-domain` / `via-invalid-fact` (a runtime fact not adopted, never acted on) | `node`, `incarnation_id`, `adopter`, `detail` |
-| `rafka.node_admin.runtime.reject.via-not-authority-capable` (a node-admin holds Pending: a held birth's runtime cannot be managed from here) | `node`, `blocked`, `detail` |
-| `rafka.mesh.runtime.reject.via-locator-changed` (membership refused a digest of a held birth naming another runtime locator or control domain) | `node`, `node_id`, `incarnation_id`, `held_locator_fingerprint`, `offered_locator_fingerprint` |
-| `rafka.mesh.membership.update.via-resubscribe` / `rafka.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
-| `rafka.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
-| `rafka.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
-| `rafka.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
-| `rafka.node_admin.fabric.update.via-shutdown` | — |
-| `rafka.ui.build.create.via-node-admin` (the Admin UI submitted a Build) | `what`, `build_id` |
-| `rafka.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
-| `rafka.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
-| `rafka.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire` / `adopt-current`: the Day-0 admin adopting its own runtime, `build_id` empty), `build_id`, `provider`, `node`, `attempt`, `restart` |
-| `rafka.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome` (`complete` / `failed` / `reused`: decided by an earlier attempt's receipt), `elapsed_ms` |
-| `rafka.mesh.election.resolve.via-recompute` (a cohort of the observer's own mesh resolved a new primary: the lowest ready NodeId; `docs/i143/design.md` §2.1) | `election_level` (`node_type`), `observer`, `mesh`, `kind`, `candidate_count`, `eligible_count`, `winner_node_id`, `winner_path`, `election_key` (`node_id_crockford`), `previous_node_id` (empty = none), `primary`, `previous`, `members`, `ready` |
-| `rafka.mesh.election.resolve.via-mesh-primary` (the observer's mesh primary changed: its node-admin cohort's winner, the same seat) | `election_level` (`mesh_primary`), `observer`, `mesh`, `winner_node_id`, `winner_path`, `previous_node_id`, `source_kind` (`node_admin`) |
-| `rafka.mesh.election.resolve.via-fabric-recompute` (the fabric primary changed, reported by a mesh primary: the lowest-NodeId mesh primary) | `election_level` (`fabric_primary`), `observer`, `fabric`, `fabric_id`, `candidate_mesh_primaries`, `winner_node_id`, `winner_path`, `winner_mesh`, `previous_node_id`, `election_key` (`node_id_crockford`), `primary`, `previous`, `meshes` |
-| `rafka.node_admin.deployment.delete.via-fence` (a new birth at a path stopped the previous birth's runtime, which the view no longer heard) | `node`, `incarnation`, `outcome` (`terminated` / `not-running: …` / `not-found: …` / `terminate-failed: …`) |
-| `rafka.mesh.node.create.via-deployment` (rpc node boot; parent: launch `TRACEPARENT`) | `node`, `node_id`, `incarnation_id`, `kind` |
-| `rafka.mesh.node.update.via-drain` (SIGTERM: typed `Draining` for new calls, in-flight handlers finish) | `node`, `incarnation_id`, `deadline_ms`, `in_flight_at_deadline` |
-| `rafka.mesh.node.delete.via-signal` | `node`, `incarnation_id` |
-| `rafka.node_rpc.request.serve.via-direct` | `protocol`, `tag`, `peer`, `slot` (parent: the request's `traceparent`) |
-| `rafka.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` / `via-protocol-violation` | `tag`, `slot`, `reason` / `kind` |
-| `rafka.node_rpc.request.reject.via-busy` (DEBUG: refusal storms are counters) | `tag`, `reason` |
-| `rafka.node_rpc.handler.reject.via-internal-rpc-failure` | `fault` |
-| `rafka.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
-| `rafka.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` (the pool dropped a connection or dial whose exact slot target, or process birth, the resolver no longer names; `crates/rafka-node-rpc/src/pool.rs`) | `peer`, `slot`, `outcome` (`cancelled` / `late-connect-dropped` / `evicted`), `elapsed_ms` |
-| `rafka.node_rpc.connection.evict.via-timeout-strikes` (two consecutive reply deadlines evicted a pooled connection; never reachability) | `peer`, `slot`, `strikes` |
+| `rdm.node_admin.build.create.via-rest` | `route`, `build_id`, `intent` |
+| `rdm.node_admin.build.reject.via-<reason>` (`invalid-mesh-name`, `duplicate-mesh`, `mesh-without-admin`, `unknown-mesh`, `unknown-node`, `node-not-live`, `would-leave-mesh-without-admin`, `mesh-already-exists`, `fabric-mismatch`, `empty-fabric`, `provider-mismatch`, `invalid-intent`) | `route`, `detail` |
+| `rdm.node_admin.build.update.via-reconcile` (an executor claims the next attempt and runs what is left) | `build_id`, `attempt`, `executor`, `previous_executor`, `desired_revision` (0: a Build from before desired topology), `reason` (`requested-change` / `proven-drift`), `operations`, `outcome` (`converged` / `failed` / `lost` / `finished` / `handed-off`: the attempt stopped at an operation another admin executes) |
+| `rdm.node_admin.build.create.via-proven-drift` (the fabric primary proved a desired cohort short, an exact runtime exited, and started a new reconciliation Build against the unchanged revision; `docs/i143/design.md` §2.2) | `fabric_id`, `desired_revision`, `source_build_id`, `reconcile_build_id`, `scope` (each short cohort and its exited births), `authority`, `authority_node_id`, `reason` (`proven-drift`) |
+| `rdm.node_admin.build.reject.via-desired-revision-conflict` (a Build whose desired revision lost a fork is refused before it runs) | `build_id`, `desired_revision`, `detail` |
+| `rdm.node_admin.desired_topology.update.via-build` (a topology-changing request proposed the next desired revision) | `fabric_id`, `desired_revision`, `previous_revision`, `source_build_id`, `reason` |
+| `rdm.node_admin.desired_topology.update.via-day-0` / `via-hydration` (entry pull) / `via-catch-up` (fabric control topic: a new revision or a neighbour's catch-up) (an admin took a desired revision) | `node`, `fabric_id`, `desired_revision`, `previous_revision`, `source_build_id`, `from` |
+| `rdm.node_admin.desired_topology.reject.via-revision-conflict` (two revisions from one base: the branch whose first revision has the lower source Build holds) / `via-fork-beyond-lineage` (a fork deeper than the 16-revision lineage: refused, the held revision stays) | `node`, `fabric_id`, `desired_revision` / `held`, `winner` / `offered`, `loser`, `from` |
+| `rdm.node_admin.node.create.via-build` / `node.update.via-build` (restart) / `node.delete.via-build` (child of `via-reconcile`; parent of the deployment pipeline and the node's lifecycle transition) | `build_id`, `node`, `attempt` |
+| `rdm.node_admin.fabric.update.via-join` (a launched admin pulled its entry from the admin that launched it; it may now execute Builds) | `node`, `joined` (the answering admin) |
+| `rdm.mesh.entry.serve.via-pull` (node-admin answered an entry pull over QUIC, ALPN `rafka-mesh-entry/1`: fabric policy and the membership digests it hears) | `node`, `served_by`, `members` |
+| `rdm.mesh.entry.update.via-membership-pulled` (a launched node recorded its admin's membership as heard, before ready) | `node`, `served_by`, `members`, `attempt` |
+| `rdm.mesh.entry.reject.via-membership-pull-failed` (no answer after the retries; an rpc node continues, an admin refuses to start) | `node`, `reason`, `attempts` |
+| `rdm.mesh.membership.update.via-subscribe` (a membership channel was joined: the node's mesh channel `mesh_topic(fabric_id, mesh_id)`, or the admin-only `backbone_topic(fabric_id)`) | `node`, `channel` (`mesh:<mesh>` / `backbone`), `fabric`, `peers` |
+| `rdm.mesh.membership.update.via-mesh-learned` / `via-mesh-silent` (a mesh's members became heard, or none of them is heard for `SILENT_AFTER`) | `node`, `mesh`, `via` (learned only: `mesh-channel` / `forwarded` / `backbone`) |
+| `rdm.mesh.membership.update.via-cut-off` (a node that heard others now hears none; while cut off, and for `SILENT_AFTER` after it heals, an admin executes no Build and publishes as no primary) | `node`, `role` (`start` / `stop`) |
+| `rdm.mesh.backbone.update.via-aggregate-publisher` (the mesh primary starts or stops publishing its mesh's packed members on the backbone) | `node`, `mesh`, `role` (`start` / `stop`) |
+| `rdm.mesh.backbone.update.via-forwarder` (the mesh primary starts or stops forwarding peer meshes from the backbone onto its mesh channel) | `node`, `mesh`, `role` (`start` / `stop`) |
+| `rdm.mesh.fabric.update.via-status-publisher` (the fabric primary starts or stops publishing fabric status on the backbone) | `node`, `fabric`, `role` (`start` / `stop`) |
+| `rdm.mesh.connection.update.via-backbone-peers-joined` (an admin joined the other meshes' admins on the backbone) | `node`, `peers` |
+| `rdm.mesh.connection.update.via-refeed` (a channel, or the fabric Build topic, had no neighbour for `SILENT_AFTER`: every peer it knows is handed to it again through `join_peers`, once per window while that holds; `gossip.md` §6) | `channel` (`mesh:<mesh>` / `backbone` / `builds`), `node` (membership channels) or `fabric` (Build topic), `peers`, `joined` |
+| `rdm.mesh.node.update.via-ready` (a node is ready for traffic: subscribed, entry pulled, membership held; a node-admin also authority-capable; the birth's identity and runtime evidence) | `node`, `incarnation_id`, `meshes`, `node_id`, `mesh_id`, `fabric_id`, `id_format` (`crockford60`), `deployment_id`, `provider`, `provider_control_domain_fingerprint`, `runtime_locator_kind` (`process-pid-start` / `container-id`), `runtime_locator_fingerprint`, `source` (`self-published-membership`); node-admin: `runtime_facts_held` |
+| `rdm.node_admin.runtime.update.via-adopt` (a node-admin adopted a runtime it did not launch, from the birth's published `RuntimeFact`; `docs/i143/design.md` §2.1) | `node`, `node_id`, `incarnation_id`, `deployment_id`, `provider`, `provider_control_domain_fingerprint`, `runtime_locator_kind`, `runtime_locator_fingerprint`, `source`, `adopter`, `adopter_node_id`, `execution_node_id` |
+| `rdm.node_admin.runtime.reject.via-unpublished` / `via-other-provider` / `via-foreign-control-domain` / `via-invalid-fact` (a runtime fact not adopted, never acted on) | `node`, `incarnation_id`, `adopter`, `detail` |
+| `rdm.node_admin.runtime.reject.via-not-authority-capable` (a node-admin holds Pending: a held birth's runtime cannot be managed from here) | `node`, `blocked`, `detail` |
+| `rdm.mesh.runtime.reject.via-locator-changed` (membership refused a digest of a held birth naming another runtime locator or control domain) | `node`, `node_id`, `incarnation_id`, `held_locator_fingerprint`, `offered_locator_fingerprint` |
+| `rdm.mesh.membership.update.via-resubscribe` / `rdm.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
+| `rdm.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
+| `rdm.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
+| `rdm.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
+| `rdm.node_admin.fabric.update.via-shutdown` | — |
+| `rdm.ui.build.create.via-node-admin` (the Admin UI submitted a Build) | `what`, `build_id` |
+| `rdm.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |
+| `rdm.node_admin.lifecycle_hook.update.via-transition` (new entity `lifecycle_hook`) | `hook_id`, `phase`, `transition_id`, `blocking`, `attempt`, `outcome` |
+| `rdm.node_admin.deployment.update.via-pipeline` | `pipeline` (`create` / `retire` / `adopt-current`: the Day-0 admin adopting its own runtime, `build_id` empty), `build_id`, `provider`, `node`, `attempt`, `restart` |
+| `rdm.node_admin.deployment.update.via-step` (child of `via-pipeline`) | `step`, `build_id`, `provider`, `node`, `attempt`, `outcome` (`complete` / `failed` / `reused`: decided by an earlier attempt's receipt), `elapsed_ms` |
+| `rdm.mesh.election.resolve.via-recompute` (a cohort of the observer's own mesh resolved a new primary: the lowest ready NodeId; `docs/i143/design.md` §2.1) | `election_level` (`node_type`), `observer`, `mesh`, `kind`, `candidate_count`, `eligible_count`, `winner_node_id`, `winner_path`, `election_key` (`node_id_crockford`), `previous_node_id` (empty = none), `primary`, `previous`, `members`, `ready` |
+| `rdm.mesh.election.resolve.via-mesh-primary` (the observer's mesh primary changed: its node-admin cohort's winner, the same seat) | `election_level` (`mesh_primary`), `observer`, `mesh`, `winner_node_id`, `winner_path`, `previous_node_id`, `source_kind` (`node_admin`) |
+| `rdm.mesh.election.resolve.via-fabric-recompute` (the fabric primary changed, reported by a mesh primary: the lowest-NodeId mesh primary) | `election_level` (`fabric_primary`), `observer`, `fabric`, `fabric_id`, `candidate_mesh_primaries`, `winner_node_id`, `winner_path`, `winner_mesh`, `previous_node_id`, `election_key` (`node_id_crockford`), `primary`, `previous`, `meshes` |
+| `rdm.node_admin.deployment.delete.via-fence` (a new birth at a path stopped the previous birth's runtime, which the view no longer heard) | `node`, `incarnation`, `outcome` (`terminated` / `not-running: …` / `not-found: …` / `terminate-failed: …`) |
+| `rdm.mesh.node.create.via-deployment` (rpc node boot; parent: launch `TRACEPARENT`) | `node`, `node_id`, `incarnation_id`, `kind` |
+| `rdm.mesh.node.update.via-drain` (SIGTERM: typed `Draining` for new calls, in-flight handlers finish) | `node`, `incarnation_id`, `deadline_ms`, `in_flight_at_deadline` |
+| `rdm.mesh.node.delete.via-signal` | `node`, `incarnation_id` |
+| `rdm.node_rpc.request.serve.via-direct` | `protocol`, `tag`, `peer`, `slot` (parent: the request's `traceparent`) |
+| `rdm.node_rpc.request.reject.via-unserved-tag` / `via-malformed` / `via-frame-not-sent` / `via-protocol-violation` | `tag`, `slot`, `reason` / `kind` |
+| `rdm.node_rpc.request.reject.via-busy` (DEBUG: refusal storms are counters) | `tag`, `reason` |
+| `rdm.node_rpc.handler.reject.via-internal-rpc-failure` | `fault` |
+| `rdm.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
+| `rdm.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` (the pool dropped a connection or dial whose exact slot target, or process birth, the resolver no longer names; `crates/rafka-node-rpc/src/pool.rs`) | `peer`, `slot`, `outcome` (`cancelled` / `late-connect-dropped` / `evicted`), `elapsed_ms` |
+| `rdm.node_rpc.connection.evict.via-timeout-strikes` (two consecutive reply deadlines evicted a pooled connection; never reachability) | `peer`, `slot`, `strikes` |
 
 On the membership, backbone and Build-topic spans above (`via-subscribe`, `via-resubscribe`, `via-status-publisher`, `via-refeed`, the Build-topic `fabric` rows), `fabric` is the Fabric's id (`RAFKA_FABRIC_ID`), the key of those topics; on the election spans it is the Fabric's name.
 
@@ -169,16 +169,16 @@ On the membership, backbone and Build-topic spans above (`via-subscribe`, `via-r
 
 | Metric | Unit | Labels |
 |---|---|---|
-| `rafka.mesh.bytes_sent_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
-| `rafka.mesh.bytes_received_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
-| `rafka.mesh.frames_sent_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
-| `rafka.mesh.frames_received_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
-| `rafka.mesh.frame.decode_error_rate` | errors/sec (gauge) | `src_node_id`, `dst_node_id` |
-| `rafka.mesh.peer.rtt_ms` | milliseconds (histogram) | `node_id`, `peer_id` |
-| `rafka.mesh.node.cpu_used_cores`   | cores (gauge) | `node_id`, `node_type` |
-| `rafka.mesh.node.cpu_budget_cores` | cores (gauge) | `node_id`, `node_type` |
-| `rafka.mesh.node.ram_used_gb`      | GB (gauge)    | `node_id`, `node_type` |
-| `rafka.mesh.node.ram_budget_gb`    | GB (gauge)    | `node_id`, `node_type` |
+| `rdm.mesh.bytes_sent_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rdm.mesh.bytes_received_per_sec` | bytes/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rdm.mesh.frames_sent_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rdm.mesh.frames_received_per_sec` | frames/sec (gauge) | `src_node_id`, `dst_node_id`, `op_kind` |
+| `rdm.mesh.frame.decode_error_rate` | errors/sec (gauge) | `src_node_id`, `dst_node_id` |
+| `rdm.mesh.peer.rtt_ms` | milliseconds (histogram) | `node_id`, `peer_id` |
+| `rdm.mesh.node.cpu_used_cores`   | cores (gauge) | `node_id`, `node_type` |
+| `rdm.mesh.node.cpu_budget_cores` | cores (gauge) | `node_id`, `node_type` |
+| `rdm.mesh.node.ram_used_gb`      | GB (gauge)    | `node_id`, `node_type` |
+| `rdm.mesh.node.ram_budget_gb`    | GB (gauge)    | `node_id`, `node_type` |
 
 Aggregation window: **5-second sliding** for every per-sec gauge. Locked so the dynamic-throughput viz can divide consistently.
 
@@ -355,7 +355,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_NODE_BIND_ADDR` | `0.0.0.0:0` | IPv4 socket address iroh binds the QUIC endpoint to. Port 0 = ephemeral OS-assigned. Override to pin to a specific port for firewall rules. |
 | `RAFKA_GOSSIP_INTERVAL_MS` | `2000` | Gossip heartbeat interval in milliseconds. Bumped from 500 → 2000 as part of the CPU-optimization pass (07-cpu-optimization-plan.md): substrate health doesn't need 2 Hz granularity, and at 18 nodes the per-tick fanout cost was non-trivial. |
 | `RAFKA_STALENESS_MS` | `30000` | Background pruner threshold (milliseconds). A `GossipDigest` whose `wall_time_ms` is older than this is removed from the process-global `live_digests` + `topic_membership` maps. Sweeps every 5 seconds. At the default 2s gossip cadence, 30s = 15 missed cycles. Override to tune how aggressively stale peers are evicted from the topology view. |
-| `RAFKA_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rafka.mesh.peer.discovered` + `rafka.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
+| `RAFKA_SEED_NODES` | _(empty)_ | Comma-separated list of `<node_id_hex>@<host>:<port>` entries to dial on boot. Each seed triggers `rdm.mesh.peer.discovered` + `rdm.mesh.peer.connected` spans. Example: `abc123...@127.0.0.1:14820`. Added Sprint 03. |
 | `RAFKA_AUTO_SHUTDOWN_SECS` | _(unset = wait for signal)_ | If set, node shuts down cleanly after this many seconds. Verification hook only — used to produce a clean process exit (and thus flush OTLP spans) in environments where Ctrl+C delivery is unreliable (e.g. Windows child process). |
 | `RAFKA_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | TCP address the `rafka-topology-ui` HTTP server binds to. Override to expose on a different interface or port. |
 | `RAFKA_NODE_ADMIN_API_BASE` | _(unset)_ | The node-admin control API the Admin UI drives (the URL node-admin prints). The UI submits every topology change there as a Build through `rafka-node-admin-client`; unset, its spawn/restart/remove/bootstrap routes answer `503 no-node-admin`. |
@@ -384,7 +384,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RAFKA_MESH_ID` | _(minted)_ | The mesh's id (canonical Crockford60, refused by name otherwise), written by the launching admin for every node it launches so every node of a mesh carries the same one. |
 | `RAFKA_NODE_ADMIN_API_BIND` | `127.0.0.1:0` | `rafka-node-admin` (bootstrap): the control API's HTTP bind. A launched admin binds the `control` slot node-admin assigned. It prints `RAFKA_NODE_ADMIN_API_BASE=<url>` once serving. |
 | `RAFKA_BIN_DIR` | _(beside the running exe)_ | `rafka-node-admin`: where `rafka-node-admin` and `rafka-rpc-node` live. |
-| `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rafka.mesh.node.create.via-deployment` parents to it. |
+| `TRACEPARENT` | _(unset)_ | W3C traceparent of the deploying step; the node's boot span `rdm.mesh.node.create.via-deployment` parents to it. |
 | `RAFKA_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
 | `RAFKA_LEAVE_LINGER_MS` | `1000` | Every node (rpc node and node-admin): how long a stopping node keeps announcing `Leaving` on membership (every 200 ms) before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
 

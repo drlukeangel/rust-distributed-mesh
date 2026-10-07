@@ -113,7 +113,7 @@ pub async fn run(role: Role) -> Result<()> {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
-        "rafka.mesh.node.create.via-deployment",
+        "rdm.mesh.node.create.via-deployment",
         node = %launch.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
@@ -140,14 +140,14 @@ pub async fn run(role: Role) -> Result<()> {
     println!("RAFKA_NODE_READY {}", launch.node_id);
     rafka_node_rpc_testkit::node::wait_for_signal(&format!("rafka-{}", role.name())).await;
     let deadline = drain_deadline_from_env();
-    let drain = tracing::info_span!("rafka.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);
+    let drain = tracing::info_span!("rdm.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);
     let left = {
         use tracing::Instrument;
         running.drain(deadline).instrument(drain.clone()).await
     };
     drain.record("in_flight_at_deadline", left);
     drop(drain);
-    tracing::info_span!("rafka.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
     running.stop(leave_linger_from_env()).await;
     Ok(())
 }

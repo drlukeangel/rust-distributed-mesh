@@ -12,7 +12,7 @@
 //!    a wrong incarnation: `RejectedStaleIncarnation`.
 //! 4. A declaration to the non-primary admin: `RejectedNotAuthority` (receiver-not-primary).
 //! 5. `Draining`, then `Leaving`: `Applied`, and the view follows.
-//! Every decision is one `rafka.node_admin.status.update.via-declaration` span on the authority.
+//! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the authority.
 
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
@@ -102,7 +102,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
 
     // Evidence: every decision is one span on the authority, naming op, sender and outcome.
     let spans = estate.spans();
-    let decided = named(&spans, "rafka.node_admin.status.update.via-declaration");
+    let decided = named(&spans, "rdm.node_admin.status.update.via-declaration");
     let on_primary = |outcome: &str| decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == outcome && s["attributes"]["sender"] == "mesh1.rpc.1").count();
     assert_eq!(on_primary("applied"), 3, "RFT (by the node at birth), Draining, Leaving: {decided:?}");
     assert!(on_primary("already-applied") >= 1, "the oracle's repeat, and the node's own Draining/Leaving at stop: {decided:?}");

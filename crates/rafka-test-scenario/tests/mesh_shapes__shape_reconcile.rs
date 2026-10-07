@@ -83,7 +83,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let mut estate = estate;
     estate.stop().await;
     let spans = estate.spans();
-    let accepted_span = named(&spans, "rafka.node_admin.build.create.via-rest")
+    let accepted_span = named(&spans, "rdm.node_admin.build.create.via-rest")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))
@@ -91,7 +91,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     // The fabric primary runs the attempt that creates the admin cohorts; a
     // new mesh's own primary runs a later attempt for its members. Every
     // attempt descends from the accepting request, and the last converges.
-    let reconciles: Vec<Value> = named(&spans, "rafka.node_admin.build.update.via-reconcile")
+    let reconciles: Vec<Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|s| s["attributes"]["build_id"] == build_id.as_str())
         .cloned()
@@ -102,19 +102,19 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     }
     let created: Vec<&String> = want.iter().filter(|n| *n != "mesh1.admin.1").collect();
     for node in created {
-        let step = named(&spans, "rafka.node_admin.deployment.update.via-step")
+        let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
             .unwrap_or_else(|| panic!("{shape}: no DeployRuntime step for {node}"))
             .clone();
         assert!(reconciles.iter().any(|r| descends_from(&spans, &step, r)), "{shape}: {node}'s DeployRuntime runs under a reconcile of the Build");
-        let boot = named(&spans, "rafka.mesh.node.create.via-deployment")
+        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str())
             .unwrap_or_else(|| panic!("{shape}: {node} wrote no boot span"))
             .clone();
         assert!(descends_from(&spans, &boot, &step), "{shape}: {node} booted under the step that launched it");
-        let lifecycle = named(&spans, "rafka.node_admin.lifecycle.update.via-transition")
+        let lifecycle = named(&spans, "rdm.node_admin.lifecycle.update.via-transition")
             .into_iter()
             .find(|s| s["attributes"]["target"] == node.as_str())
             .unwrap_or_else(|| panic!("{shape}: no lifecycle transition for {node}"))

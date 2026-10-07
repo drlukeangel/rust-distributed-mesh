@@ -91,7 +91,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     estate.stop().await;
     let spans = estate.spans();
     let accepted = |id: &str| {
-        named(&spans, "rafka.node_admin.build.create.via-rest")
+        named(&spans, "rdm.node_admin.build.create.via-rest")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == id)
             .unwrap_or_else(|| panic!("no span accepted build {id}"))
@@ -100,27 +100,27 @@ async fn roles_are_born_by_build_under_their_kind() {
     let (first_accepted, second_accepted) = (accepted(&first), accepted(&second));
     for (kind, _) in &roles {
         let node = format!("mesh1.{kind}.1");
-        let step = named(&spans, "rafka.node_admin.deployment.update.via-step")
+        let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == first.as_str())
             .unwrap_or_else(|| panic!("no DeployRuntime step for {node}"))
             .clone();
         assert!(descends_from(&spans, &step, &first_accepted), "{node}'s deployment runs under the Build that asked for it");
-        let boot = named(&spans, "rafka.mesh.node.create.via-deployment")
+        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str())
             .unwrap_or_else(|| panic!("{node} wrote no boot span"))
             .clone();
         assert_eq!(boot["attributes"]["kind"], *kind, "{node}'s boot names its kind: {boot}");
         assert!(descends_from(&spans, &boot, &step), "{node} booted under the step that launched it");
-        let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+        let ready = named(&spans, "rdm.mesh.node.update.via-ready")
             .into_iter()
             .find(|s| s["attributes"]["node"] == node.as_str())
             .unwrap_or_else(|| panic!("{node} wrote no ready span"))
             .clone();
         assert_eq!(ready["attributes"]["kind"], *kind, "{node}'s ready span names its kind: {ready}");
     }
-    let delete = named(&spans, "rafka.node_admin.node.delete.via-build")
+    let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
         .into_iter()
         .find(|s| s["attributes"]["node"] == "mesh1.compute.1" && s["attributes"]["build_id"] == second.as_str())
         .unwrap_or_else(|| panic!("no removal of mesh1.compute.1 under build {second}"))

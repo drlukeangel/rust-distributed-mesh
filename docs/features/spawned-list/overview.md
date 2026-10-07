@@ -15,7 +15,7 @@ Returns ONLY UI-spawned subprocesses — baseline nodes launched directly (e.g. 
 ```rust
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
     let names: Vec<String> = state.processes.iter().map(|e| e.key().clone()).collect();
-    let span = info_span!("rafka.ui.spawned_list", count = names.len() as i64, "otel.kind" = "internal");
+    let span = info_span!("rdm.ui.spawned_list", count = names.len() as i64, "otel.kind" = "internal");
     span.in_scope(|| info!(count = names.len(), "spawned subprocesses listed"));
     (StatusCode::OK, axum::Json(json!({"spawned": names}))).into_response()
 }
@@ -27,7 +27,7 @@ Used by:
 
 ## Locked spans
 
-- `rafka.ui.spawned_list{count, otel.kind="internal"}` — one span per query
+- `rdm.ui.spawned_list{count, otel.kind="internal"}` — one span per query
 
 ## Invariants
 

@@ -281,12 +281,12 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
   var uiSpawned = {};
 
   var COLORS = {
-    'rafka.mesh.node.ready':              '#1f6feb',
-    'rafka.mesh.boot.identity_':          '#3fb950',
-    'rafka.mesh.boot.endpoint_created':   '#e3b341',
-    'rafka.mesh.boot.alpn_registered':    '#8957e5',
-    'rafka.mesh.boot.gossip_started':     '#39c5cf',
-    'rafka.mesh.boot.accept_loop_started':'#f85149',
+    'rdm.mesh.node.ready':              '#1f6feb',
+    'rdm.mesh.boot.identity_':          '#3fb950',
+    'rdm.mesh.boot.endpoint_created':   '#e3b341',
+    'rdm.mesh.boot.alpn_registered':    '#8957e5',
+    'rdm.mesh.boot.gossip_started':     '#39c5cf',
+    'rdm.mesh.boot.accept_loop_started':'#f85149',
   };
 
   function spanColor(opName) {
@@ -350,11 +350,11 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
   function renderWaterfall(svc, traceData) {
     var spans = traceData.spans || [];
     var rafkaSpans = spans.filter(function(s) {
-      return s.operationName && s.operationName.indexOf('rafka.') === 0;
+      return s.operationName && (s.operationName.indexOf('rdm.') === 0 || s.operationName.indexOf('rafka.') === 0);
     });
 
     if (rafkaSpans.length === 0) {
-      wf.innerHTML = '<div class="wf-error">no rafka spans found in boot trace for ' + svc + '</div>';
+      wf.innerHTML = '<div class="wf-error">no owned spans found in boot trace for ' + svc + '</div>';
       return;
     }
 
@@ -372,7 +372,7 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
 
     rafkaSpans.forEach(function(sp) {
       var name       = sp.operationName;
-      var shortName  = name.replace('rafka.mesh.', '');
+      var shortName  = name.replace('rdm.mesh.', '');
       var offsetUs   = sp.startTime - rootTime;
       var leftPct    = (offsetUs / totalUs * 100).toFixed(2);
       var widthPct   = (sp.duration / totalUs * 100).toFixed(2);
@@ -1145,7 +1145,7 @@ async fn handle_health() -> impl IntoResponse {
 async fn handle_spawned_list(State(state): State<AppState>) -> impl IntoResponse {
     let names: Vec<String> = state.known.iter().map(|e| e.key().clone()).collect();
     let span = info_span!(
-        "rafka.ui.spawned_list",
+        "rdm.ui.spawned_list",
         count = names.len() as i64,
         "otel.kind" = "internal",
     );
@@ -1225,9 +1225,9 @@ async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResp
     // Fan out 15+ Jaeger queries in parallel so the timeline tab returns in
     // ~1s instead of 15s+ serial.
     let ops: Vec<(&str, &str)> = vec![
-        ("rafka.mesh.node.ready", "node.ready"),
-        ("rafka.mesh.peer.connected", "peer.connected"),
-        ("rafka.mesh.peer.disconnected", "peer.disconnected"),
+        ("rdm.mesh.node.ready", "node.ready"),
+        ("rdm.mesh.peer.connected", "peer.connected"),
+        ("rdm.mesh.peer.disconnected", "peer.disconnected"),
     ];
 
     let mut handles = Vec::new();
@@ -1587,7 +1587,7 @@ async fn handle_chaos_recent(State(state): State<AppState>) -> impl IntoResponse
 /// `GET /api/alerts` — query Jaeger for chaos.primitive.detected spans with
 /// non-Passed results in the last 10 minutes; surface them as alerts.
 async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
-    let span = info_span!("rafka.ui.alerts.query", "otel.kind" = "internal");
+    let span = info_span!("rdm.ui.alerts.query", "otel.kind" = "internal");
     let _enter = span.enter();
 
     let url = format!(
@@ -1652,7 +1652,7 @@ async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn handle_nodes(State(state): State<AppState>) -> impl IntoResponse {
     let url = format!("{}/api/services", state.jaeger_url);
-    let span = info_span!("rafka.ui.jaeger.query", endpoint = "/api/services", "otel.kind" = "client");
+    let span = info_span!("rdm.ui.jaeger.query", endpoint = "/api/services", "otel.kind" = "client");
     // Explicit 4s timeout at the call site documents the budget locally
     // (QA F#2). Global client default also caps at 4s as a backstop.
     let result = state.http.get(&url).timeout(Duration::from_secs(4)).send().instrument(span).await;
@@ -1703,11 +1703,11 @@ async fn handle_boot_trace(
         .unwrap_or_else(|_| "{}".into());
     let tags_enc = urlencoding::encode(&tags_json);
     let url = format!(
-        "{}/api/traces?service={}&operation=rafka.mesh.node.ready&limit=1&lookback=2h&tags={}",
+        "{}/api/traces?service={}&operation=rdm.mesh.node.ready&limit=1&lookback=2h&tags={}",
         state.jaeger_url, node_type, tags_enc
     );
     let span = info_span!(
-        "rafka.ui.jaeger.query",
+        "rdm.ui.jaeger.query",
         endpoint = "/api/traces",
         service = %svc,
         "otel.kind" = "client",
@@ -1751,11 +1751,11 @@ async fn handle_heartbeat(
 ) -> impl IntoResponse {
     let svc = &params.service;
     let url = format!(
-        "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=10m",
+        "{}/api/traces?service={}&operation=rdm.mesh.heartbeat&limit=1&lookback=10m",
         state.jaeger_url, svc
     );
     let span = info_span!(
-        "rafka.ui.jaeger.query",
+        "rdm.ui.jaeger.query",
         endpoint = "/api/traces/heartbeat",
         service = %svc,
         "otel.kind" = "client",
@@ -2130,7 +2130,7 @@ async fn chaos_loop(state: AppState) {
                     detail: Some(format!("restart build {build_id}")),
                 });
                 info_span!(
-                    "rafka.ui.chaos.restart",
+                    "rdm.ui.chaos.restart",
                     node_name = %victim,
                     mesh_id = %meta.mesh_id,
                     build_id = %build_id,
@@ -2152,7 +2152,7 @@ async fn trace_middleware(req: Request, next: Next) -> Response {
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
 
-    // Extract incoming W3C traceparent so the rafka.ui.http.request span chains
+    // Extract incoming W3C traceparent so the rdm.ui.http.request span chains
     // under the caller's trace (e.g. rfa CLI invocation). When no traceparent
     // header is present, set_parent on a default context is a no-op and the span
     // becomes its own root — matches in-browser-fetch behaviour.
@@ -2161,7 +2161,7 @@ async fn trace_middleware(req: Request, next: Next) -> Response {
     });
 
     let span = info_span!(
-        "rafka.ui.http.request",
+        "rdm.ui.http.request",
         method = %method,
         path = %path,
         "otel.kind" = "server",

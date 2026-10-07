@@ -3,7 +3,7 @@
 ## Watch heartbeats in Jaeger
 
 ```
-http://localhost:16686/search?service=gateway&operation=rafka.mesh.heartbeat&lookback=15m
+http://localhost:16686/search?service=gateway&operation=rdm.mesh.heartbeat&lookback=15m
 ```
 
 Each trace = one tick. Click any to see `peer_count` tag.
@@ -28,7 +28,7 @@ Returns the most recent heartbeat: `{node_id, peer_count, last_heartbeat_us}`.
 ```bash
 PYTHONIOENCODING=utf-8 python -c "
 import urllib.request, json
-d=json.loads(urllib.request.urlopen('http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.heartbeat&limit=20&lookback=2m').read())
+d=json.loads(urllib.request.urlopen('http://localhost:16686/api/traces?service=gateway&operation=rdm.mesh.heartbeat&limit=20&lookback=2m').read())
 counts = set()
 for t in d.get('data', []):
     for tag in t['spans'][0]['tags']:

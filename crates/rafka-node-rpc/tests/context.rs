@@ -222,7 +222,7 @@ async fn a_direct_call_continues_the_callers_trace_and_records_only_allowlisted_
 
     // The serve span is a child of the caller's remote span, carries its tracestate, names the
     // caller system and exposes the allowlisted keys only.
-    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id));
+    let serve = finished("rdm.node_rpc.request.serve.via-direct", Some(&t.id));
     assert_eq!(serve.len(), 1, "{serve:?}");
     let s = &serve[0];
     assert_eq!(s.parent_span_id.to_string(), PARENT, "the caller's span is the parent");
@@ -255,7 +255,7 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen[0].context.caller_system.as_deref(), Some("rdm"), "the client's caller_system rides every call");
-    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(&trace));
+    let serve = finished("rdm.node_rpc.request.serve.via-direct", Some(&trace));
     assert_eq!(serve.len(), 1, "the serve span joined the caller's current trace: {serve:?}");
     assert_eq!(serve[0].parent_span_id.to_string(), parent);
     assert_eq!(attr(&serve[0], "caller_system").as_deref(), Some("rdm"));
@@ -270,7 +270,7 @@ async fn missing_context_is_valid_and_starts_a_new_trace() {
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen[0].context, CallContext::default());
-    let serve: Vec<SpanData> = finished("rafka.node_rpc.request.serve.via-direct", None)
+    let serve: Vec<SpanData> = finished("rdm.node_rpc.request.serve.via-direct", None)
         .into_iter()
         .filter(|s| attr(s, "peer").as_deref() == Some(&c.endpoint().id().to_string()))
         .collect();
@@ -296,7 +296,7 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     assert!(matches!(&out, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { payload } if payload == b"bad")), "the call proceeds: {out:?}");
     assert!(ev.unwrap().committed);
     // The caller dropped every bad part before sending, named on its own span...
-    let dropped = finished("rafka.node_rpc.request.update.via-context-dropped", None);
+    let dropped = finished("rdm.node_rpc.request.update.via-context-dropped", None);
     let caller_side: Vec<_> = dropped.iter().filter(|s| attr(s, "decided_by").as_deref() == Some("caller")).collect();
     assert_eq!(caller_side.len(), 1, "{dropped:?}");
     assert_eq!(attr(caller_side[0], "context_dropped").as_deref(), Some("caller_system,traceparent,baggage"));
@@ -311,7 +311,7 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     let seen = p.seen.lock().unwrap().clone();
     assert_eq!(seen[1].context, CallContext { tracestate: None, ..full(&t) });
-    let serve = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id));
+    let serve = finished("rdm.node_rpc.request.serve.via-direct", Some(&t.id));
     assert!(serve.iter().any(|s| attr(s, "caller_system").as_deref() == Some("rdm") && s.parent_span_id.to_string() == PARENT), "the valid parts still apply: {serve:?}");
 }
 
@@ -330,7 +330,7 @@ async fn context_never_reaches_the_fence_decision() {
     assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
     // The refusal is still correlated with the caller's trace.
-    let refused = finished("rafka.node_rpc.connection.reject.via-stale-target", Some(&t.id));
+    let refused = finished("rdm.node_rpc.connection.reject.via-stale-target", Some(&t.id));
     assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").as_deref() == Some("rdm")), "{refused:?}");
     // The current client serves with the same context.
     let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
@@ -373,15 +373,15 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
 
     // One trace: the Forward serve and the hop are children of the origin's span, and the
     // target's serve span keeps the origin's causal parent rather than the hop.
-    let forward_serve: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("forward")).collect();
+    let forward_serve: Vec<_> = finished("rdm.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("forward")).collect();
     assert_eq!(forward_serve.len(), 1, "{forward_serve:?}");
     assert_eq!(forward_serve[0].parent_span_id.to_string(), PARENT);
     assert_eq!(attr(&forward_serve[0], "caller_system").as_deref(), Some("rdm"));
-    let hop = finished("rafka.node_rpc.request.serve.via-carried-inner", Some(&t.id));
+    let hop = finished("rdm.node_rpc.request.serve.via-carried-inner", Some(&t.id));
     assert_eq!(hop.len(), 1, "{hop:?}");
     assert_eq!(hop[0].parent_span_id.to_string(), PARENT, "the hop is a child span in the origin's trace");
     assert_eq!(attr(&hop[0], "caller_system").as_deref(), Some("rdm"));
-    let inner: Vec<_> = finished("rafka.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("probe")).collect();
+    let inner: Vec<_> = finished("rdm.node_rpc.request.serve.via-direct", Some(&t.id)).into_iter().filter(|s| attr(s, "protocol").as_deref() == Some("probe")).collect();
     assert_eq!(inner.len(), 1, "{inner:?}");
     assert_eq!(inner[0].parent_span_id.to_string(), PARENT, "the origin's parent, not the hop");
     assert_eq!(attr(&inner[0], "caller_system").as_deref(), Some("rdm"));

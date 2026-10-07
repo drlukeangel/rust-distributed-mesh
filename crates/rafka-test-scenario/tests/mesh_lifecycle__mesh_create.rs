@@ -38,7 +38,7 @@ fn s(v: &Value) -> String {
 /// whole test.
 fn fabric_primary_seen_by(spans: &[Value], observer: &str, at: &Value) -> String {
     let t = at["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
-    named(spans, "rafka.mesh.election.resolve.via-fabric-recompute")
+    named(spans, "rdm.mesh.election.resolve.via-fabric-recompute")
         .into_iter()
         .filter(|r| r["attributes"]["observer"] == observer && r["start_unix_nano"].as_u64().is_some_and(|s| s <= t))
         .max_by_key(|r| r["start_unix_nano"].as_u64())
@@ -61,7 +61,7 @@ fn executed_by(spans: &[Value], span_name: &str, node: &str, build_id: &str) -> 
         .find(|s| s["attributes"]["node"] == node && s["attributes"]["build_id"] == build_id)
         .unwrap_or_else(|| panic!("no {span_name} for {node} under {build_id}"))
         .clone();
-    let reconcile = named(spans, "rafka.node_admin.build.update.via-reconcile")
+    let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|r| r["attributes"]["build_id"] == build_id && descends_from(spans, &op, r))
         .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} above its operation"));
@@ -121,19 +121,19 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     // NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the test is
     // not the creator's seat.
     for a in ["mesh2.admin.1", "mesh2.admin.2"] {
-        let op = operation(&spans, "rafka.node_admin.node.create.via-build", a, &create);
-        let creator = executed_by(&spans, "rafka.node_admin.node.create.via-build", a, &create);
+        let op = operation(&spans, "rdm.node_admin.node.create.via-build", a, &create);
+        let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", a, &create);
         assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "{a}: created by the admin holding the fabric seat when it ran");
     }
     for r in ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"] {
-        assert_eq!(executed_by(&spans, "rafka.node_admin.node.create.via-build", r, &create), mesh2_primary, "{r}: mesh2's primary creates its members");
+        assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", r, &create), mesh2_primary, "{r}: mesh2's primary creates its members");
     }
-    assert_eq!(executed_by(&spans, "rafka.node_admin.node.create.via-build", "mesh2.rpc.4", &grow), mesh2_primary);
-    assert_eq!(executed_by(&spans, "rafka.node_admin.node.delete.via-build", "mesh2.rpc.4", &shrink), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", "mesh2.rpc.4", &grow), mesh2_primary);
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.delete.via-build", "mesh2.rpc.4", &shrink), mesh2_primary);
     // The Pending hand-off (e4.s11): once mesh2's first admin is born, the fabric primary applies
     // MeshStatus::Pending at that exact birth, and only then does the shape proceed. Evidence names
     // the authority's birth, the target's birth, the exact mesh identity and the applied state.
-    let handoffs: Vec<&Value> = named(&spans, "rafka.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").collect();
+    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").collect();
     let applied: Vec<&&Value> = handoffs.iter().filter(|h| h["attributes"]["outcome"] == "applied").collect();
     assert_eq!(applied.len(), 1, "one Pending applied at mesh2's bootstrap admin: {handoffs:?}");
     let handoff = applied[0];
@@ -143,7 +143,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(handoff["attributes"]["target"], "mesh2.admin.1");
     assert_eq!(handoff["attributes"]["state"], "Pending");
     let handed = handoff["end_unix_nano"].as_u64().unwrap();
-    let shape_started = named(&spans, "rafka.node_admin.node.create.via-build")
+    let shape_started = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(|c| c["attributes"]["build_id"] == create.as_str() && ["mesh2.admin.2", "mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"].contains(&c["attributes"]["node"].as_str().unwrap_or("")))
         .filter_map(|c| c["start_unix_nano"].as_u64())
@@ -152,14 +152,14 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert!(handed <= shape_started, "Pending Applied ({handed}) precedes Build(shape) ({shape_started})");
     // The target decided it through the same door as every declaration, and accepting Pending did
     // not make it the elected mesh primary.
-    let decided: Vec<&Value> = named(&spans, "rafka.node_admin.status.update.via-declaration")
+    let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
         .filter(|d| d["attributes"]["node"] == "mesh2.admin.1" && d["attributes"]["op"] == "apply-mesh-state" && d["attributes"]["outcome"] == "applied")
         .collect();
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
-    let accepted = named(&spans, "rafka.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
-    for r in named(&spans, "rafka.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()) {
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
+    for r in named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()) {
         assert!(descends_from(&spans, r, &accepted), "every attempt of the creation Build descends from its request");
     }
     estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));

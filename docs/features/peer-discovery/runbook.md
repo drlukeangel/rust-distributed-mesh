@@ -23,7 +23,7 @@ rfa mesh status
 **Detection:**
 ```bash
 # Count discovered events for one peer over 30s — should be 1, not 30+
-curl -s "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.peer.discovered&limit=100&lookback=1m" | python -c "import sys,json; d=json.load(sys.stdin); peer='<hex>'; n=sum(1 for t in d['data'] for tag in t['spans'][0]['tags'] if tag['key']=='peer_id' and tag['value']==peer); print(f'discoveries for {peer[:8]}: {n}')"
+curl -s "http://localhost:16686/api/traces?service=gateway&operation=rdm.mesh.peer.discovered&limit=100&lookback=1m" | python -c "import sys,json; d=json.load(sys.stdin); peer='<hex>'; n=sum(1 for t in d['data'] for tag in t['spans'][0]['tags'] if tag['key']=='peer_id' and tag['value']==peer); print(f'discoveries for {peer[:8]}: {n}')"
 ```
 
 **Recovery:** Re-enable the dedup guard in `crates/rafka-node-base/src/lib.rs::watch_mdns`:

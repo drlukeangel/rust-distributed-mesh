@@ -18,7 +18,7 @@ CARGO_TARGET_DIR=E:/cargo-target-v2 cargo run -p rafka-topology-ui &
 
 **Detection:** After running an rfa command, query:
 ```bash
-curl -s "http://localhost:16686/api/traces?service=rfa&operation=rafka.cli.command&limit=5&lookback=2m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))"
+curl -s "http://localhost:16686/api/traces?service=rfa&operation=rdm.cli.command&limit=5&lookback=2m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))"
 ```
 Should be ≥ number of invocations.
 

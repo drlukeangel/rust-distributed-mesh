@@ -124,7 +124,7 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     estate.stop().await;
     // Every served call is a span on the executing birth, naming the op and its outcome.
     let spans = estate.spans();
-    let served = named(&spans, "rafka.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     let on = |inc: &Value, op: &str, outcome: &str| {
         served.iter().any(|s| s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome)
     };

@@ -262,7 +262,7 @@ mesh-grow-shrink
 12. ~~`gossip-mesh-to-mesh` test failure (no cross.peer_connected
     spans on gateway)~~ — **FIXED** (2026-05-21): test was written
     pre-bridge architecture and queried `service=gateway` for the
-    `rafka.mesh.cross.peer_connected` span. Post-bridge, mesh-a
+    `rdm.mesh.cross.peer_connected` span. Post-bridge, mesh-a
     nodes only talk to bridges and bridges only talk to mesh-b —
     gateways never directly see cross-mesh peers, so the span
     fires on `service=bridge` instead. Fix: query all five peer

@@ -113,7 +113,7 @@ pub fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<
                             let log = s.entry(key.clone()).or_default();
                             log.push(value);
                             let offset = (log.len() - 1) as u64;
-                            tracing::info_span!("rafka.node_rpc.broker_data.serve.via-append", key = %key, offset, served_by = %me).in_scope(|| tracing::info!("appended"));
+                            tracing::info_span!("rdm.node_rpc.broker_data.serve.via-append", key = %key, offset, served_by = %me).in_scope(|| tracing::info!("appended"));
                             BrokerDataReply::Appended { key, offset, served_by: me }
                         }
                         BrokerDataRequest::Read { key } => {

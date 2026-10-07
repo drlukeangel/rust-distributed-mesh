@@ -69,9 +69,9 @@ async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() 
 
     let spans = estate.spans();
     let node_id = s(&target["node_id"]);
-    let tickled = named(&spans, "rafka.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id.as_str()).cloned().unwrap_or_else(|| panic!("{path} was never tickled"));
-    assert!(named(&spans, "rafka.node_admin.node.update.via-offline-hold-down-opened").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "the hold-down opened for {path}");
-    assert!(named(&spans, "rafka.node_admin.node.update.via-offline-returned").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "{path} returned");
-    assert!(!named(&spans, "rafka.node_admin.node.delete.via-build").iter().any(|sp| sp["attributes"]["node"] == path.as_str()), "silence removed nothing");
+    let tickled = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id.as_str()).cloned().unwrap_or_else(|| panic!("{path} was never tickled"));
+    assert!(named(&spans, "rdm.node_admin.node.update.via-offline-hold-down-opened").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "the hold-down opened for {path}");
+    assert!(named(&spans, "rdm.node_admin.node.update.via-offline-returned").iter().any(|sp| sp["attributes"]["node_id"] == node_id.as_str()), "{path} returned");
+    assert!(!named(&spans, "rdm.node_admin.node.delete.via-build").iter().any(|sp| sp["attributes"]["node"] == path.as_str()), "silence removed nothing");
     estate.record_trace_url(tickled["trace_id"].as_str().unwrap_or(""));
 }

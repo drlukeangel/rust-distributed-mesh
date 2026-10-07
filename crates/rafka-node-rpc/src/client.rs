@@ -135,7 +135,7 @@ impl NodeRpcClient {
         });
         let (ctx, dropped) = ctx.sanitized();
         if !dropped.is_empty() {
-            tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "caller", context_dropped = %dropped_as_str(&dropped))
+            tracing::info_span!("rdm.node_rpc.request.update.via-context-dropped", decided_by = "caller", context_dropped = %dropped_as_str(&dropped))
                 .in_scope(|| tracing::info!("observability context dropped before the request was sent; the call proceeds"));
         }
         ctx
@@ -357,7 +357,7 @@ impl NodeRpcClient {
 /// `current` is what the decider holds instead, in its own words.
 fn stale_span(decided_by: &'static str, asked: &Fence, current: &str) {
     tracing::info_span!(
-        "rafka.node_rpc.connection.reject.via-stale-target",
+        "rdm.node_rpc.connection.reject.via-stale-target",
         decided_by,
         node_id = %asked.target_node_id,
         op = asked.op,

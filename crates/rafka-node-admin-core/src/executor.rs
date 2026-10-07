@@ -145,7 +145,7 @@ impl BuildExecutor {
         use tracing::Instrument;
         let attempt = build.attempt + 1;
         let span = tracing::info_span!(
-            "rafka.node_admin.build.update.via-reconcile",
+            "rdm.node_admin.build.update.via-reconcile",
             build_id = %build.build_id,
             attempt,
             executor = %self.executor,

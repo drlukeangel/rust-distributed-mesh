@@ -15,7 +15,7 @@
 | chaos-soak-9prim-5min | chaos | `rafka_chaos::soak::run_soak("5m","10s",seed)` | ~310 s (≥25 events) |
 | mesh-five-types-present | chaos | spawn 5 types via `/api/nodes/spawn`, query `/api/nodes/spawned` | ~10 s |
 | remove-resilience | chaos | spawn 6 (own set), kill 3, verify OUR 3 survivors emit fresh heartbeats | ~25 s |
-| gossip-swarm-forms | chaos | spawn 4, verify `rafka.mesh.gossip.received` spans exist | ~15 s |
+| gossip-swarm-forms | chaos | spawn 4, verify `rdm.mesh.gossip.received` spans exist | ~15 s |
 | gossip-mesh-to-mesh | chaos | spawn in mesh-A + mesh-B, verify isolation + cross.peer_connected | ~30 s |
 
 ## What each test proves
@@ -81,7 +81,7 @@ a bounded time — without this, dead peers stay in the active view forever.
 
 ### gossip-swarm-forms
 **Asserts**: after spawning 4 nodes and waiting briefly,
-`rafka.mesh.gossip.received` spans exist in Jaeger.
+`rdm.mesh.gossip.received` spans exist in Jaeger.
 **Why it matters**: control plane sanity. If gossip never emits "I received
 a digest from peer X" spans, the swarm hasn't formed and the topology is
 just isolated nodes.
@@ -89,7 +89,7 @@ just isolated nodes.
 ### gossip-mesh-to-mesh
 **Asserts**: nodes spawned with `RAFKA_MESH_ID=mesh-A` only gossip with each
 other (separate topic_id derived from mesh_id), AND
-`rafka.mesh.peer.connected` spans fire for cross-mesh QUIC connections
+`rdm.mesh.peer.connected` spans fire for cross-mesh QUIC connections
 (via bridges).
 **Why it matters**: tenant isolation guarantee. Two meshes must not leak
 gossip into each other even though they share the underlying iroh QUIC

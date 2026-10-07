@@ -11,9 +11,9 @@
 TID=<trace id>
 curl -s "http://localhost:16686/api/traces/$TID" | python -c "import sys,json; ops=sorted(set(s['operationName'] for s in json.load(sys.stdin)['data'][0]['spans'] if s['operationName'].startswith('rafka.'))); print(len(ops), ops)"
 ```
-Expected: 5–6 ops including `rafka.mesh.node.ready` AND `rafka.mesh.boot.endpoint_created`.
+Expected: 5–6 ops including `rdm.mesh.node.ready` AND `rdm.mesh.boot.endpoint_created`.
 
-**Recovery:** Read `crates/rafka-node-base/src/lib.rs::NodeRuntime::run`. Confirm each child span is wrapped via `.instrument(info_span!("rafka.mesh.boot.<phase>"))`. If `node.ready` is missing, the boot chain was refactored such that iroh background tasks inherited the root span context — fix by moving the iroh endpoint creation OUTSIDE the root span (per sprint-06 regression-fix-v2 pattern).
+**Recovery:** Read `crates/rafka-node-base/src/lib.rs::NodeRuntime::run`. Confirm each child span is wrapped via `.instrument(info_span!("rdm.mesh.boot.<phase>"))`. If `node.ready` is missing, the boot chain was refactored such that iroh background tasks inherited the root span context — fix by moving the iroh endpoint creation OUTSIDE the root span (per sprint-06 regression-fix-v2 pattern).
 
 ### Mode 2 — Boot trace exists but `bind_addr` shows `0.0.0.0:0`
 

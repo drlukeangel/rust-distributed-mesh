@@ -413,7 +413,7 @@ pub async fn reconcile_drift(
     }
     let scope = scope.join("; ");
     let span = tracing::info_span!(
-        "rafka.node_admin.build.update.via-proven-drift",
+        "rdm.node_admin.build.update.via-proven-drift",
         build_id = %current.build_id,
         attempt,
         scope = %scope,
@@ -536,7 +536,7 @@ impl NodeObserver for MembershipObserver {
             RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
             RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
         };
-        tracing::info_span!("rafka.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the typed drain was sent to the exact birth"));
         outcome
     }
@@ -617,7 +617,7 @@ pub struct GossipLifecycle {
 impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rafka.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         let _g = span.enter();
         if let Err(e) = self.membership.publish_lifecycle(&f).await {
             tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
@@ -629,7 +629,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rafka.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         let _g = span.enter();
         if let Err(e) = self.membership.publish_lifecycle(&f).await {
             tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
@@ -709,10 +709,10 @@ impl AdminRunner {
             .ok_or_else(|| format!("{} (birth {}) is not held in this admin's membership; its runtime is unknown", node.name, incarnation.0))?;
         let refuse = |reason: &str, detail: String| {
             let span = match reason {
-                "unpublished" => tracing::info_span!("rafka.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
-                "other-provider" => tracing::info_span!("rafka.node_admin.runtime.reject.via-other-provider", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
-                "foreign-control-domain" => tracing::info_span!("rafka.node_admin.runtime.reject.via-foreign-control-domain", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
-                _ => tracing::info_span!("rafka.node_admin.runtime.reject.via-invalid-fact", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                "other-provider" => tracing::info_span!("rdm.node_admin.runtime.reject.via-other-provider", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                "foreign-control-domain" => tracing::info_span!("rdm.node_admin.runtime.reject.via-foreign-control-domain", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
+                _ => tracing::info_span!("rdm.node_admin.runtime.reject.via-invalid-fact", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
             };
             span.in_scope(|| tracing::info!("runtime not adopted"));
             format!("{} (birth {}): {detail}", node.name, incarnation.0)
@@ -725,7 +725,7 @@ impl AdminRunner {
             record.data_dir = digest.data_dir.clone();
         }
         tracing::info_span!(
-            "rafka.node_admin.runtime.update.via-adopt",
+            "rdm.node_admin.runtime.update.via-adopt",
             node = %node.name,
             node_id = %node.node_id,
             incarnation_id = %incarnation.0,
@@ -961,7 +961,7 @@ impl AdminRunner {
                 Ok(())
             }
             BuildOperation::CreateNode { node } => {
-                let span = tracing::info_span!("rafka.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt);
                 async {
                     // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it
                     // has joined its mesh, the fabric primary applies MeshStatus::Pending at that exact
@@ -975,7 +975,7 @@ impl AdminRunner {
                 .await
             }
             BuildOperation::RestartNode { node } => {
-                let span = tracing::info_span!("rafka.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 async {
                     let prior = self.retire_for_restart(build_id, attempt, node).await?;
                     self.create(build_id, attempt, node, prior, None).await
@@ -984,7 +984,7 @@ impl AdminRunner {
                 .await
             }
             BuildOperation::RetireNode { node } => {
-                let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
             BuildOperation::RetireMesh { mesh } => {
@@ -1000,7 +1000,7 @@ impl AdminRunner {
                 // Each retire holds its local cleanup until this admin has heard the birth's own
                 // `Leaving`.
                 for node in retire_mesh_order(members, last_admin.as_ref()) {
-                    let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                    let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                     self.retire_with(build_id, attempt, &node, RetireKind::Removal, true, false).instrument(span).await?;
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
@@ -1049,7 +1049,7 @@ async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &r
             other => (format!("{}: {other:?}", other.name()), None),
         };
         tracing::info_span!(
-            "rafka.node_admin.mesh.update.via-pending-handoff",
+            "rdm.node_admin.mesh.update.via-pending-handoff",
             node = %me,
             node_id = %me_id,
             incarnation = %me_inc,
@@ -1221,7 +1221,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
             tracing::info_span!(
-                "rafka.node_admin.node.update.via-restart",
+                "rdm.node_admin.node.update.via-restart",
                 node = %own.name,
                 node_id = %own.node_id,
                 supersedes = %own.incarnation_id,
@@ -1451,7 +1451,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     Err(e) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's fabric shutdown does not decode"),
                 }
             }
-            tracing::info_span!("rafka.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
+            tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
             FabricPolicy { provider: topology.fabric.provider }
         }
@@ -1459,7 +1459,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
             // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
             // own mesh with one node-admin, and points `Fabric.build_id` at it (Build first).
             if restart.is_some() {
-                tracing::info_span!("rafka.node_admin.fabric.update.via-restart", node = %name, build_id = %accepted.build_id().await.map(|b| b.0).unwrap_or_default())
+                tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %accepted.build_id().await.map(|b| b.0).unwrap_or_default())
                     .in_scope(|| tracing::info!("Fabric.build_id and its Build reloaded from this admin's own storage"));
             } else if accepted.build_id().await.is_none() {
                 let b0 = crate::build_state::BuildAccepted {
@@ -1745,7 +1745,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     d.status = MemberStatus::ReadyForTraffic;
                     drop(d);
                     tracing::info_span!(
-                        "rafka.mesh.node.update.via-ready",
+                        "rdm.mesh.node.update.via-ready",
                         node = %me,
                         incarnation_id = %incarnation.0,
                         meshes = membership.meshes_held(),
@@ -1765,7 +1765,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     break;
                 }
                 if reported.as_ref() != Some(&blocked) {
-                    tracing::info_span!("rafka.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
+                    tracing::info_span!("rdm.node_admin.runtime.reject.via-not-authority-capable", node = %me, blocked = blocked.len(), detail = %blocked.join("; "))
                         .in_scope(|| tracing::info!("not ready: a held birth's runtime cannot be managed from here"));
                     reported = Some(blocked);
                 }
@@ -2064,7 +2064,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 d.clone()
             };
             let _ = membership_w.publish(&d).await;
-            tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown-frozen", node = %me)
+            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
                 .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
             if crate::shutdown::drain(me, drain_control, stopper).await {
                 done.notify_waiters();

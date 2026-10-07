@@ -289,7 +289,7 @@ impl LifecycleTransitionPipeline {
                     attempt,
                 };
                 let span = tracing::info_span!(
-                    "rafka.node_admin.lifecycle_hook.update.via-transition",
+                    "rdm.node_admin.lifecycle_hook.update.via-transition",
                     hook_id = %spec.hook_id,
                     phase = phase.as_str(),
                     transition_id = %t.transition_id,
@@ -337,7 +337,7 @@ impl LifecycleTransitionPipeline {
         C: FnOnce(),
     {
         let span = tracing::info_span!(
-            "rafka.node_admin.lifecycle.update.via-transition",
+            "rdm.node_admin.lifecycle.update.via-transition",
             transition_id = %t.transition_id,
             target = %t.target,
             from = ?t.key.from,

@@ -17,24 +17,24 @@
 2. Create spawn dir `E:/tmp/rafka-ui-nodes/{node_name}/`.
 3. Locate binary via `CARGO_TARGET_DIR` env var (default `./target`); resolve `{cargo_target_dir}/debug/rafka-{type}.exe`.
 4. `tokio::process::Command::new(binary_path).envs([OTEL_*, RAFKA_DATA_DIR]).spawn()`.
-5. Insert Child into DashMap; emit `rafka.ui.subprocess.spawned{node_name, node_type, pid, otel.kind="internal"}`.
+5. Insert Child into DashMap; emit `rdm.ui.subprocess.spawned{node_name, node_type, pid, otel.kind="internal"}`.
 
 `handle_kill`:
 1. Remove Child from DashMap.
 2. `Mutex::into_inner()` → `child.start_kill()` → `tokio::time::timeout(5s, child.wait())`.
 3. On timeout: `child.kill().await` (force).
-4. Delete spawn dir; emit `rafka.ui.subprocess.killed{node_name, pid, reason}` where `reason` ∈ {`graceful`, `forced`}.
+4. Delete spawn dir; emit `rdm.ui.subprocess.killed{node_name, pid, reason}` where `reason` ∈ {`graceful`, `forced`}.
 
 `handle_spawned_list`:
 1. Iterate DashMap keys → return as JSON array.
-2. Emit `rafka.ui.spawned_list{count, otel.kind="internal"}`.
+2. Emit `rdm.ui.spawned_list{count, otel.kind="internal"}`.
 
 ## Locked spans
 
-- `rafka.ui.subprocess.spawned{node_name, node_type, pid, otel.kind="internal"}`
-- `rafka.ui.subprocess.killed{node_name, pid, reason, otel.kind="internal"}` — `reason` ∈ {`graceful`, `forced`}
-- `rafka.ui.subprocess.spawn_failed{node_type, error, otel.kind="internal"}` — fork/path errors
-- `rafka.ui.spawned_list{count, otel.kind="internal"}` — visibility queries
+- `rdm.ui.subprocess.spawned{node_name, node_type, pid, otel.kind="internal"}`
+- `rdm.ui.subprocess.killed{node_name, pid, reason, otel.kind="internal"}` — `reason` ∈ {`graceful`, `forced`}
+- `rdm.ui.subprocess.spawn_failed{node_type, error, otel.kind="internal"}` — fork/path errors
+- `rdm.ui.spawned_list{count, otel.kind="internal"}` — visibility queries
 
 ## Invariants
 

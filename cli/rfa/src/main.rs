@@ -280,7 +280,7 @@ async fn main() -> Result<()> {
 
     let (command_name, args_str) = describe_command(&cli.command);
     let cmd_span = info_span!(
-        "rafka.cli.command",
+        "rdm.cli.command",
         command = %command_name,
         args = %args_str,
         "otel.kind" = "internal",
@@ -477,7 +477,7 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
     ("mesh-five-types-present", "chaos",      "spawn 4 nodes (gateway+broker+compute+registry), verify all 4 visible in topology + heartbeats fresh"),
     ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
-    ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rafka.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
+    ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rdm.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
     ("gossip-mesh-to-mesh",     "chaos",      "spawn nodes in mesh-A + mesh-B; verify each mesh's gossip stays isolated (separate topic_id per mesh_id) AND cross.peer_connected spans fire"),
     // === Single-primitive chaos tests ===
     ("kill-broker",             "chaos",      "KillNode targeting a random broker; verify subprocess removed within 30s"),
@@ -972,7 +972,7 @@ async fn run_gossip_swarm_forms(api_url: &str) -> (&'static str, String) {
     let mut total_rx: i64 = 0;
     for svc in ["gateway", "broker", "compute", "registry"] {
         let url = format!(
-            "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.gossip.received&limit=50&lookback=2m"
+            "http://localhost:16686/api/traces?service={svc}&operation=rdm.mesh.gossip.received&limit=50&lookback=2m"
         );
         let body = fetch_json(&client, &url).await;
         total_rx += body["data"]
@@ -981,7 +981,7 @@ async fn run_gossip_swarm_forms(api_url: &str) -> (&'static str, String) {
                 arr.iter()
                     .filter_map(|t| t["spans"].as_array())
                     .flat_map(|ss| ss.iter())
-                    .filter(|sp| sp["operationName"] == "rafka.mesh.gossip.received")
+                    .filter(|sp| sp["operationName"] == "rdm.mesh.gossip.received")
                     .count() as i64
             })
             .unwrap_or(0);
@@ -1015,7 +1015,7 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
     let mut cross_count: i64 = 0;
     for svc in ["gateway", "broker", "compute", "registry"] {
         let url = format!(
-            "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.cross.peer_connected&limit=20&lookback=2m"
+            "http://localhost:16686/api/traces?service={svc}&operation=rdm.mesh.cross.peer_connected&limit=20&lookback=2m"
         );
         let body = fetch_json(&client, &url).await;
         let n = body["data"]
@@ -1024,7 +1024,7 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
                 arr.iter()
                     .filter_map(|t| t["spans"].as_array())
                     .flat_map(|ss| ss.iter())
-                    .filter(|sp| sp["operationName"] == "rafka.mesh.cross.peer_connected")
+                    .filter(|sp| sp["operationName"] == "rdm.mesh.cross.peer_connected")
                     .count() as i64
             })
             .unwrap_or(0);
@@ -1300,7 +1300,7 @@ async fn http_post(client: &reqwest::Client, url: &str, body: &Value) -> Result<
         .map(|u| u.path().to_string())
         .unwrap_or_else(|_| url.to_string());
     let span = info_span!(
-        "rafka.cli.http.request",
+        "rdm.cli.http.request",
         method = "POST",
         path = %path,
         "otel.kind" = "client",
@@ -1327,7 +1327,7 @@ async fn http_delete(client: &reqwest::Client, url: &str) -> Result<(u16, Value)
         .map(|u| u.path().to_string())
         .unwrap_or_else(|_| url.to_string());
     let span = info_span!(
-        "rafka.cli.http.request",
+        "rdm.cli.http.request",
         method = "DELETE",
         path = %path,
         "otel.kind" = "client",
@@ -1349,7 +1349,7 @@ async fn http_get(client: &reqwest::Client, url: &str) -> Result<Value> {
         .map(|u| u.path().to_string())
         .unwrap_or_else(|_| url.to_string());
     let span = info_span!(
-        "rafka.cli.http.request",
+        "rdm.cli.http.request",
         method = "GET",
         path = %path,
         "otel.kind" = "client",
@@ -1445,7 +1445,7 @@ async fn cmd_node_describe(
             println!("{}", "-".repeat(65));
             for sp in &rafka {
                 let op = sp["operationName"].as_str().unwrap_or("?");
-                let short = op.replace("rafka.mesh.", "");
+                let short = op.replace("rdm.mesh.", "");
                 let start = sp["startTime"].as_i64().unwrap_or(0);
                 let dur = sp["duration"].as_i64().unwrap_or(0);
                 let offset_ms = (start - root_time) as f64 / 1000.0;
@@ -1682,7 +1682,7 @@ async fn cmd_wait_converged(
         poll_count += 1;
 
         let wait_span = info_span!(
-            "rafka.cli.wait_loop",
+            "rdm.cli.wait_loop",
             poll_count,
             target,
             current_count = current,

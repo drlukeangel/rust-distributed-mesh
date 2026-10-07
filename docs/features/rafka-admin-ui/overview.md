@@ -78,10 +78,10 @@ chaos.start
 
 ## Architectural truths the UI surfaces
 
-- **Edges are real**, derived from `rafka.mesh.peer.connected` +
-  `rafka.mesh.frame.sent` spans. No synthesis from labels. Pairs that
+- **Edges are real**, derived from `rdm.mesh.peer.connected` +
+  `rdm.mesh.frame.sent` spans. No synthesis from labels. Pairs that
   haven't connected yet have no edge.
-- **Frame counts are real**, accumulated from `rafka.mesh.frame.sent` spans
+- **Frame counts are real**, accumulated from `rdm.mesh.frame.sent` spans
   in the last 60 s. Pairs with non-zero counts render thicker.
 - **Every role pings every 10 s.** Previously only gateways pinged; brokers
   / compute / registry / bridges were silent on the data plane. Now all of

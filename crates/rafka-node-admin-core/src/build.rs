@@ -168,7 +168,7 @@ pub struct BuildPlan {
     pub operations: Vec<BuildOperation>,
 }
 
-/// A Build refused by name (`rafka.node_admin.build.reject.via-<reason>`).
+/// A Build refused by name (`rdm.node_admin.build.reject.via-<reason>`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum BuildReject {

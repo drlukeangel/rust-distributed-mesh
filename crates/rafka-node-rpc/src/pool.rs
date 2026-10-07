@@ -112,7 +112,7 @@ pub struct DialSpec {
 
 fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
     tracing::info_span!(
-        "rafka.node_rpc.connection.evict.via-incarnation-superseded",
+        "rdm.node_rpc.connection.evict.via-incarnation-superseded",
         peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, outcome, elapsed_ms = elapsed_ms as u64
     )
     .in_scope(|| tracing::info!("superseded birth: {outcome}"));
@@ -269,7 +269,7 @@ impl Pool {
             self.inner.strikes.lock().unwrap().remove(key);
             if self.remove_if_same(key, conn) {
                 tracing::info_span!(
-                    "rafka.node_rpc.connection.evict.via-timeout-strikes",
+                    "rdm.node_rpc.connection.evict.via-timeout-strikes",
                     peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, strikes
                 )
                 .in_scope(|| tracing::info!("poisoned connection evicted; the node is not marked unreachable"));

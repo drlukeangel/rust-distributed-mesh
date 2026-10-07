@@ -14,14 +14,14 @@ W3C trace context is embedded in the frame envelope (32 bytes: 16-byte trace_id 
 
 `crates/rafka-node-base/src/lib.rs::run_ping_sender` (Gateway role only) ticks every 10s, opens a uni stream per peer, encodes Ping with current OTel context, writes + closes.
 
-`run_frame_reader` (all roles) loops on `conn.accept_uni()`, reads the bytes, calls `decode_with_context`, creates a `rafka.mesh.frame.received` span with `set_parent(extracted_ctx)`, then for Ping replies with Pong (same trace context).
+`run_frame_reader` (all roles) loops on `conn.accept_uni()`, reads the bytes, calls `decode_with_context`, creates a `rdm.mesh.frame.received` span with `set_parent(extracted_ctx)`, then for Ping replies with Pong (same trace context).
 
 ## Locked spans
 
-- `rafka.mesh.frame.sent{node_id, peer_id, frame_kind, org_id, otel.kind="producer"}` — sender side
-- `rafka.mesh.frame.received{node_id, peer_id, frame_kind, org_id, otel.kind="consumer"}` — receiver side, parented via extracted context
-- `rafka.mesh.frame.sent_failed{node_id, peer_id, frame_kind, error, otel.kind="producer"}` — open_uni/write/finish error paths
-- `rafka.mesh.frame.decode_failed{node_id, peer_id, error, byte_len, otel.kind="consumer"}` — bincode decode error (orphan trace, no parent extractable)
+- `rdm.mesh.frame.sent{node_id, peer_id, frame_kind, org_id, otel.kind="producer"}` — sender side
+- `rdm.mesh.frame.received{node_id, peer_id, frame_kind, org_id, otel.kind="consumer"}` — receiver side, parented via extracted context
+- `rdm.mesh.frame.sent_failed{node_id, peer_id, frame_kind, error, otel.kind="producer"}` — open_uni/write/finish error paths
+- `rdm.mesh.frame.decode_failed{node_id, peer_id, error, byte_len, otel.kind="consumer"}` — bincode decode error (orphan trace, no parent extractable)
 
 ## Invariants
 

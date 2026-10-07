@@ -42,38 +42,38 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
         // The view holds no birth at the path: the world is asked, not assumed.
         let recorded = probe.recorded(path).await;
         if let Some((at, _)) = recorded.iter().find(|(_, s)| matches!(s, DeploymentStatus::Running)) {
-            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "held-running-unheard", data_dir = %at)
+            tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "held-running-unheard", data_dir = %at)
                 .in_scope(|| tracing::info!("the view holds no birth at this path, but a runtime recorded there still runs: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-predecessor-held", runtime_records = recorded.len())
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-predecessor-held", runtime_records = recorded.len())
             .in_scope(|| tracing::info!("the view holds no birth at this path and no recorded runtime there runs: nothing to fence"));
         return FenceOutcome::Clear { gone: None };
     };
     let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
     if prev.incarnation_id.is_none() {
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
             .in_scope(|| tracing::info!("the view holds a path with no birth at it: nothing to fence"));
         return FenceOutcome::Clear { gone: None };
     }
     // The plan was made on an older view: the path's birth is live here now (heard again through
     // a reborn forwarder, as the attempt ran). It keeps the path; a create over it is a duplicate.
     if prev.status.is_live() {
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
             .in_scope(|| tracing::info!("the view holds a live birth at this path: it stays, never created over"));
         return FenceOutcome::Alive;
     }
     // Unheard is not dead: a healthy member's digests can stop arriving for a window (its
     // forwarder left, its connections are timing out). A predecessor that answers is alive.
     if probe.answers(&prev).await {
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "answers")
+        tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "answers")
             .in_scope(|| tracing::info!("the previous birth is unheard but answers directly: it stays"));
         return FenceOutcome::Alive;
     }
     let (outcome, proven) = match probe.inspect(&prev).await {
         Err(e) => (format!("not-found: {e}"), false),
         Ok(DeploymentStatus::Running) => {
-            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
+            tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
                 .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
@@ -81,7 +81,7 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
         // (nothing answers there) but publishes no departure.
         Ok(other) => (format!("not-running: {other:?}"), matches!(other, DeploymentStatus::Exited { .. })),
     };
-    tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
+    tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
         .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
     FenceOutcome::Clear { gone: proven.then_some(prev) }
 }

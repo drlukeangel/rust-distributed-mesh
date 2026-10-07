@@ -134,7 +134,7 @@ pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch)
                     Err(ResolveFailure::Unavailable) => ResolveReply::Unavailable { by },
                 },
             };
-            tracing::info_span!("rafka.node_rpc.resolve_probe.serve.via-request", node = %reply_by(&reply), resolution = reply.resolution())
+            tracing::info_span!("rdm.node_rpc.resolve_probe.serve.via-request", node = %reply_by(&reply), resolution = reply.resolution())
                 .in_scope(|| tracing::info!("the node's own resolver answered"));
             Ok(reply)
         }

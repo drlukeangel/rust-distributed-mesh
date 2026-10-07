@@ -453,7 +453,7 @@ pub fn port_range_from_env() -> (u16, u16) {
         .unwrap_or((20000, 29999));
     if let Some((lo, hi)) = ephemeral_range() {
         if first <= hi && last >= lo {
-            tracing::info_span!("rafka.node_admin.endpoint.reject.via-ephemeral-overlap", first, last, ephemeral_first = lo, ephemeral_last = hi)
+            tracing::info_span!("rdm.node_admin.endpoint.reject.via-ephemeral-overlap", first, last, ephemeral_first = lo, ephemeral_last = hi)
                 .in_scope(|| tracing::warn!("the endpoint port range overlaps the kernel's ephemeral range: a port assigned here can be taken by any port-0 bind before the birth binds it"));
         }
     }

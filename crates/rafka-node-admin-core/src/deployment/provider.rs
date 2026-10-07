@@ -152,7 +152,7 @@ pub enum AdoptRefusal {
 }
 
 impl AdoptRefusal {
-    /// The span reason (`rafka.node_admin.runtime.reject.via-<reason>`).
+    /// The span reason (`rdm.node_admin.runtime.reject.via-<reason>`).
     pub fn reason(&self) -> &'static str {
         match self {
             Self::Invalid { .. } => "invalid-fact",

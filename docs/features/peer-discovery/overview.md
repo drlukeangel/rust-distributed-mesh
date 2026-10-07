@@ -12,7 +12,7 @@ How nodes find each other on the mesh. Two simultaneous paths:
 ## How it works
 
 `crates/rafka-node-base/src/lib.rs` spawns three tasks per boot:
-- `dial_seeds` — parses `RAFKA_SEED_NODES`, dials each via `endpoint.connect()`, emits `rafka.mesh.peer.discovered{source="seed"}` then `rafka.mesh.peer.connected{direction="outbound"}` on handshake.
+- `dial_seeds` — parses `RAFKA_SEED_NODES`, dials each via `endpoint.connect()`, emits `rdm.mesh.peer.discovered{source="seed"}` then `rdm.mesh.peer.connected{direction="outbound"}` on handshake.
 - `watch_mdns` — subscribes to iroh's mdns channel; for each newly-announced peer, dials + emits `peer.discovered{source="mdns"}` + `peer.connected{direction="outbound"}`. Skips if already in registry.
 - `start_accept_loop` — accepts inbound connections via `endpoint.accept()`, completes handshake, emits `peer.connected{direction="inbound"}`.
 
@@ -20,9 +20,9 @@ All three insert the live `iroh::endpoint::Connection` into a shared `PeerRegist
 
 ## Locked spans (Principle #10)
 
-- `rafka.mesh.peer.discovered{node_id, peer_id, peer_node_type, source}` — `source` ∈ {`seed`, `mdns`}
-- `rafka.mesh.peer.connected{node_id, peer_id, peer_node_type, direction}` — `direction` ∈ {`inbound`, `outbound`}
-- `rafka.mesh.peer.disconnected{node_id, peer_id, reason}` — fires when iroh `Connection::closed()` resolves
+- `rdm.mesh.peer.discovered{node_id, peer_id, peer_node_type, source}` — `source` ∈ {`seed`, `mdns`}
+- `rdm.mesh.peer.connected{node_id, peer_id, peer_node_type, direction}` — `direction` ∈ {`inbound`, `outbound`}
+- `rdm.mesh.peer.disconnected{node_id, peer_id, reason}` — fires when iroh `Connection::closed()` resolves
 
 ## Invariants
 

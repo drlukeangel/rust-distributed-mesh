@@ -85,7 +85,7 @@ impl NodeRpcClient {
         opts: &CallOptions,
     ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>, RouteLeg) {
         let span = tracing::info_span!(
-            "rafka.node_rpc.route.resolve.via-connections",
+            "rdm.node_rpc.route.resolve.via-connections",
             protocol = P::NAME,
             target = %target,
             route = route.token(),

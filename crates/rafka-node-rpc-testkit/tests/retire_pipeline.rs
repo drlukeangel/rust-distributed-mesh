@@ -87,15 +87,15 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
         let (_, parent, f) = all
             .values()
             .find(|(n, _, f)| {
-                n == "rafka.node_admin.deployment.update.via-step"
+                n == "rdm.node_admin.deployment.update.via-step"
                     && f.get("step").map(String::as_str) == Some(step.name())
                     && f.get("build_id") == Some(&retire_build.0)
             })
             .unwrap_or_else(|| panic!("no span for retire step {}", step.name()));
-        assert_eq!(parent.as_deref(), Some("rafka.node_admin.deployment.update.via-pipeline"));
+        assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"));
         assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
     }
-    assert!(all.values().any(|(n, _, f)| n == "rafka.node_admin.deployment.update.via-pipeline"
+    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
         && f.get("pipeline").map(String::as_str) == Some("retire")));
 
     // Create again on the same node: only possible on the released ports.

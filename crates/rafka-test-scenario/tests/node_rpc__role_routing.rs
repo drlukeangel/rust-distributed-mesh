@@ -6,7 +6,7 @@
 //! span evidence only:
 //! 1. Direct: the selected broker served, nobody else.
 //! 2. ViaPeer through `mesh1.gateway.2`: the carrier made exactly one inner invocation to that same
-//!    broker (`rafka.node_rpc.request.serve.via-carried-inner`) and never changed the final target.
+//!    broker (`rdm.node_rpc.request.serve.via-carried-inner`) and never changed the final target.
 //! 3. NoActiveRoute: `NotSent`, no connection opened, nothing served.
 //! 4. Selecting the other broker executes that broker; the first broker's store is untouched.
 
@@ -66,24 +66,24 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     estate.stop().await;
 
     let spans = estate.spans();
-    let served = named(&spans, "rafka.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     let served_in = |t: &[&Value]| served.iter().filter(|s| t.iter().any(|x| x["trace_id"] == s["trace_id"])).cloned().collect::<Vec<_>>();
-    let direct_b1: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b1_id).collect();
+    let direct_b1: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b1_id).collect();
     assert!(!direct_b1.is_empty() && direct_b1.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b1:?}");
     let direct_served = served_in(&direct_b1);
     assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the direct calls were served by broker.1's birth only: {direct_served:?}");
-    let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.request.serve.via-carried-inner").collect();
+    let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-carried-inner").collect();
     assert_eq!(carried_t.len(), 1, "exactly one carried inner call in the whole run: {carried_t:?}");
     assert_eq!(carried_t[0]["attributes"]["target"], b1_id, "the carrier was handed exactly broker.1");
-    let via: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect();
+    let via: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect();
     assert_eq!(via.len(), 1, "{via:?}");
     assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b1_id.as_str()), Some("mesh1.gateway.2"), Some("Reply")));
     assert!(served_in(&via).iter().all(|s| s["attributes"]["incarnation_id"] == b1["incarnation_id"]), "the carried call was served by broker.1's birth only");
-    let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
+    let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
     let none_trace = &none_t[0]["trace_id"];
-    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rafka.node_rpc.connection")), "no route: no connection was opened");
+    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")), "no route: no connection was opened");
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
     let b2_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == b2["incarnation_id"]).collect();
     assert_eq!(b2_served.len(), 1, "broker.2 served exactly the one call selected for it: {b2_served:?}");

@@ -103,7 +103,7 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
 
     // mesh1 retired through the retire pipeline under B: each node drained, then terminated,
     // then removed from the topology.
-    let steps = named(&spans, "rafka.node_admin.deployment.update.via-step");
+    let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
     for (name, _) in &mesh1_pids {
         let mine: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["build_id"] == b.as_str()).collect();
         let order: Vec<String> = {
@@ -118,10 +118,10 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
 
     // A desired change, not a recovery.
     assert!(
-        !named(&spans, "rafka.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")),
+        !named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")),
         "no recovery Build names mesh1"
     );
-    let created = named(&spans, "rafka.node_admin.node.create.via-build");
+    let created = named(&spans, "rdm.node_admin.node.create.via-build");
     assert!(!created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "B recreates nothing in mesh1");
     for n in names(&["mesh3"]) {
         assert!(created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["node"] == n.as_str()), "B created {n}");

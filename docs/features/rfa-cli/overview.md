@@ -26,18 +26,18 @@
 
 Each command:
 1. `init_telemetry_for_cli("rfa")` at startup (SimpleSpanProcessor — synchronous OTel export).
-2. Open `rafka.cli.command{command, args, otel.kind="internal"}` root span.
+2. Open `rdm.cli.command{command, args, otel.kind="internal"}` root span.
 3. Build reqwest HTTP request; inject W3C `traceparent` header from current OTel context (`current_traceparent_headers()`).
-4. Send + parse response inside a `rafka.cli.http.request{method, path, otel.kind="client"}` child span.
+4. Send + parse response inside a `rdm.cli.http.request{method, path, otel.kind="client"}` child span.
 5. Render response per `--format`.
 
-Cross-service trace propagation means topology-ui's `rafka.ui.http.request` span lands under the same trace_id as `rafka.cli.command` — operators can click any CLI invocation in Jaeger and see the full chain through topology-ui into the subprocess spawn span.
+Cross-service trace propagation means topology-ui's `rdm.ui.http.request` span lands under the same trace_id as `rdm.cli.command` — operators can click any CLI invocation in Jaeger and see the full chain through topology-ui into the subprocess spawn span.
 
 ## Locked spans
 
-- `rafka.cli.command{command, args, otel.kind="internal"}` — root span per invocation
-- `rafka.cli.http.request{method, path, otel.kind="client"}` — child per outbound HTTP
-- `rafka.cli.wait_loop{poll_count, target, current_count}` — wait-converged poll iterations
+- `rdm.cli.command{command, args, otel.kind="internal"}` — root span per invocation
+- `rdm.cli.http.request{method, path, otel.kind="client"}` — child per outbound HTTP
+- `rdm.cli.wait_loop{poll_count, target, current_count}` — wait-converged poll iterations
 
 ## Invariants
 

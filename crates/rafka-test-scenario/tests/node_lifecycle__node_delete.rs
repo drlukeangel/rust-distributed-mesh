@@ -123,21 +123,21 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // 3. Cut points and the absence of drift.
     let spans = estate.spans();
     let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
-    let deleting: Vec<&Value> = named(&spans, "rafka.node_admin.node.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
-    let deleted: Vec<&Value> = named(&spans, "rafka.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
+    let deleting: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     assert_eq!(deleting.len(), 1, "one pre-notice for one retirement: {deleting:?}");
     assert_eq!(deleted.len(), 1, "one departure for one retirement: {deleted:?}");
     assert_eq!(deleting[0]["attributes"]["build_id"], build_id);
     assert_eq!(deleted[0]["attributes"]["operation"], format!("retire-node:{VICTIM}"));
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], victim_inc, "the departure names the exact birth");
-    let executor_claim = named(&spans, "rafka.node_admin.build.update.via-reconcile")
+    let executor_claim = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .filter(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["executor"] == "mesh2.admin.1")
         .map(start)
         .min()
         .expect("mesh2's primary claimed the removal");
     assert!(start(deleting[0]) > executor_claim, "the pre-notice follows the executor's claim");
-    let terminal = named(&spans, "rafka.node_admin.deployment.update.via-step")
+    let terminal = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
         .map(start)
@@ -148,24 +148,24 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The drain leg (fabric-mesh-ops.md §4): the executor's typed drain reached the exact birth
     // (the victim's own `via-apply-draining`), after the pre-notice and before the terminal
     // proof; the MarkDraining step's receipt carries an established drain.
-    let drained_at = named(&spans, "rafka.node_admin.status.update.via-apply-draining")
+    let drained_at = named(&spans, "rdm.node_admin.status.update.via-apply-draining")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM)
         .map(start)
         .min()
         .expect("the victim answered the typed drain");
     assert!(drained_at > start(deleting[0]) && drained_at < terminal, "the drain lands between the pre-notice and the terminal proof");
-    let mark_draining = named(&spans, "rafka.node_admin.deployment.update.via-step")
+    let mark_draining = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .find(|sp| sp["attributes"]["step"] == "MarkDraining" && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
         .expect("MarkDraining completed on the executor");
     assert!(start(mark_draining) < terminal, "the drain step precedes termination");
-    let heard_deleting = named(&spans, "rafka.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
-    let heard_deleted = named(&spans, "rafka.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
+    let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
+    let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     assert!(heard_deleting >= 5, "every other node heard the pre-notice: {heard_deleting}");
     assert!(heard_deleted >= 5, "every other node heard the departure: {heard_deleted}");
-    assert!(named(&spans, "rafka.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start(sp) > start(deleting[0])).next().is_none(), "a departure is not drift: nothing is repaired");
-    let mut births: Vec<String> = named(&spans, "rafka.node_admin.node.create.via-build").into_iter().filter(|sp| start(sp) > start(deleting[0])).map(|sp| s(&sp["attributes"]["node"])).collect();
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start(sp) > start(deleting[0])).next().is_none(), "a departure is not drift: nothing is repaired");
+    let mut births: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| start(sp) > start(deleting[0])).map(|sp| s(&sp["attributes"]["node"])).collect();
     births.sort();
     let mut asked = vec![s(&newcomer["name"]), s(&newcomer2["name"])];
     asked.sort();

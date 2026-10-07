@@ -15,7 +15,7 @@
 //! - a mesh the step did not resize keeps every node's birth (incarnation).
 //!
 //! Evidence, by parent span id: every retired node has a
-//! `rafka.node_admin.node.delete.via-build` span that descends from the
+//! `rdm.node_admin.node.delete.via-build` span that descends from the
 //! request that accepted its Build, with a retire pipeline under it.
 
 use rafka_test_scenario::elections::seats_as_expected;
@@ -81,19 +81,19 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
 fn retirements_are_causal(estate: &Estate, steps: &[Step]) {
     let spans = estate.spans();
     for step in steps {
-        let accepted = named(&spans, "rafka.node_admin.build.create.via-rest")
+        let accepted = named(&spans, "rdm.node_admin.build.create.via-rest")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == step.build_id.as_str())
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))
             .clone();
         for node in &step.retired {
-            let delete = named(&spans, "rafka.node_admin.node.delete.via-build")
+            let delete = named(&spans, "rdm.node_admin.node.delete.via-build")
                 .into_iter()
                 .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["build_id"] == step.build_id.as_str())
                 .unwrap_or_else(|| panic!("{node}: no removal under build {}", step.build_id))
                 .clone();
             assert!(descends_from(&spans, &delete, &accepted), "{node}: its removal descends from its Build");
-            let retire = named(&spans, "rafka.node_admin.deployment.update.via-pipeline")
+            let retire = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
                 .into_iter()
                 .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["pipeline"] == "retire" && descends_from(&spans, s, &delete));
             assert!(retire.is_some(), "{node}: a retire pipeline ran under its removal");

@@ -4,7 +4,7 @@
 //! - every cohort's advertised primary is the one the canonical election computes from the
 //!   view's NodeIds and statuses (`seats_as_expected`), a role cohort like an rpc cohort;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
-//!   `rafka.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
+//!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
 //!   primary is the election's answer on the same sample (drift rebirths the path as a new NodeId
 //!   that wins or not by it) — read the way a product reads it, by `is_primary` on node-admin's
 //!   view (`rafka-node-admin-client` `nodes()`), never computed product-side.
@@ -73,7 +73,7 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     estate.kill_node(&killed).await;
     let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
     wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), silence_bound, || async {
-        named(&estate.spans(), "rafka.mesh.election.resolve.via-recompute")
+        named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute")
             .iter()
             .any(|sp| {
                 let a = &sp["attributes"];
@@ -101,6 +101,6 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
     estate.stop().await;
     let spans = estate.spans();
-    let announced = named(&spans, "rafka.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["kind"] == "broker" && sp["attributes"]["winner_node_id"] == succ_id.as_str()).cloned().unwrap();
+    let announced = named(&spans, "rdm.mesh.election.resolve.via-recompute").into_iter().find(|sp| sp["attributes"]["kind"] == "broker" && sp["attributes"]["winner_node_id"] == succ_id.as_str()).cloned().unwrap();
     estate.record_trace_url(announced["trace_id"].as_str().unwrap_or(""));
 }

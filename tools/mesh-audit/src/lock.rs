@@ -12,7 +12,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The seventeen ratchets of #2927, in the issue's order.
+/// The seventeen #2927 ratchets followed by the telemetry ownership ratchet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ratchet {
     TagIsDescriptiveOnly,
@@ -32,10 +32,11 @@ pub enum Ratchet {
     TypedProtocolEvidence,
     StatusResealIsAtomic,
     OneNewLivenessPrimitive,
+    RdmSpansAreRdmPrefixed,
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 17] = [
+    pub const ALL: [Ratchet; 18] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeMeta,
@@ -53,6 +54,7 @@ impl Ratchet {
         Self::TypedProtocolEvidence,
         Self::StatusResealIsAtomic,
         Self::OneNewLivenessPrimitive,
+        Self::RdmSpansAreRdmPrefixed,
     ];
 
     /// The name the issue gives the ratchet.
@@ -75,6 +77,7 @@ impl Ratchet {
             Self::TypedProtocolEvidence => "typed_protocol_evidence",
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
+            Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
         }
     }
 }
@@ -290,6 +293,20 @@ fn enum_arms(text: &str, name: &str) -> Option<Vec<String>> {
 pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
     let mut out = Vec::new();
     match ratchet {
+        Ratchet::RdmSpansAreRdmPrefixed => {
+            require(root, "crates/rafka-node-rpc/src/server.rs", &["rdm.node_rpc.request.serve.via-direct"], ratchet, &mut out);
+            match crate::telemetry::emitters(root) {
+                Ok(emitters) => for e in emitters {
+                    // The retained chaos harness is a customer-owned exception, not a
+                    // license for generic substrate code to emit arbitrary rafka.* spans.
+                    let customer_chaos = e.file.starts_with("crates/rafka-chaos/src/") && e.name.starts_with("rafka.chaos.");
+                    if !e.name.starts_with("rdm.") && !customer_chaos {
+                        out.push(Violation::Token { ratchet, file: e.file, line: e.line, token: e.name });
+                    }
+                },
+                Err(e) => out.push(Violation::Missing { ratchet, file: "runtime Rust sources".into(), what: format!("parseable instrumentation: {e}") }),
+            }
+        }
         Ratchet::TagIsDescriptiveOnly => {
             scan_tokens(root, &files_in(root, RUNTIME_SOURCES), DESCRIPTIVE_READ_TOKENS, ratchet, &mut out);
         }

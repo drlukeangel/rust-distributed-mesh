@@ -21,7 +21,7 @@
 //! moves the seat to the next-lowest mesh primary.
 //!
 //! Evidence: the new fabric primary's election is announced as
-//! `rafka.mesh.election.resolve.via-fabric-recompute` (`election_level =
+//! `rdm.mesh.election.resolve.via-fabric-recompute` (`election_level =
 //! fabric_primary`, the winner's NodeId, path and mesh) by a surviving mesh
 //! primary.
 
@@ -147,7 +147,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert_eq!(estate.live_runtimes(), vec![], "no runtime of the estate is left running");
     let spans = estate.spans();
     assert!(
-        named(&spans, "rafka.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| {
+        named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| {
             let a = &sp["attributes"];
             // The lost mesh's admins fall silent milliseconds apart: the
             // previous holder is whichever mesh1 admin went silent last.
@@ -199,7 +199,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     assert!(Command::new("kill").args(["-CONT", &pid.to_string()]).status().unwrap().success());
     estate.stop().await;
     let spans = estate.spans();
-    let fences: Vec<&Value> = named(&spans, "rafka.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.2").collect();
+    let fences: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.2").collect();
     assert!(fences.iter().any(|sp| sp["attributes"]["outcome"] == "held-running"), "the hold is in the evidence: {fences:?}");
     assert!(!fences.iter().any(|sp| sp["attributes"]["outcome"] == "terminated"), "nothing was terminated on silence: {fences:?}");
 }
@@ -306,7 +306,7 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
     estate.stop().await;
     let spans = estate.spans();
     // Each mesh primary that observed the first resolution reported the same winner.
-    let first: Vec<&Value> = named(&spans, "rafka.mesh.election.resolve.via-fabric-recompute")
+    let first: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute")
         .into_iter()
         .filter(|sp| sp["attributes"]["winner_node_id"] == winner_node["node_id"])
         .collect();
@@ -314,7 +314,7 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
     assert!(observers.len() >= 2, "more than one mesh primary resolved the same winner: {observers:?}");
     assert!(first.iter().all(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["election_key"] == "node_id_crockford"));
     assert!(
-        named(&spans, "rafka.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| {
+        named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| {
             let a = &sp["attributes"];
             a["winner_node_id"] == next_id.as_str() && a["previous_node_id"] == winner_node["node_id"]
         }),

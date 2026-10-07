@@ -67,7 +67,7 @@ fn answer(c: &Control, what: &str, r: Result<BuildId, ClientError>, node: Option
     match r {
         Ok(build_id) => {
             c.events.submitted(what, &build_id, node, mesh);
-            tracing::info_span!("rafka.ui.build.create.via-node-admin", what, build_id = %build_id, "otel.kind" = "internal")
+            tracing::info_span!("rdm.ui.build.create.via-node-admin", what, build_id = %build_id, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!(%build_id, "{what} submitted to node-admin"));
             (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id }))).into_response()
         }

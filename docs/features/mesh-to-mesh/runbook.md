@@ -8,7 +8,7 @@
 
 **Cause:** Bridge is the only node forwarding gossip; without it, mesh-A's topology changes don't reach mesh-B.
 
-**Detection:** Both meshes' independent gossip continues, but cross-mesh `rafka.mesh.cross.*` spans stop firing.
+**Detection:** Both meshes' independent gossip continues, but cross-mesh `rdm.mesh.cross.*` spans stop firing.
 
 **Recovery:** Restart bridge gateway. On boot, it re-peers both meshes; gossip catch-up via iroh-docs snapshot (per D-027 guardrail 2) re-syncs metadata.
 

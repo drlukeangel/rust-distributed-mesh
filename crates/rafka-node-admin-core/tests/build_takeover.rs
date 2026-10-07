@@ -6,7 +6,7 @@
 //! SAME build id from its own projection (A's state is gone with it): it
 //! claims attempt 2, re-plans against the observed topology, runs only what
 //! is left and completes the Build, under
-//! `rafka.node_admin.build.update.via-reconcile`.
+//! `rdm.node_admin.build.update.via-reconcile`.
 
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
@@ -251,7 +251,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let all = spans.0.lock().unwrap().clone();
     let reconciles: Vec<&BTreeMap<String, String>> = all
         .values()
-        .filter(|(n, f)| n == "rafka.node_admin.build.update.via-reconcile" && f.get("build_id") == Some(&build_id.0))
+        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id") == Some(&build_id.0))
         .map(|(_, f)| f)
         .collect();
     let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).expect("B's reconcile span");

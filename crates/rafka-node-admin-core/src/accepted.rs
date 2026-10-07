@@ -380,7 +380,7 @@ impl AcceptedStore {
         record.build_id = Some(build_id.clone());
         self.storage.put_fabric(&record).await?;
         tracing::info_span!(
-            "rafka.node_admin.fabric.update.via-build-accepted",
+            "rdm.node_admin.fabric.update.via-build-accepted",
             node = %self.node,
             fabric_id = %record.fabric_id,
             build_id = %build_id,

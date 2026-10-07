@@ -9,8 +9,8 @@
 **Detection:**
 ```bash
 # Count sent vs received over 1 min — should match within a few
-SENT=$(curl -s "http://localhost:16686/api/traces?service=gateway&operation=rafka.mesh.frame.sent&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
-RECV=$(curl -s "http://localhost:16686/api/traces?service=broker&operation=rafka.mesh.frame.received&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
+SENT=$(curl -s "http://localhost:16686/api/traces?service=gateway&operation=rdm.mesh.frame.sent&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
+RECV=$(curl -s "http://localhost:16686/api/traces?service=broker&operation=rdm.mesh.frame.received&limit=100&lookback=1m" | python -c "import sys,json; print(len(json.load(sys.stdin).get('data',[])))")
 echo "sent=$SENT received=$RECV"
 ```
 

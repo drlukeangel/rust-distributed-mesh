@@ -25,10 +25,10 @@ All substrate work — identity, iroh endpoint, mdns + seed discovery, peer regi
 1. `init_telemetry(node_type)` — OTel pipeline up.
 2. Load/mint identity from `RAFKA_DATA_DIR/node-identity.json`.
 3. Build `IrohMeshTransport` with mdns discovery enabled.
-4. Emit `rafka.mesh.node.ready` root span; nest the boot child spans under it.
+4. Emit `rdm.mesh.node.ready` root span; nest the boot child spans under it.
 5. Spawn background tasks: `dial_seeds`, `watch_mdns`, `start_accept_loop`, `run_heartbeat`, plus `run_ping_sender` if `Role::Gateway`.
 6. `wait_for_signal()` — block on Ctrl+C or `RAFKA_AUTO_SHUTDOWN_SECS` timer.
-7. Emit `rafka.mesh.node.stopping` and return.
+7. Emit `rdm.mesh.node.stopping` and return.
 
 ## Role variants (locked enum)
 

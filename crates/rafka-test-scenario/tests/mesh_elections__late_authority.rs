@@ -142,13 +142,13 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
     // Before Ready: Fabric.build_id (taken from the fabric control topic) and every held birth's
     // runtime.
-    let ready = named(&spans, "rafka.mesh.node.update.via-ready")
+    let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
     assert!(
-        named(&spans, "rafka.node_admin.fabric.update.via-build-accepted")
+        named(&spans, "rdm.node_admin.fabric.update.via-build-accepted")
             .into_iter()
             .any(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["via"].as_str().is_some_and(|v| v != "day-0" && v != "accepted") && at(sp) < at(&ready)),
         "it held Fabric.build_id before Ready"
@@ -156,13 +156,13 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");
     // Elected by the lowest NodeId, at every level.
-    assert!(named(&spans, "rafka.mesh.election.resolve.via-recompute")
+    assert!(named(&spans, "rdm.mesh.election.resolve.via-recompute")
         .iter()
         .any(|sp| sp["attributes"]["kind"] == "node_admin" && sp["attributes"]["winner_node_id"] == late["node_id"] && sp["attributes"]["election_key"] == "node_id_crockford"));
-    assert!(named(&spans, "rafka.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| sp["attributes"]["winner_node_id"] == late["node_id"]));
+    assert!(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").iter().any(|sp| sp["attributes"]["winner_node_id"] == late["node_id"]));
     // It managed A's births from their published runtimes.
     for birth in [&restarted, &retired] {
-        let adopted = named(&spans, "rafka.node_admin.runtime.update.via-adopt")
+        let adopted = named(&spans, "rdm.node_admin.runtime.update.via-adopt")
             .into_iter()
             .find(|sp| sp["attributes"]["node"] == birth["name"] && sp["attributes"]["incarnation_id"] == birth["incarnation_id"])
             .unwrap_or_else(|| panic!("{} adopted by the late admin", birth["name"]));

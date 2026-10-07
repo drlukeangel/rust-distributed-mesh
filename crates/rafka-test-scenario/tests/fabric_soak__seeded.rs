@@ -669,10 +669,10 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "seed {seed}: no container of the estate is left running");
     // Evidence: a 425 is never followed by a dispatch of the same request; the refusal spans say so.
     let spans = estate.spans();
-    let stale = named(&spans, "rafka.node_rpc.connection.reject.via-stale-target");
+    let stale = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target");
     for sp in &stale {
         let trace = &sp["trace_id"];
-        let served_after = spans.iter().any(|x| x["trace_id"] == *trace && x["name"] == "rafka.node_rpc.request.serve.via-direct" && x["start_unix_nano"].as_u64() > sp["start_unix_nano"].as_u64());
+        let served_after = spans.iter().any(|x| x["trace_id"] == *trace && x["name"] == "rdm.node_rpc.request.serve.via-direct" && x["start_unix_nano"].as_u64() > sp["start_unix_nano"].as_u64());
         assert!(!served_after, "a stale fence was dispatched after its 425: {sp}");
     }
     assert!(round >= 3, "seed {seed}: only {round} rounds in {secs}s");

@@ -20,7 +20,7 @@
 //!   advertises the same computed seats.
 //!
 //! Evidence: each successor is announced by a
-//! `rafka.mesh.election.resolve.via-recompute` span (`election_level =
+//! `rdm.mesh.election.resolve.via-recompute` span (`election_level =
 //! node_type`, `winner_node_id`, `previous_node_id`, `election_key =
 //! node_id_crockford`); the mesh primary by `via-mesh-primary`.
 //!
@@ -155,7 +155,7 @@ async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, go
 
 /// The node-type election span that announced `winner` for `c` after `previous` (NodeIds).
 fn announced(spans: &[Value], c: &Cohort, winner: &str, previous: &str) -> bool {
-    named(spans, "rafka.mesh.election.resolve.via-recompute").iter().any(|s| {
+    named(spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|s| {
         let a = &s["attributes"];
         a["election_level"] == "node_type"
             && a["election_key"] == "node_id_crockford"
@@ -297,13 +297,13 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
             a["election_level"] == level && a["observer"] == boot.0.as_str() && a["winner_node_id"] == boot.1.as_str() && a["previous_node_id"] == ""
         })
     };
-    assert!(own("rafka.mesh.election.resolve.via-recompute", "node_type"), "day 0: node-admin cohort");
-    assert!(own("rafka.mesh.election.resolve.via-mesh-primary", "mesh_primary"), "day 0: mesh primary");
-    assert!(own("rafka.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
+    assert!(own("rdm.mesh.election.resolve.via-recompute", "node_type"), "day 0: node-admin cohort");
+    assert!(own("rdm.mesh.election.resolve.via-mesh-primary", "mesh_primary"), "day 0: mesh primary");
+    assert!(own("rdm.mesh.election.resolve.via-fabric-recompute", "fabric_primary"), "day 0: fabric primary");
     assert!(announced(&spans, &rpc, &succ_id, &killed_id), "the successor to the killed primary was announced");
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
     // The restarted primary's NodeId left the seat while it was not ready and took it back.
-    let back = named(&spans, "rafka.mesh.election.resolve.via-recompute").iter().any(|sp| {
+    let back = named(&spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|sp| {
         let a = &sp["attributes"];
         a["mesh"] == "mesh1" && a["kind"] == "rpc_node" && a["winner_node_id"] == rpc_p_id.as_str() && a["previous_node_id"].as_str().is_some_and(|p| !p.is_empty() && p != rpc_p_id)
     });
@@ -372,7 +372,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     assert!(announced(&spans, &admin2, &succ2_id, &removed_id), "the successor to the removed admin primary was announced");
     // The mesh primary is the node-admin cohort's winner, announced as such.
     assert!(
-        named(&spans, "rafka.mesh.election.resolve.via-mesh-primary").iter().any(|sp| {
+        named(&spans, "rdm.mesh.election.resolve.via-mesh-primary").iter().any(|sp| {
             let a = &sp["attributes"];
             a["mesh"] == "mesh2" && a["source_kind"] == "node_admin" && a["winner_node_id"] == succ2_id.as_str()
         }),

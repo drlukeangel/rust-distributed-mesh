@@ -113,14 +113,14 @@ async fn every_admin_restarts_on_its_own_storage_and_the_fabric_reconverges() {
     estate.stop().await;
     let spans = estate.spans();
     let after_restart = |sp: &&Value| sp["start_unix_nano"].as_u64().unwrap_or(0) > restarted_at;
-    let restarts: Vec<&Value> = named(&spans, "rafka.node_admin.node.update.via-restart").into_iter().filter(after_restart).collect();
+    let restarts: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-restart").into_iter().filter(after_restart).collect();
     for n in ["mesh1.admin.1", "mesh1.admin.2"] {
         let r = restarts.iter().find(|sp| sp["attributes"]["node"] == n).unwrap_or_else(|| panic!("{n} restarted from nodes.storage: {restarts:?}"));
         assert_eq!(r["attributes"]["node_id"], by_name(&before, n)["node_id"]);
         assert_eq!(r["attributes"]["supersedes"], by_name(&before, n)["incarnation_id"], "{n} supersedes the incarnation it last ran");
     }
-    assert!(named(&spans, "rafka.node_admin.build.update.via-proven-drift").into_iter().filter(after_restart).next().is_none(), "no repair: nothing was lost");
-    let created: Vec<String> = named(&spans, "rafka.node_admin.node.create.via-build")
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(after_restart).next().is_none(), "no repair: nothing was lost");
+    let created: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .filter(after_restart)
         .map(|sp| format!("{} {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["build_id"])))
@@ -176,8 +176,8 @@ async fn a_fabric_shutdown_survives_an_all_admin_restart() {
     estate.stop_locally().await;
     let spans = estate.spans();
     let after = |name: &str| named(&spans, name).into_iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) > restarted_at).count();
-    assert_eq!(after("rafka.node_admin.build.update.via-proven-drift"), 0, "no repair after the restart");
-    assert_eq!(after("rafka.node_admin.build.update.via-reconcile"), 0, "no reconciliation after the restart");
-    assert_eq!(after("rafka.node_admin.node.create.via-build"), 0, "no birth after the restart");
-    assert_eq!(after("rafka.node_admin.fabric.update.via-shutdown-learned"), 0, "each admin held the shutdown from its own storage; it learned nothing anew");
+    assert_eq!(after("rdm.node_admin.build.update.via-proven-drift"), 0, "no repair after the restart");
+    assert_eq!(after("rdm.node_admin.build.update.via-reconcile"), 0, "no reconciliation after the restart");
+    assert_eq!(after("rdm.node_admin.node.create.via-build"), 0, "no birth after the restart");
+    assert_eq!(after("rdm.node_admin.fabric.update.via-shutdown-learned"), 0, "each admin held the shutdown from its own storage; it learned nothing anew");
 }

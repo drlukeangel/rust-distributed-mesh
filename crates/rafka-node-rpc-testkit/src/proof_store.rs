@@ -317,7 +317,7 @@ pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> S
         let store = store.clone();
         async move {
             let span = tracing::info_span!(
-                "rafka.node_rpc.proof_store.serve.via-request",
+                "rdm.node_rpc.proof_store.serve.via-request",
                 node = %at.node,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,

@@ -6,7 +6,7 @@
 //! standing in for connections' answer; that the seam takes its leg from a resolved
 //! `EffectiveRoute` and never moves the selection is proven in `rafka-node-rpc/tests/routing.rs`.
 //! The evidence names the same final target at the selector's output (the probe's argument),
-//! at route resolution (`rafka.node_rpc.route.resolve.via-connections`) and at execution (the
+//! at route resolution (`rdm.node_rpc.route.resolve.via-connections`) and at execution (the
 //! carrier's one inner call and the target's own serve span):
 //! 1. Direct: the selected node served, nobody else.
 //! 2. ViaPeer: the carrier made exactly one inner call to that same node, which served.
@@ -73,31 +73,31 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
 
     // Evidence: one final target at selection, resolution and execution.
     let spans = estate.spans();
-    let served = named(&spans, "rafka.node_rpc.proof_store.serve.via-request");
+    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     let served_in = |t: &[&Value]| served.iter().filter(|s| t.iter().any(|x| x["trace_id"] == s["trace_id"])).cloned().collect::<Vec<_>>();
 
     let direct_b: Vec<&Value> = spans
         .iter()
-        .filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b_id)
+        .filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "direct" && s["attributes"]["target"] == b_id)
         .collect();
     assert!(!direct_b.is_empty() && direct_b.iter().all(|r| r["attributes"]["outcome"] == "Reply"), "{direct_b:?}");
     let direct_served = served_in(&direct_b);
     assert!(!direct_served.is_empty() && direct_served.iter().all(|s| s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the direct calls were served by B's birth only: {direct_served:?}");
 
-    let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.request.serve.via-carried-inner").collect();
+    let carried_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-carried-inner").collect();
     assert_eq!(carried_t.len(), 1, "exactly one carried inner call in the whole run: {carried_t:?}");
     assert_eq!(carried_t[0]["attributes"]["target"], b_id, "the carrier was handed exactly B");
-    let via = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect::<Vec<_>>();
+    let via = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "via-peer").collect::<Vec<_>>();
     assert_eq!(via.len(), 1, "{via:?}");
     assert_eq!((via[0]["attributes"]["target"].as_str(), via[0]["attributes"]["carrier"].as_str(), via[0]["attributes"]["outcome"].as_str()), (Some(b_id.as_str()), Some("mesh1.rpc.3"), Some("Reply")));
     let via_served = served_in(&via);
     assert!(via_served.iter().all(|s| s["attributes"]["incarnation_id"] == b["incarnation_id"]), "the carried call was served by B's birth only: {via_served:?}");
 
-    let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rafka.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
+    let none_t: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.route.resolve.via-connections" && s["attributes"]["route"] == "no-active-route").collect();
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
     let none_trace = &none_t[0]["trace_id"];
-    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rafka.node_rpc.connection")), "no route: no connection was opened");
+    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")), "no route: no connection was opened");
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
 
     let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == c["incarnation_id"]).collect();

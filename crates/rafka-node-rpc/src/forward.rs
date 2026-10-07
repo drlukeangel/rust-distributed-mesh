@@ -48,7 +48,7 @@ async fn carry_once(
     let ForwardRequest::Forward { target, inner_op, inner, .. } = req;
     let Some(&max_reply) = table.get().and_then(|t| t.get(&inner_op)) else {
         tracing::info_span!(
-            "rafka.node_rpc.request.reject.via-not-forwardable",
+            "rdm.node_rpc.request.reject.via-not-forwardable",
             inner_op,
             target = %target,
             caller = %peer.endpoint_id
@@ -60,7 +60,7 @@ async fn carry_once(
     // The hop is a child span of the origin's trace; the inner call carries the origin's
     // context unchanged, so the target sees the origin's caller_system and causal parent.
     let span = tracing::info_span!(
-        "rafka.node_rpc.request.serve.via-carried-inner",
+        "rdm.node_rpc.request.serve.via-carried-inner",
         inner_op,
         target = %target,
         caller = %peer.endpoint_id,

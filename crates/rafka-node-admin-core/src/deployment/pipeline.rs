@@ -243,7 +243,7 @@ impl CurrentRuntimeAdoption {
     pub fn begin_in(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
         let kind = if container_domain.is_some() { crate::model::ProviderKind::Container } else { crate::model::ProviderKind::Process };
         let span = tracing::info_span!(
-            "rafka.node_admin.deployment.update.via-pipeline",
+            "rdm.node_admin.deployment.update.via-pipeline",
             pipeline = "adopt-current",
             build_id = "",
             provider = ?kind,
@@ -297,7 +297,7 @@ impl CurrentRuntimeAdoption {
     fn step(&mut self, step: AdoptStep, work: impl FnOnce(&PathName) -> Result<(Option<RuntimeFact>, RuntimeEvidence), String>) -> Result<Option<RuntimeFact>, PipelineError> {
         let span = tracing::info_span!(
             parent: &self.span,
-            "rafka.node_admin.deployment.update.via-step",
+            "rdm.node_admin.deployment.update.via-step",
             step = step.name(),
             build_id = "",
             provider = ?crate::model::ProviderKind::Process,
@@ -689,7 +689,7 @@ impl DeploymentPipeline<'_> {
 
     fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32, restart: bool) -> tracing::Span {
         tracing::info_span!(
-            "rafka.node_admin.deployment.update.via-pipeline",
+            "rdm.node_admin.deployment.update.via-pipeline",
             pipeline = kind,
             build_id = %build_id,
             provider = ?self.provider.kind(),
@@ -708,7 +708,7 @@ impl DeploymentPipeline<'_> {
     {
         use tracing::Instrument;
         let span = tracing::info_span!(
-            "rafka.node_admin.deployment.update.via-step",
+            "rdm.node_admin.deployment.update.via-step",
             step,
             build_id = %run.build_id,
             provider = ?self.provider.kind(),

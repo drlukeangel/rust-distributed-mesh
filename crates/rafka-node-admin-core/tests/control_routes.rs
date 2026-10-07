@@ -148,7 +148,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert_eq!(b["reason"], "requested");
     let paths: Vec<&str> = b["topology"]["meshes"]["mesh1"]["nodes"].as_array().unwrap().iter().filter_map(|p| p.as_str()).collect();
     assert_eq!(paths, ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3", "mesh1.rpc.4"], "exact paths, the next free ordinal");
-    assert!(h.span_with_build("rafka.node_admin.build.create.via-rest", &b1), "create span carries the build id");
+    assert!(h.span_with_build("rdm.node_admin.build.create.via-rest", &b1), "create span carries the build id");
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
     assert_eq!(f["build_id"], b1.as_str(), "{f}");
 
@@ -173,7 +173,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
     assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("restart"), Some("restart"), Some("mesh1.rpc.2")), "{b}");
     assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b2 && o.attempt == 2));
-    assert!(h.span_with_build("rafka.node_admin.build.update.via-rest", &b2));
+    assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b2));
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
     assert_eq!(f["build_id"], b2.as_str(), "Fabric.build_id is unchanged by a restart");
     assert_eq!(*h.cp.topology.read().await, before, "no route touched the observed topology");
@@ -208,10 +208,10 @@ async fn refusals_are_named_and_publish_nothing() {
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/restart", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
     assert_eq!(v["error"], "unknown-node");
-    assert!(h.span("rafka.node_admin.build.reject.via-unknown-node"));
+    assert!(h.span("rdm.node_admin.build.reject.via-unknown-node"));
     let (s, v) = call(&h.app, "POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "Mesh!", "node_admin": 1, "rpc_node": 1}]}))).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid-mesh-name")), "{v}");
-    assert!(h.span("rafka.node_admin.build.reject.via-invalid-mesh-name"));
+    assert!(h.span("rdm.node_admin.build.reject.via-invalid-mesh-name"));
     let (s, v) = call(&h.app, "POST", "/api/nodes/not-a-path/restart", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid-request")), "{v}");
     let (s, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "registry"}))).await;

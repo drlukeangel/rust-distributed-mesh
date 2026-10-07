@@ -3675,9 +3675,11 @@ name = "rafka-mesh-audit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proc-macro2",
  "serde",
  "serde_json",
  "sha2",
+ "syn",
 ]
 
 [[package]]

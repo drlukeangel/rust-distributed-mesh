@@ -35,7 +35,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RAFKA_BRIDGE_TARGET_MESHES` | `` | Comma-list of mesh IDs this bridge announces it spans; surfaced on `rafka.mesh.bridge.boot_announced` |
+| `RAFKA_BRIDGE_TARGET_MESHES` | `` | Comma-list of mesh IDs this bridge announces it spans; surfaced on `rdm.mesh.bridge.boot_announced` |
 
 ### topology-ui reads:
 
@@ -91,7 +91,7 @@ $proc = Start-Process -FilePath "E:\cargo-target-v2\debug\rfa.exe" `
 
 | Tab | What it shows | Auto-poll |
 |---|---|---|
-| Boot Waterfall | Last `rafka.mesh.node.ready` trace per service | manual |
+| Boot Waterfall | Last `rdm.mesh.node.ready` trace per service | manual |
 | Topology | SVG mesh graph; nodes grouped by mesh_id; cross-mesh edges dashed gold; per-node `N fr/m` activity badge | 5s |
 | Alerts | Chaos events with non-Passed result (last 10m) | 10s |
 | Heartbeat | Per-service peer_count + age_ms with color-coded staleness | 5s |

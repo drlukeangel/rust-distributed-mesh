@@ -78,7 +78,7 @@ impl ProtocolHandler for EntryServer {
             let Ok(req) = serde_json::from_slice::<EntryRequest>(&bytes) else { continue };
             let answer = (self.answer)(&req).await;
             tracing::info_span!(
-                "rafka.mesh.entry.serve.via-pull",
+                "rdm.mesh.entry.serve.via-pull",
                 node = %req.node,
                 served_by = %answer.served_by,
                 members = answer.members.len(),
@@ -117,7 +117,7 @@ pub async fn pull(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, attempt
         match pull_once(endpoint, anchor.clone(), node, Duration::from_secs(5)).await {
             Ok(a) => {
                 tracing::info_span!(
-                    "rafka.mesh.entry.update.via-membership-pulled",
+                    "rdm.mesh.entry.update.via-membership-pulled",
                     node,
                     served_by = %a.served_by,
                     members = a.members.len(),
@@ -132,7 +132,7 @@ pub async fn pull(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, attempt
             }
         }
     }
-    tracing::info_span!("rafka.mesh.entry.reject.via-membership-pull-failed", node, reason = %last, attempts)
+    tracing::info_span!("rdm.mesh.entry.reject.via-membership-pull-failed", node, reason = %last, attempts)
         .in_scope(|| tracing::warn!("entry pull failed"));
     Err(last)
 }

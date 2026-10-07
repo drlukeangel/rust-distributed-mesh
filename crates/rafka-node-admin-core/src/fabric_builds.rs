@@ -162,7 +162,7 @@ fn refeed(
             }
             let s = sender.read().await.clone();
             let joined = s.join_peers(peers.clone()).await.is_ok();
-            tracing::info_span!("rafka.mesh.connection.update.via-refeed", channel = "builds", fabric = %fabric, peers = peers.len(), joined)
+            tracing::info_span!("rdm.mesh.connection.update.via-refeed", channel = "builds", fabric = %fabric, peers = peers.len(), joined)
                 .in_scope(|| tracing::info!("no neighbour: every known peer handed to the Build topic again"));
             alone_since = Some(std::time::Instant::now());
         }
@@ -234,7 +234,7 @@ impl FabricBuildStateAdapter {
                                 let heard_fabric = w.fabric;
                                 if let Some(sd) = w.shutdown {
                                     if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()).await {
-                                        tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
+                                        tracing::info_span!("rdm.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
                                             .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
                                     }
                                 }
@@ -245,7 +245,7 @@ impl FabricBuildStateAdapter {
                                     store.resolve_wanted(&*absorb).await;
                                 }
                             }
-                            Err(e) => tracing::info_span!("rafka.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
+                            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
                                 .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
                         },
                         Some(Ok(Event::NeighborUp(peer))) => {
@@ -267,14 +267,14 @@ impl FabricBuildStateAdapter {
                                 }
                                 let facts = active_facts(&*absorb, pointer.clone()).await;
                                 let _span = tracing::info_span!(
-                                    "rafka.node_admin.build.update.via-neighbor-up",
+                                    "rdm.node_admin.build.update.via-neighbor-up",
                                     fabric = %fabric_name,
                                     peer = %peer,
                                     facts = facts.len(),
                                 );
                                 let (messages, refused) = encode_chunks(facts);
                                 for e in refused {
-                                    tracing::info_span!("rafka.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
+                                    tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
                                         .in_scope(|| tracing::info!("a Build fact does not fit one gossip message"));
                                 }
                                 let sender = shared.read().await.clone();
@@ -298,7 +298,7 @@ impl FabricBuildStateAdapter {
                     k.dedup();
                     k.clone()
                 };
-                let span = tracing::info_span!("rafka.node_admin.build.update.via-resubscribe", fabric = %fabric_name, reason = %reason, peers = known.len());
+                let span = tracing::info_span!("rdm.node_admin.build.update.via-resubscribe", fabric = %fabric_name, reason = %reason, peers = known.len());
                 // A refused subscribe means the gossip actor itself has stopped.
                 let reopened = match gossip.subscribe(topic_id, known.clone()).await {
                     Ok(t) => t,

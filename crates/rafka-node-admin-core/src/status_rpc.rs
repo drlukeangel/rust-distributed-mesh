@@ -210,7 +210,7 @@ impl StatusAuthority {
             _ => reply,
         };
         tracing::info_span!(
-            "rafka.node_admin.status.update.via-declaration",
+            "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
             op = req.op(),
             sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
@@ -232,7 +232,7 @@ impl StatusAuthority {
         let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
         let (reply, _) = apply_mesh(&mut self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
         tracing::info_span!(
-            "rafka.node_admin.status.update.via-declaration",
+            "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
             op = "apply-mesh-state",
             sender = %self.me,
@@ -295,7 +295,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 republish().await;
             }
             let state = node_state_of(me.status);
-            tracing::info_span!("rafka.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
@@ -304,7 +304,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 return Some(StatusReply::NotReady { reason: format!("{} has no drain door in this build", me.name) });
             };
             let in_flight = drain().await;
-            tracing::info_span!("rafka.node_admin.status.update.via-apply-draining", node = %me.name, sender = %sender_name, in_flight, "otel.kind" = "internal")
+            tracing::info_span!("rdm.node_admin.status.update.via-apply-draining", node = %me.name, sender = %sender_name, in_flight, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("draining applied by a node-admin"));
             Some(StatusReply::NodeDrainingApplied { in_flight })
         }
