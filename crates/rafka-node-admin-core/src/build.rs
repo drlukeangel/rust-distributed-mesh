@@ -246,13 +246,18 @@ fn validate_mesh(m: &MeshDesired) -> Result<(), BuildReject> {
     Ok(())
 }
 
+/// The members of a cohort the plan counts as present: every held birth that is not on its way
+/// out. An unheard member (`PendingReconnect`, `Dead`) is held, never re-created by a plan:
+/// silence is not a proven exit (drift, with the provider's proof, is the only replacer), and a
+/// plan that re-created a silent member would birth a second runtime beside the one still
+/// running (an all-admin restart at a short staleness window did exactly that).
 fn live<'a>(t: &'a Topology, mesh: &str, kind: NodeKind) -> Vec<&'a crate::model::Node> {
-    t.cohort(mesh, kind).filter(|n| n.status.is_live()).collect()
+    t.cohort(mesh, kind).filter(|n| n.status != NodeStatus::Leaving).collect()
 }
 
-/// Bring one existing mesh's live cohorts to `desired` counts.
+/// Bring one existing mesh's held cohorts to `desired` counts.
 ///
-/// Grow fills the lowest free ordinals among the live members; a dead member's
+/// Grow fills the lowest free ordinals among the held members; a leaving member's
 /// path is free like any other. Shrink retires the highest-ordinal non-primary
 /// members first, so no seat moves while any other member can go.
 fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
@@ -559,14 +564,24 @@ mod tests {
         assert_eq!(plan(&desired(&[("mesh1", 2, 3)]), &mn()).unwrap().operations, vec![]);
     }
 
+    /// Grow fills the lowest free ordinals. A silent member (`PendingReconnect`, `Dead`) is held,
+    /// never re-created by a plan: silence is not a proven exit, and the runtime may still be
+    /// running on that path; drift, with the provider's proof, is the only replacer. A leaving
+    /// member's path is free.
     #[test]
-    fn grow_fills_free_ordinals_and_reuses_a_dead_members_path() {
+    fn grow_fills_free_ordinals_and_never_recreates_a_silent_member() {
         let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 3), (rafka_mesh_entity::NodeKind::RpcNode, 5)]) }, &mn()).unwrap();
         assert_eq!(ops.operations, vec![create("mesh1.admin.3"), create("mesh1.rpc.4"), create("mesh1.rpc.5")]);
+        for silent in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
+            let mut t = mn();
+            t.nodes[3].status = silent; // rpc.2 unheard
+            let ops = plan(&desired(&[("mesh1", 2, 3)]), &t).unwrap();
+            assert_eq!(ops.operations, vec![], "a silent member is held, not re-created: {silent:?}");
+        }
         let mut t = mn();
-        t.nodes[3].status = NodeStatus::PendingReconnect; // rpc.2 lost
+        t.nodes[3].status = NodeStatus::Leaving; // rpc.2 going
         let ops = plan(&desired(&[("mesh1", 2, 3)]), &t).unwrap();
-        assert_eq!(ops.operations, vec![create("mesh1.rpc.2")], "the lost slot is recreated, nothing else");
+        assert_eq!(ops.operations, vec![create("mesh1.rpc.2")], "a leaving member's path is free");
     }
 
     #[test]
