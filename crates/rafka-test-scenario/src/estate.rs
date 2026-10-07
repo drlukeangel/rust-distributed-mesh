@@ -21,11 +21,15 @@ pub struct Owner {
     pub test: String,
 }
 
-/// `RAFKA_ARTIFACTS_DIR`, else this crate's `tests/artifacts`.
+/// `RAFKA_ARTIFACTS_DIR`, else this crate's `tests/artifacts`. A relative `RAFKA_ARTIFACTS_DIR`
+/// is taken from the workspace root, where every registered acceptance command is run from: a
+/// test binary itself runs in its crate's directory.
 pub fn artifacts_root() -> PathBuf {
-    std::env::var("RAFKA_ARTIFACTS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"))
+    match std::env::var("RAFKA_ARTIFACTS_DIR") {
+        Ok(d) if Path::new(&d).is_absolute() => PathBuf::from(d),
+        Ok(d) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d),
+        Err(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"),
+    }
 }
 
 /// Directory holding the built binaries: `RAFKA_BIN_DIR`, else the cargo

@@ -272,7 +272,7 @@ impl Channel {
         let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup };
         let neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>> = Arc::default();
         me.refeed(node.to_string(), channel.to_string(), neighbors.clone());
-        let (shared, known, gossip, fabric, channel) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string());
+        let (shared, known, gossip, fabric, channel, node) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), node.to_string());
         tokio::spawn(async move {
             loop {
                 let reason = loop {
@@ -284,11 +284,25 @@ impl Channel {
                             }
                             continue;
                         }
+                        // A neighbour coming up or going down is named: when a channel found its
+                        // first neighbour after a join is what a stalled join is read from.
                         Some(Ok(Event::NeighborUp(p))) => {
-                            neighbors.lock().unwrap().insert(*p);
+                            let count = {
+                                let mut n = neighbors.lock().unwrap();
+                                n.insert(*p);
+                                n.len()
+                            };
+                            tracing::info_span!("rdm.mesh.connection.update.via-neighbour-up", node = %node, channel = %channel, peer = %p.fmt_short(), neighbours = count)
+                                .in_scope(|| tracing::info!("a neighbour came up on this channel"));
                         }
                         Some(Ok(Event::NeighborDown(p))) => {
-                            neighbors.lock().unwrap().remove(p);
+                            let count = {
+                                let mut n = neighbors.lock().unwrap();
+                                n.remove(p);
+                                n.len()
+                            };
+                            tracing::info_span!("rdm.mesh.connection.update.via-neighbour-down", node = %node, channel = %channel, peer = %p.fmt_short(), neighbours = count)
+                                .in_scope(|| tracing::info!("a neighbour went down on this channel"));
                         }
                         _ => {}
                     }
