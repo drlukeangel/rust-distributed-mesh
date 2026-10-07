@@ -22,7 +22,9 @@ curl -s "http://localhost:16686/api/traces/$TID" | python -c "import sys,json; d
 
 ```rust
 async fn my_http_call(client: &reqwest::Client, url: &str) -> Result<...> {
-    let span = info_span!("rafka.foo.http.request", method = "GET", path = %url, "otel.kind" = "client");
+    // The span root is the implementation owner: rdm.* for RDM-owned code (this example),
+    // rafka.* when the same pattern is written in Rafka-owned code downstream.
+    let span = info_span!("rdm.foo.http.request", method = "GET", path = %url, "otel.kind" = "client");
     let resp = async {
         let headers = current_traceparent_headers();  // captures current span's context
         client.get(url).headers(headers).send().await
@@ -42,7 +44,7 @@ async fn my_middleware(req: Request, next: Next) -> Response {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     let parent_ctx = global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(req.headers())));
-    let span = info_span!("rafka.foo.http.request", "otel.kind" = "server");
+    let span = info_span!("rdm.foo.http.request", "otel.kind" = "server");
     span.set_parent(parent_ctx);
     next.run(req).instrument(span).await
 }
