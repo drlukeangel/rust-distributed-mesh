@@ -356,9 +356,10 @@ mod tests {
         assert!(matches!(c.lookup(0x12).unwrap().kind, EntryKind::Transitional { .. }));
         // 0x17 is reserved for rafka forward-write in the ledger but not registered:
         // the sealed catalog is the only table, so it is unserved — no legacy fallthrough.
-        assert_eq!(parse_request_head(&[0x17, 1, 0], |t| c.request_ceiling(t)), RequestHead::Unserved { tag: 0x17 });
-        let header = crate::framing::RequestHeader::fence(crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() });
-        let head = crate::framing::encode_request(0x12, &header, &[0]);
+        let unserved = crate::framing::encode_request(&crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x17 }), &[]);
+        assert_eq!(parse_request_head(&unserved, |t| c.request_ceiling(t)), RequestHead::Unserved { tag: 0x17 });
+        let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x12 });
+        let head = crate::framing::encode_request(&header, &[0]);
         assert_eq!(
             parse_request_head(&head, |t| c.request_ceiling(t)),
             RequestHead::Ready { tag: 0x12, header, payload_len: 1, head_len: head.len() - 1 }

@@ -15,6 +15,7 @@ pub mod deployment;
 pub mod drift;
 pub mod election;
 pub mod executor;
+pub mod fence;
 pub mod fabric_builds;
 pub mod fabric_storage;
 pub mod http;

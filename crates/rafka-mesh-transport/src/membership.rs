@@ -13,7 +13,7 @@
 //!   topic. A member the publisher stops forwarding goes silent everywhere.
 //!
 //! Every member heard is registered with the endpoint at its gossip address
-//! (its first endpoint slot), so HyParView reaches a peer it learned by id.
+//! (its one endpoint), so HyParView reaches a peer it learned by id.
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -60,7 +60,7 @@ pub fn learn_addresses(endpoint: &Endpoint, peers: &[EndpointAddr]) -> Result<()
 
 /// A member's gossip address: its key at its one transport address.
 pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
-    let key = d.node.transport_id.0.parse::<iroh::PublicKey>().ok()?;
+    let key = d.node.endpoint_id.0.parse::<iroh::PublicKey>().ok()?;
     Some(EndpointAddr::new(key).with_ip_addr(d.node.transport_addr))
 }
 
@@ -985,7 +985,7 @@ impl DigestBook {
     }
 
     /// Ticks each time a member's birth is first held or changes (a new
-    /// incarnation, a moved slot, a runtime published): what a process's
+    /// incarnation, a moved address, a runtime published): what a process's
     /// live resolver is fed from. A fresher digest of the same birth does not.
     pub fn birth_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.births.subscribe()
@@ -1008,7 +1008,7 @@ impl DigestBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{EndpointSet, TransportId, IncarnationId, MemberStatus, MeshNode, NodeId};
+    use rafka_mesh_entity::{EndpointId, IncarnationId, MemberStatus, MeshNode, NodeId};
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest {
@@ -1016,11 +1016,10 @@ mod tests {
             node: MeshNode {
                 node_id: node_id.clone(),
                 name: "mesh1.rpc.1".parse().unwrap(),
-                transport_id: TransportId("key".into()),
+                endpoint_id: EndpointId("key".into()),
                 transport_addr: "127.0.0.1:41000".parse().unwrap(),
                 incarnation: incarnation.clone(),
                 supersedes,
-                endpoints: EndpointSet(vec![]),
                 runtime: None,
             },
             status,

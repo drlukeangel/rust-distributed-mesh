@@ -11,7 +11,7 @@
 //! Gossip is untouched: the view's `status` stays what membership says; what the authority
 //! applied is the view's `declared`.
 
-use crate::model::{IncarnationId, NodeId, NodeKind, TransportId};
+use crate::model::{IncarnationId, NodeId, NodeKind, EndpointId};
 use crate::topology::Topology;
 use crate::storage::NodeRecord;
 use rafka_node_rpc::{PeerContext, ServerBuilder};
@@ -89,9 +89,8 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
                         node_id: sender.node_id.clone(),
                         name: sender.name.clone(),
                         incarnation_id: IncarnationId(incarnation.clone()),
-                        transport_id: sender.transport_id.clone().unwrap_or_else(|| TransportId(String::new())),
+                        endpoint_id: sender.endpoint_id.clone().unwrap_or_else(|| EndpointId(String::new())),
                         transport_addr: sender.transport_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0))),
-                        endpoints: sender.endpoints.clone(),
                         listeners: sender.listeners.clone(),
                         declared: Some(format!("{state:?}")),
                     };
@@ -174,8 +173,8 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
                 return Ok(StatusReply::NotReady { reason: "this admin holds no view yet".into() });
             };
             let view = auth.topology.read().await.clone();
-            let peer_id = TransportId(peer.transport_id.to_string());
-            let sender = view.nodes.iter().find(|n| n.transport_id.as_ref() == Some(&peer_id)).cloned();
+            let peer_id = EndpointId(peer.endpoint_id.to_string());
+            let sender = view.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer_id)).cloned();
             let (reply, row) = {
                 let mut declared = auth.declared.lock().unwrap();
                 decide(&auth, &view, &mut declared, sender.as_ref(), &req)

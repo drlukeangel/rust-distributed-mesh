@@ -471,7 +471,12 @@ impl Estate {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             if c.try_wait().ok().flatten().is_none() {
-                let (_, fabric) = self.get("/api/fabric").await;
+                // Its control API may already be closed (it closes before the Leaving linger ends):
+                // the view is evidence when it answers, never a condition of the stop.
+                let fabric = match self.http.get(format!("{}/api/fabric", self.admin)).timeout(Duration::from_secs(2)).send().await {
+                    Ok(r) => r.json::<Value>().await.unwrap_or(Value::Null),
+                    Err(e) => Value::String(format!("control API closed: {e}")),
+                };
                 eprintln!("estate stop: bootstrap admin pid {} still ran when the shutdown bound passed; killed. Its fabric view: {fabric}", c.id());
                 let _ = c.kill();
                 let _ = c.wait();

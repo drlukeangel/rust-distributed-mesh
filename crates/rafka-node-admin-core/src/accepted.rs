@@ -264,6 +264,9 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
             ops.push(BuildOperation::CreateMesh { mesh: name.clone() });
         }
         for p in &m.nodes {
+            // A path whose birth the view holds live is satisfied; any other path is planned and the
+            // create pipeline's fence decides against the world (a running runtime at the path is
+            // held, never replaced: `AdminRunner::fence_predecessor`).
             if !observed.node(p).is_some_and(|n| n.status.is_live()) {
                 ops.push(BuildOperation::CreateNode { node: p.clone() });
             }
@@ -508,7 +511,8 @@ mod tests {
         let fresh = plan(&cur, &observed(vec![], &[]), None);
         assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into() });
         assert_eq!(fresh.operations.len(), 6);
-        // A dead birth's path is planned again; a live node outside the topology is retired.
+        // A dead (unheard) birth's path is planned again — the create pipeline's fence then holds a
+        // runtime that still runs; a live node outside the topology is retired.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::Dead;
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));

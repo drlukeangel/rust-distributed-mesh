@@ -78,7 +78,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let node_ids: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), canonical("node id", &n["node_id"]))).collect();
     assert_eq!(node_ids.values().collect::<BTreeSet<_>>().len(), node_ids.len(), "node ids are distinct");
     for n in &nodes {
-        let transport = s(&n["transport_id"]);
+        let transport = s(&n["endpoint_id"]);
         assert!(!transport.is_empty() && transport != s(&n["node_id"]) && transport != fabric_id, "transport identity is not product identity: {n}");
     }
     for admin in nodes.iter().filter(|n| n["kind"] == "node_admin") {

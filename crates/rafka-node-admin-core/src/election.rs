@@ -143,6 +143,9 @@ impl ElectionLog {
             }
             let candidates = t.cohort(&mesh, *kind).count();
             let eligible = t.cohort(&mesh, *kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count();
+            // The exact inputs: every candidate as this view holds it. Two observers that name
+            // different winners differ here, never in the function.
+            let inputs: Vec<String> = t.cohort(&mesh, *kind).map(|n| format!("{}={}:{:?}", n.name, n.node_id, n.status)).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rafka.mesh.election.resolve.via-recompute",
@@ -152,6 +155,7 @@ impl ElectionLog {
                 kind = kind_name(*kind),
                 candidate_count = candidates,
                 eligible_count = eligible,
+                inputs = %inputs.join(","),
                 winner_node_id = %field(winner, |s| &s.node_id),
                 winner_path = %field(winner, |s| &s.path),
                 election_key = ELECTION_KEY,
@@ -198,6 +202,9 @@ impl ElectionLog {
         if owner && (gained || last_fabric.as_ref() != Some(&fabric)) {
             let previous = last_fabric.clone().flatten();
             let candidates: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
+            // The exact inputs: every node-admin of every mesh as this view holds it, with the id
+            // the order is decided on and the status the eligibility is decided on.
+            let inputs: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| format!("{}={}:{:?}{}", n.name, n.node_id, n.status, if n.is_primary { ":primary" } else { "" })).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rafka.mesh.election.resolve.via-fabric-recompute",
@@ -206,6 +213,7 @@ impl ElectionLog {
                 fabric = %t.fabric.name,
                 fabric_id = %t.fabric.id,
                 candidate_mesh_primaries = %candidates.join(","),
+                inputs = %inputs.join(","),
                 winner_node_id = %field(&fabric, |s| &s.node_id),
                 winner_path = %field(&fabric, |s| &s.path),
                 winner_mesh = %field(&fabric, |s| &s.mesh),

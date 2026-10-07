@@ -7,7 +7,7 @@
 //! it carries no time, age, ordinal or topology. Display prefixes (`msh_`,
 //! `fab_`, node-kind prefixes) are a presentation concern and never stored.
 //!
-//! Every other identity here (incarnation, transport, freshness) is opaque,
+//! Every other identity here (incarnation, transport) is opaque,
 //! compared by equality only, and keeps its own representation.
 
 use serde::{Deserialize, Serialize};
@@ -175,13 +175,10 @@ opaque_id!(
     IncarnationId
 );
 opaque_id!(
-    /// The node's authenticated transport identity: its Iroh `EndpointId`
-    /// (public key). Never a product identity; never the Fabric's id.
-    TransportId
-);
-opaque_id!(
-    /// Freshness of one endpoint-slot assignment.
-    FreshnessToken
+    /// The node's authenticated transport identity: its Iroh endpoint id
+    /// (public key), under iroh's own name. Never a product identity; never
+    /// the Fabric's id.
+    EndpointId
 );
 
 #[cfg(test)]

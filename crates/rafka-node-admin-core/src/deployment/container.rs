@@ -3,7 +3,7 @@
 //! container provider is the namespace/isolation/network-fault gate).
 //!
 //! Node-admin still assigns every advertised endpoint: each node owns one
-//! address on the fabric network (`--ip`), and its slots bind ports on that
+//! address on the fabric network (`--ip`), and its sockets bind ports on that
 //! address. `WaitForBind` reads the container's own socket table
 //! (`/proc/<pid>/net/udp` of its init process), never the host's.
 //!

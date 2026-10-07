@@ -1,11 +1,11 @@
-//! The rpc node runtime: bind the assigned endpoints, serve Node RPC on every
-//! slot, join fabric membership, publish the digest.
+//! The rpc node runtime: bind the assigned endpoint, serve Node RPC, join
+//! fabric membership, publish the digest.
 
 use rafka_mesh_entity::launch::Launch;
 use anyhow::{anyhow, Context, Result};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
-use rafka_mesh_entity::{EndpointSet, MemberStatus, MeshDigest, MeshNode};
+use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcServer, ServerBuilder};
 use rafka_node_rpc_contract::catalog::TagOwner;
@@ -155,7 +155,6 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
-    // names its slot in its framing; the server holds every slot under its freshness token.
     let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.transport_addr)
         .await
         .with_context(|| format!("the node cannot bind its assigned transport address {}", launch.transport_addr))?;
@@ -165,7 +164,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     let server = register(core_protocols(ServerBuilder::new()), resolver.clone())
         .carry::<crate::proof_store::ProofStore>()
         .serve_forward(client.clone())
-        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() }, launch.endpoints.iter().cloned())
+        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
     let routers = vec![Router::builder(ep0.clone()).accept(rafka_node_rpc::ALPN, server.clone()).accept(iroh_gossip::ALPN, g.clone()).spawn()];
@@ -222,11 +221,10 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
         node: MeshNode {
             node_id: launch.node_id.clone(),
             name: launch.name.clone(),
-            transport_id: rafka_mesh_entity::TransportId(key.public().to_string()),
+            endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
             transport_addr: launch.transport_addr,
-            endpoints: EndpointSet(launch.endpoints.clone()),
             runtime: Some(runtime.clone()),
         },
         status: MemberStatus::ReadyForTraffic,

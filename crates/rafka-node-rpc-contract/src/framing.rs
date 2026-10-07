@@ -1,51 +1,56 @@
 //! Canonical length-first framing (node-rpc.md §10; ownership amendment §7).
 //!
 //! ```text
-//! request direction:   protocol_tag: u8 | header_len: varint | header | request_len: varint | payload | FIN
+//! request direction:   fence_len: varint | fence | context_len: varint | context | request_len: varint | payload | FIN
 //! unary reply:         reply_len: varint | payload | FIN
 //! server streaming:    (frame_len: varint | frame)* | FIN
 //! ```
 //!
-//! The receiver reads the tag first (it names the protocol and therefore the
-//! request ceiling), then the [`RequestHeader`] — the [`RequestTarget`] fence the
-//! caller addressed, checked against the receiver's current birth and slot tokens
-//! before anything else, and the [`CallContext`] that correlates the call — then
-//! the declared length, and refuses an oversize request before allocating or
-//! reading its body.
+//! The receiver reads the [`Fence`] first and alone: the op (which names the
+//! protocol and therefore the request ceiling) and the node the caller resolved,
+//! each checked against what this process is and serves before the context, the
+//! length or the body exist to it. Then the
+//! [`CallContext`] that correlates the call, then the declared length; an
+//! oversize request is refused before its body is allocated or read.
 
 use crate::context::CallContext;
 use serde::{Deserialize, Serialize};
 
-/// The exact target a request addresses: the logical node and birth, and the
-/// slot under the freshness token the caller holds. One process serves every
-/// slot from its one endpoint, so the socket a request arrives on names
-/// nothing: the request does, and the receiver refuses any part of it that is
-/// not current with `425 STALE_SLOT` before the length or the body.
+/// The fence: what the receiver checks a request against before anything else.
+/// It is core, the same two checks for every protocol: is the addressed node me
+/// (`target_node_id`, the minted id; a mismatch is `425 STALE_TARGET`, the
+/// caller reached a replacement or misrouted), is the op served (`op`, the
+/// protocol's ledger code; unserved is `421`). One process has one endpoint, so
+/// the socket a request arrives on names nothing: the fence does. It says
+/// nothing about the process birth: which birth a caller is talking to is the
+/// resolver's and the pool's knowledge, never the wire's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestTarget {
-    pub node_id: String,
-    pub incarnation: String,
-    pub slot: String,
-    pub freshness: String,
+pub struct Fence {
+    pub target_node_id: String,
+    pub op: u8,
 }
 
-/// The request envelope: the fence, then the observability context that never
-/// participates in protocol semantics.
+/// The request envelope as the receiver holds it after the head: the fence it
+/// passed, then the observability context that never participates in protocol
+/// semantics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestHeader {
-    pub target: RequestTarget,
+    pub fence: Fence,
     pub context: CallContext,
 }
 
 impl RequestHeader {
-    pub fn fence(target: RequestTarget) -> Self {
-        Self { target, context: CallContext::default() }
+    pub fn fence(fence: Fence) -> Self {
+        Self { fence, context: CallContext::default() }
     }
 }
 
-/// The largest encoded [`RequestHeader`] a receiver reads: the fence and a context at
-/// its bounds (`MAX_TRACESTATE_BYTES` + `MAX_BAGGAGE_BYTES` + the short parts) fit.
-pub const MAX_HEADER_BYTES: usize = 12 * 1024;
+/// The largest encoded [`Fence`] a receiver reads before deciding.
+pub const MAX_FENCE_BYTES: usize = 256;
+
+/// The largest encoded [`CallContext`] a receiver reads: a context at its bounds
+/// (`MAX_TRACESTATE_BYTES` + `MAX_BAGGAGE_BYTES` + the short parts) fits.
+pub const MAX_CONTEXT_BYTES: usize = 12 * 1024;
 
 /// An unsigned LEB128 varint is at most 10 bytes for a `u64`.
 pub const MAX_VARINT_LEN: usize = 10;
@@ -91,13 +96,15 @@ pub fn decode_varint(b: &[u8]) -> Varint {
     }
 }
 
-/// `tag | varint(header_len) | header | varint(len) | payload`.
-pub fn encode_request(tag: u8, header: &RequestHeader, payload: &[u8]) -> Vec<u8> {
-    let header = postcard::to_allocvec(header).expect("a RequestHeader always encodes");
-    let mut out = Vec::with_capacity(1 + 2 * MAX_VARINT_LEN + header.len() + payload.len());
-    out.push(tag);
-    encode_varint(header.len() as u64, &mut out);
-    out.extend_from_slice(&header);
+/// `varint(fence_len) | fence | varint(context_len) | context | varint(len) | payload`.
+pub fn encode_request(header: &RequestHeader, payload: &[u8]) -> Vec<u8> {
+    let fence = postcard::to_allocvec(&header.fence).expect("a Fence always encodes");
+    let context = postcard::to_allocvec(&header.context).expect("a CallContext always encodes");
+    let mut out = Vec::with_capacity(3 * MAX_VARINT_LEN + fence.len() + context.len() + payload.len());
+    encode_varint(fence.len() as u64, &mut out);
+    out.extend_from_slice(&fence);
+    encode_varint(context.len() as u64, &mut out);
+    out.extend_from_slice(&context);
     encode_varint(payload.len() as u64, &mut out);
     out.extend_from_slice(payload);
     out
@@ -116,17 +123,18 @@ pub fn encode_frame(payload: &[u8]) -> Vec<u8> {
 pub enum RequestHead {
     /// Not enough bytes yet.
     NeedMore,
-    /// The tag has no catalog entry: reset `421 UNSERVED_TAG`, no dispatch.
-    /// Decided on the tag byte alone, before the length is read.
+    /// The fence's op has no catalog entry: reset `421 UNSERVED_TAG`, no dispatch.
+    /// Decided on the fence alone, before the context or the length is read.
     Unserved { tag: u8 },
     /// A served tag declaring more than its protocol ceiling: typed
     /// `Malformed(TooLarge)`, body never read.
     TooLarge { tag: u8, declared: u64, max: usize },
     /// The length prefix is not a valid varint: `424 PROTOCOL_VIOLATION`.
     BadLength { tag: u8 },
-    /// The header is over [`MAX_HEADER_BYTES`] or does not decode: `424 PROTOCOL_VIOLATION`.
-    BadTarget { tag: u8 },
-    /// The header is read and the length is not yet: the receiver checks the fence now.
+    /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
+    /// `tag` is `None` when the fence itself could not be read.
+    BadTarget { tag: Option<u8> },
+    /// The fence and context are read and the length is not yet.
     Targeted { tag: u8, header: RequestHeader },
     /// A served tag within its ceiling; the body is `payload_len` bytes after `head_len`.
     Ready { tag: u8, header: RequestHeader, payload_len: usize, head_len: usize },
@@ -141,7 +149,7 @@ pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> 
     }
 }
 
-/// The tag and header of a request, read; the length is next.
+/// The fence and context of a request, read; the length is next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetRead {
     pub tag: u8,
@@ -152,24 +160,62 @@ pub struct TargetRead {
     pub max: usize,
 }
 
-/// Stage one of the head: the tag, then the header. `Err` is `NeedMore`,
-/// `Unserved` or `BadTarget`.
+/// Stage one of the head: the fence, then the context. `Err` is `NeedMore`,
+/// `Unserved` or `BadTarget`. The fence is decoded and its op looked up before a
+/// byte of the context is read.
 pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<TargetRead, RequestHead> {
-    let Some(&tag) = buf.first() else { return Err(RequestHead::NeedMore) };
+    let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
+        Section::NeedMore => return Err(RequestHead::NeedMore),
+        Section::Bad => return Err(RequestHead::BadTarget { tag: None }),
+        Section::Read(bytes, at) => match postcard::from_bytes::<Fence>(bytes) {
+            Ok(f) => (f, at),
+            Err(_) => return Err(RequestHead::BadTarget { tag: None }),
+        },
+    };
+    let tag = fence.op;
     let Some(max) = ceiling(tag) else { return Err(RequestHead::Unserved { tag }) };
-    match decode_varint(&buf[1..]) {
-        Varint::NeedMore => Err(RequestHead::NeedMore),
-        Varint::Overflow => Err(RequestHead::BadTarget { tag }),
-        Varint::Complete { value, .. } if value > MAX_HEADER_BYTES as u64 => Err(RequestHead::BadTarget { tag }),
+    match decode_section(buf, at, MAX_CONTEXT_BYTES) {
+        Section::NeedMore => Err(RequestHead::NeedMore),
+        Section::Bad => Err(RequestHead::BadTarget { tag: Some(tag) }),
+        Section::Read(bytes, at) => match postcard::from_bytes::<CallContext>(bytes) {
+            Ok(context) => Ok(TargetRead { tag, header: RequestHeader { fence, context }, at, max }),
+            Err(_) => Err(RequestHead::BadTarget { tag: Some(tag) }),
+        },
+    }
+}
+
+/// The fence alone, when that is all a reader needs (a carrier naming the inner
+/// target, a test): `None` until the fence is complete or when it does not decode.
+pub fn peek_fence(buf: &[u8]) -> Option<Fence> {
+    match decode_section(buf, 0, MAX_FENCE_BYTES) {
+        Section::Read(bytes, _) => postcard::from_bytes(bytes).ok(),
+        _ => None,
+    }
+}
+
+enum Section<'a> {
+    NeedMore,
+    Bad,
+    /// The section's bytes and where the next section starts.
+    Read(&'a [u8], usize),
+}
+
+/// One `varint(len) | bytes` section starting at `from`, bounded by `max`.
+fn decode_section(buf: &[u8], from: usize, max: usize) -> Section<'_> {
+    if buf.len() < from {
+        return Section::NeedMore;
+    }
+    match decode_varint(&buf[from..]) {
+        Varint::NeedMore => Section::NeedMore,
+        Varint::Overflow => Section::Bad,
+        Varint::Complete { value, .. } if value > max as u64 => Section::Bad,
         Varint::Complete { value, len } => {
-            let end = 1 + len + value as usize;
+            let start = from + len;
+            let end = start + value as usize;
             if buf.len() < end {
-                return Err(RequestHead::NeedMore);
+                return Section::NeedMore;
             }
-            match postcard::from_bytes::<RequestHeader>(&buf[1 + len..end]) {
-                Ok(header) => Ok(TargetRead { tag, header, at: end, max }),
-                Err(_) => Err(RequestHead::BadTarget { tag }),
-            }
+            Section::Read(&buf[start..end], end)
         }
     }
 }
@@ -250,22 +296,24 @@ mod tests {
     }
 
     fn t() -> RequestHeader {
-        RequestHeader::fence(RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "f1".into() })
+        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x11 })
     }
 
     #[test]
     fn request_round_trips() {
-        let frame = encode_request(0x11, &t(), b"hello");
+        let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame, |_| Some(64)), Ok((0x11, t(), &b"hello"[..])));
-        assert_eq!(frame[0], 0x11, "the tag is the first byte");
+        assert_eq!(peek_fence(&frame), Some(t().fence), "the fence is the first section");
     }
 
     #[test]
     fn the_header_is_read_before_the_length_and_bounded() {
-        let frame = encode_request(0x11, &t(), b"hello");
-        let target_end = 2 + frame[1] as usize;
-        assert_eq!(parse_request_head(&frame[..target_end], |_| Some(64)), RequestHead::Targeted { tag: 0x11, header: t() });
-        assert_eq!(parse_request_head(&frame[..target_end - 1], |_| Some(64)), RequestHead::NeedMore);
+        let frame = encode_request(&t(), b"hello");
+        let fence_end = 1 + frame[0] as usize;
+        let context_end = fence_end + 1 + frame[fence_end] as usize;
+        assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { tag: 0x11, header: t() });
+        assert_eq!(parse_request_head(&frame[..context_end - 1], |_| Some(64)), RequestHead::NeedMore);
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x11).then_some(64)), RequestHead::Unserved { tag: 0x11 }, "an unserved op is decided on the fence, before the context");
         // A context at its bounds fits the header ceiling; one byte past the ceiling is a violation.
         let full = RequestHeader {
             context: CallContext {
@@ -276,23 +324,33 @@ mod tests {
             },
             ..t()
         };
-        let frame = encode_request(0x11, &full, b"hello");
+        let frame = encode_request(&full, b"hello");
         assert!(matches!(decode_request(&frame, |_| Some(64)), Ok((0x11, h, _)) if h == full), "a context at its bounds rides the header");
-        let mut big = vec![0x11];
-        encode_varint(MAX_HEADER_BYTES as u64 + 1, &mut big);
-        assert_eq!(parse_request_head(&big, |_| Some(64)), RequestHead::BadTarget { tag: 0x11 });
-        let garbage = [0x11, 0x02, 0xff, 0xff];
-        assert_eq!(parse_request_head(&garbage, |_| Some(64)), RequestHead::BadTarget { tag: 0x11 });
+        // An oversize fence is refused before its op is known.
+        let mut big = Vec::new();
+        encode_varint(MAX_FENCE_BYTES as u64 + 1, &mut big);
+        assert_eq!(parse_request_head(&big, |_| Some(64)), RequestHead::BadTarget { tag: None });
+        let garbage = [0x02, 0xff, 0xff];
+        assert_eq!(parse_request_head(&garbage, |_| Some(64)), RequestHead::BadTarget { tag: None });
+        // An oversize context is refused with the op the fence named.
+        let mut frame = encode_request(&t(), b"");
+        let fence_end = frame.len() - 2; // `0x00` context, `0x00` payload
+        frame.truncate(fence_end);
+        encode_varint(MAX_CONTEXT_BYTES as u64 + 1, &mut frame);
+        assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { tag: Some(0x11) });
     }
 
     #[test]
-    fn unserved_is_decided_on_the_tag_byte_alone() {
-        assert_eq!(parse_request_head(&[0x42], |t| (t == 0x11).then_some(64)), RequestHead::Unserved { tag: 0x42 });
+    fn unserved_is_decided_on_the_fence_alone() {
+        let unserved = RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 });
+        let frame = encode_request(&unserved, b"");
+        let fence_end = frame.len() - 2;
+        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x11).then_some(64)), RequestHead::Unserved { tag: 0x42 }, "decided before a byte of context arrives");
     }
 
     #[test]
     fn oversize_is_refused_from_the_declared_length_before_the_body() {
-        let mut head = encode_request(0x11, &t(), b"");
+        let mut head = encode_request(&t(), b"");
         head.pop(); // the zero length
         encode_varint(1 << 30, &mut head); // a 1 GiB declaration, no body at all
         assert_eq!(parse_request_head(&head, |_| Some(1024)), RequestHead::TooLarge { tag: 0x11, declared: 1 << 30, max: 1024 });
@@ -303,11 +361,11 @@ mod tests {
         assert_eq!(parse_request_head(&[], |_| Some(1)), RequestHead::NeedMore);
         assert_eq!(parse_request_head(&[0x11], |_| Some(1)), RequestHead::NeedMore);
         assert_eq!(parse_request_head(&[0x11, 0x80], |_| Some(1)), RequestHead::NeedMore);
-        let mut bad = encode_request(0x11, &t(), b"");
+        let mut bad = encode_request(&t(), b"");
         bad.pop();
         bad.extend([0xff; 11]);
         assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { tag: 0x11 });
-        let frame = encode_request(0x11, &t(), b"hello");
+        let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame[..frame.len() - 1], |_| Some(64)), Err(RequestHead::NeedMore));
     }
 

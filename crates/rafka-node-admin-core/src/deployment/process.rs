@@ -72,11 +72,22 @@ fn signal(pid: u32, sig: i32) -> bool {
 
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
-    // A zombie is not alive: read its state from /proc when available.
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        return !stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z'));
+    // A process is gone only once every task of its thread group has exited. The leader's own
+    // state is not proof: during `exit_group` the leader can already read as a zombie while its
+    // sibling threads are still exiting, and the group's files (its sockets) are released only by
+    // the last of them. Judging the leader alone let a restart spawn the next birth while the
+    // old one still held the transport port (`WaitForBind: Address already in use`).
+    match std::fs::read_dir(format!("/proc/{pid}/task")) {
+        Ok(tasks) => tasks.flatten().any(|t| std::fs::read_to_string(t.path().join("stat")).is_ok_and(|stat| !is_zombie(&stat))),
+        // No task directory: the pid is gone, or /proc is not readable here; kill(2) with signal 0
+        // answers whether the pid exists at all.
+        Err(_) => std::fs::metadata(format!("/proc/{pid}")).is_ok() && signal(pid, 0),
     }
-    signal(pid, 0)
+}
+
+/// `stat` (a `/proc/<pid>/stat` or `/proc/<pid>/task/<tid>/stat` line) names a zombie.
+fn is_zombie(stat: &str) -> bool {
+    stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z'))
 }
 
 #[async_trait::async_trait]

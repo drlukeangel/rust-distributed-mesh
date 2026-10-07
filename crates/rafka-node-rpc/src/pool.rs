@@ -1,11 +1,10 @@
-//! The scoped, slot-aware connection pool (i143 PRD §1.19–20, §14;
+//! The scoped connection pool (i143 PRD §1.19–20, §14;
 //! node-rpc-rdm-ownership.md §8–§9).
 //!
 //! A pooled connection is keyed by `(scope, peer, incarnation)`: the caller's
 //! execution scope, the peer's authenticated Iroh key and the process birth it
-//! was dialled to. A connection is to a process, never to a slot: slots are
-//! invocation fences carried in each request's framing, so one slot's token
-//! moving never touches a connection, and every slot of a birth shares it.
+//! was dialled to. A connection is to a process: the fence in each request's
+//! framing names the node, and every op of a birth shares the connection.
 //!
 //! Supersession is per birth:
 //! - a dial in flight whose incarnation the resolver no longer names is
@@ -49,7 +48,7 @@ pub struct PoolKey {
 impl PoolKey {
     /// Does `node` (the resolver's answer now) still name this exact birth?
     pub fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
-        node.is_some_and(|n| n.transport_id == self.peer && n.incarnation == self.incarnation)
+        node.is_some_and(|n| n.endpoint_id == self.peer && n.incarnation == self.incarnation)
     }
 
     fn superseded_by(&self, _node: Option<&ResolvedNode>) -> &'static str {
@@ -74,7 +73,7 @@ impl std::fmt::Debug for Failpoint {
 /// How a dial ended, for every caller waiting on it.
 #[derive(Debug, Clone)]
 pub enum DialError {
-    /// The exact slot target moved while the dial ran, or before it pooled.
+    /// The birth moved while the dial ran, or before it pooled.
     Superseded,
     /// This caller's own deadline passed first (the dial may run on for others).
     Deadline,
@@ -128,7 +127,7 @@ impl Pool {
     /// Evict every pooled connection and cancel every dial of `node`'s peer
     /// whose target `node` no longer names.
     pub fn purge_stale(&self, node: &ResolvedNode) {
-        let stale = |k: &PoolKey| k.peer == node.transport_id && !k.is_current(Some(node));
+        let stale = |k: &PoolKey| k.peer == node.endpoint_id && !k.is_current(Some(node));
         let gone: Vec<PoolKey> = {
             let mut conns = self.inner.conns.lock().unwrap();
             let gone: Vec<PoolKey> = conns.keys().filter(|k| stale(k)).cloned().collect();

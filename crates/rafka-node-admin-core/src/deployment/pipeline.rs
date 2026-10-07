@@ -40,7 +40,7 @@ use super::endpoint::{verify_bound_with, Assignment, EndpointAllocator, KindSpec
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
-use crate::model::{DeploymentId, TransportId, IncarnationId, Node, NodeId, NodeStatus, PathName};
+use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
@@ -313,12 +313,12 @@ pub trait NodeObserver: Send + Sync {
     /// What this exact birth (`node_id`, `incarnation`) publishes with its
     /// own membership digest; `None` until it has joined fabric membership.
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
-    /// Is the node serving on every advertised slot?
+    /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
     /// After the stop signal: has this birth finished its in-flight work
     /// (it reports `Draining` with nothing in flight, or `Leaving`)?
     async fn drained(&self, node: &Node) -> bool;
-    /// Does the node refuse new Node RPC work on every slot (a typed
+    /// Does the node refuse new Node RPC work (a typed
     /// `Draining`, or nothing admits the call at all)?
     async fn admission_closed(&self, node: &Node) -> Result<(), String>;
     /// Has this exact birth's own `Leaving` reached this admin's membership view (its own digest,
@@ -424,7 +424,7 @@ pub struct CreateRequest {
     pub node: PathName,
     pub spec: &'static KindSpec,
     /// `Some(current record)` for a restart: same node id, data dir and
-    /// transport key, a new incarnation, stable slots kept.
+    /// transport key, a new incarnation.
     pub restart_of: Option<Node>,
 }
 
@@ -508,7 +508,7 @@ struct Identity {
 
 /// Write (if absent) and read back the node's transport key in its data dir;
 /// a restart reuses it, a fresh data dir gets a new one.
-fn ensure_transport_key(data_dir: &std::path::Path) -> Result<TransportId, String> {
+fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
     let path = data_dir.join("node-key");
     let key = match std::fs::read_to_string(&path) {
@@ -525,7 +525,7 @@ fn ensure_transport_key(data_dir: &std::path::Path) -> Result<TransportId, Strin
             k
         }
     };
-    Ok(TransportId(key.public().to_string()))
+    Ok(EndpointId(key.public().to_string()))
 }
 
 async fn poll<F, Fut>(within: Duration, mut f: F) -> bool
@@ -694,7 +694,7 @@ impl DeploymentPipeline<'_> {
             Some(d) => PathBuf::from(d),
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
-        let transport_id: TransportId = self.step(&mut run, CreateStep::PrepareStorage.name(), async { ensure_transport_key(&data_dir) }).await?;
+        let endpoint_id: EndpointId = self.step(&mut run, CreateStep::PrepareStorage.name(), async { ensure_transport_key(&data_dir) }).await?;
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(&mut run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;
@@ -706,7 +706,6 @@ impl DeploymentPipeline<'_> {
             incarnation: id.incarnation.clone(),
             supersedes: id.supersedes.clone(),
             transport_addr: assigned.transport,
-            endpoints: assigned.slots.clone(),
             listeners: assigned.listeners.clone(),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
@@ -809,13 +808,12 @@ impl DeploymentPipeline<'_> {
         .await?;
         let mut node = Node::allocated(req.node.clone());
         node.node_id = id.node_id.clone();
-        node.transport_id = Some(transport_id);
+        node.endpoint_id = Some(endpoint_id);
         node.incarnation_id = Some(id.incarnation.clone());
         node.deployment_id = Some(id.deployment_id.clone());
         node.provider = Some(self.provider.kind());
         node.data_dir = Some(data_dir.display().to_string());
         node.transport_addr = Some(assigned.transport);
-        node.endpoints = assigned.slots.clone();
         node.listeners = assigned.listeners.clone();
         node.status = NodeStatus::Pending;
         if let Some(p) = &prior {
@@ -970,10 +968,38 @@ impl DeploymentPipeline<'_> {
                 .map_err(|e| e.to_string())?;
             // Only an exact inspection that says the runtime exited is terminal proof.
             match self.provider.inspect(handle).await {
-                DeploymentStatus::Running => Err(format!("{name} still runs after the stop ladder")),
-                DeploymentStatus::Unknown => Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
-                DeploymentStatus::Exited { .. } => Ok(()),
+                DeploymentStatus::Running => return Err(format!("{name} still runs after the stop ladder")),
+                DeploymentStatus::Unknown => return Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
+                DeploymentStatus::Exited { .. } => {}
             }
+            // Exited is not yet released: the kernel frees a dead process's sockets after the
+            // process is gone, so its advertised addresses can read as held for a few tens of
+            // milliseconds more. A successor at the same addresses (a restart) must not race that:
+            // the operating system is asked, as `WaitForBind` asks it, until nothing holds them.
+            let mut held: Vec<(String, SocketAddr, super::endpoint::SlotTransport)> = Vec::new();
+            if let Some(t) = node.transport_addr {
+                held.push(("transport".into(), t, super::endpoint::SlotTransport::Udp));
+            }
+            held.extend(node.listeners.iter().map(|(n, a)| (n.clone(), *a, super::endpoint::SlotTransport::Tcp)));
+            let until = Instant::now() + Duration::from_secs(3);
+            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| match h.2 {
+                super::endpoint::SlotTransport::Udp => super::endpoint::udp_port_is_held(h.1),
+                super::endpoint::SlotTransport::Tcp => super::endpoint::tcp_port_is_held(h.1),
+            };
+            let started = Instant::now();
+            loop {
+                held.retain(|h| still(h));
+                if held.is_empty() {
+                    break;
+                }
+                if Instant::now() >= until {
+                    let names: Vec<String> = held.iter().map(|h| format!("{} {}", h.0, h.1)).collect();
+                    return Err(format!("{name} exited, but the operating system still holds {} after {:?}", names.join(", "), started.elapsed()));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tracing::info!(node = %name, released_after_ms = started.elapsed().as_millis() as u64, "the runtime exited and the operating system released its addresses");
+            Ok(())
         })
         .await?;
         // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything

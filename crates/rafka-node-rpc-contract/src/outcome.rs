@@ -54,7 +54,7 @@ pub enum MalformedKind {
 pub enum NotSentReason {
     /// The resolver answered `Unknown`, `Gone` or `Unavailable`.
     Resolve(ResolveFailure),
-    /// Dial / open_bi / slot failure before the first write.
+    /// Dial / open_bi / port failure before the first write.
     Connection(String),
     /// No streaming permit before the deadline.
     StreamBudget,
@@ -136,20 +136,16 @@ impl Unserved {
     }
 }
 
-/// The receiver's `425 STALE_SLOT`: the request's target slot was unknown to it,
-/// or not under the freshness token the request named.
+/// The receiver's `425 STALE_TARGET`: the request's fence named a node the receiver is not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectedStale {
-    slot: String,
-    freshness: String,
+    target_node_id: String,
 }
 
 impl RejectedStale {
-    pub fn slot(&self) -> &str {
-        &self.slot
-    }
-    pub fn freshness(&self) -> &str {
-        &self.freshness
+    /// The node the caller addressed and the receiver was not.
+    pub fn target_node_id(&self) -> &str {
+        &self.target_node_id
     }
 }
 
@@ -174,8 +170,8 @@ pub enum RpcOutcome<R> {
     NotSent(NotSent),
     /// The receiver's `421 UNSERVED_TAG` proves the tag was never dispatched.
     Unserved(Unserved),
-    /// The receiver's `425 STALE_SLOT` proves the request was never dispatched:
-    /// it reached the process, which does not hold the slot under that token. It
+    /// The receiver's `425 STALE_TARGET` proves the request was never dispatched:
+    /// it reached a process that is not the fenced node. It
     /// is not `NotSent`: the request was sent and refused.
     RejectedStale(RejectedStale),
     /// Committed, and no stronger proof exists. Never silently replayed.
@@ -273,12 +269,12 @@ impl PreCommit {
         RpcOutcome::Unserved(Unserved { tag: self.tag })
     }
 
-    /// The target `(slot, freshness)` is stale: the caller found it superseded
+    /// The fence is stale: the caller found its target superseded
     /// before or during the dial, or the receiver refused it with
-    /// `425 STALE_SLOT` before the request finished. Definitive no-dispatch,
+    /// `425 STALE_TARGET` before the request finished. Definitive no-dispatch,
     /// never `NotSent`.
-    pub fn stale_before_finish<R>(self, target: &crate::framing::RequestTarget) -> RpcOutcome<R> {
-        RpcOutcome::RejectedStale(RejectedStale { slot: target.slot.clone(), freshness: target.freshness.clone() })
+    pub fn stale_before_finish<R>(self, fence: &crate::framing::Fence) -> RpcOutcome<R> {
+        RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
     }
 }
 
@@ -334,11 +330,11 @@ impl Committed {
     /// The stream was reset with `code` after commit, for a request that named
     /// `target`. Only `421` and `425` prove non-dispatch; every other code leaves
     /// the call `Indeterminate`.
-    pub fn reset<R>(self, code: u64, target: &crate::framing::RequestTarget) -> RpcOutcome<R> {
+    pub fn reset<R>(self, code: u64, fence: &crate::framing::Fence) -> RpcOutcome<R> {
         match ResetCode::from_code(code) {
             Some(ResetCode::UnservedTag) => RpcOutcome::Unserved(Unserved { tag: self.tag }),
-            Some(ResetCode::StaleSlot) => {
-                RpcOutcome::RejectedStale(RejectedStale { slot: target.slot.clone(), freshness: target.freshness.clone() })
+            Some(ResetCode::StaleTarget) => {
+                RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
             }
             _ => self.indeterminate(IndeterminateReason::Reset(code)),
         }
@@ -381,7 +377,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         },
         ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
         ForwardReply::InnerUnserved { tag } => RpcOutcome::Unserved(Unserved { tag }),
-        ForwardReply::InnerRejectedStale { slot, freshness } => RpcOutcome::RejectedStale(RejectedStale { slot, freshness }),
+        ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id }),
         ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
         ForwardReply::NotForwardable { tag } => not_sent(NotSentReason::NotForwardable { tag }),
         // The carrier refused the forward itself, before any inner call.
@@ -434,7 +430,7 @@ mod tests {
 
     #[test]
     fn unserved_comes_only_from_a_421_after_commit() {
-        let target = crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() };
+        let target = crate::framing::Fence { target_node_id: "n1".into(), op: 0x11 };
         let o: RpcOutcome<EchoReply> = committed().reset(421, &target);
         assert!(matches!(&o, RpcOutcome::Unserved(u) if u.tag() == 0x11));
         assert!(o.proves_not_dispatched());
