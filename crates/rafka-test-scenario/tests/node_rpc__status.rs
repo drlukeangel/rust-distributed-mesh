@@ -61,6 +61,9 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     .await;
     let view = declared_by_birth.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap().clone();
     assert_eq!(view["status"], "ready-for-traffic", "membership's status is untouched");
+    // The authority itself: its own ReadyForTraffic goes through the same door, applied by itself.
+    let self_declared = declared_by_birth.iter().find(|n| n["name"] == primary["name"]).unwrap();
+    assert_eq!(self_declared["declared"], "ReadyForTraffic", "the fabric primary declared its own birth to itself: {self_declared}");
 
     // 1. The same declaration asked again: one logical event.
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready-for-traffic"]);
@@ -115,8 +118,18 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let not_primary: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == other_admin["name"] && s["attributes"]["outcome"] == "rejected-not-authority").collect();
     assert!(not_primary.iter().any(|s| s["attributes"]["sender"] == "mesh1.rpc.1" && s["attributes"]["detail"] == "receiver-not-primary"), "{not_primary:?}");
     assert!(not_primary.iter().all(|s| s["attributes"]["detail"] == "receiver-not-primary" || s["attributes"]["detail"] == "sender-not-subject"), "{not_primary:?}");
-    // Nodes and admins declare their own state; the mesh primary declares its Mesh's (e4.s11).
-    assert!(decided.iter().all(|s| ["declare-node-state", "declare-mesh-state", "apply-fabric-event"].contains(&s["attributes"]["op"].as_str().unwrap_or(""))), "{decided:?}");
+    // Nodes and admins declare their own state; the mesh primary declares its Mesh's; the Day-0
+    // root applies its own mesh's Pending, having no upstream authority (e4.s11).
+    assert!(decided.iter().all(|s| ["declare-node-state", "declare-mesh-state", "apply-fabric-event", "apply-mesh-state"].contains(&s["attributes"]["op"].as_str().unwrap_or(""))), "{decided:?}");
+    let root_pending: Vec<_> = decided.iter().filter(|s| s["attributes"]["op"] == "apply-mesh-state").collect();
+    assert_eq!(root_pending.len(), 1, "exactly one Pending, self-applied by the Day-0 root: {root_pending:?}");
+    assert_eq!(root_pending[0]["attributes"]["sender"], root_pending[0]["attributes"]["node"], "{root_pending:?}");
+    assert_eq!(root_pending[0]["attributes"]["receiver_is_primary"], "false", "applied before any election: {root_pending:?}");
     // The other admin's own birth was applied by the fabric-primary (this primary) too.
     assert!(decided.iter().any(|s| s["attributes"]["sender"] == other_admin["name"] && s["attributes"]["outcome"] == "applied"), "{decided:?}");
+    // And the primary's own birth: the sender is the authority, through the same door.
+    assert!(
+        decided.iter().any(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["sender"] == primary["name"] && s["attributes"]["op"] == "declare-node-state" && s["attributes"]["outcome"] == "applied"),
+        "the authority applied its own declaration to itself: {decided:?}"
+    );
 }

@@ -69,6 +69,11 @@ pub enum CreateStep {
     /// The birth's projection: its node record and data dir, and the fact it
     /// publishes with its own membership digest.
     PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
+    /// A mesh's first admin only: the fabric primary applies `MeshStatus::Pending` at this exact
+    /// birth, through its Status door, as soon as the birth is bound and published and before it
+    /// is heard or asked to be Ready (e4.s11): a peer mesh's admin is heard on the backbone only
+    /// once it is its mesh's primary, which needs Ready, which needs this.
+    ApplyMeshPending,
     WaitForMeshJoin,
     WaitForNodeReady,
     Complete,
@@ -83,7 +88,7 @@ pub const READY_PREREQUISITES: [CreateStep; 4] = [
 ];
 
 impl CreateStep {
-    pub const ORDER: [CreateStep; 13] = [
+    pub const ORDER: [CreateStep; 14] = [
         Self::AllocateIdentity,
         Self::AllocateEndpoints,
         Self::PrepareStorage,
@@ -94,6 +99,7 @@ impl CreateStep {
         Self::MakeRuntimeFactAvailableToBirth,
         Self::WaitForBind,
         Self::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata,
+        Self::ApplyMeshPending,
         Self::WaitForMeshJoin,
         Self::WaitForNodeReady,
         Self::Complete,
@@ -112,6 +118,7 @@ impl CreateStep {
             Self::WaitForBind => "WaitForBind",
             Self::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata => "PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata",
             Self::WaitForMeshJoin => "WaitForMeshJoin",
+            Self::ApplyMeshPending => "ApplyMeshPending",
             Self::WaitForNodeReady => "WaitForNodeReady",
             Self::Complete => "Complete",
         }
@@ -428,6 +435,11 @@ pub struct CreateRequest {
     pub restart_of: Option<Node>,
 }
 
+/// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
+/// Pending hand-off at a mesh's first admin. Runs as its own receipted step (`ApplyMeshPending`);
+/// a failure fails the create, so nothing downstream starts under an assumed state.
+pub type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
 #[derive(Debug, Clone)]
 pub struct RetireRequest {
     pub build_id: BuildId,
@@ -642,12 +654,18 @@ impl DeploymentPipeline<'_> {
 
     /// Create (or restart) `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
-        use tracing::Instrument;
-        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt, req.restart_of.is_some());
-        self.create_steps(req).instrument(span).await
+        self.create_with(req, None).await
     }
 
-    async fn create_steps(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
+    /// `create`, with `before_ready` run as the `ApplyMeshPending` step once the birth has joined
+    /// its mesh and before it is asked to be Ready.
+    pub async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt, req.restart_of.is_some());
+        self.create_steps(req, before_ready).instrument(span).await
+    }
+
+    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
         let op = if req.restart_of.is_some() { "restart-node" } else { "create-node" };
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("{op}:{}", req.node)).await;
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
@@ -827,6 +845,17 @@ impl DeploymentPipeline<'_> {
             Ok(RuntimeEvidence { data_dir: node.data_dir.clone(), ..RuntimeEvidence::of(&fact) })
         })
         .await?;
+        // Every create records this step: a mesh's first admin receives the fabric primary's
+        // Pending here; any other birth records that none was owed, so the Build facts say so.
+        let target = node.clone();
+        let _: serde_json::Value = self
+            .step(&mut run, CreateStep::ApplyMeshPending.name(), async {
+                match &before_ready {
+                    Some(hand_off) => hand_off(target).await.map(|()| serde_json::json!({"applied": "Pending"})),
+                    None => Ok(serde_json::json!({"applied": null, "reason": "not a mesh's first admin"})),
+                }
+            })
+            .await?;
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
         self.step(&mut run, CreateStep::WaitForMeshJoin.name(), async {
             let until = Instant::now() + self.timeouts.join;

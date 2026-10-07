@@ -754,7 +754,7 @@ impl AdminRunner {
         }
     }
 
-    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>) -> Result<(), String> {
+    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
         if restart_of.is_none() {
             match self.fence_predecessor(node).await {
                 // The member is alive (it answers) or held (its exact runtime still runs):
@@ -766,10 +766,26 @@ impl AdminRunner {
         }
         let template = self.template_for(node.kind, &node.mesh).await;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of };
-        let created = self.pipeline(&template).create(&req).await.map_err(|e| e.to_string())?;
+        let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
+    }
+
+    /// The fabric-primary -> mesh bootstrap Pending operation (e4.s11), as the create pipeline's
+    /// `ApplyMeshPending` step at the exact birth just joined at `admin`: `ApplyMeshState(Pending)`
+    /// re-sent as the same declaration until the target answers `Applied` or `AlreadyApplied`. A
+    /// stale-birth answer (the target holds another mesh id: no replacement id is ever minted to
+    /// satisfy the operation) or a backward move fails the step by name; so does a bound of
+    /// attempts with no certainty, so `Build(shape)` never starts under an assumed state.
+    fn pending_handoff_hook(&self, admin: &PathName) -> Result<crate::deployment::pipeline::BeforeReady, String> {
+        let mesh_id = self.records.meshes.lock().unwrap().get(&admin.mesh).map(|m| m.to_string()).ok_or_else(|| format!("{}: this admin holds no mesh id for {}, so no Pending can be applied", admin, admin.mesh))?;
+        let Some(node_rpc) = &self.node_rpc else { return Err(format!("{admin}: this admin has no Node RPC client for the Pending hand-off")) };
+        let (client, resolver, me, topology, mesh) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.topology.clone(), admin.mesh.clone());
+        Ok(Arc::new(move |target: Node| {
+            let (client, resolver, me, topology, mesh, mesh_id) = (client.clone(), resolver.clone(), me.clone(), topology.clone(), mesh.clone(), mesh_id.clone());
+            Box::pin(async move { apply_mesh_pending(&client, &resolver, &me, &topology, &mesh, &mesh_id, &target).await })
+        }))
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
@@ -864,13 +880,23 @@ impl AdminRunner {
             }
             BuildOperation::CreateNode { node } => {
                 let span = tracing::info_span!("rafka.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt);
-                self.create(build_id, attempt, node, None).instrument(span).await
+                async {
+                    // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it
+                    // has joined its mesh, the fabric primary applies MeshStatus::Pending at that exact
+                    // birth, before it is asked to be Ready; only with that certainty does the shape
+                    // proceed (e4.s11).
+                    let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
+                    let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
+                    self.create(build_id, attempt, node, None, before_ready).await
+                }
+                .instrument(span)
+                .await
             }
             BuildOperation::RestartNode { node } => {
                 let span = tracing::info_span!("rafka.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 async {
                     let prior = self.retire(build_id, attempt, node, false).await?;
-                    self.create(build_id, attempt, node, prior).await
+                    self.create(build_id, attempt, node, prior, None).await
                 }
                 .instrument(span)
                 .await
@@ -897,6 +923,68 @@ impl AdminRunner {
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
                 Ok(())
+            }
+        }
+    }
+}
+
+/// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me`.
+async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
+    use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
+    // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
+    // primary): this admin launched it and holds its birth exactly, so its resolver takes the
+    // birth from what it launched, never from a digest it has not heard.
+    let (Some(endpoint_id), Some(transport_addr), Some(incarnation)) = (target.endpoint_id.as_ref(), target.transport_addr, target.incarnation_id.clone()) else {
+        return Err(format!("{}: the birth just launched has no endpoint id, transport address or incarnation to reach it by", target.name));
+    };
+    let endpoint_id = endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("{}: its endpoint id is not an iroh key: {e}", target.name))?;
+    let fed = resolver.apply(rafka_node_rpc::ResolvedNode { node_id: target.node_id.clone(), name: target.name.clone(), endpoint_id, transport_addr, incarnation }, None);
+    tracing::info!(target = %target.name, applied = ?fed, "the resolver holds the launched birth for the Pending hand-off");
+    let (me_id, me_inc) = {
+        let v = topology.read().await;
+        let my = v.nodes.iter().find(|n| &n.name == me).cloned();
+        (my.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), my.and_then(|n| n.incarnation_id).map(|i| i.0).unwrap_or_default())
+    };
+    let request = StatusRequest::ApplyMeshState { mesh_id: mesh_id.to_string(), mesh_name: mesh.to_string(), state: MeshState::Pending };
+    let key = format!("mesh:{mesh_id}:Pending");
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(target.node_id.clone()), &request, &rafka_node_rpc::CallOptions::default()).await;
+        let (outcome, verdict) = match &out {
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
+                StatusReply::Applied => ("applied".to_string(), Some(Ok(()))),
+                StatusReply::AlreadyApplied => ("already-applied".to_string(), Some(Ok(()))),
+                StatusReply::RejectedStaleBirth { held } => (format!("rejected-stale-birth: the target holds mesh id {held}"), Some(Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the Pending hand-off is refused", target.name)))),
+                StatusReply::RejectedInvalidTransition { current } => (format!("rejected-invalid-transition: {current}"), Some(Err(format!("{} already holds its Mesh at {current}: Pending is a backward move", target.name)))),
+                other => (format!("{other:?}"), None),
+            },
+            other => (format!("{}: {other:?}", other.name()), None),
+        };
+        tracing::info_span!(
+            "rafka.node_admin.mesh.update.via-pending-handoff",
+            node = %me,
+            node_id = %me_id,
+            incarnation = %me_inc,
+            target = %target.name,
+            target_node_id = %target.node_id,
+            target_incarnation = %target.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
+            mesh = %mesh,
+            mesh_id = %mesh_id,
+            key = %key,
+            state = "Pending",
+            attempt,
+            outcome = %outcome,
+        )
+        .in_scope(|| tracing::info!("the fabric primary applies Pending at the mesh's bootstrap admin"));
+        match verdict {
+            Some(v) => return v,
+            None => {
+                if std::time::Instant::now() >= until {
+                    return Err(format!("{}: Pending is not certain after {attempt} attempts (last: {outcome}); Build(shape) does not start under an assumed state", target.name));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
     }
@@ -1466,6 +1554,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         let hydrated = accepted.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
+        let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
         tasks.push(tokio::spawn(async move {
             let mut reported = None;
             loop {
@@ -1479,6 +1568,29 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
                 }
                 blocked.extend(hydration_blocker(&me, &hydrated));
+                // A mesh is Pending until its authority says so (e4.s11): a mesh's first admin holds
+                // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
+                // root, with no upstream authority, applies its own. An admin joining a mesh whose
+                // admin cohort is already live owes nothing here.
+                let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id.to_string());
+                if !pending_applied {
+                    if day0.is_some() {
+                        match authority.get() {
+                            Some(auth) => {
+                                let reply = auth.self_apply_mesh_pending(&mesh_id.to_string()).await;
+                                if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
+                                    blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
+                                }
+                            }
+                            None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
+                        }
+                    } else {
+                        let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
+                        if !cohort_live {
+                            blocked.push(format!("{me}: the first admin of {mesh_name}: its mesh's Pending has not been applied here by the fabric primary"));
+                        }
+                    }
+                }
                 if blocked.is_empty() {
                     let mut d = digest.lock().unwrap();
                     if d.status != MemberStatus::Pending {
@@ -1525,15 +1637,15 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // each round until answered by name; nothing it does gates gossip or readiness.
     {
         let declarer = crate::status_declare::Declarer::new();
-        let (digest, topology, records, me, me_id, incarnation, client) =
-            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone());
+        let (digest, topology, records, me, me_id, incarnation, client, authority) =
+            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
         tasks.push(tokio::spawn(async move {
             loop {
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                 crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, &view, &mesh_ids);
-                declarer.round(&me, &me_id, &view, &client).await;
+                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref())).await;
                 tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
             }
         }));

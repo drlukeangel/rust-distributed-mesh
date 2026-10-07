@@ -163,6 +163,68 @@ fn apply_mesh(declared: &mut Declared, mesh_id: &str, state: MeshState) -> (Stat
     }
 }
 
+impl StatusAuthority {
+    /// The one door every declaration goes through, whoever the sender is: a peer over Node RPC,
+    /// or this admin itself when its view names it as the authority. Decide over the view; an
+    /// `Applied` node state is durable (the subject's row) before it is answered, and the live
+    /// view shows it at once; one span per decision names op, sender, outcome and whether the
+    /// receiver holds its mesh's seat (accepting a Pending hand-off is not an election).
+    pub async fn apply(&self, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
+        let view = self.topology.read().await.clone();
+        let receiver_is_primary = view.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let (reply, row) = {
+            let mut declared = self.declared.lock().unwrap();
+            decide(self, &view, &mut declared, sender.as_ref(), req)
+        };
+        let reply = match (&reply, row) {
+            (StatusReply::Applied, Some(row)) => match self.nodes_storage.put_contact(&row) {
+                Ok(()) => {
+                    let mut t = self.topology.write().await;
+                    if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
+                        n.declared = row.declared.clone();
+                    }
+                    reply
+                }
+                Err(e) => StatusReply::NotReady { reason: format!("nodes.storage refused the row: {e}") },
+            },
+            _ => reply,
+        };
+        tracing::info_span!(
+            "rafka.node_admin.status.update.via-declaration",
+            node = %self.me,
+            op = req.op(),
+            sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
+            outcome = reply.name(),
+            detail = %detail(&reply),
+            receiver_is_primary,
+        )
+        .in_scope(|| tracing::info!("declaration decided by the authority"));
+        reply
+    }
+}
+
+impl StatusAuthority {
+    /// Initial fabric bootstrap: the Day-0 root has no upstream authority to hand it its mesh's
+    /// Pending, so it applies it to itself (e4.s11 "single-admin recovery root"). Only Pending, only
+    /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
+    /// as every decision, with the sender named as itself.
+    pub async fn self_apply_mesh_pending(&self, mesh_id: &str) -> StatusReply {
+        let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let (reply, _) = apply_mesh(&mut self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
+        tracing::info_span!(
+            "rafka.node_admin.status.update.via-declaration",
+            node = %self.me,
+            op = "apply-mesh-state",
+            sender = %self.me,
+            outcome = reply.name(),
+            detail = "self-applied: initial fabric bootstrap, no upstream authority",
+            receiver_is_primary,
+        )
+        .in_scope(|| tracing::info!("the Day-0 root applies its own mesh's Pending"));
+        reply
+    }
+}
+
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
 pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -> ServerBuilder {
@@ -172,37 +234,9 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
             let Some(auth) = authority.get().cloned() else {
                 return Ok(StatusReply::NotReady { reason: "this admin holds no view yet".into() });
             };
-            let view = auth.topology.read().await.clone();
             let peer_id = EndpointId(peer.endpoint_id.to_string());
-            let sender = view.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer_id)).cloned();
-            let (reply, row) = {
-                let mut declared = auth.declared.lock().unwrap();
-                decide(&auth, &view, &mut declared, sender.as_ref(), &req)
-            };
-            // Applied is durable before it is answered: the subject's row carries the state. The
-            // live view shows it at once; the projection carries it from `declared` from then on.
-            let reply = match (&reply, row) {
-                (StatusReply::Applied, Some(row)) => match auth.nodes_storage.put_contact(&row) {
-                    Ok(()) => {
-                        let mut t = auth.topology.write().await;
-                        if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
-                            n.declared = row.declared.clone();
-                        }
-                        reply
-                    }
-                    Err(e) => StatusReply::NotReady { reason: format!("nodes.storage refused the row: {e}") },
-                },
-                _ => reply,
-            };
-            tracing::info_span!(
-                "rafka.node_admin.status.update.via-declaration",
-                node = %auth.me,
-                op = req.op(),
-                sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
-                outcome = reply.name(),
-                detail = %detail(&reply),
-            )
-            .in_scope(|| tracing::info!("declaration decided by the authority"));
+            let sender = auth.topology.read().await.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer_id)).cloned();
+            let reply = auth.apply(sender, &req).await;
             if auth.hold_next_reply.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
             }

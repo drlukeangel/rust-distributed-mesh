@@ -52,11 +52,15 @@ pub struct Pending {
     pub last: Option<String>,
 }
 
-/// The declarer's state: what is owed, and what was answered by name.
+/// The declarer's state: what is owed, and what was answered by name, and by which authority. A
+/// key answered by one authority is owed again when the view names another: the seat moved, and
+/// the new authority answers `AlreadyApplied` or applies it, never assumes it.
 #[derive(Debug, Default)]
 pub struct Declarer {
     pending: Mutex<BTreeMap<Key, Pending>>,
-    done: Mutex<BTreeMap<Key, String>>,
+    done: Mutex<BTreeMap<Key, (String, NodeId)>>,
+    /// Every declaration ever owed, by key: what is re-owed when the authority moves.
+    requests: Mutex<BTreeMap<Key, (Authority, StatusRequest)>>,
 }
 
 impl Declarer {
@@ -66,6 +70,7 @@ impl Declarer {
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
     pub fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
+        self.requests.lock().unwrap().entry(key.clone()).or_insert((to.clone(), request.clone()));
         if self.done.lock().unwrap().contains_key(&key) {
             return;
         }
@@ -73,15 +78,43 @@ impl Declarer {
     }
 
     pub fn answered(&self, key: &Key) -> Option<String> {
-        self.done.lock().unwrap().get(key).cloned()
+        self.done.lock().unwrap().get(key).map(|(o, _)| o.clone())
     }
 
     pub fn owed(&self) -> usize {
         self.pending.lock().unwrap().len()
     }
 
-    /// One round: send every owed declaration to its authority as the view names it now.
-    pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient) {
+    /// One round: send every owed declaration to its authority as the view names it now. When the
+    /// view names this admin, the declaration goes through this admin's own door (`authority`),
+    /// decided exactly as a peer's would be; no seat is assumed.
+    pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>) {
+        // A key answered by an authority the view no longer names is owed to the current one.
+        {
+            let mut done = self.done.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap();
+            let moved: Vec<Key> = done
+                .iter()
+                .filter(|(key, (_, by))| {
+                    let now = match key {
+                        Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
+                        Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
+                    };
+                    now.is_some_and(|n| &n.node_id != by)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in moved {
+                if let Some((_, by)) = done.remove(&key) {
+                    let (to, request) = match self.requests.lock().unwrap().get(&key) {
+                        Some(r) => r.clone(),
+                        None => continue,
+                    };
+                    tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
+                    pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None });
+                }
+            }
+        }
         let owed: Vec<Pending> = self.pending.lock().unwrap().values().cloned().collect();
         for p in owed {
             let target = match &p.to {
@@ -92,26 +125,37 @@ impl Declarer {
                 self.note(&p.key, 0, "no authority in view");
                 continue;
             };
-            if &target.node_id == me_id {
-                // The authority is this admin: apply locally through the same door is e4.s11's
-                // next step; until then the view's `declared` is what the authority holds.
-                self.note(&p.key, 0, "authority is self");
-                continue;
-            }
-            let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).await;
-            let (outcome, finished) = match &out {
-                RpcOutcome::Reply(r) => match r.value() {
-                    StatusReply::Applied | StatusReply::AlreadyApplied => (r.value().name().to_string(), true),
-                    StatusReply::RejectedStaleBirth { .. } | StatusReply::RejectedInvalidTransition { .. } => (format!("{:?}", r.value()), true),
-                    other => (format!("{other:?}"), false),
-                },
-                other => (format!("{}: {other:?}", other.name()), false),
+            let classify = |reply: &StatusReply| match reply {
+                StatusReply::Applied | StatusReply::AlreadyApplied => (reply.name().to_string(), true),
+                StatusReply::RejectedStaleBirth { .. } | StatusReply::RejectedInvalidTransition { .. } => (format!("{reply:?}"), true),
+                other => (format!("{other:?}"), false),
+            };
+            let (outcome, finished, via) = if &target.node_id == me_id {
+                match authority {
+                    Some(auth) => {
+                        let reply = auth.apply(Some(target.clone()), &p.request).await;
+                        let (o, f) = classify(&reply);
+                        (o, f, "self")
+                    }
+                    None => {
+                        self.note(&p.key, 0, "authority is self, but this admin holds no view yet");
+                        continue;
+                    }
+                }
+            } else {
+                let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).await;
+                let (o, f) = match &out {
+                    RpcOutcome::Reply(r) => classify(r.value()),
+                    other => (format!("{}: {other:?}", other.name()), false),
+                };
+                (o, f, "node-rpc")
             };
             tracing::info_span!(
                 "rafka.node_admin.status.update.via-declare",
                 node = %me,
                 key = ?p.key,
                 to = %target.name,
+                via,
                 attempt = p.attempts + 1,
                 outcome = %outcome,
                 finished,
@@ -119,7 +163,7 @@ impl Declarer {
             .in_scope(|| tracing::info!("declared to the authority"));
             if finished {
                 self.pending.lock().unwrap().remove(&p.key);
-                self.done.lock().unwrap().insert(p.key.clone(), outcome);
+                self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone()));
             } else {
                 self.note(&p.key, 1, &outcome);
             }
