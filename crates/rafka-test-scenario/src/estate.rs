@@ -495,13 +495,15 @@ impl Estate {
 
     /// Run one probe invocation and record it in the RPC ledger.
     pub fn probe(&self, args: &[&str]) -> Value {
-        let out = Command::new(binary("rafka-rpc-probe"))
-            .arg("--admin")
-            .arg(&self.admin)
-            .args(args)
-            .env("RAFKA_EVIDENCE_DIR", &self.evidence)
-            .output()
-            .expect("run rafka-rpc-probe");
+        let mut cmd = Command::new(binary("rafka-rpc-probe"));
+        cmd.arg("--admin").arg(&self.admin).args(args).env("RAFKA_EVIDENCE_DIR", &self.evidence);
+        // A container fabric's nodes are reachable from the host through its network's gateway.
+        if self.owner.provider == "container" {
+            if let Ok(gw) = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &format!("rafka-{}", self.fabric_id)]) {
+                cmd.env("RAFKA_PROBE_BIND", gw);
+            }
+        }
+        let out = cmd.output().expect("run rafka-rpc-probe");
         let line = String::from_utf8_lossy(&out.stdout);
         let v: Value = serde_json::from_str(line.trim())
             .unwrap_or_else(|e| panic!("probe {args:?} printed no JSON ({e}): {line} / {}", String::from_utf8_lossy(&out.stderr)));

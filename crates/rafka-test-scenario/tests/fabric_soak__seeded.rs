@@ -215,7 +215,17 @@ async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], 
     let mut last = String::new();
     while Instant::now() < until {
         if relocate_control(estate, known).await {
-            if let Some(v) = try_get(&estate.admin, "/api/nodes").await {
+            // Only the target mesh's primary tickles it, so only its view records `dead`: true
+            // offline is read there; pending-reconnect from any admin that answers.
+            let mut judge = estate.admin.clone();
+            if true_offline {
+                if let (Some(v), Some(mesh)) = (try_get(&estate.admin, "/api/nodes").await, paths.first().and_then(|p| p.split('.').next())) {
+                    if let Some(base) = v["nodes"].as_array().into_iter().flatten().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready-for-traffic").and_then(|n| n["admin_api_base"].as_str()) {
+                        judge = base.to_string();
+                    }
+                }
+            }
+            if let Some(v) = try_get(&judge, "/api/nodes").await {
                 let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
                 let unheard = |p: &String| nodes.iter().filter(|n| n["name"] == p.as_str()).all(|n| match n["status"].as_str() {
                     Some("dead") => true,

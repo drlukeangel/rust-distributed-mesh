@@ -105,7 +105,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let req = DeclareRequest::Declare { to, state, node_id: a.as_node_id.clone(), incarnation: a.as_incarnation.clone() };
     let (out, _) = client.call::<DeclareProbe>(target, &req, &CallOptions::default()).await;
@@ -211,7 +211,7 @@ async fn run(a: Args) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
         .await
         .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
     let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
@@ -283,7 +283,7 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap())
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
         .await
         .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
@@ -305,4 +305,11 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
         RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "target_node_id": r.target_node_id()}),
     })
+}
+
+/// Where the probe binds its one socket: `RAFKA_PROBE_BIND` (an address on the fabric's network,
+/// e.g. a container fabric's gateway), else loopback.
+fn probe_bind() -> std::net::SocketAddr {
+    let ip: std::net::IpAddr = std::env::var("RAFKA_PROBE_BIND").ok().and_then(|v| v.parse().ok()).unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    std::net::SocketAddr::new(ip, 0)
 }
