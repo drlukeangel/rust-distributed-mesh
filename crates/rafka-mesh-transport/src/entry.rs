@@ -95,18 +95,54 @@ impl ProtocolHandler for EntryServer {
 
 /// One pull from `anchor`, within `within`.
 pub async fn pull_once(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, within: Duration) -> Result<EntryAnswer, String> {
-    let work = async {
-        let answered = |a: EntryAnswer| if a.served_by.is_empty() { Err("the admin is not ready to answer yet".to_string()) } else { Ok(a) };
-        let conn = endpoint.connect(anchor, ENTRY_ALPN).await.map_err(|e| format!("connecting: {e}"))?;
-        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("opening a stream: {e}"))?;
-        let req = serde_json::to_vec(&EntryRequest { node: node.to_string() }).map_err(|e| e.to_string())?;
-        send.write_all(&req).await.map_err(|e| format!("sending: {e}"))?;
-        send.finish().map_err(|e| format!("finishing: {e}"))?;
-        let bytes = recv.read_to_end(MAX_ANSWER).await.map_err(|e| format!("reading the answer: {e}"))?;
-        conn.close(0u32.into(), b"entry pulled");
-        serde_json::from_slice::<EntryAnswer>(&bytes).map_err(|e| format!("undecodable answer: {e}")).and_then(answered)
+    pull_attempt(endpoint, anchor, node, within, 1).await
+}
+
+/// [`pull_once`] as attempt `attempt` of a [`pull`]: one span per attempt names the step the
+/// attempt reached (connecting, opening the stream, sending, reading the answer, answered), its
+/// elapsed time and its outcome, so a pull that never completes names where it waited
+/// (rafka-v2 #2941).
+async fn pull_attempt(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, within: Duration, attempt: u32) -> Result<EntryAnswer, String> {
+    use tracing::Instrument;
+    let span = tracing::info_span!(
+        "rdm.mesh.entry.update.via-pull-attempt",
+        node,
+        anchor = %anchor.id.fmt_short(),
+        attempt,
+        step = tracing::field::Empty,
+        elapsed_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    );
+    let step = std::sync::Arc::new(std::sync::Mutex::new("connecting"));
+    let started = std::time::Instant::now();
+    let work = {
+        let step = step.clone();
+        async move {
+            let reached = |s: &'static str| *step.lock().unwrap() = s;
+            let answered = |a: EntryAnswer| if a.served_by.is_empty() { Err("the admin is not ready to answer yet".to_string()) } else { Ok(a) };
+            let conn = endpoint.connect(anchor, ENTRY_ALPN).await.map_err(|e| format!("connecting: {e}"))?;
+            reached("opening-stream");
+            let (mut send, mut recv) = conn.open_bi().await.map_err(|e| format!("opening a stream: {e}"))?;
+            reached("sending");
+            let req = serde_json::to_vec(&EntryRequest { node: node.to_string() }).map_err(|e| e.to_string())?;
+            send.write_all(&req).await.map_err(|e| format!("sending: {e}"))?;
+            send.finish().map_err(|e| format!("finishing: {e}"))?;
+            reached("reading-answer");
+            let bytes = recv.read_to_end(MAX_ANSWER).await.map_err(|e| format!("reading the answer: {e}"))?;
+            conn.close(0u32.into(), b"entry pulled");
+            reached("answered");
+            serde_json::from_slice::<EntryAnswer>(&bytes).map_err(|e| format!("undecodable answer: {e}")).and_then(answered)
+        }
     };
-    tokio::time::timeout(within, work).await.map_err(|_| format!("no answer within {within:?}"))?
+    let r = match tokio::time::timeout(within, work).instrument(span.clone()).await {
+        Ok(r) => r,
+        Err(_) => Err(format!("no answer within {within:?}")),
+    };
+    span.record("step", *step.lock().unwrap());
+    span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+    span.record("outcome", match &r { Ok(_) => "answered".to_string(), Err(e) => format!("refused: {e}") }.as_str());
+    span.in_scope(|| tracing::info!("one entry pull attempt"));
+    r
 }
 
 /// Pull from `anchor`, retrying an unreachable admin up to `attempts` times.
@@ -114,7 +150,7 @@ pub async fn pull_once(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, wi
 pub async fn pull(endpoint: &Endpoint, anchor: EndpointAddr, node: &str, attempts: u32) -> Result<EntryAnswer, String> {
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
-        match pull_once(endpoint, anchor.clone(), node, Duration::from_secs(5)).await {
+        match pull_attempt(endpoint, anchor.clone(), node, Duration::from_secs(5), attempt).await {
             Ok(a) => {
                 tracing::info_span!(
                     "rdm.mesh.entry.update.via-membership-pulled",
