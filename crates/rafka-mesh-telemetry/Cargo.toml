@@ -16,3 +16,6 @@ http = "1"
 tracing-flame = "0.2.0"
 serde_json = { workspace = true }
 futures-util = "0.3"
+
+[dev-dependencies]
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

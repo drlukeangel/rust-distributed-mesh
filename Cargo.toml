@@ -32,9 +32,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-opentelemetry = "0.28"
 
 # opentelemetry
-opentelemetry = { version = "0.27", features = ["trace"] }
-opentelemetry_sdk = { version = "0.27", features = ["trace", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
+opentelemetry = { version = "0.27", features = ["trace", "logs"] }
+opentelemetry_sdk = { version = "0.27", features = ["trace", "logs", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace", "logs"] }
 opentelemetry-semantic-conventions = "0.27"
 
 # iroh 1 + iroh-gossip from drlukeangel/iroh-gossip, pinned to the exact

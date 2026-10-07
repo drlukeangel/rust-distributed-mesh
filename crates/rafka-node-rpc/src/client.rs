@@ -227,6 +227,7 @@ impl NodeRpcClient {
             Ok(n) => n,
             Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
         };
+        tracing::info!(step = "resolved", node = %node.name, addr = %node.transport_addr, incarnation = %node.incarnation.0, "the target resolved to one birth");
         // Whatever this node's record no longer names leaves the pool now.
         self.pool.purge_stale(&node);
         // The fence: the node the caller resolved and the op, never a dial target.
@@ -247,8 +248,10 @@ impl NodeRpcClient {
             deadline: send_deadline,
             failpoint: opts.after_connect.clone(),
         };
+        let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec).await {
             Ok((c, reused)) => {
+                tracing::info!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
                 evidence.connection = Some(c.stable_id());
                 evidence.reused = reused;
                 if !reused {
@@ -265,20 +268,26 @@ impl NodeRpcClient {
                 return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
             }
             Err(DialError::Deadline) => {
+                tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
                 if let Some(o) = &self.observer {
                     o.direct_failed(&node, "dial deadline");
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
             }
             Err(DialError::Failed(e)) => {
+                tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
                 if let Some(o) = &self.observer {
                     o.direct_failed(&node, &e);
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence));
             }
         };
+        let opened_at = Instant::now();
         let (mut send, mut recv) = match timeout_at(send_deadline, conn.open_bi()).await {
-            Ok(Ok(s)) => s,
+            Ok(Ok(s)) => {
+                tracing::info!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, "a request stream is open");
+                s
+            }
             Ok(Err(e)) => {
                 self.pool.broken(&key, &conn);
                 if let Some(o) = &self.observer {
@@ -359,6 +368,50 @@ impl NodeRpcClient {
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
+        use tracing::Instrument;
+        // The caller's side of one call: its outcome, why, and how long it took; the steps it
+        // reached are the log lines inside it (resolved, connection pooled or dialed, stream
+        // opened, request written, reply read).
+        let span = tracing::info_span!(
+            "rdm.node_rpc.request.update.via-call",
+            target = ?target,
+            op,
+            outcome = tracing::field::Empty,
+            reason = tracing::field::Empty,
+            reused = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+        );
+        let started = Instant::now();
+        let (out, evidence) = self.invoke_raw_steps(target, op, payload, max_reply, opts, decode).instrument(span.clone()).await;
+        span.record("outcome", out.name());
+        let reason = match &out {
+            RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
+            RpcOutcome::Indeterminate(i) => format!("{:?}", i.reason()),
+            RpcOutcome::RejectedStale(r) => format!("stale target {}", r.target_node_id()),
+            RpcOutcome::Unserved(u) => format!("op {} unserved", u.op()),
+            RpcOutcome::Reply(_) => String::new(),
+        };
+        span.record("reason", reason.as_str());
+        if let Some(e) = &evidence {
+            span.record("reused", e.reused);
+        }
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.in_scope(|| tracing::info!("node rpc call finished"));
+        (out, evidence)
+    }
+
+    async fn invoke_raw_steps<R, D>(
+        &self,
+        target: &NodeTarget,
+        op: u8,
+        payload: Vec<u8>,
+        max_reply: usize,
+        opts: &CallOptions,
+        decode: D,
+    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+    where
+        D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
+    {
         let decode = std::sync::Mutex::new(Some(decode));
         let take = || decode.lock().unwrap().take().expect("decode runs once");
         let Opened { committed, mut recv, evidence, key, conn, reply_deadline, target: request_target } =
@@ -367,6 +420,8 @@ impl NodeRpcClient {
                 Phase::Committed(o) => o,
             };
         let decode = take();
+        tracing::info!(step = "request-written", "the request is written and finished; awaiting the reply");
+        let read_at = Instant::now();
         let got = match timeout_at(reply_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await {
             Err(_) => Committed::Lost(IndeterminateReason::ReplyDeadline),
             Ok(Ok(bytes)) => Committed::Reply(bytes),
@@ -374,6 +429,7 @@ impl NodeRpcClient {
             Ok(Err(ReadToEndError::TooLong)) => Committed::Lost(IndeterminateReason::ProtocolViolation("reply longer than the protocol ceiling".into())),
             Ok(Err(e)) => Committed::Lost(IndeterminateReason::ReplyLost(e.to_string())),
         };
+        tracing::info!(step = "reply-read", waited_ms = read_at.elapsed().as_millis() as u64, "the reply direction ended");
         // Pool health from what came back (never reachability).
         match &got {
             Committed::Reply(_) | Committed::Reset(_) => self.pool.healthy(&key),

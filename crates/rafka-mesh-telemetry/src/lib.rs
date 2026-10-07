@@ -5,8 +5,12 @@ use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SimpleSpa
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+pub mod logs;
+
 pub struct TelemetryGuard {
     provider: TracerProvider,
+    /// The OTLP log provider the log adapter emits through, when a collector is configured.
+    logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
 }
 
 impl Drop for TelemetryGuard {
@@ -18,6 +22,16 @@ impl Drop for TelemetryGuard {
         }
         if let Err(e) = self.provider.shutdown() {
             eprintln!("telemetry shutdown error: {e}");
+        }
+        if let Some(logs) = &self.logs {
+            for result in logs.force_flush() {
+                if let Err(e) = result {
+                    eprintln!("telemetry log flush error: {e}");
+                }
+            }
+            if let Err(e) = logs.shutdown() {
+                eprintln!("telemetry log shutdown error: {e}");
+            }
         }
     }
 }
@@ -35,7 +49,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    TelemetryGuard { provider }
+    TelemetryGuard { provider, logs: None }
 }
 
 /// Initialize OTLP tracing for short-lived CLI processes (rfa, future rf).
@@ -50,7 +64,7 @@ pub fn init_telemetry_for_cli(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_simple_provider(service_name);
     install_subscriber(tracer);
-    TelemetryGuard { provider }
+    TelemetryGuard { provider, logs: None }
 }
 
 fn install_propagator() {
@@ -250,6 +264,12 @@ impl JsonlSpanExporter {
             "start_unix_nano": nanos(s.start_time),
             "end_unix_nano": nanos(s.end_time),
             "attributes": attrs,
+            // The log lines emitted inside this span, in order: what the span did, in its words.
+            "events": s.events.iter().map(|e| serde_json::json!({
+                "name": e.name,
+                "time_unix_nano": nanos(e.timestamp),
+                "attributes": e.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.as_str().into_owned()))).collect::<serde_json::Map<_, _>>(),
+            })).collect::<Vec<_>>(),
         })
         .to_string()
     }
@@ -300,7 +320,20 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
             Err(e) => eprintln!("telemetry: RAFKA_EVIDENCE_DIR={dir} is unusable: {e}"),
         }
     }
+    let mut logs = None;
     if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        // The log adapter's provider: every log line to the collector's log store, beside spans.
+        match opentelemetry_otlp::LogExporter::builder().with_tonic().with_endpoint(endpoint.clone()).build() {
+            Ok(exporter) => {
+                logs = Some(
+                    opentelemetry_sdk::logs::LoggerProvider::builder()
+                        .with_resource(build_resource(&service))
+                        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+                        .build(),
+                );
+            }
+            Err(e) => eprintln!("telemetry: the OTLP log exporter for {endpoint} could not be built: {e}"),
+        }
         let processor = BatchSpanProcessor::builder(build_exporter(endpoint), opentelemetry_sdk::runtime::Tokio).build();
         builder = builder.with_span_processor(processor);
         any = true;
@@ -318,9 +351,18 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .add_directive("iroh_gossip=warn".parse().expect("static directive"))
         .add_directive("noq=warn".parse().expect("static directive"))
         .add_directive("noq_proto=warn".parse().expect("static directive"));
+    let log_filter = EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("iroh=warn".parse().expect("static directive"))
+        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
+        .add_directive("noq=warn".parse().expect("static directive"))
+        .add_directive("noq_proto=warn".parse().expect("static directive"));
+    use opentelemetry::logs::LoggerProvider as _;
+    let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
         .with(OpenTelemetryLayer::new(tracer).with_filter(otel_filter))
+        .with(log_layer)
         .try_init();
-    Some(TelemetryGuard { provider })
+    Some(TelemetryGuard { provider, logs })
 }

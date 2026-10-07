@@ -257,7 +257,13 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     assert_eq!(seen[0].context.caller_system.as_deref(), Some("rdm"), "the client's caller_system rides every call");
     let serve = finished("rdm.node_rpc.request.serve.via-direct", Some(&trace));
     assert_eq!(serve.len(), 1, "the serve span joined the caller's current trace: {serve:?}");
-    assert_eq!(serve[0].parent_span_id.to_string(), parent);
+    // The unbroken hierarchy (node-rpc.md §48): the caller's span, its call span holding the
+    // per-call evidence, then the target's serve span.
+    let call = finished("rdm.node_rpc.request.update.via-call", Some(&trace));
+    assert_eq!(call.len(), 1, "one call span in the caller's trace: {call:?}");
+    assert_eq!(call[0].parent_span_id.to_string(), parent, "the call span is a child of the caller's span");
+    assert_eq!(attr(&call[0], "outcome").as_deref(), Some("Reply"));
+    assert_eq!(serve[0].parent_span_id, call[0].span_context.span_id(), "the serve span is a child of the call span");
     assert_eq!(attr(&serve[0], "caller_system").as_deref(), Some("rdm"));
 }
 
