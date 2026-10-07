@@ -23,9 +23,9 @@ before the body is read, allocated or parsed:
 | `op` is not served on that port | `-32027 UNSERVED_OP` (421) | kept |
 
 The fence is core: the same three checks for every family on every port. It carries nothing about
-the process birth. The connection is authenticated under the peer's iroh `EndpointId`, which names
-the process; a restarted node keeps its id, its old connection dies with the old process, and the
-next dial resolves the node record again. A replacement is a new id.
+the process birth: which birth a caller is talking to is the resolver's and the pool's knowledge
+(the incarnation, held locally, never sent), and a dial to a superseded birth is invalidated before
+dispatch. A restarted node keeps its id; a replacement is a new id.
 
 Encoding: JSON on every control port. The data port (op `0x12`, `data-frame`) carries the same
 three fields in the same order as postcard, because that path is hot and nothing else is.
@@ -70,7 +70,8 @@ fence carries the code; the body carries the method name. A retired code is neve
 
 ## What this replaces
 
-`RequestTarget{node_id, incarnation, slot, freshness}` and the postcard `RequestHeader`; the pool key
-`(scope, EndpointId, IncarnationId)` becomes `(scope, EndpointId)`; `IncarnationId`, `FreshnessToken`,
-`EndpointSlot`, `SlotPolicy` and the resolver's `StaleIncarnation`/`UnknownLineage` refusals are
-deleted; node-admin's endpoint assignment says `port`.
+`RequestTarget{node_id, incarnation, slot, freshness}` and the postcard `RequestHeader`.
+`FreshnessToken`, `SlotPolicy`, the per-slot tokens and the resolver's `SlotsMoved` are deleted; a
+node kind declares `ports`, each a named service surface with the ops it serves; `TransportId` is
+`EndpointId`. Incarnation stays where it was off the wire: the Node row, the digest, the launch, the
+lifecycle events, the connections rows, the resolver's lineage and the pool key.

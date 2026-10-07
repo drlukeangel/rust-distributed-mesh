@@ -2,10 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rafka.dev/schemas/node-rpc/fence.schema.json",
   "title": "Node RPC fence (frame 0)",
-  "description": "The first frame of every invocation, length-prefixed and read alone. The receiver checks it against what it is and what it serves before the second frame is read, allocated or parsed. It is core: the same three checks for every protocol on every port. It carries no incarnation, freshness or lineage: the QUIC connection is authenticated under the peer's iroh EndpointId, which names the process birth; a restart's connection dies with its process and the next dial resolves the node record again.",
+  "description": "The first frame of every invocation, length-prefixed and read alone. The receiver checks it against what it is and what it serves before the second frame is read, allocated or parsed. It is core: the same three checks for every protocol on every port. It carries nothing about the process birth: which birth of a node a caller is talking to is the resolver's and the pool's knowledge (incarnation, held locally and never sent), and a dial to a superseded birth is invalidated before dispatch.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["target_node_id", "target_port", "op"],
+  "required": [
+    "target_node_id",
+    "target_port",
+    "op"
+  ],
   "properties": {
     "target_node_id": {
       "$ref": "#/$defs/node_id",
