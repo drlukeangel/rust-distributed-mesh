@@ -147,6 +147,15 @@ impl RuntimeFact {
 
     /// The fact of the process reading it, under `deployment_id`: how a
     /// runtime nobody launched (the first admin) adopts itself.
+    /// This process's runtime as the container it runs in: its immutable id (from its own mount
+    /// table) in `control_domain`, the container runtime that runs it.
+    pub fn of_this_container(deployment_id: &str, control_domain: &str) -> Result<Self, String> {
+        let id = this_container_id().ok_or("this process runs in no container (no container id in /proc/self/mountinfo)")?;
+        let fact = Self { deployment_id: deployment_id.into(), provider: RuntimeProvider::Container, control_domain: control_domain.into(), locator: RuntimeLocator::Container { id } };
+        fact.validate().map_err(|e| e.to_string())?;
+        Ok(fact)
+    }
+
     pub fn of_this_process(deployment_id: &str) -> Result<Self, String> {
         let pid = std::process::id();
         let start = process_start_token(pid).ok_or_else(|| format!("no start token for pid {pid}"))?;
@@ -310,5 +319,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(f.domain_fingerprint().len(), 12);
         assert_ne!(f.locator_fingerprint(), container(&"c".repeat(64)).locator_fingerprint());
+    }
+}
+
+/// The immutable id of the container this process runs in: the container runtime mounts the
+/// container's own files (`/etc/hostname`, `/etc/hosts`) from `.../containers/<id>/`, and the mount
+/// table names that path. `None` outside a container.
+pub fn this_container_id() -> Option<String> {
+    let table = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    container_id_in_mountinfo(&table)
+}
+
+fn container_id_in_mountinfo(table: &str) -> Option<String> {
+    table.lines().find_map(|line| {
+        let parts: Vec<&str> = line.split('/').collect();
+        parts.windows(2).find_map(|w| (w[0] == "containers" && w[1].len() == 64 && w[1].chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())).then(|| w[1].to_string()))
+    })
+}
+
+#[cfg(test)]
+mod container_id_tests {
+    use super::container_id_in_mountinfo;
+
+    #[test]
+    fn a_container_reads_its_id_from_its_own_mount_table_and_a_host_process_reads_none() {
+        let id = "8495c98a3c3b1f0d6e2a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+        let table = format!("1 0 0:1 / / rw - overlay overlay rw\n2 1 259:2 /var/lib/docker/containers/{id}/hostname /etc/hostname rw - ext4 /dev/x rw\n");
+        assert_eq!(container_id_in_mountinfo(&table).as_deref(), Some(id));
+        assert_eq!(container_id_in_mountinfo("24 1 259:2 / / rw - ext4 /dev/nvme0n1p2 rw\n"), None);
+        assert_eq!(container_id_in_mountinfo("2 1 259:2 /var/lib/docker/containers/ABC/hostname /etc/hostname rw\n"), None, "never a short or malformed id");
     }
 }

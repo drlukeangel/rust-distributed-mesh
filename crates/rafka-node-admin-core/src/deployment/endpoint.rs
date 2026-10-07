@@ -116,7 +116,29 @@ enum Addressing {
     /// Every node owns one address from `first..=last` in its own network
     /// namespace (container provider): ports are unique per node address, and
     /// the host's own sockets cannot collide with them.
-    PerNode { first: u32, last: u32, next: u32 },
+    PerNode { first: u32, last: u32, next: u32, held_elsewhere: HeldElsewhere },
+}
+
+/// The node addresses something outside this allocator holds on the network right now (every
+/// container of the fabric, whichever admin launched it). An admin taking over a fabric's
+/// execution never hands out an address another admin's birth holds.
+#[derive(Clone, Default)]
+pub struct HeldElsewhere(Option<std::sync::Arc<dyn Fn() -> BTreeSet<IpAddr> + Send + Sync>>);
+
+impl HeldElsewhere {
+    pub fn new(f: impl Fn() -> BTreeSet<IpAddr> + Send + Sync + 'static) -> Self {
+        Self(Some(std::sync::Arc::new(f)))
+    }
+
+    fn now(&self) -> BTreeSet<IpAddr> {
+        self.0.as_ref().map(|f| f()).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for HeldElsewhere {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "HeldElsewhere(probe)" } else { "HeldElsewhere(none)" })
+    }
 }
 
 /// Allocates advertised endpoints. Addresses already handed out are never
@@ -138,12 +160,20 @@ impl EndpointAllocator {
     }
 
     /// One address per node from `first_ip..=last_ip`, ports from `first..=last`.
+    /// [`Self::per_node`] that also skips every address `held_elsewhere` reports.
+    pub fn with_held_elsewhere(mut self, probe: HeldElsewhere) -> Self {
+        if let Addressing::PerNode { held_elsewhere, .. } = &mut self.addressing {
+            *held_elsewhere = probe;
+        }
+        self
+    }
+
     pub fn per_node(first_ip: std::net::Ipv4Addr, last_ip: std::net::Ipv4Addr, first: u16, last: u16) -> Self {
         assert!(first <= last, "empty port range");
         let (a, b) = (u32::from(first_ip), u32::from(last_ip));
         assert!(a <= b, "empty address range");
         Self {
-            addressing: Addressing::PerNode { first: a, last: b, next: a },
+            addressing: Addressing::PerNode { first: a, last: b, next: a, held_elsewhere: HeldElsewhere::default() },
             first,
             last,
             next: first,
@@ -163,11 +193,12 @@ impl EndpointAllocator {
     fn node_ip(&mut self, node: &PathName) -> Result<IpAddr, AllocationError> {
         match &mut self.addressing {
             Addressing::SharedHost(h) => Ok(*h),
-            Addressing::PerNode { first, last, next } => {
+            Addressing::PerNode { first, last, next, held_elsewhere } => {
                 if let Some(a) = self.held.get(node) {
                     return Ok(a.transport.ip());
                 }
-                let taken: BTreeSet<IpAddr> = self.held.values().map(|a| a.transport.ip()).collect();
+                let mut taken: BTreeSet<IpAddr> = self.held.values().map(|a| a.transport.ip()).collect();
+                taken.extend(held_elsewhere.now());
                 for _ in 0..=(*last - *first) {
                     let ip = IpAddr::from(std::net::Ipv4Addr::from(*next));
                     *next = if *next == *last { *first } else { *next + 1 };
@@ -513,6 +544,17 @@ mod tests {
         let node = p("mesh1.admin.2");
         a.adopt(&node, Assignment { transport: "127.0.0.1:27999".parse().unwrap(), listeners: vec![] });
         assert_eq!(a.assign(&node, &NODE_ADMIN, true), Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: "control".into() }));
+    }
+
+    #[test]
+    fn a_container_address_held_on_the_network_by_another_admins_birth_is_never_handed_out() {
+        let held: BTreeSet<IpAddr> = ["10.9.0.2".parse().unwrap(), "10.9.0.3".parse().unwrap()].into_iter().collect();
+        let mut a = EndpointAllocator::per_node("10.9.0.2".parse().unwrap(), "10.9.0.9".parse().unwrap(), 20000, 20010)
+            .with_held_elsewhere(HeldElsewhere::new(move || held.clone()));
+        let got = a.assign(&"mesh1.rpc.1".parse().unwrap(), &RPC_NODE, false).unwrap();
+        assert_eq!(got.transport.ip(), "10.9.0.4".parse::<IpAddr>().unwrap(), "the two addresses other births hold are skipped");
+        let next = a.assign(&"mesh1.rpc.2".parse().unwrap(), &RPC_NODE, false).unwrap();
+        assert_eq!(next.transport.ip(), "10.9.0.5".parse::<IpAddr>().unwrap());
     }
 
     #[test]

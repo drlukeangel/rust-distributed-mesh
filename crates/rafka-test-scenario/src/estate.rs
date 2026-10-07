@@ -64,6 +64,90 @@ fn spawn_admin(env: &[(&str, String)], what: &str) -> (Child, String) {
     (child, base)
 }
 
+fn docker(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("docker").args(args).output().map_err(|e| format!("docker {}: {e}", args.join(" ")))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(format!("docker {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+fn current_user() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).and_then(|v| v.split_whitespace().next().map(String::from));
+    format!("{}:{}", field("Uid:").expect("Uid"), field("Gid:").expect("Gid"))
+}
+
+fn socket_group() -> String {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/var/run/docker.sock").map(|m| m.gid().to_string()).expect("the Docker daemon's socket")
+}
+
+/// The empty runtime image every node container runs from (the provider's `RUNTIME_IMAGE`).
+const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
+
+/// Start the Day-0 node-admin of a new container fabric in a container on that fabric's own
+/// network: the Fabric id is minted here so the network exists before the admin does, the admin
+/// is given an address on it, and it drives the host's Docker daemon through its socket. The
+/// returned child is the attached `docker run`; the container is labelled like every container of
+/// the fabric, so the estate stops and removes it with them.
+fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str) -> (Child, String) {
+    let fabric_id = rafka_mesh_entity::FabricId::mint().to_string();
+    let network = format!("rafka-{fabric_id}");
+    if docker(&["image", "inspect", RUNTIME_IMAGE]).is_err() {
+        let mut c = Command::new("docker").args(["import", "-", RUNTIME_IMAGE]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().expect("docker import");
+        c.stdin.take().unwrap().write_all(&[0u8; 1024]).expect("an empty tar archive");
+        assert!(c.wait().unwrap().success(), "docker import {RUNTIME_IMAGE}");
+    }
+    docker(&["network", "create", "--label", &format!("rafka.fabric={fabric_id}"), &network]).unwrap_or_else(|e| panic!("the fabric network: {e}"));
+    let subnet = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Subnet}}{{end}}", &network]).unwrap();
+    let (base, prefix) = subnet.split_once('/').map(|(b, p)| (b.parse::<std::net::Ipv4Addr>().unwrap(), p.parse::<u32>().unwrap())).unwrap_or_else(|| panic!("network {network} subnet {subnet}"));
+    // The network's last node address: the provider allocates upward from the gateway.
+    let ip = std::net::Ipv4Addr::from(u32::from(base) + (1u32 << (32 - prefix)) - 2);
+    env.push(("RAFKA_FABRIC_ID", fabric_id.clone()));
+    env.push(("RAFKA_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
+    for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG"] {
+        if let Ok(v) = std::env::var(k) {
+            env.push((k, v));
+        }
+    }
+    let bin = bin_dir().display().to_string();
+    let (root, evidence) = (root.display().to_string(), evidence.display().to_string());
+    let mut args: Vec<String> = vec![
+        "run".into(), "--name".into(), format!("rafka-{node}-{fabric_id}"),
+        "--label".into(), format!("rafka.fabric={fabric_id}"), "--label".into(), format!("rafka.node={node}"),
+        "--network".into(), network, "--ip".into(), ip.to_string(),
+        "-v".into(), format!("{bin}:{bin}:ro"), "-v".into(), format!("{root}:{root}"), "-v".into(), format!("{evidence}:{evidence}"),
+        "-v".into(), "/var/run/docker.sock:/var/run/docker.sock".into(),
+        // As this user, in the socket's group: what it writes on the host stays the user's.
+        "--user".into(), current_user(), "--group-add".into(), socket_group(),
+        // It reads its births' socket tables by their host pids.
+        "--pid".into(), "host".into(),
+        "-e".into(), format!("HOME={root}"),
+    ];
+    for m in ["/lib", "/lib64", "/usr"].iter().filter(|m| Path::new(m).exists()) {
+        args.extend(["-v".into(), format!("{m}:{m}:ro")]);
+    }
+    for (k, v) in &env {
+        args.extend(["-e".into(), format!("{k}={v}")]);
+    }
+    args.push(RUNTIME_IMAGE.into());
+    args.push(binary("rafka-node-admin").display().to_string());
+    let mut child = Command::new("docker").args(&args).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker run the Day-0 node-admin");
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(base) = line.strip_prefix("RAFKA_NODE_ADMIN_API_BASE=") {
+                let _ = tx.send(base.trim().to_string());
+            }
+        }
+    });
+    let base = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("the containerised Day-0 node-admin never advertised RAFKA_NODE_ADMIN_API_BASE"));
+    (child, base)
+}
+
 pub fn binary(name: &str) -> PathBuf {
     let p = bin_dir().join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     assert!(
@@ -120,17 +204,21 @@ impl Estate {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
 
-        let (child, admin) = spawn_admin(
-            &[
-                ("MESH_SPAWN_TYPE", owner.provider.clone()),
-                ("RAFKA_FABRIC", fabric.into()),
-                ("RAFKA_MESH", mesh.into()),
-                ("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
-                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-                ("RAFKA_EVIDENCE_DIR", evidence.display().to_string()),
-            ],
-            "bootstrap node-admin",
-        );
+        let env = vec![
+            ("MESH_SPAWN_TYPE", owner.provider.clone()),
+            ("RAFKA_FABRIC", fabric.into()),
+            ("RAFKA_MESH", mesh.into()),
+            ("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
+            ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+            ("RAFKA_EVIDENCE_DIR", evidence.display().to_string()),
+        ];
+        // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
+        // the fabric is a container a successor can control in the same Docker domain.
+        let (child, admin) = if owner.provider == "container" {
+            spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"))
+        } else {
+            spawn_admin(&env, "bootstrap node-admin")
+        };
         let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
@@ -345,8 +433,13 @@ impl Estate {
         panic!("no live admin advertises {node}'s data dir")
     }
 
-    /// The pid of `node`'s runtime (process provider: its `deployment.json`).
+    /// The pid of `node`'s runtime: its process (process provider: its `deployment.json`), or its
+    /// container's init as the host sees it (container provider).
     pub async fn pid_of(&self, node: &str) -> u64 {
+        if self.owner.provider == "container" {
+            let id = self.container_of(node).unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
+            return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node}: container {id} has no running init"));
+        }
         let dir = self.data_dir_of(node).await;
         let d: Value = serde_json::from_slice(&std::fs::read(format!("{dir}/deployment.json")).unwrap()).unwrap();
         d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
@@ -584,9 +677,26 @@ impl Estate {
     /// SIGKILL the bootstrap admin (a fault: it flushes nothing).
     pub fn kill_bootstrap(&mut self) {
         if let Some(mut c) = self.bootstrap.take() {
+            // A containerised Day-0 admin: the kill reaches its container, not only the attached CLI.
+            if self.owner.provider == "container" {
+                if let Some(id) = self.container_of(&format!("{}.admin.1", self.root_mesh())) {
+                    let _ = docker(&["kill", &id]);
+                }
+            }
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+
+    /// The Mesh the estate bootstrapped (its Day-0 admin's data dir names it).
+    fn root_mesh(&self) -> String {
+        std::fs::read_dir(&self.root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".admin.1")).map(String::from))
+            .next()
+            .unwrap_or_else(|| "mesh1".into())
     }
 
     /// Every runtime a provider started for this estate that still runs:
@@ -614,8 +724,15 @@ impl Estate {
         if self.owner.provider != "container" || self.fabric_id.is_empty() {
             return;
         }
-        let ids = Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.fabric_id)]).output();
-        for id in ids.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default().split_whitespace() {
+        let ids = Command::new("docker")
+            .args(["ps", "-a", "--no-trunc", "--filter", &format!("label=rafka.fabric={}", self.fabric_id), "--format", "{{.Label \"rafka.node\"}} {{.ID}}"])
+            .output();
+        for line in ids.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default().lines() {
+            let Some((node, id)) = line.split_once(' ') else { continue };
+            // Each container's own output is evidence: kept in the artifacts before it goes.
+            if let Ok(logs) = Command::new("docker").args(["logs", id]).output() {
+                let _ = std::fs::write(self.artifacts.join(format!("{node}.{}.container.log", &id[..12.min(id.len())])), [&logs.stdout[..], &logs.stderr[..]].concat());
+            }
             let _ = Command::new("docker").args(["rm", "-f", id]).output();
         }
         let _ = Command::new("docker").args(["network", "rm", &format!("rafka-{}", self.fabric_id)]).output();

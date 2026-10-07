@@ -25,6 +25,8 @@ use tokio::process::Command;
 pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 /// Where the node executable is mounted inside the container.
 const BIN_DIR: &str = "/rafka/bin";
+/// The Docker daemon's socket a containerised node-admin drives.
+const DOCKER_SOCKET: &str = "/var/run/docker.sock";
 /// Host directories holding the executable's runtime libraries.
 const RUNTIME_MOUNTS: &[&str] = &["/lib", "/lib64", "/usr"];
 
@@ -82,6 +84,29 @@ fn container_name(spec: &ResolvedNodeLaunch) -> String {
 }
 
 /// Container names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]`.
+/// Every address a container holds on `network` right now (`docker network inspect`).
+pub fn network_addresses(network: &str) -> std::collections::BTreeSet<IpAddr> {
+    let out = std::process::Command::new("docker").args(["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network]).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().filter_map(|a| a.split('/').next()?.parse().ok()).collect()).unwrap_or_default()
+}
+
+/// `uid:gid` of this process (`/proc/self/status`): a container runs as the user that launched it.
+pub fn current_user() -> String {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).and_then(|v| v.split_whitespace().next().map(String::from));
+    match (field("Uid:"), field("Gid:")) {
+        (Some(u), Some(g)) => format!("{u}:{g}"),
+        _ => "0:0".into(),
+    }
+}
+
+/// The group owning the Docker daemon's socket: a containerised node-admin joins it to drive the
+/// daemon as the launching user.
+pub fn socket_group() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(DOCKER_SOCKET).ok().map(|m| m.gid())
+}
+
 fn docker_safe(s: &str) -> String {
     s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' }).collect()
 }
@@ -279,7 +304,8 @@ impl ContainerDeploymentProvider {
     /// The allocator for this fabric's nodes: one address each on its network.
     pub fn allocator(&self, ports: (u16, u16)) -> EndpointAllocator {
         let (first, last) = self.network.node_range();
-        EndpointAllocator::per_node(first, last, ports.0, ports.1)
+        let network = self.network.name.clone();
+        EndpointAllocator::per_node(first, last, ports.0, ports.1).with_held_elsewhere(super::endpoint::HeldElsewhere::new(move || network_addresses(&network)))
     }
 
     /// Remove every container of the fabric and its network.
@@ -340,6 +366,9 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             self.network.name.clone(),
             "--ip".into(),
             ip.to_string(),
+            // As the launching user: what the node writes into host directories stays the user's.
+            "--user".into(),
+            current_user(),
             "-v".into(),
             format!("{}:{}:ro", spec.executable.display(), exe_in.display()),
             "-v".into(),
@@ -347,6 +376,28 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         ];
         for m in RUNTIME_MOUNTS.iter().filter(|m| Path::new(m).exists()) {
             args.extend(["-v".into(), format!("{m}:{m}:ro")]);
+        }
+        // A node-admin in a container drives the same Docker daemon (one provider control domain)
+        // and hands it host paths: the daemon's socket, the binaries and the fabric's data root are
+        // mounted at their host paths, so a path it names means the same thing to the daemon.
+        if spec.node.kind == rafka_mesh_entity::NodeKind::NodeAdmin {
+            if std::env::var_os("DOCKER_HOST").is_none() && Path::new(DOCKER_SOCKET).exists() {
+                args.extend(["-v".into(), format!("{DOCKER_SOCKET}:{DOCKER_SOCKET}")]);
+                if let Some(gid) = socket_group() {
+                    args.extend(["--group-add".into(), gid.to_string()]);
+                }
+            }
+            // It proves a birth bound its sockets from the birth's own socket table
+            // (`/proc/<pid>/net/*` of the container's init, a host pid): it sees host pids.
+            args.extend(["--pid".into(), "host".into()]);
+            // The Docker client keeps its configuration under HOME; the node's data dir is its own.
+            args.extend(["-e".into(), format!("HOME={data}")]);
+            if let Some(dir) = spec.env.get("RAFKA_BIN_DIR").filter(|d| Path::new(d).is_dir()) {
+                args.extend(["-v".into(), format!("{dir}:{dir}:ro")]);
+            }
+            if let Some(root) = spec.data_dir.parent().filter(|r| r.is_dir()) {
+                args.extend(["-v".into(), format!("{}:{}", root.display(), root.display())]);
+            }
         }
         // The span evidence directory the launch names, at the same path: a container's spans
         // land beside every process's.

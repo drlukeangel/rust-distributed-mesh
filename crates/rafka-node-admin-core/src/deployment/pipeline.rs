@@ -232,18 +232,30 @@ impl CurrentRuntimeAdoption {
     /// `ResolveProviderControlDomain` for this process, under a new
     /// deployment id. The receipts so far are in `data_dir`.
     pub fn begin(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId) -> Result<Self, PipelineError> {
+        Self::begin_in(node, data_dir, deployment_id, None)
+    }
+
+    /// [`Self::begin`], for a process that runs in a container of the container runtime whose
+    /// control domain is `container_domain`: its runtime is that container, by immutable id.
+    pub fn begin_in(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
+        let kind = if container_domain.is_some() { crate::model::ProviderKind::Container } else { crate::model::ProviderKind::Process };
         let span = tracing::info_span!(
             "rafka.node_admin.deployment.update.via-pipeline",
             pipeline = "adopt-current",
             build_id = "",
-            provider = ?crate::model::ProviderKind::Process,
+            provider = ?kind,
             node = %node,
             attempt = 1u32,
             restart = false,
         );
         let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
-            RuntimeFact::of_this_process(&deployment_id.0).map(|f| (Some(f.clone()), RuntimeEvidence::of(&f))).map_err(|e| format!("{n}: {e}"))
+            match &container_domain {
+                Some(d) => RuntimeFact::of_this_container(&deployment_id.0, d),
+                None => RuntimeFact::of_this_process(&deployment_id.0),
+            }
+            .map(|f| (Some(f.clone()), RuntimeEvidence::of(&f)))
+            .map_err(|e| format!("{n}: {e}"))
         })?;
         let f = a.fact().clone();
         a.step(AdoptStep::RegisterExactRuntimeHandle, |n| {
@@ -252,9 +264,12 @@ impl CurrentRuntimeAdoption {
             Ok((None, RuntimeEvidence::of(&f)))
         })?;
         a.step(AdoptStep::ResolveProviderControlDomain, |n| {
-            let domain = rafka_mesh_entity::runtime::process_control_domain()?;
+            let domain = match &container_domain {
+                Some(d) => d.clone(),
+                None => rafka_mesh_entity::runtime::process_control_domain()?,
+            };
             if f.control_domain != domain {
-                return Err(format!("{n}: its runtime is in control domain {}, not this host's process domain {}", f.domain_fingerprint(), rafka_mesh_entity::runtime::fingerprint(&domain)));
+                return Err(format!("{n}: its runtime is in control domain {}, not this provider's domain {}", f.domain_fingerprint(), rafka_mesh_entity::runtime::fingerprint(&domain)));
             }
             Ok((None, RuntimeEvidence::of(&f)))
         })?;

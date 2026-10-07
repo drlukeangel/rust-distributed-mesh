@@ -1205,8 +1205,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         (None, Ok(p)) if p.provider == ProviderKind::Container => Some(crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?),
         _ => None,
     };
+    // A host-process admin binds on the gateway; an admin that itself runs in a container of the
+    // fabric binds on its own address there (its control address), the gateway not being local.
     let mesh_addr = match (&early, &cfg.launch, &restart) {
-        (Some(p), None, None) => SocketAddr::new(p.admin_ip, 0),
+        (Some(p), None, None) if rafka_mesh_entity::runtime::this_container_id().is_none() => SocketAddr::new(p.admin_ip, 0),
         _ => mesh_addr,
     };
 
@@ -1447,7 +1449,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         fabric: cfg.fabric.clone(),
         fabric_id: cfg.fabric_id.clone(),
         executable: PathBuf::new(),
-        seeds: vec![(key.public().to_string(), SocketAddr::new(prepared.admin_ip, mesh_addr.port()))],
+        // The address this admin's mesh endpoint is bound on: where every birth it launches reaches
+        // it (loopback for a process fabric, the gateway or its own container address for a
+        // container fabric).
+        seeds: vec![(key.public().to_string(), mesh_addr)],
         env: cfg.passthrough.clone(),
         data_root,
     };
@@ -1488,7 +1493,11 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 .map_err(|e| format!("reading the runtime record: {e}"))??
         }
         None => {
-            let a = CurrentRuntimeAdoption::begin(&name, &cfg.data_dir, &crate::model::DeploymentId::mint()).map_err(|e| e.to_string())?;
+            // In a container of this fabric's container runtime, its runtime is that container;
+            // a host process stays a process (it then cannot be failed over by a container admin,
+            // which refuses Ready by name).
+            let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
+            let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).map_err(|e| e.to_string())?;
             let f = a.fact().clone();
             adoption = Some(a);
             f

@@ -110,7 +110,7 @@ async fn a_successor_manages_births_it_never_launched() {
     let spans = estate.spans();
     // Day 0: the bootstrap admin published the runtime it adopted for itself.
     let boot = named(&spans, "rafka.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node"] == "mesh1.admin.1").cloned().expect("the bootstrap admin is ready");
-    assert_eq!(boot["attributes"]["runtime_locator_kind"], "process-pid-start");
+    assert_eq!(boot["attributes"]["runtime_locator_kind"], if estate.owner.provider == "container" { "container-id" } else { "process-pid-start" });
     assert_eq!(boot["attributes"]["source"], "self-published-membership");
     let ns = |sp: &Value, k: &str| sp[k].as_u64().unwrap_or_else(|| panic!("{k} on {sp}"));
     let steps_of = |node: &str, pipeline_step: &dyn Fn(&Value) -> bool| -> Vec<Value> {
