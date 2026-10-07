@@ -187,10 +187,25 @@ pub struct AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    let admin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), SocketAddr::new(ip, 0)).await.unwrap();
+    // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
+    // within the membership silence window, so gossip redials instead of holding it.
+    let transport = iroh::endpoint::QuicTransportConfig::builder()
+        .keep_alive_interval(Duration::from_secs(1))
+        .max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap()))
+        .build();
+    let alpns = vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec(), rafka_mesh_transport::entry::ENTRY_ALPN.to_vec()];
+    let admin_ep = rafka_node_rpc::endpoint::bind_exact(SecretKey::generate(), SocketAddr::new(ip, 0), alpns, transport).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
-    let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", vec![]).await.unwrap();
+    // Entry, as a node-admin serves it: a launched node pulls what the admin hears before it
+    // publishes. Without it every pull is refused and the node's join rests on gossip alone.
+    let book = membership.book.clone();
+    let entry = rafka_mesh_transport::entry::EntryServer::new(move |_req| rafka_mesh_transport::entry::EntryAnswer {
+        served_by: "mesh1.admin.1".into(),
+        members: book.current(book.staleness_floor()),
+        ..Default::default()
+    });
+    let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_mesh_transport::entry::ENTRY_ALPN, entry).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
@@ -244,6 +259,13 @@ impl Drop for ContainerFabricCleanup {
     fn drop(&mut self) {
         let docker = |args: &[&str]| std::process::Command::new("docker").args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
         for id in docker(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.0)]).split_whitespace() {
+            // Its output is the evidence of a failed smoke: kept before the container goes.
+            if let Ok(o) = std::process::Command::new("docker").args(["logs", id]).output() {
+                let path = std::env::temp_dir().join(format!("{}-{id}.container.log", self.0));
+                if std::fs::write(&path, [&o.stdout[..], &o.stderr[..]].concat()).is_ok() {
+                    eprintln!("container {id} of fabric {}: log kept at {}", self.0, path.display());
+                }
+            }
             docker(&["rm", "-f", id]);
         }
         docker(&["network", "rm", &format!("rafka-{}", self.0)]);

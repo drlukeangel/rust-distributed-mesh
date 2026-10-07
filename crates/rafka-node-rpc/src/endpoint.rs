@@ -15,6 +15,7 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .secret_key(secret)
         .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .clear_ip_transports()
         .bind_addr(addr)?
         .bind()
@@ -24,13 +25,15 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder
 /// otherwise also binds the IPv4 and IPv6 wildcards (`0.0.0.0`, `[::]`) on
-/// ports nobody assigned; those are cleared, so the node is reachable only
-/// at the address node-admin advertises for it.
+/// ports nobody assigned, and its port mapper probes the gateway (UPnP,
+/// NAT-PMP, PCP) from wildcard sockets and advertises what it maps; both are
+/// off, so the node is reachable only at the address node-admin advertises.
 pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>, transport: iroh::endpoint::QuicTransportConfig) -> Result<Endpoint> {
     let ep = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .transport_config(transport)
         .clear_ip_transports()
         .bind_addr(addr)?

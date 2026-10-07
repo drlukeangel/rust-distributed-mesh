@@ -84,6 +84,17 @@ fn socket_group() -> String {
     std::fs::metadata("/var/run/docker.sock").map(|m| m.gid().to_string()).expect("the Docker daemon's socket")
 }
 
+/// A new Fabric id in its canonical form: 60 random bits as 12 lowercase Crockford characters.
+/// The harness mints it only for a container fabric, whose network must exist before its first
+/// admin; the admin takes it as given (`RAFKA_FABRIC_ID`) and validates it.
+fn mint_fabric_id() -> String {
+    const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut bytes = [0u8; 8];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes)).expect("/dev/urandom");
+    let v = u64::from_le_bytes(bytes) >> 4;
+    (0..12).map(|i| CROCKFORD[((v >> (5 * (11 - i))) & 0x1f) as usize] as char).collect()
+}
+
 /// The empty runtime image every node container runs from (the provider's `RUNTIME_IMAGE`).
 const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 
@@ -93,7 +104,7 @@ const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
 fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str) -> (Child, String) {
-    let fabric_id = rafka_mesh_entity::FabricId::mint().to_string();
+    let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
     if docker(&["image", "inspect", RUNTIME_IMAGE]).is_err() {
         let mut c = Command::new("docker").args(["import", "-", RUNTIME_IMAGE]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().expect("docker import");

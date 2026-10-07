@@ -15,10 +15,17 @@
 //! same-path replacement DELETE the node, then grow the mesh back by one
 //! mesh-primary loss     SIGKILL the mesh primary admin's runtime
 //! fabric-primary loss   SIGKILL the fabric primary admin's runtime
+//! rpc wedge             freeze one rpc node in place (SIGSTOP / docker pause) until the view
+//!                       marks it unheard (pending-reconnect, or dead after the tickle), then thaw
+//! admin wedge           the same for any node-admin, the fabric primary included
+//! network lost          (container) disconnect one node's container from the fabric network until
+//!                       the view marks it unheard, then reconnect it at the same address
+//! peer mesh unheard     (container) disconnect every container of one mesh until the other mesh
+//!                       marks it unheard, then reconnect them all
 //! ```
 //!
-//! An unheard peer mesh is not in the mix until the backbone re-feed (i143.e6.s14) lands; the
-//! evidence names that.
+//! A wedged or unheard birth whose runtime still runs is held, never replaced: it comes back as
+//! the same birth. After a replacement, a call to the replaced node's id is never dispatched.
 //!
 //! After every round the estate must converge within a bound, and the invariants hold:
 //! no hang (every wait is bounded and named); one current birth per path; one fabric-primary
@@ -143,6 +150,89 @@ async fn invariants(estate: &Estate, round: usize, build_id: &str) -> Vec<String
     bad
 }
 
+/// A runtime frozen in place, to be thawed: a process (SIGSTOP) or a container (docker pause).
+enum Frozen {
+    Pid(u64),
+    Container(String),
+}
+
+fn docker(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("docker").args(args).output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(format!("docker {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+async fn freeze(estate: &Estate, node: &str) -> Frozen {
+    if estate.owner.provider == "container" {
+        let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
+        docker(&["pause", &id]).unwrap();
+        return Frozen::Container(id);
+    }
+    let pid = match estate.bootstrap_pid() {
+        Some(p) if node == "mesh1.admin.1" => p as u64,
+        _ => estate.pid_of(node).await,
+    };
+    assert!(std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success(), "SIGSTOP {pid} ({node})");
+    Frozen::Pid(pid)
+}
+
+fn thaw(f: &Frozen) {
+    match f {
+        Frozen::Pid(pid) => {
+            let _ = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status();
+        }
+        Frozen::Container(id) => {
+            let _ = docker(&["unpause", id]);
+        }
+    }
+}
+
+/// A container disconnected from the fabric network, to be reconnected at the same address.
+struct Unplugged {
+    id: String,
+    ip: String,
+}
+
+fn unplug(estate: &Estate, node: &str) -> Unplugged {
+    let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
+    let net = format!("rafka-{}", estate.fabric_id);
+    let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{net}\").IPAddress}}}}"), &id]).unwrap();
+    docker(&["network", "disconnect", "-f", &net, &id]).unwrap();
+    Unplugged { id, ip }
+}
+
+fn replug(estate: &Estate, u: &Unplugged) -> Result<(), String> {
+    docker(&["network", "connect", "--ip", &u.ip, &format!("rafka-{}", estate.fabric_id), &u.id]).map(|_| ())
+}
+
+/// Until the view of an admin that answers marks every one of `paths` unheard (`dead`, or also
+/// `pending-reconnect` unless `true_offline`), within `within`. `Err` names what the views held.
+async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, within: Duration) -> Result<(), String> {
+    let until = Instant::now() + within;
+    let mut last = String::new();
+    while Instant::now() < until {
+        if relocate_control(estate, known).await {
+            if let Some(v) = try_get(&estate.admin, "/api/nodes").await {
+                let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
+                let unheard = |p: &String| nodes.iter().filter(|n| n["name"] == p.as_str()).all(|n| match n["status"].as_str() {
+                    Some("dead") => true,
+                    Some("pending-reconnect") => !true_offline,
+                    _ => false,
+                });
+                if paths.iter().all(unheard) {
+                    return Ok(());
+                }
+                last = paths.iter().map(|p| format!("{p}:{:?}", nodes.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ");
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(format!("not marked unheard within {}s: {last}", within.as_secs()))
+}
+
 /// SIGKILL an admin's runtime: the bootstrap admin is the test's own child (no provider record),
 /// every other admin a provider-born runtime.
 async fn kill_admin(estate: &mut Estate, name: &str) {
@@ -245,7 +335,8 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     eprintln!("SOAK seed={seed} secs={secs}  (rerun: RAFKA_SOAK_SEED={seed} RAFKA_SOAK_SECS={secs})");
     let mut rng = Rng(seed);
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.artifact("soak.json", &json!({"seed": seed, "secs": secs, "shape": SHAPE.iter().map(|(m, a, r)| json!({"mesh": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(), "ops_absent": ["unheard peer mesh (i143.e6.s14)"]}));
+    let absent: Vec<&str> = if estate.owner.provider == "container" { vec![] } else { vec!["network lost and peer mesh unheard: the process estate has no unprivileged network fault (container provider only)"] };
+    estate.artifact("soak.json", &json!({"seed": seed, "secs": secs, "provider": estate.owner.provider, "shape": SHAPE.iter().map(|(m, a, r)| json!({"mesh": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(), "ops_absent": absent}));
     let desired = json!({"fabric": "fabric1", "meshes": SHAPE.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>()});
     let (status, a) = estate.post("/api/build", &desired).await;
     assert_eq!(status, 202, "{a}");
@@ -254,7 +345,15 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     estate.settled_shape(&SHAPE, Duration::from_secs(60)).await;
     rafka_test_scenario::estate::wait_for("every live admin holds the same births", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(60), || converged_everywhere(&estate)).await;
 
-    let ops = ["node-restart", "admin-restart", "runtime-kill", "replace", "mesh-primary-loss", "fabric-primary-loss"];
+    let container = estate.owner.provider == "container";
+    let mut ops = vec!["node-restart", "admin-restart", "runtime-kill", "replace", "mesh-primary-loss", "fabric-primary-loss", "rpc-wedge", "admin-wedge"];
+    if container {
+        ops.extend(["network-lost", "peer-mesh-unheard"]);
+    }
+    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let backbone = rafka_mesh_transport::membership::backbone_gossip_interval();
+    // Long enough for a forwarded peer to be marked unheard, then for the tickle's two rounds.
+    let unheard_within = floor * 3 + backbone * 2 + Duration::from_secs(30);
     let deadline = Instant::now() + Duration::from_secs(secs);
     let mut log: Vec<Value> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
@@ -282,6 +381,12 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         let mut removed: Option<(String, String)> = None;
         // The Build whose receipts name the replacement birth, and the attempt it must come after.
         let mut watch: Option<(String, u64)> = None;
+        // A birth a fault silenced while its runtime ran: it must come back as itself.
+        let mut held: Vec<(String, String)> = Vec::new();
+        // The node id a replacement retired: a call to it is never dispatched.
+        let mut retired_node_id: Option<String> = None;
+        // A fault's own failure (the view never marked the silence), named and fatal.
+        let mut fault_failure: Option<String> = None;
         let attempt_before = estate.get(&format!("/api/builds?id={build_id}")).await.1["attempt"].as_u64().unwrap_or(0);
         match op {
             "node-restart" => {
@@ -326,6 +431,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                     if st2 == 202 {
                         removed = Some((s(&n["name"]), s(&n["incarnation_id"])));
                         watch = Some((s(&b2["build_id"]), 0));
+                        retired_node_id = Some(s(&n["node_id"]));
                     }
                 }
             }
@@ -349,7 +455,61 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                     kill_admin(&mut estate, &fp).await;
                 }
             }
+            "rpc-wedge" | "admin-wedge" => {
+                let pool = if op == "rpc-wedge" { &rpcs } else { &admins };
+                let n = rng.pick(pool).clone();
+                let path = s(&n["name"]);
+                let true_offline = rng.next() % 2 == 0;
+                entry["target"] = json!(path);
+                entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
+                let frozen = freeze(&estate, &path).await;
+                let marked = until_unheard(&mut estate, &known, &[path.clone()], true_offline, unheard_within).await;
+                thaw(&frozen);
+                if let Err(e) = marked {
+                    fault_failure = Some(format!("{path} frozen: {e}"));
+                }
+                held.push((path, s(&n["incarnation_id"])));
+            }
+            "network-lost" => {
+                let pool: Vec<Value> = rpcs.iter().chain(admins.iter()).cloned().collect();
+                let n = rng.pick(&pool).clone();
+                let path = s(&n["name"]);
+                entry["target"] = json!(path);
+                let u = unplug(&estate, &path);
+                let marked = until_unheard(&mut estate, &known, &[path.clone()], false, unheard_within).await;
+                if let Err(e) = replug(&estate, &u) {
+                    fault_failure = Some(format!("{path} could not be reconnected: {e}"));
+                }
+                if let Err(e) = marked {
+                    fault_failure = Some(format!("{path} disconnected: {e}"));
+                }
+                held.push((path, s(&n["incarnation_id"])));
+            }
+            "peer-mesh-unheard" => {
+                let mesh = rng.pick(&SHAPE).0.to_string();
+                entry["target"] = json!(mesh);
+                let members: Vec<Value> = nodes.iter().filter(|n| n["mesh"] == mesh.as_str() && n["status"] == "ready-for-traffic").cloned().collect();
+                let paths: Vec<String> = members.iter().map(|n| s(&n["name"])).collect();
+                let unplugged: Vec<Unplugged> = paths.iter().map(|p| unplug(&estate, p)).collect();
+                // Seen from the other mesh: control is read through its admins.
+                let others: Vec<String> = known.iter().filter(|b| !members.iter().any(|m| m["admin_api_base"] == b.as_str())).cloned().collect();
+                let marked = until_unheard(&mut estate, &others, &paths, false, unheard_within).await;
+                for u in &unplugged {
+                    if let Err(e) = replug(&estate, u) {
+                        fault_failure = Some(format!("{mesh}: {e}"));
+                    }
+                }
+                if let Err(e) = marked {
+                    fault_failure = Some(format!("{mesh} disconnected: {e}"));
+                }
+                held.extend(members.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))));
+            }
             _ => unreachable!(),
+        }
+        if let Some(f) = fault_failure {
+            violations.push(format!("round {round} ({op}): {f}"));
+            log.push(entry);
+            break;
         }
         // Converge: every path of the shape current and ready again, read through whichever admin
         // answers (the one just killed may have been the entry).
@@ -413,6 +573,21 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
             break;
         }
         entry["converged_ms"] = json!(started.elapsed().as_millis() as u64);
+        // A silenced birth whose runtime ran is held, never replaced: the same birth is back.
+        let now_nodes = estate.nodes().await;
+        for (path, inc) in &held {
+            if !now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic") {
+                violations.push(format!("round {round} ({op}): {path} came back as another birth than {inc}: silence replaced a running runtime"));
+            }
+        }
+        // The replaced node's id names no node: a call to it is refused, never dispatched.
+        if let Some(old) = &retired_node_id {
+            let r = estate.probe(&["get", "--target", &format!("exact:{old}"), "--key", "soak"]);
+            entry["retired_call"] = r["outcome"].clone();
+            if r["outcome"] == "Reply" {
+                violations.push(format!("round {round} ({op}): a call to the retired node {old} was dispatched: {r}"));
+            }
+        }
         // The accepted topology is the Build the fabric names; a loss opens attempts, never a Build.
         let (_, f) = estate.get("/api/fabric").await;
         let now_build = s(&f["build_id"]);
@@ -443,9 +618,10 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let left = estate.live_runtimes();
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     assert!(left.is_empty(), "seed {seed}: no runtime of the estate is left running: {left:?}");
+    assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "seed {seed}: no container of the estate is left running");
     // Evidence: a 425 is never followed by a dispatch of the same request; the refusal spans say so.
     let spans = estate.spans();
-    let stale = named(&spans, "rafka.node_rpc.connection.reject.via-stale-slot");
+    let stale = named(&spans, "rafka.node_rpc.connection.reject.via-stale-target");
     for sp in &stale {
         let trace = &sp["trace_id"];
         let served_after = spans.iter().any(|x| x["trace_id"] == *trace && x["name"] == "rafka.node_rpc.request.serve.via-direct" && x["start_unix_nano"].as_u64() > sp["start_unix_nano"].as_u64());
