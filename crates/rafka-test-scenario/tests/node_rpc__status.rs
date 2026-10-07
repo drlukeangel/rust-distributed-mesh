@@ -56,7 +56,13 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let declared_by_birth = rafka_test_scenario::estate::wait_for("every birth's own ReadyForTraffic declared at the authority", Duration::from_secs(20), || async {
         let nodes = estate.nodes().await;
         let of = |name: &str| nodes.iter().find(|n| n["name"] == name).map(|n| n["declared"].clone()).unwrap_or(Value::Null);
-        (of("mesh1.rpc.1") == "ReadyForTraffic" && of("mesh1.rpc.2") == "ReadyForTraffic" && of(other_admin["name"].as_str().unwrap()) == "ReadyForTraffic").then_some(nodes)
+        // The primary's own declaration is applied by itself and reaches this view like every
+        // other: it is waited for, never asserted on the instant after the others landed.
+        (of("mesh1.rpc.1") == "ReadyForTraffic"
+            && of("mesh1.rpc.2") == "ReadyForTraffic"
+            && of(other_admin["name"].as_str().unwrap()) == "ReadyForTraffic"
+            && of(primary["name"].as_str().unwrap()) == "ReadyForTraffic")
+            .then_some(nodes)
     })
     .await;
     let view = declared_by_birth.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap().clone();

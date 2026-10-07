@@ -2117,10 +2117,20 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     {
         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
         let elections = ElectionLog::new(name.clone());
+        let me = name.clone();
         tasks.push(tokio::spawn(async move {
+            let mut held: BTreeSet<PathName> = BTreeSet::new();
             loop {
                 let t = project(&fabric, &fabric_id, provider, &book, &records);
                 elections.observe(&t);
+                // A name this view held and now lacks: the exclusion is named from the same
+                // inputs at the moment it happens, not reconstructed later.
+                let now: BTreeSet<PathName> = t.nodes.iter().map(|n| n.name.clone()).collect();
+                for gone in held.difference(&now) {
+                    tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node = %me, name = %gone, why = %describe_absence(&book, &records, gone))
+                        .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
+                }
+                held = now;
                 *topology.write().await = t;
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
