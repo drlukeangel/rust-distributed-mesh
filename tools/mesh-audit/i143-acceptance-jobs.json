@@ -1,0 +1,80 @@
+{
+  "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RAFKA_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`.",
+  "jobs": {
+    "i143-2938-process": {
+      "issue": 2938,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "source_restart_hydrates_proxy_routes_first_call_without_rediscovery",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
+          "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
+        },
+        {
+          "name": "source_accepts_inbound_direct_retires_proxy_before_cutback",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_accepts_inbound_direct_retires_proxy_before_cutback -- --exact",
+          "dir": "target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback"
+        }
+      ]
+    },
+    "i143-2938-unit": {
+      "issue": 2938,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "source_reconnect_failures_grow_log_keep_two_current_members",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2938.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2938 source_reconnect_failures_grow_log_keep_two_current_members -- --exact",
+          "dir": "target/i143-acceptance/2938/unit/source_reconnect_failures_grow_log_keep_two_current_members"
+        }
+      ]
+    },
+    "i143-2941-process": {
+      "issue": 2941,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "restarted_member_pulls_current_admin_within_staleness_window",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2941.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_pulls_current_admin_within_staleness_window -- --exact",
+          "dir": "target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window"
+        },
+        {
+          "name": "restarted_member_joins_mesh_channel_within_gossip_interval",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2941.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
+          "dir": "target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval"
+        }
+      ]
+    },
+    "i143-2941-fast": {
+      "issue": 2941,
+      "layer": "fast",
+      "cells": [
+        {
+          "name": "run-1",
+          "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
+          "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "dir": "target/i143-acceptance/2941/fast/run-1"
+        },
+        {
+          "name": "run-2",
+          "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
+          "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "dir": "target/i143-acceptance/2941/fast/run-2"
+        },
+        {
+          "name": "run-3",
+          "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
+          "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "dir": "target/i143-acceptance/2941/fast/run-3"
+        }
+      ]
+    }
+  }
+}
