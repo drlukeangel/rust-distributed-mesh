@@ -79,11 +79,23 @@ fn resolve_endpoint_and_service(service_name: &str) -> (String, String) {
     (otlp_endpoint, resolved_service_name)
 }
 
+/// The process's resource: its service, and what tells this process apart from every other one
+/// exporting beside it (many estates and births share one collector): its pid, and, where the
+/// launcher set them, the node it runs as, its birth's data directory and its estate's evidence
+/// directory.
 fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
-    opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-        opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-        service_name.to_string(),
-    )])
+    let mut attrs = vec![
+        opentelemetry::KeyValue::new(opentelemetry_semantic_conventions::resource::SERVICE_NAME, service_name.to_string()),
+        opentelemetry::KeyValue::new("process.pid", std::process::id() as i64),
+    ];
+    for (env, key) in [("RAFKA_NODE_NAME", "rafka.node"), ("RAFKA_DATA_DIR", "rafka.data_dir"), ("RAFKA_EVIDENCE_DIR", "rafka.evidence_dir")] {
+        if let Ok(v) = std::env::var(env) {
+            if !v.is_empty() {
+                attrs.push(opentelemetry::KeyValue::new(key, v));
+            }
+        }
+    }
+    opentelemetry_sdk::Resource::new(attrs)
 }
 
 fn build_exporter(endpoint: String) -> SpanExporter {

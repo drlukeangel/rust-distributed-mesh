@@ -227,7 +227,7 @@ impl NodeRpcClient {
             Ok(n) => n,
             Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
         };
-        tracing::info!(step = "resolved", node = %node.name, addr = %node.transport_addr, incarnation = %node.incarnation.0, "the target resolved to one birth");
+        tracing::info!(step = "resolved", node = %node.name, node_id = %node.node_id, peer = %node.endpoint_id.fmt_short(), addr = %node.transport_addr, incarnation = %node.incarnation.0, "the target resolved to one birth");
         // Whatever this node's record no longer names leaves the pool now.
         self.pool.purge_stale(&node);
         // The fence: the node the caller resolved and the op, never a dial target.

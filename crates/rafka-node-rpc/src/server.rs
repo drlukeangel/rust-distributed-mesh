@@ -514,6 +514,9 @@ impl NodeRpcServer {
 impl ProtocolHandler for NodeRpcServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
+        // The moment the handshake completed here: matched against the caller's `dialed` /
+        // `dial-deadline` line for the same peer, it says which side a slow connect waited on.
+        tracing::info!(step = "accepted", peer = %peer.fmt_short(), connection = connection.stable_id(), "a node rpc connection was accepted");
         // Once per accepted connection, never per stream: the peer's live birth, as this
         // process resolves it now, is Direct Connected from this node (connections.md §10).
         if let Some(inbound) = &self.inner.inbound {

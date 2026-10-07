@@ -73,6 +73,7 @@ impl EntryServer {
 
 impl ProtocolHandler for EntryServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        tracing::info!(step = "accepted", peer = %connection.remote_id().fmt_short(), "an entry connection was accepted");
         while let Ok((mut send, mut recv)) = connection.accept_bi().await {
             let Ok(bytes) = recv.read_to_end(64 * 1024).await else { continue };
             let Ok(req) = serde_json::from_slice::<EntryRequest>(&bytes) else { continue };
