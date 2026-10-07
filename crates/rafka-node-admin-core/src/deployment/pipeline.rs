@@ -10,7 +10,7 @@
 //! retire: MarkDraining (the typed Node RPC drain; its receipt carries the DrainOutcome)
 //!   -> WaitForDrain (bounded; a deadline is an arm, never a failure) -> PublishLeaving
 //!   -> CloseRpcAdmission (after an established drain)
-//!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (permanent: by the Build's StorageMeta)
+//!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
 //!
@@ -130,7 +130,7 @@ impl CreateStep {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireStep {
-    /// The pre-notice (a permanent retire only): the executor holds the operation; the node is
+    /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
     MarkDraining,
@@ -138,11 +138,11 @@ pub enum RetireStep {
     PublishLeaving,
     CloseRpcAdmission,
     TerminateRuntime,
-    /// The departure (a permanent retire only): the provider proved the runtime terminal; the
+    /// The departure (a removal only): the provider proved the runtime terminal; the
     /// node has left.
     NodeDeleted,
     ReleaseEndpoints,
-    /// Only when the retirement is permanent.
+    /// Only on a removal.
     ReleaseStorage,
     /// Only in a whole-mesh retire: the executor's own membership view has heard this birth's
     /// own `Leaving` before the local cleanup (Luke 2026-10-05). Not in [`RetireStep::ORDER`],
@@ -426,7 +426,17 @@ fn now_unix_ms() -> u64 {
 /// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
 /// own journal holds the step that records it, the departure once the provider proved the
 /// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
-/// What a permanent retirement did with the logical node's storage, by the accepted Build's
+/// Why a birth is being retired: the storage disposition and the lifecycle events follow it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RetireKind {
+    /// The logical node leaves the topology.
+    Removal,
+    /// The birth stops; the logical node is reborn at the same path.
+    Restart,
+}
+
+/// What a removal did with the logical node's storage, by the accepted Build's
 /// `StorageMeta` for its path: the ReleaseStorage step's receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "arm", rename_all = "kebab-case")]
@@ -529,9 +539,10 @@ pub struct RetireRequest {
     /// The node's current record.
     pub node: Node,
     pub handle: DeploymentHandle,
-    /// Permanent: the data dir goes too. Otherwise it is kept (a restart or
-    /// a replacement that reuses it).
-    pub permanent: bool,
+    /// A removal of the logical node (the pre-notice and the departure are published, and the
+    /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
+    /// the logical node and its storage stay).
+    pub kind: RetireKind,
     /// Part of a whole-mesh retire: hold the local cleanup until this admin's own membership view
     /// has heard the birth's `Leaving` ([`RetireStep::ObserveDeparture`]).
     pub observe_departure: bool,
@@ -1016,9 +1027,9 @@ impl DeploymentPipeline<'_> {
         // The pre-notice, for a departure only: this executor's journal holds its Claim for the
         // attempt (it runs nothing before that) and now records this operation; every node hears
         // the node is being removed and stops routing to it, while it stays found. A restart
-        // (`permanent == false`) stops the birth and keeps the logical node: it never emits a
+        // (`RetireKind::Restart`) stops the birth and keeps the logical node: it never emits a
         // departure, so the same NodeId's next incarnation is taken.
-        let op = if req.permanent {
+        let op = if req.kind == RetireKind::Removal {
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
@@ -1168,10 +1179,10 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
-        // Storage disposition (the lock's StorageMeta): a restart keeps the storage; a permanent
-        // retirement does what the accepted Build's meta for this path says, read here and
+        // Storage disposition (the lock's StorageMeta): a restart keeps the storage; a removal
+        // does what the accepted Build's meta for this path says, read here and
         // interpreted here, never by the provider. The receipt names the disposition.
-        if req.permanent {
+        if req.kind == RetireKind::Removal {
             let _disposition: StorageDisposition = self
                 .step(&mut run, RetireStep::ReleaseStorage.name(), async {
                     let storage = self

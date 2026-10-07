@@ -53,11 +53,11 @@ struct Rig {
     authority: Arc<StatusAuthority>,
     storage: Arc<MemoryNodesStorage>,
     topology: Arc<tokio::sync::RwLock<Topology>>,
-    mesh_ids: BTreeMap<String, String>,
+    mesh_ids: BTreeMap<String, MeshId>,
 }
 
 impl Rig {
-    fn mesh_id(&self, mesh: &str) -> String {
+    fn mesh_id(&self, mesh: &str) -> MeshId {
         self.mesh_ids[mesh].clone()
     }
 }
@@ -78,10 +78,10 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         meshes: Vec::new(),
         nodes,
     }));
-    let fabric_id = topology.read().await.fabric.id.to_string();
+    let fabric_id = topology.read().await.fabric.id.clone();
     let storage = Arc::new(MemoryNodesStorage::default());
     let (m1id, m2id) = (MeshId::mint(), MeshId::mint());
-    let mesh_ids: BTreeMap<String, String> = [("mesh1".to_string(), m1id.to_string()), ("mesh2".to_string(), m2id.to_string())].into_iter().collect();
+    let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
         me: admin.node.name.clone(),
@@ -190,7 +190,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     let (rig, b) = rig().await;
     let (m2admin, rpc1, admin2) = (&b["m2admin"], &b["rpc1"], &b["admin2"]);
     // mesh2's primary declares mesh2's state to the fabric-primary.
-    let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: MeshId::parse(&rig.mesh_id("mesh2")).unwrap(), state: s };
+    let m2 = |s| StatusRequest::DeclareMeshState { mesh_id: rig.mesh_id("mesh2"), state: s };
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic });
@@ -200,7 +200,7 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     // A fabric event applied here must come from the fabric-primary: while this admin holds the
     // fabric seat, mesh2's primary is not it. Then the seat moves to mesh2's primary (the view
     // says so), and its events and Pending hand-offs apply here, each once.
-    let ev = StatusRequest::ApplyFabricEvent { fabric_id: FabricId::parse(&rig.authority.fabric_id).unwrap(), event: FabricEvent::ReadyForTraffic };
+    let ev = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: FabricEvent::ReadyForTraffic };
     assert!(matches!(reply(&call(&rig, m2admin, &ev).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
     rig.topology.write().await.nodes.iter_mut().for_each(|n| {
         if n.name == rig.admin.node.name {
@@ -213,13 +213,13 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, m2admin, &ev).await), StatusReply::AlreadyApplied);
     let wrong = StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ReadyForTraffic };
-    assert_eq!(reply(&call(&rig, m2admin, &wrong).await), StatusReply::RejectedStaleFabric { held: FabricId::parse(&rig.authority.fabric_id).unwrap() });
+    assert_eq!(reply(&call(&rig, m2admin, &wrong).await), StatusReply::RejectedStaleFabric { held: rig.authority.fabric_id.clone() });
     // ApplyMeshState(Pending) from the fabric-primary at an admin of that mesh: this admin is
     // mesh1's; mesh2's Pending is not its to apply, mesh1's is, and a foreign mesh id is refused.
-    let pend = |id: &str, name: &str| StatusRequest::ApplyMeshState { mesh_id: MeshId::parse(id).unwrap(), mesh_name: name.into(), state: MeshState::Pending };
-    let (m1id, m2id, other) = (rig.mesh_id("mesh1"), rig.mesh_id("mesh2"), MeshId::mint().to_string());
+    let pend = |id: &MeshId, name: &str| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: name.into(), state: MeshState::Pending };
+    let (m1id, m2id, other) = (rig.mesh_id("mesh1"), rig.mesh_id("mesh2"), MeshId::mint());
     assert!(matches!(reply(&call(&rig, m2admin, &pend(&m2id, "mesh2")).await), StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
-    assert_eq!(reply(&call(&rig, m2admin, &pend(&other, "mesh1")).await), StatusReply::RejectedStaleMesh { held: MeshId::parse(&m1id).unwrap() }, "never a replacement mesh id");
+    assert_eq!(reply(&call(&rig, m2admin, &pend(&other, "mesh1")).await), StatusReply::RejectedStaleMesh { held: m1id.clone() }, "never a replacement mesh id");
     assert_eq!(reply(&call(&rig, m2admin, &pend(&m1id, "mesh1")).await), StatusReply::Applied);
     assert_eq!(reply(&call(&rig, rpc1, &pend(&m1id, "mesh1")).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "mesh1.rpc.1".into() } }, "only the fabric-primary applies a Pending");
 }

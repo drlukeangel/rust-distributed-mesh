@@ -1,6 +1,6 @@
 //! What a node publishes about itself on the fabric's membership topic.
 
-use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId};
+use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId, MeshId};
 use crate::path::PathName;
 use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,13 @@ pub struct MeshDigest {
     /// successor needs to manage it; not part of its runtime identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
-    /// Kind-specific facts (e.g. the mesh id), string-keyed.
+    /// The mesh this member belongs to, by id; a node-admin's own digest carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_id: Option<MeshId>,
+    /// While `Draining`: the work still in flight at this birth; the drain's own evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_flight: Option<u64>,
+    /// Descriptive labels only (tags): nothing reads them to decide.
     #[serde(default)]
     pub extra: BTreeMap<String, String>,
 }

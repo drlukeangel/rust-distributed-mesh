@@ -158,7 +158,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
             attempt: 1,
             node: created.node.clone(),
             handle: created.handle.clone(),
-            permanent: true,
+            kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
             observe_departure: false,
             keep_endpoints: false,
         })
@@ -241,7 +241,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
             attempt: 1,
             node: b.node.clone(),
             handle: b.handle.clone(),
-            permanent: false,
+            kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Restart,
             observe_departure: false,
             keep_endpoints: false,
         })
@@ -285,7 +285,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), permanent: true, observe_departure: true, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true, keep_endpoints: false })
         .await;
     let err = retired.expect_err("an unheard departure holds the mesh retire");
     assert!(err.to_string().contains("never heard its own Leaving"), "{err}");
@@ -312,7 +312,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), permanent: true, observe_departure: true, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true, keep_endpoints: false })
         .await;
     assert_eq!(retired, Ok(()), "the departure was heard: the mesh retire completes");
     assert_eq!(sink.removed.lock().unwrap().as_slice(), &[created.node.name.clone()], "then the local cleanup ran");

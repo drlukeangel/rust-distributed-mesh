@@ -1173,6 +1173,8 @@ mod tests {
             status,
             admin_api_base: None,
             emitted_unix_ms: at,
+            mesh_id: None,
+            in_flight: None,
             extra: Default::default(),
             data_dir: None,
         }

@@ -26,9 +26,9 @@ pub struct Declared {
     /// Per node id: the birth whose state was declared, and the state.
     pub nodes: BTreeMap<NodeId, (IncarnationId, NodeState)>,
     /// Per mesh id.
-    pub meshes: BTreeMap<String, MeshState>,
+    pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per fabric id: the events applied, in order, each once.
-    pub fabric: BTreeMap<String, Vec<String>>,
+    pub fabric: std::collections::HashMap<FabricId, Vec<String>>,
 }
 
 impl Declared {
@@ -41,12 +41,12 @@ impl Declared {
 /// and the rows it writes.
 pub struct StatusAuthority {
     pub me: crate::model::PathName,
-    pub fabric_id: String,
+    pub fabric_id: FabricId,
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     pub declared: Arc<Mutex<Declared>>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// The mesh ids this admin holds, by mesh name.
-    pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>,
+    pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
     /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
     /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
     pub republish: Republish,
@@ -112,10 +112,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
             }
             let ids = (auth.mesh_ids)();
             let senders_mesh = ids.get(&sender.mesh);
-            if !(sender.kind == NodeKind::NodeAdmin && sender.is_primary && senders_mesh.map(String::as_str) == Some(mesh_id.as_str())) {
+            if !(sender.kind == NodeKind::NodeAdmin && sender.is_primary && senders_mesh == Some(mesh_id)) {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender.name.to_string() } }, None);
             }
-            apply_mesh(declared, mesh_id.as_str(), *state)
+            apply_mesh(declared, mesh_id, *state)
         }
         // Downward exact-node operations reach the subject itself (`self_subject`); an authority
         // that is not the subject is not the receiver they name.
@@ -131,14 +131,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
             }
             // Never a replacement mesh id to satisfy the operation.
             if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
-                if held != mesh_id.as_str() {
-                    return match MeshId::parse(held) {
-                        Ok(held) => (StatusReply::RejectedStaleMesh { held }, None),
-                        Err(e) => (StatusReply::NotReady { reason: format!("the held mesh id {held:?} of {mesh_name} is not a MeshId: {e}") }, None),
-                    };
+                if held != mesh_id {
+                    return (StatusReply::RejectedStaleMesh { held: held.clone() }, None);
                 }
             }
-            apply_mesh(declared, mesh_id.as_str(), *state)
+            apply_mesh(declared, mesh_id, *state)
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !sender.is_fabric_primary {
@@ -147,13 +144,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
             if !me.is_primary {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() } }, None);
             }
-            if fabric_id.as_str() != auth.fabric_id {
-                return match FabricId::parse(&auth.fabric_id) {
-                    Ok(held) => (StatusReply::RejectedStaleFabric { held }, None),
-                    Err(e) => (StatusReply::NotReady { reason: format!("the held fabric id {:?} is not a FabricId: {e}", auth.fabric_id) }, None),
-                };
+            if *fabric_id != auth.fabric_id {
+                return (StatusReply::RejectedStaleFabric { held: auth.fabric_id.clone() }, None);
             }
-            let events = declared.fabric.entry(fabric_id.to_string()).or_default();
+            let events = declared.fabric.entry(fabric_id.clone()).or_default();
             let key = event_key(event);
             if events.contains(&key) {
                 return (StatusReply::AlreadyApplied, None);
@@ -171,12 +165,12 @@ fn event_key(e: &FabricEvent) -> String {
     }
 }
 
-fn apply_mesh(declared: &mut Declared, mesh_id: &str, state: MeshState) -> (StatusReply, Option<NodeRecord>) {
+fn apply_mesh(declared: &mut Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<NodeRecord>) {
     match transition(declared.meshes.get(mesh_id).copied(), state) {
         Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
         Transition::Backward { current } => (StatusReply::RejectedInvalidMeshTransition { current }, None),
         Transition::Apply => {
-            declared.meshes.insert(mesh_id.to_string(), state);
+            declared.meshes.insert(mesh_id.clone(), state);
             (StatusReply::Applied, None)
         }
     }
@@ -234,7 +228,7 @@ impl StatusAuthority {
     /// Pending, so it applies it to itself (e4.s11 "single-admin recovery root"). Only Pending, only
     /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
     /// as every decision, with the sender named as itself.
-    pub async fn self_apply_mesh_pending(&self, mesh_id: &str) -> StatusReply {
+    pub async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
         let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
         let (reply, _) = apply_mesh(&mut self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
         tracing::info_span!(

@@ -58,7 +58,6 @@ pub struct RunningNode {
 }
 
 /// The digest key carrying a node's in-flight handler count.
-pub const IN_FLIGHT: &str = "in_flight";
 
 /// `RAFKA_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
 /// for in-flight handlers. Strictly shorter than node-admin's stop grace.
@@ -97,7 +96,7 @@ impl RunningNode {
             let mut d = self.digest.clone();
             d.status = MemberStatus::Draining;
             d.emitted_unix_ms = now_ms();
-            d.extra.insert(IN_FLIGHT.into(), in_flight.to_string());
+            d.in_flight = Some(in_flight);
             let _ = self.membership.publish(&d).await;
             if in_flight == 0 || tokio::time::Instant::now() >= until {
                 return in_flight;
@@ -266,6 +265,8 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
         status: MemberStatus::ReadyForTraffic,
         admin_api_base: None,
         emitted_unix_ms: now_ms(),
+        mesh_id: None,
+        in_flight: None,
         extra: Default::default(),
         data_dir: Some(launch.data_dir.display().to_string()),
     };
@@ -295,7 +296,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
         d.emitted_unix_ms = now_ms();
-        d.extra.insert(IN_FLIGHT.into(), rafka_node_rpc::ServerStats::get(&stats.in_flight).to_string());
+        d.in_flight = Some(rafka_node_rpc::ServerStats::get(&stats.in_flight));
         d
     });
     // The owed declaration loop: whatever state this birth owes is re-declared every publish
@@ -434,7 +435,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let mut d = me.digest.clone();
                     d.status = MemberStatus::Draining;
                     d.emitted_unix_ms = now_ms();
-                    d.extra.insert(IN_FLIGHT.into(), in_flight.to_string());
+                    d.in_flight = Some(in_flight);
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rafka.node_admin.status.update.via-apply-draining",

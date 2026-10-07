@@ -57,6 +57,8 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
         status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
         admin_api_base: None,
         emitted_unix_ms: 1,
+        mesh_id: None,
+        in_flight: None,
         extra: Default::default(),
         data_dir: None,
     };

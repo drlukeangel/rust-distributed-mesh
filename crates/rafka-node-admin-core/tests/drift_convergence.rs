@@ -183,6 +183,8 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
         admin_api_base: None,
         emitted_unix_ms: 0,
         data_dir: None,
+        mesh_id: None,
+        in_flight: None,
         extra: Default::default(),
     });
     n

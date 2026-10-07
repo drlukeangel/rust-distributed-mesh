@@ -318,7 +318,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
             }
             AttemptAction::Replace { path, from_incarnation } => {
                 if observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status.is_live()) {
-                    ops.push(BuildOperation::RetireNode { node: path.clone(), permanent: true });
+                    ops.push(BuildOperation::RetireNode { node: path.clone() });
                     ops.push(BuildOperation::CreateNode { node: path.clone() });
                 }
             }
@@ -331,7 +331,7 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
         observed.nodes.iter().filter(|n| n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name)).map(|n| &n.name).collect();
     extra.sort();
     for p in extra {
-        ops.push(BuildOperation::RetireNode { node: p.clone(), permanent: true });
+        ops.push(BuildOperation::RetireNode { node: p.clone() });
     }
     let mut gone: Vec<&String> = observed.meshes.iter().map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
     gone.sort();
@@ -554,7 +554,7 @@ mod tests {
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         assert_eq!(
             plan(&cur, &o, None).operations,
-            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), permanent: true }]
+            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]
         );
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
@@ -573,7 +573,7 @@ mod tests {
         let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(
             plan(&cur, &o, Some(&replace)).operations,
-            vec![BuildOperation::RetireNode { node: path.clone(), permanent: true }, BuildOperation::CreateNode { node: path.clone() }]
+            vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone() }]
         );
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();

@@ -21,7 +21,7 @@ use crate::build_state::BuildStateAdapter;
 use crate::deployment::endpoint::{spec_for, EndpointAllocator};
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
-    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireRequest, Timeouts, TopologySink,
+    CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireKind, RetireRequest, Timeouts, TopologySink,
 };
 use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPolicy, TerminationMode};
 use crate::executor::{BuildExecutor, OperationRunner};
@@ -48,7 +48,6 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// The digest key carrying a node-admin's mesh id.
-pub const MESH_ID: &str = "mesh_id";
 
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
@@ -260,7 +259,7 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         if d.status == MemberStatus::Leaving && age > gossip_interval() {
             continue;
         }
-        if let Some(id) = d.extra.get(MESH_ID).and_then(|v| MeshId::parse(v).ok()) {
+        if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(name.mesh.clone()).or_insert(id);
         }
         let mut n = Node::allocated(name.clone());
@@ -545,7 +544,7 @@ impl NodeObserver for MembershipObserver {
     async fn drained(&self, node: &Node) -> bool {
         self.digest_of(node).is_some_and(|d| {
             d.status == MemberStatus::Leaving
-                || (d.status == MemberStatus::Draining && d.extra.get("in_flight").is_none_or(|v| v == "0"))
+                || (d.status == MemberStatus::Draining && d.in_flight.is_none_or(|n| n == 0))
         })
     }
 
@@ -859,18 +858,18 @@ impl AdminRunner {
         }))
     }
 
-    async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, permanent, false, false).await
+    async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
+        self.retire_with(build_id, attempt, node, RetireKind::Removal, false, false).await
     }
 
     /// The retire half of a restart: the birth's addresses are claimed by this admin before its
     /// runtime stops and stay held for the rebirth (a successor never launched it, and the claim
     /// of the admin that did may name a dead process).
     async fn retire_for_restart(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, false, false, true).await
+        self.retire_with(build_id, attempt, node, RetireKind::Restart, false, true).await
     }
 
-    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, permanent: bool, observe_departure: bool, keep_endpoints: bool) -> Result<Option<Node>, String> {
+    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind, observe_departure: bool, keep_endpoints: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
@@ -882,7 +881,7 @@ impl AdminRunner {
             }
         }
         let template = self.template_for(node.kind, &node.mesh).await;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, permanent, observe_departure, keep_endpoints };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure, keep_endpoints };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
@@ -984,9 +983,9 @@ impl AdminRunner {
                 .instrument(span)
                 .await
             }
-            BuildOperation::RetireNode { node, permanent } => {
+            BuildOperation::RetireNode { node } => {
                 let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                self.retire(build_id, attempt, node, *permanent).instrument(span).await.map(|_| ())
+                self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
             BuildOperation::RetireMesh { mesh } => {
                 let (members, last_admin) = {
@@ -1002,7 +1001,7 @@ impl AdminRunner {
                 // `Leaving`.
                 for node in retire_mesh_order(members, last_admin.as_ref()) {
                     let span = tracing::info_span!("rafka.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                    self.retire_with(build_id, attempt, &node, true, true, false).instrument(span).await?;
+                    self.retire_with(build_id, attempt, &node, RetireKind::Removal, true, false).instrument(span).await?;
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
                 Ok(())
@@ -1501,11 +1500,11 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         let records_for_ids = records.clone();
         let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
             me: name.clone(),
-            fabric_id: cfg.fabric_id.to_string(),
+            fabric_id: cfg.fabric_id.clone(),
             topology: control.topology.clone(),
             declared: records.declared.clone(),
             nodes_storage: nodes_storage.clone(),
-            mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect()),
+            mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
             republish: republish.clone(),
             drain: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1581,8 +1580,6 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }
     };
     // Own digest, published on the membership cadence.
-    let mut extra = BTreeMap::new();
-    extra.insert(MESH_ID.to_string(), mesh_id.to_string());
     let digest = Arc::new(Mutex::new(MeshDigest {
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
@@ -1600,7 +1597,9 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         status: MemberStatus::Pending,
         admin_api_base: Some(api_base.clone()),
         emitted_unix_ms: now_ms(),
-        extra,
+        mesh_id: Some(mesh_id.clone()),
+        in_flight: None,
+        extra: BTreeMap::new(),
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
     }));
     // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
@@ -1719,12 +1718,12 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
                 // root, with no upstream authority, applies its own. An admin joining a mesh whose
                 // admin cohort is already live owes nothing here.
-                let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id.to_string());
+                let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
                 if !pending_applied {
                     if day0.is_some() {
                         match authority.get() {
                             Some(auth) => {
-                                let reply = auth.self_apply_mesh_pending(&mesh_id.to_string()).await;
+                                let reply = auth.self_apply_mesh_pending(&mesh_id).await;
                                 if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
                                     blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
                                 }
@@ -2108,8 +2107,6 @@ mod tests {
 
     fn digest(name: &str, status: MemberStatus) -> MeshDigest {
         let name: PathName = name.parse().unwrap();
-        let mut extra = BTreeMap::new();
-        extra.insert(MESH_ID.to_string(), mesh_id(&name.mesh).to_string());
         MeshDigest {
             fabric_id: fabric1(),
             node: MeshNode {
@@ -2124,7 +2121,9 @@ mod tests {
             status,
             admin_api_base: (name.kind == NodeKind::NodeAdmin).then(|| format!("http://admin-{name}")),
             emitted_unix_ms: now_ms(),
-            extra,
+            mesh_id: Some(mesh_id(&name.mesh)),
+            in_flight: None,
+            extra: BTreeMap::new(),
             data_dir: None,
         }
     }

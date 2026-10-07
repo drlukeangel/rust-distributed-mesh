@@ -33,7 +33,7 @@ pub trait OperationRunner: Send + Sync {
 pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
     match op {
-        BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. }
+        BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node }
             if node.kind == NodeKind::RpcNode =>
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
@@ -269,7 +269,7 @@ mod tests {
     fn a_meshs_members_are_its_own_primarys_and_everything_else_the_fabric_primarys() {
         let t = mm(true);
         assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh2.admin.1");
-        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), permanent: true }, &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap() }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh1.rpc.2"), &t), "mesh1.admin.1");
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");

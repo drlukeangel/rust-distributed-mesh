@@ -169,7 +169,7 @@ impl NodeObserver for LiveMesh {
         self.membership.book.get(node.node_id.as_str()).is_some_and(|(d, _)| {
             Some(&d.node.incarnation) == node.incarnation_id.as_ref()
                 && (d.status == MemberStatus::Leaving
-                    || (d.status == MemberStatus::Draining && d.extra.get("in_flight").map(String::as_str) == Some("0")))
+                    || (d.status == MemberStatus::Draining && d.in_flight.is_none_or(|n| n == 0)))
         })
     }
 
@@ -248,6 +248,8 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
         admin_api_base: None,
         emitted_unix_ms: now_ms,
         data_dir: None,
+        mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
+        in_flight: None,
         extra: Default::default(),
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");

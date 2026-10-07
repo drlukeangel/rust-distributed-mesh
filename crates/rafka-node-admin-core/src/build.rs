@@ -144,8 +144,9 @@ pub enum BuildOperation {
     CreateMesh { mesh: String },
     CreateNode { node: PathName },
     RestartNode { node: PathName },
-    /// Retire through the retire pipeline; `permanent` releases storage.
-    RetireNode { node: PathName, permanent: bool },
+    /// Remove the logical node through the retire pipeline; what happens to its storage is the
+    /// accepted Build's StorageMeta for the path, decided there.
+    RetireNode { node: PathName },
     RetireMesh { mesh: String },
 }
 
@@ -273,7 +274,7 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
             // non-primaries first, then by descending ordinal
             order.sort_by(|a, b| a.is_primary.cmp(&b.is_primary).then(b.name.ordinal.cmp(&a.name.ordinal)));
             for n in order.into_iter().take((have - want) as usize) {
-                ops.push(BuildOperation::RetireNode { node: n.name.clone(), permanent: true });
+                ops.push(BuildOperation::RetireNode { node: n.name.clone() });
             }
         }
     }
@@ -357,7 +358,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
         BuildIntent::RemoveNode { node, incarnation: Some(birth) } => {
             // Done once that birth is gone or another birth holds the path.
             if observed.node(node).is_some_and(|n| n.incarnation_id.as_ref() == Some(birth) && n.status.is_live()) {
-                ops.push(BuildOperation::RetireNode { node: node.clone(), permanent: true });
+                ops.push(BuildOperation::RetireNode { node: node.clone() });
             }
         }
         BuildIntent::RemoveNode { node, incarnation: None } => {
@@ -365,7 +366,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if node.kind == NodeKind::NodeAdmin && live(observed, &node.mesh, NodeKind::NodeAdmin).len() <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
             }
-            ops.push(BuildOperation::RetireNode { node: node.clone(), permanent: true });
+            ops.push(BuildOperation::RetireNode { node: node.clone() });
         }
         BuildIntent::RestartNode { node, from_incarnation } => {
             let n = observed.node(node).ok_or_else(|| BuildReject::UnknownNode { node: node.to_string() })?;
@@ -380,7 +381,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
         }
         BuildIntent::ReplaceNode { node } => {
             find_live(observed, node)?;
-            ops.push(BuildOperation::RetireNode { node: node.clone(), permanent: true });
+            ops.push(BuildOperation::RetireNode { node: node.clone() });
             ops.push(BuildOperation::CreateNode { node: node.clone() });
         }
         BuildIntent::CreateMesh { desired } => {
@@ -511,7 +512,7 @@ mod tests {
     fn a_pinned_remove_is_done_once_that_birth_is_gone_and_never_refused() {
         let t = with_incarnations(mn());
         let pinned = pin(BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None }, &t).unwrap();
-        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RetireNode { node: p("mesh1.rpc.3"), permanent: true }]);
+        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RetireNode { node: p("mesh1.rpc.3") }]);
         let mut gone = t.clone();
         gone.nodes.retain(|n| n.name != p("mesh1.rpc.3"));
         assert_eq!(plan(&pinned, &gone), Ok(BuildPlan { operations: vec![] }), "done, not unknown-node");
@@ -525,7 +526,7 @@ mod tests {
     }
 
     fn retire(s: &str) -> BuildOperation {
-        BuildOperation::RetireNode { node: p(s), permanent: true }
+        BuildOperation::RetireNode { node: p(s) }
     }
 
     fn desired(meshes: &[(&str, u32, u32)]) -> BuildIntent {
