@@ -138,17 +138,22 @@ fn refeed(
 ) {
     use rafka_mesh_transport::membership::{backbone_gossip_interval, staleness_floor};
     tokio::spawn(async move {
+        // As the membership channels (PRD §6.2): a bounded join attempt one gossip interval after
+        // the topic was left alone, backed off (doubling, at most one floor apart) while it holds.
         let mut alone_since: Option<std::time::Instant> = None;
+        let mut backoff = backbone_gossip_interval();
         loop {
             tokio::time::sleep(backbone_gossip_interval()).await;
             if !neighbors.lock().unwrap().is_empty() {
                 alone_since = None;
+                backoff = backbone_gossip_interval();
                 continue;
             }
             let since = *alone_since.get_or_insert_with(std::time::Instant::now);
-            if since.elapsed() < staleness_floor() {
+            if since.elapsed() < backoff {
                 continue;
             }
+            backoff = (backoff * 2).min(staleness_floor());
             let mut peers = known.lock().unwrap().clone();
             peers.sort();
             peers.dedup();
@@ -158,7 +163,7 @@ fn refeed(
             let s = sender.read().await.clone();
             let joined = s.join_peers(peers.clone()).await.is_ok();
             tracing::info_span!("rafka.mesh.connection.update.via-refeed", channel = "builds", fabric = %fabric, peers = peers.len(), joined)
-                .in_scope(|| tracing::info!("no neighbour for a window: every known peer handed to the Build topic again"));
+                .in_scope(|| tracing::info!("no neighbour: every known peer handed to the Build topic again"));
             alone_since = Some(std::time::Instant::now());
         }
     });
@@ -299,6 +304,7 @@ impl FabricBuildStateAdapter {
                     Ok(t) => t,
                     Err(e) => {
                         span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the Build topic ends"));
+                        rafka_mesh_transport::membership::mark_transport_stopped(format!("gossip refused to re-open the Build topic: {e}"));
                         return;
                     }
                 };

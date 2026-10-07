@@ -401,6 +401,9 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         let mut watch: Option<(String, u64)> = None;
         // A birth a fault silenced while its runtime ran: it must come back as itself.
         let mut held: Vec<(String, String)> = Vec::new();
+        // A birth a network fault silenced: back as itself, or its runtime exited (its transport
+        // stopped for good) and the path is held by a new birth. `(path, incarnation, container)`.
+        let mut unplugged_births: Vec<(String, String, String)> = Vec::new();
         // The node id a replacement retired: a call to it is never dispatched.
         let mut retired_node_id: Option<String> = None;
         // A fault's own failure (the view never marked the silence), named and fatal.
@@ -501,7 +504,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 if let Err(e) = marked {
                     fault_failure = Some(format!("{path} disconnected: {e}"));
                 }
-                held.push((path, s(&n["incarnation_id"])));
+                unplugged_births.push((path, s(&n["incarnation_id"]), u.id.clone()));
             }
             "peer-mesh-unheard" => {
                 let mesh = rng.pick(&SHAPE).0.to_string();
@@ -520,7 +523,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 if let Err(e) = marked {
                     fault_failure = Some(format!("{mesh} disconnected: {e}"));
                 }
-                held.extend(members.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))));
+                unplugged_births.extend(members.iter().zip(unplugged.iter()).map(|(n, u)| (s(&n["name"]), s(&n["incarnation_id"]), u.id.clone())));
             }
             _ => unreachable!(),
         }
@@ -610,6 +613,19 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         for (path, inc) in &held {
             if !now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic") {
                 violations.push(format!("round {round} ({op}): {path} came back as another birth than {inc}: silence replaced a running runtime"));
+            }
+        }
+        for (path, inc, container) in &unplugged_births {
+            let same = now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic");
+            let state = docker(&["inspect", "--format", "{{.State.Status}}", container]).unwrap_or_else(|_| "removed".into());
+            let reborn = now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] != inc.as_str() && n["status"] == "ready-for-traffic");
+            let outcome = if same { "same-birth" } else if reborn && state != "running" { "exited-and-reborn" } else { "" };
+            entry["network_outcome"].as_object_mut().map(|o| o.insert(path.clone(), json!(outcome))).or_else(|| {
+                entry["network_outcome"] = json!({path.clone(): outcome});
+                None
+            });
+            if outcome.is_empty() {
+                violations.push(format!("round {round} ({op}): {path} neither came back as {inc} nor was reborn after its runtime exited (container {state})"));
             }
         }
         // The replaced node's id names no node: a call to it is refused, never dispatched.

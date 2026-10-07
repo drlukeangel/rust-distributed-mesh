@@ -183,6 +183,40 @@ fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// This process's mesh transport has stopped for good: iroh-gossip refused a subscription (its
+/// actor ended, as it does once the endpoint's transports all fail). The process can no longer
+/// be heard or answer; it ends, so its exit is the death proof recovery acts on. Set once, with
+/// the reason; a node binary waits on it beside its stop signal.
+pub fn transport_stopped() -> &'static tokio::sync::watch::Sender<Option<String>> {
+    static STOPPED: std::sync::OnceLock<tokio::sync::watch::Sender<Option<String>>> = std::sync::OnceLock::new();
+    STOPPED.get_or_init(|| tokio::sync::watch::Sender::new(None))
+}
+
+/// Record that the mesh transport stopped (`transport_stopped`), keeping the first reason.
+pub fn mark_transport_stopped(reason: String) {
+    transport_stopped().send_if_modified(|r| {
+        if r.is_none() {
+            *r = Some(reason);
+            true
+        } else {
+            false
+        }
+    });
+}
+
+/// Until this process's mesh transport stops; the reason.
+pub async fn until_transport_stopped() -> String {
+    let mut rx = transport_stopped().subscribe();
+    let reason = match rx.wait_for(Option::is_some).await {
+        Ok(r) => r.clone(),
+        Err(_) => None,
+    };
+    match reason {
+        Some(r) => r,
+        None => std::future::pending().await,
+    }
+}
+
 /// The peers of the live list `live` to join now: those not joined while
 /// they stayed live. `joined` forgets a peer that left the list, so one that
 /// returns is joined again (`gossip.md` §6).
@@ -270,6 +304,7 @@ impl Channel {
                     Ok(t) => t,
                     Err(e) => {
                         span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the channel ends"));
+                        mark_transport_stopped(format!("gossip refused to re-open channel {channel}: {e}"));
                         return;
                     }
                 };
@@ -309,22 +344,28 @@ impl Channel {
         Ok(fresh.len())
     }
 
-    /// While the channel has had no neighbour for a whole window, hand it
-    /// every peer it knows again, once per window.
+    /// While the channel has no neighbour, hand it every peer it knows again: a bounded
+    /// join attempt one gossip interval after it was left alone, then backed off (doubling, at
+    /// most one staleness floor apart) while that holds (PRD §6.2). A neighbour coming up resets
+    /// it. A node whose connections all timed out (a wedge, a network gap longer than the idle
+    /// timeout) is otherwise heard again only a whole floor later.
     fn refeed(&self, node: String, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>) {
         let me = self.clone();
         tokio::spawn(async move {
             let mut alone_since: Option<Instant> = None;
+            let mut backoff = backbone_gossip_interval();
             loop {
                 tokio::time::sleep(backbone_gossip_interval()).await;
                 if !neighbors.lock().unwrap().is_empty() {
                     alone_since = None;
+                    backoff = backbone_gossip_interval();
                     continue;
                 }
                 let since = *alone_since.get_or_insert_with(Instant::now);
-                if since.elapsed() < staleness_floor() {
+                if since.elapsed() < backoff {
                     continue;
                 }
+                backoff = (backoff * 2).min(staleness_floor());
                 let peers: Vec<iroh::EndpointId> = me.peers.lock().unwrap().iter().copied().collect();
                 if peers.is_empty() {
                     continue;
@@ -332,7 +373,7 @@ impl Channel {
                 let sender = me.sender.read().await.clone();
                 let joined = sender.join_peers(peers.clone()).await.is_ok();
                 tracing::info_span!("rafka.mesh.connection.update.via-refeed", node = %node, channel = %channel, peers = peers.len(), joined)
-                    .in_scope(|| tracing::info!("no neighbour for a window: every known peer handed to the channel again"));
+                    .in_scope(|| tracing::info!("no neighbour: every known peer handed to the channel again"));
                 alone_since = Some(Instant::now());
             }
         });

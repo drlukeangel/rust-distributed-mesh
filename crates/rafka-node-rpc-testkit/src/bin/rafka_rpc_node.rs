@@ -75,14 +75,27 @@ async fn main() {
 }
 
 async fn wait_for_signal() {
+    // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
+    // answer: it ends, and its exit is the death proof the fabric recovers from.
+    let stopped = async {
+        let reason = rafka_mesh_transport::membership::until_transport_stopped().await;
+        tracing::info_span!("rafka.mesh.node.delete.via-transport-stopped", reason = %reason)
+            .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
+        eprintln!("rafka-rpc-node: the mesh transport stopped: {reason}");
+        std::process::exit(4);
+    };
     #[cfg(unix)]
     {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
         tokio::select! {
             _ = term.recv() => {}
             _ = tokio::signal::ctrl_c() => {}
+            () = stopped => {}
         }
     }
     #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = stopped => {}
+    }
 }

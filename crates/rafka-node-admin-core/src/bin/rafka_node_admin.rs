@@ -52,6 +52,14 @@ async fn main() {
     let fabric_shutdown = tokio::select! {
         _ = &mut by_route => true,
         _ = signal() => false,
+        // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
+        // answer: it ends, and its exit is the death proof the fabric recovers from.
+        reason = rafka_mesh_transport::membership::until_transport_stopped() => {
+            tracing::info_span!("rafka.mesh.node.delete.via-transport-stopped", reason = %reason)
+                .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
+            eprintln!("rafka-node-admin: the mesh transport stopped: {reason}");
+            std::process::exit(4);
+        }
     };
     let span = tracing::info_span!("rafka.mesh.node.delete.via-signal", fabric_shutdown);
     let _g = span.enter();

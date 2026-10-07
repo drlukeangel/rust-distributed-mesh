@@ -74,7 +74,11 @@ async fn a_successor_manages_births_it_never_launched() {
     // Lose the launching admin.
     estate.kill_bootstrap();
     estate.admin = base.clone();
-    let view = wait_for("the successor holds the mesh and the fabric", Duration::from_secs(40), || async {
+    // Silence is local receipt age, and gossip may still hand on the killed admin's last cached
+    // digests (newer than what the successor holds) for one cache window after it died: the
+    // successor hears it gone within the staleness floor after that, then elects.
+    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
+    let view = wait_for("the successor holds the mesh and the fabric", silence_bound, || async {
         let v = estate.nodes().await;
         let me = v.iter().find(|n| n["name"] == "mesh1.admin.2")?;
         // The killed birth is gone: dead, or already replaced by the drift
