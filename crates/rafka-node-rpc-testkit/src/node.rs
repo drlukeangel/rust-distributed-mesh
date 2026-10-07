@@ -275,7 +275,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
                 if owed.lock().unwrap().is_some() {
                     declare_once(&node, &membership, &client, &owed).await;
                 }
-                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
         })
     };
@@ -293,7 +293,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.to_string(), incarnation: me.incarnation.0.clone(), state };
     let mut admins: Vec<MeshDigest> = membership
         .book
-        .current(rafka_mesh_transport::membership::SILENT_AFTER)
+        .current(membership.book.staleness_floor())
         .into_iter()
         .filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == me.name.mesh)
         .collect();

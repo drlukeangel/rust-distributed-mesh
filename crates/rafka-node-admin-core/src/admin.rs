@@ -1576,7 +1576,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                 crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client).await;
-                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
         }));
     }
