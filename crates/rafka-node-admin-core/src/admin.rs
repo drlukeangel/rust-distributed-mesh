@@ -1839,6 +1839,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     node_id: n.node_id.clone(),
                     incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
                 };
+                let own_name = me.clone();
                 let report = tickle
                     .tick(
                         now_ms(),
@@ -1866,11 +1867,13 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                         },
                         |id| {
                             let (client, node) = (client.clone(), watched.get(&id).cloned());
-                            // Carriers from the topology: live rpc nodes of the target's mesh.
+                            // Carriers from the topology: every ready member of the target's mesh
+                            // other than the target and this admin, whatever its kind (every node
+                            // serves the core Forward op).
                             let carriers: Vec<Node> = view
                                 .nodes
                                 .iter()
-                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.kind == NodeKind::RpcNode && c.status == NodeStatus::ReadyForTraffic)
+                                .filter(|c| node.as_ref().is_some_and(|n| c.mesh == n.mesh && c.node_id != n.node_id) && c.name != own_name && c.status == NodeStatus::ReadyForTraffic)
                                 .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
                                 .cloned()
                                 .collect();

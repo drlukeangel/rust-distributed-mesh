@@ -33,8 +33,11 @@ pub trait OperationRunner: Send + Sync {
 pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
     match op {
+        // A member node of any kind is born, restarted and retired by its own mesh's primary
+        // admin (the fabric primary when the mesh has none): the rule names no role, so a
+        // product's kinds get the same executor as the proof product's rpc node.
         BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node }
-            if node.kind == NodeKind::RpcNode =>
+            if node.kind != NodeKind::NodeAdmin =>
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
@@ -271,6 +274,10 @@ mod tests {
         assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh2.admin.1");
         assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap() }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh1.rpc.2"), &t), "mesh1.admin.1");
+        // The rule names no role: a product's kinds get the mesh's own primary admin too.
+        assert_eq!(who(&create("mesh2.broker.1"), &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::RestartNode { node: "mesh2.gateway.1".parse().unwrap() }, &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.compute.1".parse().unwrap() }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
