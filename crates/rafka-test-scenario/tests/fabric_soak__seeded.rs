@@ -81,15 +81,15 @@ async fn try_get(base: &str, path: &str) -> Option<Value> {
     r.json().await.ok()
 }
 
-/// Control follows whoever answers: the fabric's advertised holder if it answers, else the first
-/// live admin from `known` that does. Returns false when nobody answers.
+/// Control follows whoever answers for this Fabric: the fabric's advertised holder if it answers,
+/// else the first live admin from `known` that does. Returns false when nobody answers.
 async fn relocate_control(estate: &mut Estate, known: &[String]) -> bool {
     let mut candidates: Vec<String> = vec![estate.admin.clone()];
     candidates.extend(known.iter().cloned());
     for c in candidates.clone() {
-        if let Some(f) = try_get(&c, "/api/fabric").await {
+        if let Some(f) = estate.fabric_at(&c).await {
             if let Some(h) = f["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
-                if try_get(h, "/api/fabric").await.is_some() {
+                if estate.fabric_at(h).await.is_some() {
                     estate.admin = h.to_string();
                     return true;
                 }

@@ -26,7 +26,7 @@
 //! primary.
 
 use rafka_test_scenario::elections::{expected_fabric_primary, seats_as_expected};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::process::Command;
 use std::time::Duration;
@@ -44,12 +44,6 @@ fn owner() -> Owner {
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
-}
-
-async fn get(base: &str, path: &str) -> Option<Value> {
-    let r = reqwest::Client::new().get(format!("{base}{path}")).timeout(Duration::from_secs(2)).send().await.ok()?;
-    r.status().is_success().then_some(())?;
-    r.json().await.ok()
 }
 
 fn kill(pid: u64) {
@@ -101,14 +95,16 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let control = wait_for("an advertised admin leads to a live fabric primary", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), || {
         let advertised = advertised.clone();
         let old = old_primary.clone();
+        let fabric_id = estate.fabric_id.clone();
         async move {
             for base in &advertised {
-                let Some(f) = get(base, "/api/fabric").await else { continue };
+                // A killed admin's port is soon another estate's: only this Fabric's admins count.
+                let Some(f) = own_fabric_at(base, &fabric_id).await else { continue };
                 let (primary, primary_base) = (s(&f["fabric_primary"]), s(&f["admin_api_base"]));
                 if primary.is_empty() || primary == old {
                     continue;
                 }
-                let Some(own) = get(&primary_base, "/api/fabric").await else { continue };
+                let Some(own) = own_fabric_at(&primary_base, &fabric_id).await else { continue };
                 if s(&own["fabric_primary"]) == primary && s(&own["admin_api_base"]) == primary_base {
                     return Some((primary, primary_base, own));
                 }

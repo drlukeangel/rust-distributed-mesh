@@ -14,7 +14,7 @@
 //! Evidence: a reconcile of B by a mesh2 admin names mesh1's admin primary
 //! as the previous executor and descends from B's accepting request.
 
-use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{descends_from, named, own_fabric_at, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -98,9 +98,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     // Control, through the advertised endpoints only.
     let base = wait_for("a surviving admin answers", Duration::from_secs(30), || {
         let advertised = advertised.clone();
+        let fabric_id = estate.fabric_id.clone();
         async move {
             for base in &advertised {
-                if get(base, "/api/fabric").await.is_some() {
+                if own_fabric_at(base, &fabric_id).await.is_some() {
                     return Some(base.clone());
                 }
             }

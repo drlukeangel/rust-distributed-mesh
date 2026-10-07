@@ -98,6 +98,10 @@ pub struct Estate {
     pub artifacts: PathBuf,
     pub evidence: PathBuf,
     pub admin: String,
+    /// This estate's Fabric id. Control addresses are loopback ports that other estates on the
+    /// host reuse once a runtime dies: an admin answers for this estate only when its view names
+    /// this id ([`Self::fabric_at`]).
+    pub fabric_id: String,
     bootstrap: Option<Child>,
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
@@ -127,12 +131,14 @@ impl Estate {
             ],
             "bootstrap node-admin",
         );
-        let estate = Self { owner, root, artifacts, evidence, admin, bootstrap: Some(child), restarted: Vec::new(), http: reqwest::Client::new() };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
-        wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
-            estate.get("/api/fabric").await.1["fabric_primary"].as_str().map(|_| ())
+        estate.fabric_id = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
+            let f = estate.get("/api/fabric").await.1;
+            f["fabric_primary"].as_str()?;
+            f["id"].as_str().filter(|i| !i.is_empty()).map(String::from)
         })
         .await;
         estate
@@ -161,6 +167,11 @@ impl Estate {
             .open(self.artifacts.join("rpc-ledger.jsonl"))
             .unwrap();
         writeln!(f, "{entry}").unwrap();
+    }
+
+    /// `GET base/api/fabric`, only when the admin at `base` answers for this estate's Fabric.
+    pub async fn fabric_at(&self, base: &str) -> Option<Value> {
+        own_fabric_at(base, &self.fabric_id).await
     }
 
     pub async fn get(&self, path: &str) -> (u16, Value) {
@@ -211,7 +222,11 @@ impl Estate {
         let deadline = Instant::now() + Duration::from_secs(120);
         let mut last = (0u16, Value::Null);
         loop {
-            let base = self.get("/api/fabric").await.1["admin_api_base"].as_str().filter(|b| !b.is_empty()).map(String::from).unwrap_or_else(|| self.admin.clone());
+            let advertised = self.get("/api/fabric").await.1["admin_api_base"].as_str().filter(|b| !b.is_empty()).map(String::from);
+            let base = match advertised {
+                Some(b) if self.fabric_at(&b).await.is_some() => b,
+                _ => self.admin.clone(),
+            };
             // Removing a node: the authority removes a birth it sees, so give its view the moment
             // gossip needs to hear a node another Mesh just created.
             if method == "DELETE" {
@@ -417,15 +432,22 @@ impl Estate {
         let entry = self.admin.clone();
         let (_, fabric) = self.get("/api/fabric").await;
         if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
-            self.admin = holder.to_string();
+            if self.fabric_at(holder).await.is_some() {
+                self.admin = holder.to_string();
+            }
         }
         // Only the fabric-primary accepts the shutdown, and the seat can still be moving when the
         // test asks: follow the advertised fabric control endpoint until one accepts, and name the
         // last refusal rather than waiting on a shutdown nobody began.
         let until = Instant::now() + Duration::from_secs(30);
-        let mut last = (0u16, Value::Null);
+        let mut last: (u16, Value);
         loop {
-            let r = self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await;
+            // The shutdown goes only to an admin of this estate's Fabric: a dead admin's port can
+            // already belong to another estate's admin.
+            let r = match self.fabric_at(&self.admin).await {
+                Some(_) => self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await.map_err(|e| e.to_string()),
+                None => Err(format!("{} does not answer for Fabric {}", self.admin, self.fabric_id)),
+            };
             let refused_or_gone = match r {
                 Ok(r) => {
                     let status = r.status().as_u16();
@@ -437,7 +459,7 @@ impl Estate {
                     true
                 }
                 Err(e) => {
-                    last = (0, Value::String(e.to_string()));
+                    last = (0, Value::String(e));
                     true
                 }
             };
@@ -445,14 +467,14 @@ impl Estate {
             // lists, who holds the fabric now.
             if refused_or_gone {
                 let mut candidates = vec![entry.clone()];
-                if let Ok(r) = self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await {
+                let entry_is_ours = self.fabric_at(&entry).await.is_some();
+                if let Some(r) = if entry_is_ours { self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await.ok() } else { None } {
                     let v: Value = r.json().await.unwrap_or(Value::Null);
                     candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
                 }
                 for c in candidates {
-                    let Ok(r) = self.http.get(format!("{c}/api/fabric")).timeout(Duration::from_secs(2)).send().await else { continue };
-                    let f: Value = r.json().await.unwrap_or(Value::Null);
-                    if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
+                    let Some(f) = self.fabric_at(&c).await else { continue };
+                    if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty() && *b != self.admin) {
                         self.admin = base.to_string();
                         break;
                     }
@@ -657,4 +679,16 @@ pub fn descends_from(spans: &[Value], child: &Value, ancestor: &Value) -> bool {
         }
     }
     false
+}
+
+/// `GET base/api/fabric`, only when the admin at `base` answers within 2s and its view names the
+/// Fabric `fabric_id`. A loopback control port freed by a dead runtime is reused by other estates
+/// on the host, so an answer from an address is never taken as this Fabric's on its own.
+pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
+    let r = reqwest::Client::new().get(format!("{base}/api/fabric")).timeout(Duration::from_secs(2)).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let f: Value = r.json().await.ok()?;
+    (f["id"].as_str() == Some(fabric_id)).then_some(f)
 }
