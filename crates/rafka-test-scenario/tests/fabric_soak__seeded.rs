@@ -360,6 +360,14 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     if container {
         ops.extend(["network-lost", "peer-mesh-unheard"]);
     }
+    // `RAFKA_SOAK_OPS=a,b,...` runs only the named faults (an isolation run); every fault otherwise.
+    if let Ok(only) = std::env::var("RAFKA_SOAK_OPS") {
+        let only: Vec<&str> = only.split(',').map(str::trim).filter(|o| !o.is_empty()).collect();
+        assert!(only.iter().all(|o| ops.contains(o)), "RAFKA_SOAK_OPS names a fault this provider does not run: {only:?} of {ops:?}");
+        ops.retain(|o| only.contains(o));
+    }
+    estate.artifact("soak-ops.json", &json!({"ops": ops}));
+    eprintln!("SOAK ops={ops:?}");
     let floor = rafka_mesh_transport::membership::staleness_floor();
     let backbone = rafka_mesh_transport::membership::backbone_gossip_interval();
     // Long enough for a forwarded peer to be marked unheard, then for the tickle's two rounds.
@@ -578,6 +586,20 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
             break;
         }
         if !converged {
+            // What every admin that answers holds, per mesh: the evidence of what did not converge.
+            let mut views = serde_json::Map::new();
+            for base in known.iter().chain(std::iter::once(&estate.admin)) {
+                if let Some(v) = try_get(base, "/api/nodes").await {
+                    let mut by: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                    for n in v["nodes"].as_array().into_iter().flatten() {
+                        by.entry(s(&n["mesh"])).or_default().push(format!("{}:{}", s(&n["name"]), s(&n["status"])));
+                    }
+                    views.insert(base.clone(), json!(by));
+                } else {
+                    views.insert(base.clone(), json!("unanswered"));
+                }
+            }
+            entry["views"] = json!(views);
             violations.push(format!("round {round} ({op}): the birth sequence did not complete within 150s: {entry}"));
             log.push(entry);
             break;
