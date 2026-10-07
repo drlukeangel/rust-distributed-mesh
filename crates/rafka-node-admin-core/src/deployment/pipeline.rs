@@ -141,6 +141,9 @@ pub enum RetireStep {
     /// The departure (a removal only): the provider proved the runtime terminal; the
     /// node has left.
     NodeDeleted,
+    /// The pre-event of a restart: the executor holds `restart-node:<path>`; the birth is held
+    /// through its Leaving until its later birth is heard.
+    NodeRestarting,
     ReleaseEndpoints,
     /// Only on a removal.
     ReleaseStorage,
@@ -171,6 +174,7 @@ impl RetireStep {
         match self {
             Self::NodeDeleting => "NodeDeleting",
             Self::NodeDeleted => "NodeDeleted",
+            Self::NodeRestarting => "NodeRestarting",
             Self::MarkDraining => "MarkDraining",
             Self::WaitForDrain => "WaitForDrain",
             Self::PublishLeaving => "PublishLeaving",
@@ -486,6 +490,8 @@ pub enum DrainOutcome {
 pub trait LifecycleEvents: Send + Sync {
     async fn deleting(&self, op: &LifecycleOp);
     async fn deleted(&self, op: &LifecycleOp);
+    /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
+    async fn restarting(&self, op: &LifecycleOp);
 }
 
 /// No events: a pipeline under test with no membership.
@@ -495,6 +501,7 @@ pub struct NoLifecycleEvents;
 impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
+    async fn restarting(&self, _op: &LifecycleOp) {}
 }
 
 pub trait TopologySink: Send + Sync {
@@ -1056,6 +1063,19 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleting(&op).await;
             Some(op)
         } else {
+            // A restart: the pre-event of `restart-node:<path>` on the same receipt-then-publish
+            // order, so every node holds the birth through the Leaving that follows.
+            let op = LifecycleOp {
+                build_id: req.build_id.to_string(),
+                attempt: req.attempt,
+                operation: format!("restart-node:{name}"),
+                node_id: node.node_id.clone(),
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
+                name: name.clone(),
+                event_at_ms: now_unix_ms(),
+            };
+            let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.restarting(&op).await;
             None
         };
         node.status = NodeStatus::Draining;

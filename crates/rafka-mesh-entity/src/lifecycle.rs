@@ -26,6 +26,12 @@ pub struct LifecycleOp {
 }
 
 impl LifecycleOp {
+    /// A restart operation (`restart-node:<path>`): the logical node is kept, a later birth
+    /// follows; every other operation here removes the node.
+    pub fn is_restart(&self) -> bool {
+        self.operation.starts_with("restart-node:")
+    }
+
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
     pub fn key(&self) -> (String, u32, String) {
         (self.build_id.clone(), self.attempt, self.operation.clone())

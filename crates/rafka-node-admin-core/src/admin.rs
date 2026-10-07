@@ -292,13 +292,17 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         let Some((_, age)) = book.get_at(d.node.node_id.as_str(), now) else { continue };
         heard.insert(d.node.incarnation.clone());
         let name = d.node.name.clone();
-        if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
+        // A birth under an open restart is held through everything below until its later birth is
+        // heard: the restart's own retire (its Leaving, its removal from these records) is not a
+        // departure (fabric-node-lifecycle.md: Restarting is commanded silence).
+        let restarting = book.restart_of(d.node.node_id.as_str(), &d.node.incarnation).is_some();
+        if !restarting && removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
         }
         let silent = age > book.staleness_floor();
         // A graceful departure: a terminal `Leaving` digest, then nothing for one gossip interval.
         // It leaves the view within one tick (fabric-node-lifecycle.md §6), never a staleness floor.
-        if d.status == MemberStatus::Leaving && age > gossip_interval() {
+        if !restarting && d.status == MemberStatus::Leaving && age > gossip_interval() {
             continue;
         }
         if let Some(id) = d.mesh_id.clone() {
@@ -311,7 +315,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         n.provider = Some(provider);
         // Silent past the staleness floor: this node's own pruner marks it PendingReconnect in place;
         // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
-        n.status = if !silent {
+        n.status = if restarting {
+            NodeStatus::Restarting
+        } else if !silent {
             node_status(d.status)
         } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
             NodeStatus::Dead
@@ -668,6 +674,18 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             tracing::info!(error = %e, "NodeDeleting not sent on the backbone");
         }
         tracing::info!("the node is being removed: every mesh hears it is not routable");
+    }
+    async fn restarting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let f = rafka_mesh_transport::membership::Frame::NodeRestarting { op: op.clone(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        let _g = span.enter();
+        if let Err(e) = self.membership.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
+        }
+        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+            tracing::info!(error = %e, "NodeRestarting not sent on the backbone");
+        }
+        tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
     }
     async fn deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };

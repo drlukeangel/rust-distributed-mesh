@@ -40,6 +40,11 @@ pub enum NodeStatus {
     /// the silent peer in place and keeps it; its next digest flips it back (fabric-node-lifecycle.md
     /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
     PendingReconnect,
+    /// Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`,
+    /// fabric-node-lifecycle.md) and owns bringing it back. Held through its `Leaving` and
+    /// silence, exempt from the staleness marks, never routable; the later birth's own digest
+    /// clears it.
+    Restarting,
     /// True offline: half a floor after the mark the mesh primary's one QUIC connect found no path,
     /// on two rounds at least one staleness floor apart. Observer inferred only; never sent, never a
     /// reason to restart or delete the node.

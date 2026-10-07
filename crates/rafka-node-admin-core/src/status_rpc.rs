@@ -257,7 +257,8 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::Pending => NodeState::Pending,
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::Draining => NodeState::Draining,
-        S::Leaving | S::PendingReconnect | S::Dead => NodeState::Leaving,
+        // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
+        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead => NodeState::Leaving,
     }
 }
 

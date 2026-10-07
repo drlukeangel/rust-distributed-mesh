@@ -187,6 +187,12 @@ pub enum Frame {
     /// The provider proved `op`'s exact birth terminal: it has left. Same
     /// channels as `NodeDeleting`; retained afterwards in `Members.departed`.
     NodeDeleted { op: LifecycleOp, forwarded_by: Option<String> },
+    /// The mesh executor holding `op` (`restart-node:<path>`) is restarting its exact birth:
+    /// commanded silence (fabric-node-lifecycle.md: node-admin took it down and owns bringing it
+    /// back). The node stays held through its own `Leaving` and silence, not routable, until a
+    /// later birth of the same NodeId is heard. Same channels as `NodeDeleting`; carried in
+    /// `Members.in_flight` while open.
+    NodeRestarting { op: LifecycleOp, forwarded_by: Option<String> },
     /// The fabric's status, published by the fabric primary alone.
     FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64 },
 }
@@ -484,7 +490,11 @@ impl View {
                     self.book.depart(op.clone());
                 }
                 for op in in_flight {
-                    self.book.deleting(op.clone());
+                    if op.is_restart() {
+                        self.book.restarting(op.clone());
+                    } else {
+                        self.book.deleting(op.clone());
+                    }
                 }
                 let mine: Vec<MeshDigest> = digests.iter().filter(|d| &d.fabric_id == fabric).cloned().collect();
                 for d in &mine {
@@ -504,6 +514,10 @@ impl View {
             }
             Frame::NodeDeleted { op, .. } => {
                 self.book.depart(op.clone());
+                Vec::new()
+            }
+            Frame::NodeRestarting { op, .. } => {
+                self.book.restarting(op.clone());
                 Vec::new()
             }
             Frame::FabricStatus { fabric: f, status, publisher, .. } if f == fabric => {
@@ -717,6 +731,7 @@ impl Backbone {
                 }
                 Frame::NodeDeleting { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.clone()) }),
                 Frame::NodeDeleted { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.clone()) }),
+                Frame::NodeRestarting { op, .. } if op.name.mesh != own => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.clone()) }),
                 Frame::FabricStatus { fabric, status, publisher, sent_unix_ms, .. } if publisher != me => {
                     Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.clone()), sent_unix_ms })
                 }
@@ -1028,6 +1043,49 @@ impl DigestBook {
         true
     }
 
+    /// Accept an open restart (`op` is `restart-node:<path>`, naming the birth being restarted):
+    /// that birth stays held through its `Leaving` and silence and is not routable, until a later
+    /// birth of its NodeId is heard. `false` when already held, when the node departed, or when a
+    /// later birth is already held (the restart is over).
+    pub fn restarting(&self, op: LifecycleOp) -> bool {
+        if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        if self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(held, _, _)| held.node.incarnation != op.incarnation && held.node.supersedes.as_ref() == Some(&op.incarnation)) {
+            return false;
+        }
+        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        if new {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-node-restarting",
+                node = %op.name,
+                node_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+            )
+            .in_scope(|| tracing::info!("the node is being restarted: held through its Leaving, not routable"));
+        }
+        new
+    }
+
+    /// The open restart of `node_id`'s birth `incarnation`, if any.
+    pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
+        self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
+    }
+
+    /// A later birth of `d`'s NodeId is held: every open restart of an earlier birth is over.
+    fn close_restarts(&self, d: &MeshDigest) {
+        let mut in_flight = self.in_flight.lock().unwrap();
+        let before = in_flight.len();
+        in_flight.retain(|_, op| !(op.is_restart() && op.node_id == d.node.node_id && op.incarnation != d.node.incarnation));
+        if in_flight.len() != before {
+            tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
+                .in_scope(|| tracing::info!("the restarted node's new birth is heard: the restart is over"));
+        }
+    }
+
     /// Accept an open lifecycle overlay: the node stays held and stops being
     /// routable. `false` when the overlay was already held or the node has
     /// already departed.
@@ -1113,9 +1171,10 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d, now, false));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), now, false));
         drop(inner);
         if birth_changed {
+            self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
         }
         true
@@ -1150,9 +1209,10 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d, now, true));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), now, true));
         drop(inner);
         if birth_changed {
+            self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
         }
         true
@@ -1302,6 +1362,29 @@ mod tests {
         assert!(book.in_flight().is_empty(), "the overlay cleared with the departure");
         assert_eq!(book.departed(), vec![o.clone()]);
         assert!(!book.depart(o), "a second copy of the departure is a no-op");
+    }
+
+    /// CONTRACT (fabric-node-lifecycle.md Restarting, fabric-mesh-ops.md §3 pre-event): a
+    /// `NodeRestarting` for the exact birth holds it as restarting and not routable through its
+    /// own Leaving; the later birth of the same NodeId (superseding it) is taken and closes the
+    /// restart; a repeat of the event after that is refused, and nothing departs.
+    #[test]
+    fn a_restart_holds_the_birth_until_its_later_birth_is_heard() {
+        let book = DigestBook::default();
+        let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &old, None, MemberStatus::ReadyForTraffic, 100)));
+        let r = op(&id, &old, "restart-node:mesh1.rpc.1");
+        assert!(book.restarting(r.clone()));
+        assert!(!book.restarting(r.clone()), "the same event twice is applied once");
+        assert!(book.restart_of(id.as_str(), &old).is_some());
+        assert!(!book.routable(id.as_str()), "a restarting birth is not routable");
+        assert!(book.record(digest(&id, &old, None, MemberStatus::Leaving, 200)), "its own Leaving is taken");
+        assert!(book.restart_of(id.as_str(), &old).is_some(), "the Leaving does not end the restart");
+        assert!(book.record(digest(&id, &new, Some(old.clone()), MemberStatus::Pending, 300)), "the later birth is taken");
+        assert!(book.restart_of(id.as_str(), &old).is_none(), "the later birth closes the restart");
+        assert!(book.routable(id.as_str()));
+        assert!(!book.restarting(r), "a late copy of the event after the later birth is refused");
+        assert!(book.departed().is_empty(), "a restart departs nothing");
     }
 
     #[test]
