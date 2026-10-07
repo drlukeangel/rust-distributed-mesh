@@ -48,9 +48,13 @@ pub struct RunningNode {
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
+    /// The state this birth owes its authority (i143.e4.s11): re-declared every publish cadence
+    /// until the authority answers by name (`declare_loop`).
+    pub owed_state: Arc<Mutex<Option<rafka_node_rpc_contract::status::NodeState>>>,
     gossip: iroh_gossip::net::Gossip,
     publisher: tokio::task::JoinHandle<()>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
+    declare_loop: tokio::task::JoinHandle<()>,
 }
 
 /// The digest key carrying a node's in-flight handler count.
@@ -68,6 +72,16 @@ pub fn drain_deadline_from_env() -> Duration {
 }
 
 impl RunningNode {
+    /// Declare this birth's `state` to its authority (i143.e4.s11): the node-admins of its mesh
+    /// it hears, tried in path order until one answers by name (the mesh-primary applies; another
+    /// admin answers `RejectedNotAuthority: receiver-not-primary` and the next is tried). A
+    /// definitive answer ends the attempt; `NotSent`/`Indeterminate` leaves it to the next call
+    /// site. Nothing here gates gossip: the digest already says the state.
+    pub async fn declare_own(&self, state: rafka_node_rpc_contract::status::NodeState) -> Option<String> {
+        *self.owed_state.lock().unwrap() = Some(state);
+        declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state).await
+    }
+
     /// Two-phase shutdown, phase one (node-rpc §35): new calls get a typed
     /// `Draining`, the digest says `Draining` with the in-flight count, and
     /// existing handlers may finish until `deadline`. Returns how many were
@@ -75,6 +89,7 @@ impl RunningNode {
     pub async fn drain(&self, deadline: Duration) -> u64 {
         self.server.drain();
         *self.status.lock().unwrap() = MemberStatus::Draining;
+        let _ = self.declare_own(rafka_node_rpc_contract::status::NodeState::Draining).await;
         let stats = self.server.stats();
         let until = tokio::time::Instant::now() + deadline;
         loop {
@@ -100,6 +115,7 @@ impl RunningNode {
     /// node on the fabric long enough for its own `Leaving` to go out.
     pub async fn stop(self, linger: Duration) {
         *self.status.lock().unwrap() = MemberStatus::Leaving;
+        let _ = self.declare_own(rafka_node_rpc_contract::status::NodeState::Leaving).await;
         let (digest, membership) = (self.digest.clone(), self.membership.clone());
         rafka_mesh_transport::membership::announce_leaving(linger, rafka_mesh_transport::membership::LEAVE_EVERY, || {
             let mut d = digest.clone();
@@ -113,6 +129,7 @@ impl RunningNode {
         .await;
         self.publisher.abort();
         self.node_rpc_feed.abort();
+        self.declare_loop.abort();
         let _ = self.gossip.shutdown().await;
         for r in self.routers {
             let _ = r.shutdown().await;
@@ -247,7 +264,61 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
         d.extra.insert(IN_FLIGHT.into(), rafka_node_rpc::ServerStats::get(&stats.in_flight).to_string());
         d
     });
-    Ok(RunningNode { routers, membership, server, status, digest, node_rpc, gossip: g, publisher, node_rpc_feed })
+    // The owed declaration loop: whatever state this birth owes is re-declared every publish
+    // cadence until an authority answers by name. An authority that does not yet hold this
+    // birth answers `sender-not-subject`; the next cadence carries the digest and the retry lands.
+    let owed_state: Arc<Mutex<Option<rafka_node_rpc_contract::status::NodeState>>> = Arc::new(Mutex::new(Some(rafka_node_rpc_contract::status::NodeState::ReadyForTraffic)));
+    let declare_loop = {
+        let (node, membership, client, owed) = (digest.node.clone(), membership.clone(), node_rpc.client.clone(), owed_state.clone());
+        tokio::spawn(async move {
+            loop {
+                if owed.lock().unwrap().is_some() {
+                    declare_once(&node, &membership, &client, &owed).await;
+                }
+                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+            }
+        })
+    };
+    Ok(RunningNode { routers, membership, server, status, digest, node_rpc, owed_state, gossip: g, publisher, node_rpc_feed, declare_loop })
+}
+
+/// One attempt at the owed declaration: the node-admins of this birth's mesh it hears, in path
+/// order, until one answers by name. A definitive answer clears the debt; `RejectedNotAuthority`
+/// (the admin is not the primary, or does not hold this birth yet) and `NotSent`/`Indeterminate`
+/// leave it owed for the next cadence. Nothing here gates gossip: the digest already says the state.
+async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_node_rpc::NodeRpcClient, owed: &Mutex<Option<rafka_node_rpc_contract::status::NodeState>>) -> Option<String> {
+    use rafka_node_rpc_contract::outcome::RpcOutcome;
+    use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+    let Some(state) = *owed.lock().unwrap() else { return None };
+    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.to_string(), incarnation: me.incarnation.0.clone(), state };
+    let mut admins: Vec<MeshDigest> = membership
+        .book
+        .current(rafka_mesh_transport::membership::SILENT_AFTER)
+        .into_iter()
+        .filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.node.name.mesh == me.name.mesh)
+        .collect();
+    admins.sort_by_key(|d| d.node.name.to_string());
+    let mut last = None;
+    for a in &admins {
+        let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(a.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+        let (outcome, definitive) = match &out {
+            RpcOutcome::Reply(r) => match r.value() {
+                StatusReply::RejectedNotAuthority { .. } => (format!("{:?}", r.value()), false),
+                v => (v.name().to_string(), true),
+            },
+            other => (format!("{}: {other:?}", other.name()), false),
+        };
+        tracing::info_span!("rafka.node_rpc.status.update.via-declare-own", node = %me.name, state = ?state, to = %a.node.name, outcome = %outcome, definitive)
+            .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
+        last = Some(outcome.clone());
+        if definitive {
+            if *owed.lock().unwrap() == Some(state) {
+                *owed.lock().unwrap() = None;
+            }
+            return Some(outcome);
+        }
+    }
+    last
 }
 
 

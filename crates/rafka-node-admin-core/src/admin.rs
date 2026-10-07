@@ -1563,6 +1563,23 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         d.emitted_unix_ms = now_ms();
         d
     });
+    // The declarer (i143.e4.s11): what this admin owes its authorities over `Status`, re-sent
+    // each round until answered by name; nothing it does gates gossip or readiness.
+    {
+        let declarer = crate::status_declare::Declarer::new();
+        let (digest, topology, records, me, me_id, incarnation, client) =
+            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone());
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let view = topology.read().await.clone();
+                let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
+                let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
+                crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, &view, &mesh_ids);
+                declarer.round(&me, &me_id, &view, &client).await;
+                tokio::time::sleep(rafka_mesh_transport::membership::PUBLISH_EVERY).await;
+            }
+        }));
+    }
 
     // The offline tickle (fabric-node-lifecycle.md §7.3, i77 PRD row 18): every admin keeps the
     // silence bookkeeping; the one holding its mesh's primary seat tickles each node the topology
