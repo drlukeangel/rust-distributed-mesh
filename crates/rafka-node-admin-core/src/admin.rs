@@ -1197,6 +1197,19 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         ),
     };
 
+    // A container fabric's node-admin is a host process its containers reach only through the
+    // fabric network's gateway (a host address, reachable from host processes too): the provider is
+    // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. A launched admin
+    // learns the policy from its launcher's entry answer, after it binds.
+    let early = match (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
+        (None, Ok(p)) if p.provider == ProviderKind::Container => Some(crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?),
+        _ => None,
+    };
+    let mesh_addr = match (&early, &cfg.launch, &restart) {
+        (Some(p), None, None) => SocketAddr::new(p.admin_ip, 0),
+        _ => mesh_addr,
+    };
+
     // The mesh endpoint: gossip for membership and Build facts.
     // A dead peer's connection closes within the membership silence window:
     // the gossip actor waits on a dead peer's full send queue until then.
@@ -1420,8 +1433,13 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }));
     }
 
-    // The deployment hand (used while this admin is fabric primary).
-    let prepared = crate::deployment::prepare(policy, &cfg.fabric).await.map_err(|e| e.to_string())?;
+    // The deployment hand (used while this admin is fabric primary). A provider's host-wide
+    // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
+    // name is not unique on a host.
+    let prepared = match early {
+        Some(p) => p,
+        None => crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?,
+    };
     let mut admin_env = BTreeMap::new();
     admin_env.insert("RAFKA_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
     let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());

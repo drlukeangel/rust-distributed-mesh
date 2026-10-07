@@ -348,6 +348,11 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         for m in RUNTIME_MOUNTS.iter().filter(|m| Path::new(m).exists()) {
             args.extend(["-v".into(), format!("{m}:{m}:ro")]);
         }
+        // The span evidence directory the launch names, at the same path: a container's spans
+        // land beside every process's.
+        if let Some(dir) = spec.env.get("RAFKA_EVIDENCE_DIR").filter(|d| Path::new(d).is_dir()) {
+            args.extend(["-v".into(), format!("{dir}:{dir}")]);
+        }
         for (k, v) in &spec.env {
             args.extend(["-e".into(), format!("{k}={v}")]);
         }

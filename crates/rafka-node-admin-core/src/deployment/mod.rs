@@ -26,6 +26,8 @@ pub struct Prepared {
 
 /// Prepare the provider the fabric's `MESH_SPAWN_TYPE` policy names. A host
 /// that cannot run it is refused by name (`DeployError::Unsupported`).
+/// `fabric` keys the provider's host-wide resources (a container fabric's Docker network and
+/// labels): the Fabric's id, never its name, which another Fabric on the host may share.
 pub async fn prepare(policy: provider::FabricPolicy, fabric: &str) -> Result<Prepared, provider::DeployError> {
     let ports = endpoint::port_range_from_env();
     match policy.provider {
