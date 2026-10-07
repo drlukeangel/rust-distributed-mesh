@@ -139,7 +139,7 @@ const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(m, *a, *r))).collect() };
+    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
     let book = DigestBook::default();
     for m in topology.meshes.values() {
@@ -301,7 +301,7 @@ impl Estate {
         for n in v.nodes.iter().filter(|n| n.status.is_live()) {
             *per_path.entry(n.name.to_string()).or_default() += 1;
         }
-        let want: BTreeSet<String> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(m, *a, *r).nodes.into_iter().map(|p| p.to_string())).collect();
+        let want: BTreeSet<String> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])).nodes.into_iter().map(|p| p.to_string())).collect();
         assert_eq!(per_path.keys().cloned().collect::<BTreeSet<_>>(), want, "every accepted path is live");
         assert!(per_path.values().all(|c| *c == 1), "one live birth per path: {per_path:?}");
         // And the world: one running runtime per path.

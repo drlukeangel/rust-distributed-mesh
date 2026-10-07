@@ -626,6 +626,9 @@ impl AdminRunner {
         let mut t = self.template.clone();
         match kind {
             NodeKind::RpcNode => t.executable = self.bin_dir.join(format!("rafka-rpc-node{}", std::env::consts::EXE_SUFFIX)),
+            NodeKind::Broker => t.executable = self.bin_dir.join(format!("rafka-broker{}", std::env::consts::EXE_SUFFIX)),
+            NodeKind::Gateway => t.executable = self.bin_dir.join(format!("rafka-gateway{}", std::env::consts::EXE_SUFFIX)),
+            NodeKind::Compute => t.executable = self.bin_dir.join(format!("rafka-compute{}", std::env::consts::EXE_SUFFIX)),
             NodeKind::NodeAdmin => {
                 t.executable = self.bin_dir.join(format!("rafka-node-admin{}", std::env::consts::EXE_SUFFIX));
                 t.env.extend(self.admin_env.clone());
@@ -758,7 +761,7 @@ impl AdminRunner {
                 let anchor = EndpointAddr::new(peer).with_ip_addr(addr);
                 rafka_mesh_transport::entry::pull_once(ep, anchor, &self.me.to_string(), WITHIN).await.is_ok()
             }
-            NodeKind::RpcNode => {
+            NodeKind::RpcNode | NodeKind::Broker | NodeKind::Gateway | NodeKind::Compute => {
                 let Some(node_rpc) = &self.node_rpc else { return false };
                 let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
                 let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"fence".to_vec() };

@@ -178,7 +178,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let mut cp = ControlPlane::new(a.builds.clone(), seeded, "mesh1.admin.1".parse().unwrap(), observed());
     cp.topology = topology.clone();
     let build_id = cp
-        .submit("POST /api/build", TopologyChange::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 3 } })
+        .submit("POST /api/build", TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) })
         .await
         .unwrap();
 

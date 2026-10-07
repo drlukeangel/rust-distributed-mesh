@@ -101,7 +101,31 @@ pub struct FabricView {
 pub struct MeshDesired {
     pub name: String,
     pub node_admin: u32,
+    #[serde(default)]
     pub rpc_node: u32,
+    #[serde(default)]
+    pub broker: u32,
+    #[serde(default)]
+    pub gateway: u32,
+    #[serde(default)]
+    pub compute: u32,
+}
+
+impl MeshDesired {
+    /// A mesh named `name` with `counts` (`rafka_mesh_entity::NodeKind`, count); every other kind at 0.
+    pub fn of(name: impl Into<String>, counts: impl IntoIterator<Item = (NodeKind, u32)>) -> Self {
+        let mut d = MeshDesired { name: name.into(), node_admin: 0, rpc_node: 0, broker: 0, gateway: 0, compute: 0 };
+        for (k, n) in counts {
+            match k {
+                NodeKind::NodeAdmin => d.node_admin = n,
+                NodeKind::RpcNode => d.rpc_node = n,
+                NodeKind::Broker => d.broker = n,
+                NodeKind::Gateway => d.gateway = n,
+                NodeKind::Compute => d.compute = n,
+            }
+        }
+        d
+    }
 }
 
 /// The whole fabric's desired meshes (`POST /api/build`).

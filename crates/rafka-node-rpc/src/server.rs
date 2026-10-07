@@ -221,6 +221,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Compose a product's transitional adapter (`CatalogEntry::transitional`) into this
+    /// process's one sealed catalog (node-rpc-rdm-ownership.md §12). The server runs no handler
+    /// for it: the product's own dispatcher serves the tag on its legacy framing and consults
+    /// [`NodeRpcServer::catalog`] to refuse what the catalog does not hold. On this server's
+    /// own ALPN the tag is unserved (`421`), as any catalogued tag without a handler is.
+    pub fn adapter(mut self, entry: CatalogEntry) -> Self {
+        self.catalog = self.catalog.serve(entry);
+        self
+    }
+
     pub fn limits(mut self, tag: u8, limits: Limits) -> Self {
         self.admission.set(tag, limits);
         self
@@ -306,6 +316,11 @@ impl NodeRpcServer {
 
     pub fn is_current(&self, fence: &Fence) -> bool {
         self.check_fence(fence).is_ok()
+    }
+
+    /// The one sealed effective catalog of this process: what every dispatcher in it serves.
+    pub fn catalog(&self) -> &SealedCatalog {
+        &self.inner.catalog
     }
 
     pub fn stats(&self) -> Arc<ServerStats> {

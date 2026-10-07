@@ -28,15 +28,19 @@ pub struct MeshTopology {
 }
 
 impl MeshTopology {
-    pub fn of(name: &str, admins: u32, rpc: u32) -> Self {
+    pub fn of(desired: &MeshDesired) -> Self {
         let mut nodes = BTreeSet::new();
-        for ord in 1..=admins {
-            nodes.insert(PathName::new(name, NodeKind::NodeAdmin, ord));
+        for (kind, want) in desired.counts() {
+            for ord in 1..=want {
+                nodes.insert(PathName::new(&desired.name, kind, ord));
+            }
         }
-        for ord in 1..=rpc {
-            nodes.insert(PathName::new(name, NodeKind::RpcNode, ord));
-        }
-        Self { name: name.into(), nodes }
+        Self { name: desired.name.clone(), nodes }
+    }
+
+    /// This mesh's shape as a desired mesh: every kind's count.
+    pub fn desired(&self) -> MeshDesired {
+        MeshDesired::of(self.name.clone(), NodeKind::ALL.map(|k| (k, self.count(k))))
     }
 
     pub fn cohort(&self, kind: NodeKind) -> impl Iterator<Item = &PathName> {
@@ -59,7 +63,7 @@ impl FabricTopology {
     /// Day 0: the bootstrap admin's own mesh, one node-admin.
     pub fn root(fabric: &str, mesh: &str) -> Self {
         let mut meshes = BTreeMap::new();
-        meshes.insert(mesh.to_string(), MeshTopology::of(mesh, 1, 0));
+        meshes.insert(mesh.to_string(), MeshTopology::of(&MeshDesired::of(mesh, [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 0)])));
         Self { fabric: fabric.into(), meshes }
     }
 
@@ -108,7 +112,7 @@ impl FabricTopology {
     pub fn desired(&self) -> FabricDesired {
         FabricDesired {
             fabric: self.fabric.clone(),
-            meshes: self.meshes.values().map(|m| MeshDesired { name: m.name.clone(), node_admin: m.count(NodeKind::NodeAdmin), rpc_node: m.count(NodeKind::RpcNode) }).collect(),
+            meshes: self.meshes.values().map(MeshTopology::desired).collect(),
         }
     }
 }
@@ -158,7 +162,7 @@ fn primary_ordinal(observed: &Topology, mesh: &str, kind: NodeKind) -> Option<u3
 /// Bring `mesh`'s cohorts to `counts`: grow fills the lowest free ordinals, shrink drops the
 /// highest ordinals that are not the observed primary.
 fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
-    for (kind, want) in [(NodeKind::NodeAdmin, counts.node_admin), (NodeKind::RpcNode, counts.rpc_node)] {
+    for (kind, want) in counts.counts() {
         let mut have: Vec<u32> = mesh.cohort(kind).map(|p| p.ordinal).collect();
         have.sort_unstable();
         let keep_ord = primary_ordinal(observed, &mesh.name, kind);
@@ -208,12 +212,9 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
         }
         TopologyChange::AddNode { mesh, node_kind } => {
             let m = next.meshes.get_mut(mesh).ok_or_else(|| BuildReject::UnknownMesh { mesh: mesh.clone() })?;
-            let (mut admins, mut rpc) = (m.count(NodeKind::NodeAdmin), m.count(NodeKind::RpcNode));
-            match node_kind {
-                NodeKind::NodeAdmin => admins += 1,
-                NodeKind::RpcNode => rpc += 1,
-            }
-            resize(m, &MeshDesired { name: mesh.clone(), node_admin: admins, rpc_node: rpc }, observed);
+            let mut grown = m.desired();
+            *grown.count_mut(*node_kind) += 1;
+            resize(m, &grown, observed);
         }
         TopologyChange::RemoveNode { node } => {
             let m = next.meshes.get_mut(&node.mesh).ok_or_else(|| BuildReject::UnknownMesh { mesh: node.mesh.clone() })?;
@@ -237,7 +238,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             if next.meshes.contains_key(&desired.name) {
                 return Err(BuildReject::MeshAlreadyExists { mesh: desired.name.clone() });
             }
-            next.meshes.insert(desired.name.clone(), MeshTopology::of(&desired.name, desired.node_admin, desired.rpc_node));
+            next.meshes.insert(desired.name.clone(), MeshTopology::of(desired));
         }
         TopologyChange::RemoveMesh { mesh } => {
             if !next.meshes.contains_key(mesh) {
@@ -435,7 +436,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(m, *a, *r))).collect() }
+        FabricTopology { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<String> {
@@ -443,7 +444,7 @@ mod tests {
     }
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
-        MeshDesired { name: name.into(), node_admin: a, rpc_node: r }
+        MeshDesired::of(name.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, a), (rafka_mesh_entity::NodeKind::RpcNode, r)])
     }
 
     #[test]

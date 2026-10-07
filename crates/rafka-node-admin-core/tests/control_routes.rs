@@ -214,8 +214,8 @@ async fn refusals_are_named_and_publish_nothing() {
     assert!(h.span("rafka.node_admin.build.reject.via-invalid-mesh-name"));
     let (s, v) = call(&h.app, "POST", "/api/nodes/not-a-path/restart", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid-request")), "{v}");
-    let (s, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "broker"}))).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "a legacy role is not a node kind: {v}");
+    let (s, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "registry"}))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "a role no node kind names is refused: {v}");
     let (s, _) = call(&h.app, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!(s, StatusCode::ACCEPTED, "two admins: removing one is legal");
     assert_eq!(h.facts().await.len(), seed + 1, "refusals published nothing");

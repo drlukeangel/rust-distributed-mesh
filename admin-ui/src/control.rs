@@ -124,7 +124,7 @@ async fn bootstrap(State(c): State<Control>) -> Response {
         Ok(f) => f.name,
         Err(e) => return answer(&c, "bootstrap", Err(e), None, None),
     };
-    let desired = FabricDesired { fabric, meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 3 }] };
+    let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])] };
     let r = admin.build(&desired).await;
     answer(&c, "bootstrap", r, None, Some("mesh1"))
 }

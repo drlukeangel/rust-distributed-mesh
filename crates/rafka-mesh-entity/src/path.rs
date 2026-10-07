@@ -1,4 +1,6 @@
-//! `path.name`: the stable topology slot `<mesh>.<admin|rpc>.<ordinal>`.
+//! `path.name`: the stable topology slot `<mesh>.<kind>.<ordinal>`. The kinds are the Mesh's own
+//! (`admin`, the proof `rpc`) and the product roles RDM has always named (`broker`, `gateway`,
+//! `compute`); RDM's proof shapes use only the first two (`docs/i143/design.md` §1).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -9,6 +11,25 @@ use std::str::FromStr;
 pub enum NodeKind {
     NodeAdmin,
     RpcNode,
+    Broker,
+    Gateway,
+    Compute,
+}
+
+impl NodeKind {
+    /// Every kind, `node_admin` first.
+    pub const ALL: [NodeKind; 5] = [NodeKind::NodeAdmin, NodeKind::RpcNode, NodeKind::Broker, NodeKind::Gateway, NodeKind::Compute];
+
+    /// The kind's name as a mesh field (`node_admin`, `rpc_node`, `broker`, ...).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::NodeAdmin => "node_admin",
+            Self::RpcNode => "rpc_node",
+            Self::Broker => "broker",
+            Self::Gateway => "gateway",
+            Self::Compute => "compute",
+        }
+    }
 }
 
 impl NodeKind {
@@ -16,6 +37,9 @@ impl NodeKind {
         match self {
             Self::NodeAdmin => "admin",
             Self::RpcNode => "rpc",
+            Self::Broker => "broker",
+            Self::Gateway => "gateway",
+            Self::Compute => "compute",
         }
     }
 
@@ -23,6 +47,9 @@ impl NodeKind {
         match s {
             "admin" => Some(Self::NodeAdmin),
             "rpc" => Some(Self::RpcNode),
+            "broker" => Some(Self::Broker),
+            "gateway" => Some(Self::Gateway),
+            "compute" => Some(Self::Compute),
             _ => None,
         }
     }
@@ -46,9 +73,9 @@ pub enum PathNameError {
 impl fmt::Display for PathNameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Shape(s) => write!(f, "`{s}` is not <mesh>.<admin|rpc>.<ordinal>"),
+            Self::Shape(s) => write!(f, "`{s}` is not <mesh>.<kind>.<ordinal>"),
             Self::MeshName(s) => write!(f, "mesh name `{s}` must match [a-z0-9][a-z0-9-]{{0,63}}"),
-            Self::Kind(s) => write!(f, "node kind `{s}` is not admin or rpc"),
+            Self::Kind(s) => write!(f, "node kind `{s}` is not admin, rpc, broker, gateway or compute"),
             Self::Ordinal(s) => write!(f, "ordinal `{s}` is not a number >= 1"),
         }
     }
@@ -114,7 +141,10 @@ mod tests {
         for s in ["mesh1.rpc.2", "mesh1.admin.1", "m-2.rpc.17"] {
             assert_eq!(s.parse::<PathName>().unwrap().to_string(), s);
         }
-        assert_eq!("mesh1.broker.1".parse::<PathName>(), Err(PathNameError::Kind("broker".into())));
+        for s in ["mesh1.broker.1", "mesh1.gateway.3", "mesh2.compute.2"] {
+            assert_eq!(s.parse::<PathName>().unwrap().to_string(), s);
+        }
+        assert_eq!("mesh1.registry.1".parse::<PathName>(), Err(PathNameError::Kind("registry".into())));
         assert_eq!("mesh1.rpc.0".parse::<PathName>(), Err(PathNameError::Ordinal("0".into())));
         assert_eq!("mesh1.rpc".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc".into())));
     }

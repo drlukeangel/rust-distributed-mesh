@@ -27,7 +27,7 @@ impl LifecycleHook for Log {
 fn desired(meshes: &[&str]) -> FabricDesired {
     FabricDesired {
         fabric: "fabric1".into(),
-        meshes: meshes.iter().map(|m| MeshDesired { name: (*m).into(), node_admin: 2, rpc_node: 3 }).collect(),
+        meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])).collect(),
     }
 }
 

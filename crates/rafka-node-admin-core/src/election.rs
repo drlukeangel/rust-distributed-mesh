@@ -232,10 +232,7 @@ impl ElectionLog {
 }
 
 fn kind_name(k: NodeKind) -> &'static str {
-    match k {
-        NodeKind::NodeAdmin => "node_admin",
-        NodeKind::RpcNode => "rpc_node",
-    }
+    k.name()
 }
 
 #[cfg(test)]

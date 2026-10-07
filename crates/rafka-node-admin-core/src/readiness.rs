@@ -15,7 +15,7 @@
 
 use crate::build::{FabricDesired, MeshDesired};
 use crate::lifecycle::ShapeFacts;
-use crate::model::{NodeKind, NodeStatus};
+use crate::model::NodeStatus;
 use crate::topology::Topology;
 
 impl ShapeFacts {
@@ -32,7 +32,7 @@ pub fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<String>
         why.push(format!("mesh {} does not exist", desired.name));
         return why;
     }
-    for (kind, want) in [(NodeKind::NodeAdmin, desired.node_admin), (NodeKind::RpcNode, desired.rpc_node)] {
+    for (kind, want) in desired.counts() {
         let ready = observed.cohort(&desired.name, kind).filter(|n| n.status == NodeStatus::ReadyForTraffic).count() as u32;
         if ready < want {
             why.push(format!("mesh {}: {ready}/{want} {} ready-for-traffic", desired.name, kind.segment()));
@@ -59,7 +59,7 @@ mod tests {
     fn desired(meshes: &[&str]) -> FabricDesired {
         FabricDesired {
             fabric: "fabric1".into(),
-            meshes: meshes.iter().map(|m| MeshDesired { name: (*m).into(), node_admin: 2, rpc_node: 3 }).collect(),
+            meshes: meshes.iter().map(|m| MeshDesired::of((*m).to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])).collect(),
         }
     }
 

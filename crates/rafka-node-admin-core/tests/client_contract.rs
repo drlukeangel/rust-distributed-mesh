@@ -104,9 +104,9 @@ async fn every_mutation_returns_a_build_and_the_build_reads_back() {
     settle(&cp, &restart).await;
     let removed = c.remove(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
     settle(&cp, &removed).await;
-    let built = c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 4 }] }).await.unwrap();
+    let built = c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 4)])] }).await.unwrap();
     settle(&cp, &built).await;
-    let mesh2 = c.create_mesh(&MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1 }).await.unwrap();
+    let mesh2 = c.create_mesh(&MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)])).await.unwrap();
     c.remove_mesh("mesh2").await.unwrap_err(); // the Build above is still in flight: refused below
     settle(&cp, &mesh2).await;
     c.remove_mesh("mesh9").await.unwrap_err(); // no such mesh

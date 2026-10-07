@@ -44,7 +44,9 @@ pub const NODE_ADMIN: KindSpec = KindSpec { listeners: &["control"] };
 /// What a node kind binds and serves.
 pub fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
     match kind {
-        crate::model::NodeKind::RpcNode => &RPC_NODE,
+        // A product kind binds the one transport here; its own listeners are the product's to
+        // assign through its node-admin binding.
+        crate::model::NodeKind::RpcNode | crate::model::NodeKind::Broker | crate::model::NodeKind::Gateway | crate::model::NodeKind::Compute => &RPC_NODE,
         crate::model::NodeKind::NodeAdmin => &NODE_ADMIN,
     }
 }

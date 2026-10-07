@@ -31,10 +31,7 @@ pub struct Shortfall {
 
 impl std::fmt::Display for Shortfall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = match self.kind {
-            NodeKind::NodeAdmin => "node_admin",
-            NodeKind::RpcNode => "rpc_node",
-        };
+        let kind = self.kind.name();
         write!(f, "{}.{kind}: {} present of {} accepted (exited: {})", self.mesh, self.present, self.desired, self.exited.join(" "))
     }
 }
@@ -52,7 +49,7 @@ pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
 pub fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
     let mut out = Vec::new();
     for m in topology.meshes.values() {
-        for kind in [NodeKind::NodeAdmin, NodeKind::RpcNode] {
+        for kind in NodeKind::ALL {
             let want = m.count(kind);
             let (mut present, mut gone) = (0u32, Vec::new());
             for n in t.cohort(&m.name, kind) {
@@ -74,6 +71,7 @@ pub fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<Incar
 mod tests {
     use super::*;
     use crate::accepted::MeshTopology;
+    use crate::build::MeshDesired;
     use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, ProviderKind, ScopeStatus};
 
     fn node(name: &str, status: NodeStatus) -> Node {
@@ -92,7 +90,7 @@ mod tests {
     }
 
     fn desired(a: u32, r: u32) -> FabricTopology {
-        FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of("mesh1", a, r))].into() }
+        FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, a), (rafka_mesh_entity::NodeKind::RpcNode, r)])))].into() }
     }
 
     #[test]

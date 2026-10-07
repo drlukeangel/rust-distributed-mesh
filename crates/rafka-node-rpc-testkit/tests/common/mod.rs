@@ -239,7 +239,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of("mesh1", 1, 1))].into() }
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.

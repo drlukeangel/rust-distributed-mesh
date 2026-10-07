@@ -42,7 +42,54 @@ impl fmt::Display for BuildId {
 pub struct MeshDesired {
     pub name: String,
     pub node_admin: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub rpc_node: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub broker: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub gateway: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub compute: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+impl MeshDesired {
+    /// The desired count of every kind, `node_admin` first.
+    pub fn counts(&self) -> [(NodeKind, u32); 5] {
+        [
+            (NodeKind::NodeAdmin, self.node_admin),
+            (NodeKind::RpcNode, self.rpc_node),
+            (NodeKind::Broker, self.broker),
+            (NodeKind::Gateway, self.gateway),
+            (NodeKind::Compute, self.compute),
+        ]
+    }
+
+    pub fn count(&self, kind: NodeKind) -> u32 {
+        self.counts().into_iter().find(|(k, _)| *k == kind).map(|(_, n)| n).unwrap_or(0)
+    }
+
+    /// A mesh named `name` with `counts`; every other kind at 0.
+    pub fn of(name: impl Into<String>, counts: impl IntoIterator<Item = (NodeKind, u32)>) -> Self {
+        let mut d = MeshDesired { name: name.into(), node_admin: 0, rpc_node: 0, broker: 0, gateway: 0, compute: 0 };
+        for (k, n) in counts {
+            *d.count_mut(k) = n;
+        }
+        d
+    }
+
+    pub fn count_mut(&mut self, kind: NodeKind) -> &mut u32 {
+        match kind {
+            NodeKind::NodeAdmin => &mut self.node_admin,
+            NodeKind::RpcNode => &mut self.rpc_node,
+            NodeKind::Broker => &mut self.broker,
+            NodeKind::Gateway => &mut self.gateway,
+            NodeKind::Compute => &mut self.compute,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,7 +245,7 @@ fn live<'a>(t: &'a Topology, mesh: &str, kind: NodeKind) -> Vec<&'a crate::model
 /// path is free like any other. Shrink retires the highest-ordinal non-primary
 /// members first, so no seat moves while any other member can go.
 fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
-    for (kind, want) in [(NodeKind::NodeAdmin, desired.node_admin), (NodeKind::RpcNode, desired.rpc_node)] {
+    for (kind, want) in desired.counts() {
         let members = live(t, &desired.name, kind);
         let have = members.len() as u32;
         if have < want {
@@ -224,11 +271,10 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
 
 fn create_mesh(desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     ops.push(BuildOperation::CreateMesh { mesh: desired.name.clone() });
-    for ord in 1..=desired.node_admin {
-        ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, NodeKind::NodeAdmin, ord) });
-    }
-    for ord in 1..=desired.rpc_node {
-        ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, NodeKind::RpcNode, ord) });
+    for (kind, want) in desired.counts() {
+        for ord in 1..=want {
+            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
+        }
     }
 }
 
@@ -294,12 +340,8 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if !mesh_exists(mesh) {
                 return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
             }
-            let admins = live(observed, mesh, NodeKind::NodeAdmin).len() as u32;
-            let rpcs = live(observed, mesh, NodeKind::RpcNode).len() as u32;
-            let desired = match node_kind {
-                NodeKind::NodeAdmin => MeshDesired { name: mesh.clone(), node_admin: admins + 1, rpc_node: rpcs },
-                NodeKind::RpcNode => MeshDesired { name: mesh.clone(), node_admin: admins, rpc_node: rpcs + 1 },
-            };
+            let mut desired = MeshDesired::of(mesh.clone(), NodeKind::ALL.map(|k| (k, live(observed, mesh, k).len() as u32)));
+            *desired.count_mut(*node_kind) += 1;
             reconcile_counts(observed, &desired, &mut ops);
         }
         BuildIntent::RemoveNode { node, incarnation: Some(birth) } => {
@@ -480,7 +522,7 @@ mod tests {
         BuildIntent::ReconcileFabric {
             desired: FabricDesired {
                 fabric: "fabric1".into(),
-                meshes: meshes.iter().map(|(m, a, r)| MeshDesired { name: (*m).into(), node_admin: *a, rpc_node: *r }).collect(),
+                meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of((*m).to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])).collect(),
             },
         }
     }
@@ -508,7 +550,7 @@ mod tests {
 
     #[test]
     fn grow_fills_free_ordinals_and_reuses_a_dead_members_path() {
-        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 3, rpc_node: 5 } }, &mn()).unwrap();
+        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 3), (rafka_mesh_entity::NodeKind::RpcNode, 5)]) }, &mn()).unwrap();
         assert_eq!(ops.operations, vec![create("mesh1.admin.3"), create("mesh1.rpc.4"), create("mesh1.rpc.5")]);
         let mut t = mn();
         t.nodes[3].status = NodeStatus::PendingReconnect; // rpc.2 lost
@@ -521,9 +563,9 @@ mod tests {
         let mut t = mn();
         t.nodes[2].is_primary = false;
         t.nodes[4].is_primary = true; // rpc.3 holds the seat
-        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 1 } }, &t).unwrap();
+        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 1)]) }, &t).unwrap();
         assert_eq!(ops.operations, vec![retire("mesh1.rpc.2"), retire("mesh1.rpc.1")]);
-        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 3 } }, &mn()).unwrap();
+        let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) }, &mn()).unwrap();
         assert_eq!(ops.operations, vec![retire("mesh1.admin.2")], "the admin primary stays");
     }
 
@@ -543,7 +585,7 @@ mod tests {
     #[test]
     fn mesh_create_and_delete_plan_and_desired_removal_retires_a_mesh() {
         let t = mn();
-        let c = plan(&BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh2".into(), node_admin: 1, rpc_node: 1 } }, &t).unwrap();
+        let c = plan(&BuildIntent::CreateMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)]) }, &t).unwrap();
         assert_eq!(c.operations, vec![BuildOperation::CreateMesh { mesh: "mesh2".into() }, create("mesh2.admin.1"), create("mesh2.rpc.1")]);
         let mut two = mn();
         two.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
@@ -567,12 +609,12 @@ mod tests {
         let t = mn();
         let intents = [
             desired(&[("mesh1", 3, 7), ("mesh2", 2, 3)]),
-            BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 2, rpc_node: 4 } },
+            BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 4)]) },
             BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::NodeAdmin, target: None },
             BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None },
             BuildIntent::RestartNode { node: p("mesh1.rpc.1"), from_incarnation: None },
             BuildIntent::ReplaceNode { node: p("mesh1.rpc.1") },
-            BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh9".into(), node_admin: 1, rpc_node: 2 } },
+            BuildIntent::CreateMesh { desired: MeshDesired::of("mesh9".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) },
         ];
         for i in &intents {
             let a = plan(i, &t).unwrap();
@@ -604,7 +646,7 @@ mod tests {
             (BuildIntent::RemoveNode { node: p("mesh1.rpc.9"), incarnation: None }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
             (BuildIntent::RestartNode { node: p("mesh1.rpc.9"), from_incarnation: None }, BuildReject::UnknownNode { node: "mesh1.rpc.9".into() }),
             (
-                BuildIntent::CreateMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 1, rpc_node: 0 } },
+                BuildIntent::CreateMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 0)]) },
                 BuildReject::MeshAlreadyExists { mesh: "mesh1".into() },
             ),
             (BuildIntent::RemoveMesh { mesh: "mesh1".into() }, BuildReject::EmptyFabric),
