@@ -1,5 +1,5 @@
 {
-  "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RAFKA_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`.",
+  "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RAFKA_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`. A cell with `evidence: runner` is an existing stem run as a regression: the runner writes its `result.json` itself from the test summary, the estate manifest and the spans files, since an existing stem is never edited to produce one.",
   "jobs": {
     "i143-2938-process": {
       "issue": 2938,
@@ -58,21 +58,24 @@
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
           "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
-          "dir": "target/i143-acceptance/2941/fast/run-1"
+          "dir": "target/i143-acceptance/2941/fast/run-1",
+          "evidence": "runner"
         },
         {
           "name": "run-2",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
           "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
-          "dir": "target/i143-acceptance/2941/fast/run-2"
+          "dir": "target/i143-acceptance/2941/fast/run-2",
+          "evidence": "runner"
         },
         {
           "name": "run-3",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
           "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
-          "dir": "target/i143-acceptance/2941/fast/run-3"
+          "dir": "target/i143-acceptance/2941/fast/run-3",
+          "evidence": "runner"
         }
       ]
     }

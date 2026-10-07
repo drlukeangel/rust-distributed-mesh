@@ -76,6 +76,21 @@ for i in $(seq 0 $((NCELLS - 1))); do
     I143_ACCEPTANCE_DIR="$cell_dir" I143_ACCEPTANCE_CELL="$cell" bash -c "$command" > "$dir/gate.log" 2>&1
     rc=$?
     finish=$(now)
+    # An existing stem run as a regression (`evidence: runner`) writes no result of its own: the
+    # runner records the test summary, the estate manifest and every spans file for it.
+    evidence=$(jq -r --arg j "$JOB" --argjson i "$i" '.jobs[$j].cells[$i].evidence // "cell"' "$REG")
+    if [ "$evidence" = runner ] && [ ! -s "$dir/result.json" ]; then
+        summary_line=$(grep -E '^test result: ' "$dir/gate.log" | tail -1)
+        estate_manifest=$(find "$dir/estate" -name manifest.json 2>/dev/null | head -1)
+        spans_json="[]"
+        for f in $(find "$dir/estate" -name '*.spans.jsonl' 2>/dev/null | sort); do
+            spans_json=$(echo "$spans_json" | jq --arg p "$f" --argjson n "$(wc -l < "$f")" --arg h "$(sha256sum "$f" | cut -d' ' -f1)" '. + [{path:$p, spans:$n, sha256:$h}]')
+        done
+        jq -n --arg cell "$cell" --arg test "$(jq -r --arg j "$JOB" --argjson i "$i" '.jobs[$j].cells[$i].test // .jobs[$j].cells[$i].name' "$REG")" \
+              --arg summary "$summary_line" --argjson rc "$rc" --arg manifest "$estate_manifest" --argjson spans "$spans_json" \
+              --argjson estate "$( [ -n "$estate_manifest" ] && cat "$estate_manifest" || echo null )" \
+              '{cell:$cell, test:$test, evidence:"runner", exit:$rc, summary:$summary, estate_manifest:$manifest, estate:$estate, spans_files:$spans}' > "$dir/result.json"
+    fi
     reason=""
     if grep -qE '^running 0 tests' "$dir/gate.log"; then
         reason="the command matched no test (running 0 tests)"

@@ -135,6 +135,10 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
             assert!(command.ends_with(&format!(" {test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
             assert!(command.contains(" --test "), "{job}/{name}: the command names its test target");
             assert!(root().join(c["source"].as_str().unwrap()).parent().unwrap().is_dir(), "{job}/{name}: the source's crate exists");
+            if let Some(e) = c.get("evidence") {
+                assert_eq!(e, "runner", "{job}/{name}: evidence is the cell's own or the runner's");
+                assert!(c.get("test").is_some(), "{job}/{name}: a runner-evidenced cell names the existing test it runs");
+            }
             match layer {
                 "unit" | "export" => assert!(!command.contains("RAFKA_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
                 "process" | "container" | "fast" => {
