@@ -1274,10 +1274,27 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
     let alpns = vec![iroh_gossip::ALPN.to_vec(), rafka_node_rpc::ALPN.to_vec()];
+    // A restart rebinds the address it last held so its peers' contacts stay good, and reclaims
+    // it host-wide first: the claim the previous incarnation held died with that process, and
+    // another admin's allocator takes a dead owner's claim over, so a bind without the claim
+    // races a birth that was just handed the same port. A claim a live process holds is theirs,
+    // and a fresh reserved port serves (peers learn it by gossip).
+    let mesh_addr = match &restart {
+        Some(_) => {
+            let mut allocator = crate::deployment::endpoint::EndpointAllocator::from_env();
+            if allocator.reclaim_transport(&name, mesh_addr) {
+                mesh_addr
+            } else {
+                let fresh = allocator.take_transport(&name).map_err(|e| format!("mesh address {mesh_addr} is claimed by a live process and no reserved port is free: {e}"))?;
+                tracing::info!(addr = %mesh_addr, fresh = %fresh, "the mesh address this admin last held is claimed by a live process; binding a reserved fresh port");
+                fresh
+            }
+        }
+        None => mesh_addr,
+    };
     let endpoint = match rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), transport.clone()).await {
         Ok(ep) => ep,
-        // A restart rebinds the address it last held so its peers' contacts stay good; another
-        // process may hold it now, and then a fresh port serves (peers learn it by gossip).
+        // A process outside the allocator may hold the reclaimed address; then a fresh port serves.
         Err(e) if restart.is_some() => {
             // A reserved port from the host-wide allocator, never an OS-chosen one: the ephemeral
             // range overlaps the allocator's, and a port a birth was assigned but has not bound

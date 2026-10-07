@@ -306,6 +306,23 @@ impl EndpointAllocator {
         Ok(transport)
     }
 
+    /// Reclaim `addr` for `node` on a restart, before it is bound again. The claim the previous
+    /// incarnation held died with that process, and a dead owner's claim is any allocator's to
+    /// take over, so a bind without the claim races a birth that was just handed the same port.
+    /// `false` when a live process holds the claim now: the address is theirs, and the caller
+    /// takes a fresh one.
+    pub fn reclaim_transport(&mut self, node: &PathName, addr: SocketAddr) -> bool {
+        let claimed = match self.addressing {
+            Addressing::SharedHost(_) => reserve_on_host(addr),
+            Addressing::PerNode { .. } => true,
+        };
+        if claimed {
+            self.in_use.insert(addr);
+            self.held.insert(node.clone(), Assignment { transport: addr, listeners: Vec::new() });
+        }
+        claimed
+    }
+
     /// Release every address of `node` (retire pipeline `ReleaseEndpoints`).
     pub fn release(&mut self, node: &PathName) {
         if let Some(a) = self.held.remove(node) {
@@ -633,6 +650,35 @@ mod tests {
         b.release(&p("mesh1.rpc.1"));
         let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30200);
         assert!(c.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).is_ok(), "released reservations are gone");
+    }
+
+    /// A restarted admin reclaims the address it last held before binding it: the claim died
+    /// with its previous process and any allocator takes a dead owner's claim over, so a bind
+    /// without the claim races a birth handed the same port. A claim a live process holds is
+    /// theirs, and the restart takes a fresh reserved port instead.
+    #[test]
+    fn a_restart_reclaims_its_kept_transport_unless_a_live_process_holds_the_claim() {
+        let kept = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30400);
+        let path = reservation_path(kept);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "4194305").unwrap();
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30400, 30401);
+        assert!(a.reclaim_transport(&p("mesh1.admin.2"), kept), "a dead owner's claim is reclaimed");
+        assert_eq!(claim_owner(&path), Some(std::process::id()));
+        let mut b = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30400, 30401);
+        assert_eq!(b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30401, "a reclaimed address is never handed out");
+        let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30402);
+        std::fs::write(reservation_path(theirs), live.id().to_string()).unwrap();
+        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30402, 30403);
+        assert!(!c.reclaim_transport(&p("mesh1.admin.3"), theirs), "a live process's claim is theirs");
+        assert_eq!(c.take_transport(&p("mesh1.admin.3")).unwrap().port(), 30403);
+        live.kill().ok();
+        live.wait().ok();
+        std::fs::remove_file(reservation_path(theirs)).ok();
+        a.release(&p("mesh1.admin.2"));
+        b.release(&p("mesh1.rpc.1"));
+        c.release(&p("mesh1.admin.3"));
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.
