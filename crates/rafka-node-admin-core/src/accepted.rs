@@ -138,10 +138,6 @@ pub enum TopologyChange {
 pub enum AttemptAction {
     Restart { path: PathName, from_incarnation: IncarnationId },
     Replace { path: PathName, from_incarnation: IncarnationId },
-    /// Proven drift: exactly these paths' births were inspected by the provider as exited. The
-    /// attempt recreates them and nothing else: a birth the view holds silent is unheard, never
-    /// gone, and is not created over.
-    Recover { exited: Vec<PathName> },
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -263,24 +259,15 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
     let mut ops = Vec::new();
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
-    let recover: Option<&[PathName]> = match action {
-        Some(AttemptAction::Recover { exited }) => Some(exited),
-        _ => None,
-    };
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone() });
         }
         for p in &m.nodes {
-            // A path is created when the view holds no birth at it, or holds one proven exited by
-            // this attempt. A birth the view holds but does not hear (`Dead`: silent, a peer mesh
-            // whose forwarder just left) is unheard, never gone: silence authorizes no replacement.
-            let create = match observed.node(p) {
-                None => true,
-                Some(n) if n.status.is_live() => false,
-                Some(_) => recover.is_some_and(|ex| ex.contains(p)),
-            };
-            if create {
+            // A path whose birth the view holds live is satisfied; any other path is planned and the
+            // create pipeline's fence decides against the world (a running runtime at the path is
+            // held, never replaced: `AdminRunner::fence_predecessor`).
+            if !observed.node(p).is_some_and(|n| n.status.is_live()) {
                 ops.push(BuildOperation::CreateNode { node: p.clone() });
             }
         }
@@ -299,8 +286,6 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
                     ops.push(BuildOperation::CreateNode { node: path.clone() });
                 }
             }
-            // Its creates were planned above, bounded to the proven-exited paths.
-            AttemptAction::Recover { .. } => {}
         }
     }
     // A live node of a kept mesh that the topology no longer names is retired; a mesh the
@@ -526,24 +511,15 @@ mod tests {
         let fresh = plan(&cur, &observed(vec![], &[]), None);
         assert_eq!(fresh.operations[0], BuildOperation::CreateMesh { mesh: "mesh1".into() });
         assert_eq!(fresh.operations.len(), 6);
-        // An unheard birth (Dead: silent, not proven gone) is never created over by itself: silence
-        // authorizes no replacement. A live node outside the topology is retired.
+        // A dead (unheard) birth's path is planned again — the create pipeline's fence then holds a
+        // runtime that still runs; a live node outside the topology is retired.
         let mut o = mn();
         o.nodes[3].status = NodeStatus::Dead;
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
-        assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), permanent: true }]);
-        // A proven-drift attempt recreates exactly the paths it proved exited, and nothing the view
-        // merely does not hear: here rpc.2 and rpc.3 are both silent, only rpc.2 was proven exited.
-        o.nodes[4].status = NodeStatus::Dead;
-        let recover = AttemptAction::Recover { exited: vec!["mesh1.rpc.2".parse().unwrap()] };
         assert_eq!(
-            plan(&cur, &o, Some(&recover)).operations,
+            plan(&cur, &o, None).operations,
             vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), permanent: true }]
         );
-        // A path the view holds nothing at all for is created (never born, or departed and gone).
-        let mut none = mn();
-        none.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
-        assert_eq!(plan(&cur, &none, None).operations, vec![BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }]);
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
         o2.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });

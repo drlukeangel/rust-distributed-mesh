@@ -153,6 +153,73 @@ async fn kill_admin(estate: &mut Estate, name: &str) {
     }
 }
 
+/// The fabric has converged when every live admin's view holds the same births: the accepted
+/// shape, every one ready for traffic, the same (path, incarnation) set everywhere. Only then
+/// is the election the same function on the same inputs on every admin. Returns the live admin
+/// bases that agree, or `None` naming nothing yet.
+async fn converged_everywhere(estate: &Estate) -> Option<Vec<String>> {
+    let nodes = estate.nodes().await;
+    let shape_ok = |nodes: &[Value]| {
+        SHAPE.iter().all(|(m, a, r)| {
+            let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == *m && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
+            ready("node_admin") == *a && ready("rpc_node") == *r
+        })
+    };
+    let births = |nodes: &[Value]| -> BTreeSet<(String, String)> {
+        nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
+    };
+    if !shape_ok(&nodes) {
+        return None;
+    }
+    let want = births(&nodes);
+    let mut agreeing = Vec::new();
+    for base in admin_bases(&nodes) {
+        let v = try_get(&base, "/api/nodes").await?;
+        let theirs: Vec<Value> = v["nodes"].as_array().cloned().unwrap_or_default();
+        if !shape_ok(&theirs) || births(&theirs) != want {
+            return None;
+        }
+        agreeing.push(base);
+    }
+    Some(agreeing)
+}
+
+/// The birth a round's operation produced at `path`, from the Build's own receipts: the last
+/// completed `AllocateIdentity` for an operation on `path` in an attempt after `after_attempt`.
+/// `Ok(None)` while the Build has not completed it; `Err` names a failed Build.
+async fn born_at(estate: &Estate, build_id: &str, path: &str, after_attempt: u64) -> Result<Option<(String, String)>, String> {
+    let (_, b) = estate.get(&format!("/api/builds?id={build_id}")).await;
+    match b["state"].as_str() {
+        Some("failed") => return Err(format!("Build {build_id} failed: {}", b["last_failure"])),
+        Some("complete") => {}
+        _ => return Ok(None),
+    }
+    let suffix = format!(":{path}");
+    Ok(b["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && st["attempt"].as_u64().unwrap_or(0) > after_attempt && st["operation"].as_str().is_some_and(|o| o.ends_with(&suffix)))
+        .last()
+        .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"]))))
+}
+
+/// Every live admin's view holds exactly `birth` at `path`, ready for traffic, and the replaced
+/// incarnation `old` nowhere live.
+async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: &str) -> bool {
+    let nodes = estate.nodes().await;
+    for base in admin_bases(&nodes) {
+        let Some(v) = try_get(&base, "/api/nodes").await else { return false };
+        let theirs = v["nodes"].as_array().cloned().unwrap_or_default();
+        let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
+        let old_live = theirs.iter().any(|n| n["incarnation_id"] == old && n["status"] != "dead");
+        if !holds || old_live {
+            return false;
+        }
+    }
+    true
+}
+
 /// Every rpc node answers a real Node RPC on its current birth: reachable and current.
 async fn reachable(estate: &Estate, round: usize) -> Vec<String> {
     let mut bad = Vec::new();
@@ -181,6 +248,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let mut build_id = s(&a["build_id"]);
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     estate.settled_shape(&SHAPE, Duration::from_secs(60)).await;
+    rafka_test_scenario::estate::wait_for("every live admin holds the same births", Duration::from_secs(60), || converged_everywhere(&estate)).await;
 
     let ops = ["node-restart", "admin-restart", "runtime-kill", "replace", "mesh-primary-loss", "fabric-primary-loss"];
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -208,6 +276,9 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         let mut entry = json!({"round": round, "op": op, "at_s": (secs as i64) - (deadline - started).as_secs() as i64});
         // The exact birth a fault removes: convergence is that birth gone or superseded, then the shape.
         let mut removed: Option<(String, String)> = None;
+        // The Build whose receipts name the replacement birth, and the attempt it must come after.
+        let mut watch: Option<(String, u64)> = None;
+        let attempt_before = estate.get(&format!("/api/builds?id={build_id}")).await.1["attempt"].as_u64().unwrap_or(0);
         match op {
             "node-restart" => {
                 let n = rng.pick(&rpcs).clone();
@@ -215,7 +286,8 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 let (st, b) = estate.post(&format!("/api/nodes/{}/restart", s(&n["name"])), &json!({})).await;
                 entry["accepted"] = json!(st);
                 if st == 202 {
-                    estate.await_build(&s(&b["build_id"]), Duration::from_secs(90)).await;
+                    removed = Some((s(&n["name"]), s(&n["incarnation_id"])));
+                    watch = Some((s(&b["build_id"]), 0));
                 }
             }
             "admin-restart" => {
@@ -227,7 +299,8 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 let (st, b) = estate.post(&format!("/api/nodes/{}/restart", s(&n["name"])), &json!({})).await;
                 entry["accepted"] = json!(st);
                 if st == 202 {
-                    estate.await_build(&s(&b["build_id"]), Duration::from_secs(90)).await;
+                    removed = Some((s(&n["name"]), s(&n["incarnation_id"])));
+                    watch = Some((s(&b["build_id"]), 0));
                 }
             }
             "runtime-kill" => {
@@ -247,7 +320,8 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                     let (st2, b2) = estate.post("/api/nodes/spawn", &json!({"mesh": mesh, "kind": "rpc_node"})).await;
                     entry["regrow"] = json!(st2);
                     if st2 == 202 {
-                        estate.await_build(&s(&b2["build_id"]), Duration::from_secs(120)).await;
+                        removed = Some((s(&n["name"]), s(&n["incarnation_id"])));
+                        watch = Some((s(&b2["build_id"]), 0));
                     }
                 }
             }
@@ -275,27 +349,53 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         }
         // Converge: every path of the shape current and ready again, read through whichever admin
         // answers (the one just killed may have been the entry).
+        if watch.is_none() && removed.is_some() {
+            watch = Some((build_id.clone(), attempt_before));
+        }
         let until = Instant::now() + Duration::from_secs(150);
+        // The birth sequence, confirmed before anything is judged: the operation's Build (or the
+        // fault's attempt) completes; its AllocateIdentity names the new birth at the path; every
+        // live admin holds exactly that birth ready and the replaced one nowhere; every live admin
+        // holds the same births. Only then do the admins compute on the same inputs.
         let mut converged = false;
+        let mut failure = None;
         while Instant::now() < until {
             if relocate_control(&mut estate, &known).await {
-                let nodes = estate.nodes().await;
-                let gone = removed.as_ref().map_or(true, |(name, inc)| !nodes.iter().any(|n| n["name"] == name.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] != "dead"));
-                let ok = gone
-                    && SHAPE.iter().all(|(m, a, r)| {
-                        let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == *m && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
-                        ready("node_admin") == *a && ready("rpc_node") == *r
-                    });
-                if ok {
-                    converged = true;
-                    known = admin_bases(&nodes);
-                    break;
+                let born = match (&watch, &removed) {
+                    (Some((b, after)), Some((path, _))) => match born_at(&estate, b, path, *after).await {
+                        Ok(born) => born,
+                        Err(f) => {
+                            failure = Some(f);
+                            break;
+                        }
+                    },
+                    _ => None,
+                };
+                let sequence_done = match (&removed, &born) {
+                    (Some((path, old)), Some(birth)) => {
+                        entry["born"] = json!({"path": path, "node_id": birth.0, "incarnation": birth.1, "replaced": old});
+                        birth_held_everywhere(&estate, path, birth, old).await
+                    }
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+                if sequence_done {
+                    if let Some(agreeing) = converged_everywhere(&estate).await {
+                        converged = true;
+                        known = agreeing;
+                        break;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        if let Some(f) = failure {
+            violations.push(format!("round {round} ({op}): {f}"));
+            log.push(entry);
+            break;
+        }
         if !converged {
-            violations.push(format!("round {round} ({op}): the fabric did not converge to its shape within 150s"));
+            violations.push(format!("round {round} ({op}): the birth sequence did not complete within 150s: {entry}"));
             log.push(entry);
             break;
         }

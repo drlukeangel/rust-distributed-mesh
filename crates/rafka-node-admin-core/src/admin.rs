@@ -393,14 +393,11 @@ pub async fn reconcile_drift(
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
     );
-    // The attempt names exactly the births proven exited: the plan recreates those and nothing
-    // the view merely does not hear.
-    let exited_paths: Vec<PathName> = short.iter().flat_map(|s| s.exited.iter()).filter_map(|p| p.parse().ok()).collect();
     let opened = crate::build_state::AttemptOpened {
         build_id: current.build_id.clone(),
         attempt,
         reason: crate::build_state::AttemptReason::ProvenDrift,
-        action: Some(crate::accepted::AttemptAction::Recover { exited: exited_paths }),
+        action: None,
         opened_by: me.to_string(),
         opened_at_ms: now_ms(),
     };
@@ -519,21 +516,7 @@ struct EntryState {
     shutdown: Arc<crate::shutdown::ShutdownControl>,
 }
 
-/// What fencing a path's previous birth found.
-#[derive(Debug, PartialEq, Eq)]
-enum FenceOutcome {
-    /// Nothing runs there any more: a new birth may take the path. `gone` is the previous
-    /// birth when the provider inspected its exact runtime as not running: that inspection is
-    /// the proof its departure is published from. `None` when there was no birth, or this
-    /// admin holds no runtime for it (no proof, so no departure is published).
-    Clear { gone: Option<Node> },
-    /// The previous birth answers directly: it is alive and keeps the path.
-    Alive,
-    /// The previous birth is unheard and does not answer, but the provider inspects its exact
-    /// runtime as running: silence is never death proof, so it is held and keeps the path
-    /// (Luke 2026-10-05). Only an explicit retire or replace may terminate a running runtime.
-    Held,
-}
+use crate::fence::FenceOutcome;
 
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
@@ -700,48 +683,14 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
-    /// A new birth at a path whose previous birth this view holds as not live (killed, or only
-    /// unheard). Recovery replaces only a birth proven terminal: a predecessor whose exact runtime
-    /// the provider inspects as running is held, never terminated here, so a partition or a
-    /// frozen process is never turned into a replacement (Luke 2026-10-05, silence never
-    /// authorizes replacement).
+    /// Fence `path` before a new birth (`crate::fence`): this admin answers the fence's questions.
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
-        let Some(prev) = self.topology.read().await.node(path).cloned() else {
-            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-predecessor-held")
-                .in_scope(|| tracing::info!("the view holds no birth at this path: nothing to fence"));
-            return FenceOutcome::Clear { gone: None };
-        };
-        if prev.status.is_live() || prev.incarnation_id.is_none() {
-            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default(), outcome = "predecessor-live")
-                .in_scope(|| tracing::info!("the view holds a live birth at this path: nothing to fence"));
-            return FenceOutcome::Clear { gone: None };
+        let prev = self.topology.read().await.node(path).cloned();
+        let out = crate::fence::fence(path, prev, self).await;
+        if matches!(out, FenceOutcome::Clear { .. }) {
+            self.handles.lock().unwrap().remove(path);
         }
-        let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
-        // Unheard is not dead: losing many peers costs gossip a window (the
-        // dead peers' connections time out) in which a healthy member's
-        // digests do not arrive. A predecessor that answers directly is alive.
-        if self.answers(&prev).await {
-            tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "answers")
-                .in_scope(|| tracing::info!("the previous birth is unheard but answers directly: it stays"));
-            return FenceOutcome::Alive;
-        }
-        let (outcome, proven) = match self.handle_for(&prev).await {
-            Err(e) => (format!("not-found: {e}"), false),
-            Ok((_, h)) => match self.provider.inspect(&h).await {
-                crate::deployment::provider::DeploymentStatus::Running => {
-                    tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-running")
-                        .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
-                    return FenceOutcome::Held;
-                }
-                // Only an inspection that says the runtime exited is proof; `Unknown` fences the
-                // path (nothing answers there) but publishes no departure.
-                other => (format!("not-running: {other:?}"), matches!(other, crate::deployment::provider::DeploymentStatus::Exited { .. })),
-            },
-        };
-        self.handles.lock().unwrap().remove(path);
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
-            .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));
-        FenceOutcome::Clear { gone: proven.then_some(prev) }
+        out
     }
 
     /// Unplanned loss: the fence above inspected the previous birth's exact runtime as not
@@ -872,6 +821,28 @@ impl AdminRunner {
             }
         });
         futures_util::future::join_all(stops).await;
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::fence::PathProbe for AdminRunner {
+    async fn answers(&self, node: &Node) -> bool {
+        AdminRunner::answers(self, node).await
+    }
+    async fn inspect(&self, node: &Node) -> Result<crate::deployment::provider::DeploymentStatus, String> {
+        let (_, h) = self.handle_for(node).await?;
+        Ok(self.provider.inspect(&h).await)
+    }
+    async fn recorded(&self, path: &PathName) -> Vec<(String, crate::deployment::provider::DeploymentStatus)> {
+        let mut out = Vec::new();
+        let Ok(dirs) = std::fs::read_dir(&self.template.data_root) else { return out };
+        let prefix = format!("{path}-");
+        for d in dirs.flatten().filter(|d| d.file_name().to_string_lossy().starts_with(&prefix)) {
+            let Some(Ok(fact)) = rafka_mesh_entity::RuntimeFact::read_record(&d.path()) else { continue };
+            let Ok(h) = crate::deployment::provider::adopt(&*self.provider, &fact) else { continue };
+            out.push((d.path().display().to_string(), self.provider.inspect(&h).await));
+        }
+        out
     }
 }
 
