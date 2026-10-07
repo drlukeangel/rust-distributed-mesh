@@ -10,7 +10,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId, NodeKind, TransportId};
+use rafka_mesh_entity::{EndpointId, IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
@@ -35,14 +35,13 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
     node.kind = kind;
     node.mesh = mesh.into();
     node.node_id = NodeId::mint();
-    node.transport_id = Some(TransportId(key.public().to_string()));
+    node.endpoint_id = Some(EndpointId(key.public().to_string()));
     node.incarnation_id = Some(IncarnationId::mint());
     node.provider = Some(ProviderKind::Process);
     node.status = NodeStatus::ReadyForTraffic;
     node.is_primary = is_primary;
     node.is_fabric_primary = is_fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-    node.endpoints = vec![EndpointSlot::fresh("rpc-0")];
     Birth { node, key }
 }
 
@@ -86,7 +85,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
     let server = rafka_node_admin_core::status_rpc::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().0 }, admin.node.endpoints.clone())
+        .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().0 })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -94,10 +93,9 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let resolved = ResolvedNode {
         node_id: admin.node.node_id.clone(),
         name: admin.node.name.clone(),
-        transport_id: admin.key.public(),
+        endpoint_id: admin.key.public(),
         transport_addr: addr,
         incarnation: admin.node.incarnation_id.clone().unwrap(),
-        slots: admin.node.endpoints.clone(),
     };
     (Rig { admin, _router: router, resolved, authority, storage, topology }, others)
 }

@@ -41,10 +41,9 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
     Some(ResolvedNode {
         node_id: d.node.node_id.clone(),
         name: d.node.name.clone(),
-        transport_id: d.node.transport_id.0.parse().ok()?,
+        endpoint_id: d.node.endpoint_id.0.parse().ok()?,
         transport_addr: d.node.transport_addr,
         incarnation: d.node.incarnation.clone(),
-        slots: d.node.endpoints.0.clone(),
     })
 }
 

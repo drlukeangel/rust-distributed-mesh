@@ -75,8 +75,8 @@ mod tests {
     #[test]
     fn request_codec_round_trips_through_the_frame() {
         let req = EchoRequest::Echo { payload: b"ping".to_vec() };
-        let header = crate::framing::RequestHeader::fence(crate::framing::RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc".into(), freshness: "f".into() });
-        let frame = encode_request(Echo::TAG, &header, &Echo::encode_request(&req).unwrap());
+        let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x11 });
+        let frame = encode_request(&header, &Echo::encode_request(&req).unwrap());
         let (tag, at, body) = decode_request(&frame, |t| (t == Echo::TAG).then_some(Echo::MAX_REQUEST_FRAME_BYTES)).unwrap();
         assert_eq!((tag, at), (0x11, header));
         let back = Echo::decode_request(body).unwrap();

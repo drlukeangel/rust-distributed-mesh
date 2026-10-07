@@ -15,7 +15,7 @@
 //! `{"outcome": "Reply"|"NotSent"|"Unserved"|"Indeterminate", ...}`; a
 //! `Reply` carries the executing node's provenance and the typed result.
 
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId, PathName};
+use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
@@ -145,10 +145,9 @@ fn resolved(view: &Value) -> Vec<ResolvedNode> {
             Some(ResolvedNode {
                 node_id: NodeId::parse(n["node_id"].as_str()?).ok()?,
                 name: n["name"].as_str()?.parse().ok()?,
-                transport_id: n["transport_id"].as_str()?.parse().ok()?,
+                endpoint_id: n["endpoint_id"].as_str()?.parse().ok()?,
                 transport_addr: n["transport_addr"].as_str()?.parse().ok()?,
                 incarnation: IncarnationId(n["incarnation_id"].as_str()?.to_string()),
-                slots: serde_json::from_value::<Vec<EndpointSlot>>(n["endpoints"].clone()).ok()?,
             })
         })
         .collect()
@@ -192,8 +191,6 @@ fn reply(r: &ProofReply) -> Value {
         o.insert("node".into(), json!(at.node));
         o.insert("mesh".into(), json!(at.mesh));
         o.insert("incarnation_id".into(), json!(at.incarnation_id));
-        o.insert("slot".into(), json!(at.slot));
-        o.insert("freshness".into(), json!(at.freshness));
         o.insert("op".into(), json!(at.op.as_str()));
     }
     v
@@ -243,7 +240,7 @@ async fn run(a: Args) -> Result<Value, String> {
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", n.reason())}),
         RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", i.reason())}),
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "route": leg, "reason": format!("{u:?}")}),
-        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "route": leg, "slot": r.slot(), "freshness": r.freshness()}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "route": leg, "target_node_id": r.target_node_id()}),
     })
 }
 
@@ -306,6 +303,6 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
         RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
-        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "slot": r.slot(), "freshness": r.freshness()}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "target_node_id": r.target_node_id()}),
     })
 }

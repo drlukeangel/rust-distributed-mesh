@@ -12,21 +12,10 @@
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
 const NODE: &str = "mesh1.rpc.2";
-
-/// Each logical slot's freshness token: a slot owns no address.
-fn slots(node: &Value) -> BTreeMap<String, String> {
-    node["endpoints"]
-        .as_array()
-        .unwrap_or_else(|| panic!("node view has no endpoints: {node}"))
-        .iter()
-        .map(|e| (e["slot"].as_str().unwrap().to_string(), e["freshness"].as_str().unwrap().to_string()))
-        .collect()
-}
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready-for-traffic"
@@ -34,8 +23,7 @@ fn ready(node: &Value) -> bool {
 
 /// CONTRACT: an RPC node restarted through Build comes back as the same logical
 /// node (same node id and transport identity, new process incarnation) at the
-/// same transport address, mints a new freshness token for its fresh slot while
-/// the stable slot keeps its token, refuses the old token as stale, still serves the
+/// same transport address, still serves the
 /// value written before the restart from its own data dir, resets an unfinished
 /// request with 499 (NotSent), and leaves a Build -> deployment -> node-lifecycle
 /// span chain linked by ParentSpanId.
@@ -79,10 +67,9 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["executing_node"], node_id.as_str(), "{put}");
 
-    // 3. Capture identity, slot tokens, ports, deployment id and the advertised admin endpoint.
+    // 3. Capture identity, ports, deployment id and the advertised admin endpoint.
     let (_, fabric_before) = estate.get("/api/fabric").await;
     let control_before = fabric_before["meshes"][0]["admin_api_base"].as_str().expect("advertised admin endpoint").to_string();
-    let slots_before = slots(&before);
     let incarnation_before = before["incarnation_id"].as_str().expect("incarnation_id").to_string();
     let deployment_before = before["deployment_id"].as_str().expect("deployment_id").to_string();
     estate.artifact("nodes-before.json", &json!(estate.nodes().await));
@@ -109,40 +96,21 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
 
     // 5. Same logical node identity returns.
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
-    assert_eq!(after["transport_id"], before["transport_id"], "same transport identity (data dir kept)");
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "same transport identity (data dir kept)");
     assert_eq!(after["name"], before["name"]);
     assert_ne!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "a new runtime deployment");
 
-    // 6. The fresh slot has a new token, the stable slot keeps its token, and the process keeps
-    //    its one transport address: a slot owns no socket.
+    // 6. The process keeps its one transport address.
     assert_eq!(after["transport_addr"], before["transport_addr"], "a restart keeps the transport address");
-    let slots_after = slots(&after);
-    assert_eq!(slots_after.keys().collect::<Vec<_>>(), slots_before.keys().collect::<Vec<_>>(), "same slot set");
-    assert_ne!(slots_after["rpc-0"], slots_before["rpc-0"], "the fresh slot's token moved");
-    assert_eq!(slots_after["rpc-1"], slots_before["rpc-1"], "the stable slot keeps its token");
-    let changed = vec!["rpc-0".to_string()];
 
-    // 7. The old token is refused as stale, by the caller, before any dial.
-    for slot in &changed {
-        let old = format!("{slot}={}", slots_before[slot]);
-        let stale = estate.probe(&["get", "--target", &exact, "--key", "41", "--pin", &old]);
-        assert_eq!(stale["outcome"], "RejectedStale", "a superseded token is stale, never dialled: {stale}");
-        assert_eq!(stale["slot"], *slot, "{stale}");
-    }
-
-    // 8. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
+    // 7. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
     let get = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     assert_eq!(get["outcome"], "Reply", "{get}");
     assert_eq!(get["reply"]["result"]["value"], "before-restart", "{get}");
     assert_eq!(get["reply"]["executing_node"], node_id.as_str(), "{get}");
     assert_eq!(get["reply"]["incarnation_id"], after["incarnation_id"], "served by the new incarnation: {get}");
-    let served = (get["reply"]["slot"].as_str().unwrap().to_string(), get["reply"]["freshness"].as_str().unwrap().to_string());
-    assert_eq!(slots_after[&served.0], served.1, "the reply's slot evidence is current: {get}");
-    for slot in &changed {
-        assert_ne!(served.1, slots_before[slot], "an old token served a request: {get}");
-    }
 
-    // 9. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.
+    // 8. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.
     let cut = estate.probe(&["put", "--target", &exact, "--key", "42", "--value", "never", "--cut-before-finish"]);
     assert_eq!(cut["outcome"], "NotSent", "{cut}");
     assert!(cut["reason"].as_str().unwrap_or("").contains("499"), "the cut is the 499 FRAME_NOT_SENT reset: {cut}");

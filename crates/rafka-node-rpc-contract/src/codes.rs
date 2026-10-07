@@ -13,9 +13,9 @@ pub enum ResetCode {
     InternalRpcFailure = 423,
     /// A framing/order/runtime contract violation.
     ProtocolViolation = 424,
-    /// The request's target slot is unknown to the receiver, or its freshness
-    /// token is not the slot's current one; proves no protocol dispatch.
-    StaleSlot = 425,
+    /// The request's fence names another node than the receiver, or a port it
+    /// does not serve; proves no protocol dispatch.
+    StaleTarget = 425,
     /// The sender reset an unfinished request; proves pre-dispatch `NotSent`.
     FrameNotSent = 499,
 }
@@ -25,7 +25,7 @@ pub const RETIRED_CODES: [u32; 3] = [413, 501, 503];
 
 impl ResetCode {
     pub const ALL: [ResetCode; 6] =
-        [Self::UnservedTag, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleSlot, Self::FrameNotSent];
+        [Self::UnservedTag, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleTarget, Self::FrameNotSent];
 
     pub fn code(self) -> u32 {
         self as u32
@@ -38,7 +38,7 @@ impl ResetCode {
             Self::RequestStop => "REQUEST_STOP",
             Self::InternalRpcFailure => "INTERNAL_RPC_FAILURE",
             Self::ProtocolViolation => "PROTOCOL_VIOLATION",
-            Self::StaleSlot => "STALE_SLOT",
+            Self::StaleTarget => "STALE_TARGET",
             Self::FrameNotSent => "FRAME_NOT_SENT",
         }
     }
@@ -58,7 +58,7 @@ mod tests {
     fn namespace_is_421_to_425_plus_499() {
         let codes: Vec<u32> = ResetCode::ALL.iter().map(|c| c.code()).collect();
         assert_eq!(codes, vec![421, 422, 423, 424, 425, 499]);
-        assert_eq!(ResetCode::StaleSlot.name(), "STALE_SLOT", "425 is pinned to STALE_SLOT");
+        assert_eq!(ResetCode::StaleTarget.name(), "STALE_TARGET", "425 is pinned to STALE_TARGET");
         for c in ResetCode::ALL {
             assert_eq!(ResetCode::from_code(c.code().into()), Some(c));
         }

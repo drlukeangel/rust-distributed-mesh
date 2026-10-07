@@ -169,7 +169,6 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     assert_eq!(created.handle.pid, Some(first_pid));
     assert_eq!(runtimes_of(&created.node.node_id), vec![first_pid], "exactly one runtime runs for the node");
     assert_eq!(created.node.transport_addr, Some(held_after_kill.transport));
-    assert_eq!(created.node.endpoints, held_after_kill.slots);
     assert_eq!(allocator.lock().unwrap().in_use_count(), 1, "one socket, no port taken twice");
 
     // Every step Complete exactly once across both attempts; the steps

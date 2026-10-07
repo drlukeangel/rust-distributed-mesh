@@ -3,7 +3,7 @@
 //! From public surfaces (node-admin's control API and `rafka-rpc-probe` over
 //! real Node RPC) and the estate's span evidence only:
 //! 1. Every op answers its typed result and names where it ran: node id, path,
-//!    mesh, incarnation, and the slot and freshness token it arrived on.
+//!    mesh and incarnation.
 //! 2. A same-node restart keeps the store: the new incarnation of the same
 //!    logical node serves the value written before it.
 //! 3. A replacement does not inherit it: `path:` reaches the new logical node,
@@ -27,8 +27,7 @@ fn owner() -> Owner {
     }
 }
 
-/// The reply's provenance names exactly `node` (as the view holds it) and a
-/// slot whose current freshness token it carries.
+/// The reply's provenance names exactly `node` (as the view holds it).
 fn landed_on(out: &Value, node: &Value, op: &str) {
     assert_eq!(out["outcome"], "Reply", "{out}");
     let r = &out["reply"];
@@ -37,8 +36,6 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
     assert_eq!(r["mesh"], "mesh1", "{out}");
     assert_eq!(r["incarnation_id"], node["incarnation_id"], "{out}");
     assert_eq!(r["op"], op, "{out}");
-    let slot = node["endpoints"].as_array().unwrap().iter().find(|e| e["slot"] == r["slot"]).unwrap_or_else(|| panic!("{out} names a slot {node} does not hold"));
-    assert_eq!(slot["freshness"], r["freshness"], "the reply carries the slot's current freshness: {out}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

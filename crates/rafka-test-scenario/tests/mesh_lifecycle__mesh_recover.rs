@@ -50,15 +50,9 @@ fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
     out
 }
 
-/// name -> (incarnation, endpoint tokens)
-fn births(nodes: &[Value]) -> BTreeMap<String, (String, BTreeSet<String>)> {
-    nodes
-        .iter()
-        .map(|n| {
-            let tokens = n["endpoints"].as_array().unwrap().iter().map(|e| s(&e["freshness"])).collect();
-            (s(&n["name"]), (s(&n["incarnation_id"]), tokens))
-        })
-        .collect()
+/// name -> incarnation
+fn births(nodes: &[Value]) -> BTreeMap<String, String> {
+    nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -128,11 +122,10 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         assert_eq!(s(&own["id"]), mesh1_id, "{} serves mesh1 under its own identity: {own:#}", admin["name"]);
     }
     let (old, new) = (births(&before), births(&after));
-    for (name, (incarnation, tokens)) in &old {
-        let (now_inc, now_tokens) = &new[name];
+    for (name, incarnation) in &old {
+        let now_inc = &new[name];
         if name.starts_with("mesh1.") {
             assert_ne!(now_inc, incarnation, "{name} is a new birth");
-            assert!(now_tokens.is_disjoint(tokens), "{name} has fresh endpoints");
         } else {
             assert_eq!(now_inc, incarnation, "{name} was never touched");
         }

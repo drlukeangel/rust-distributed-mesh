@@ -2,7 +2,7 @@
 //! reads back (`docs/i143/design.md` §3). One contract, one owner.
 
 type Result<T> = std::result::Result<T, String>;
-use crate::{EndpointSlot, FabricId, FreshnessToken, IncarnationId, MeshId, NodeId, PathName};
+use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,7 +14,6 @@ pub const ENV_NODE_ID: &str = "RAFKA_NODE_ID";
 pub const ENV_INCARNATION: &str = "RAFKA_INCARNATION_ID";
 pub const ENV_SUPERSEDES: &str = "RAFKA_SUPERSEDES";
 pub const ENV_TRANSPORT_ADDR: &str = "RAFKA_TRANSPORT_ADDR";
-pub const ENV_SLOTS: &str = "RAFKA_SLOTS";
 pub const ENV_LISTENERS: &str = "RAFKA_LISTENERS";
 pub const ENV_SEEDS: &str = "RAFKA_SEEDS";
 pub const ENV_DATA_DIR: &str = "RAFKA_DATA_DIR";
@@ -32,8 +31,6 @@ pub struct Launch {
     pub supersedes: Option<IncarnationId>,
     /// The one address the process's Iroh endpoint binds: gossip and Node RPC.
     pub transport_addr: SocketAddr,
-    /// The logical Node RPC slots the process serves, under their tokens.
-    pub endpoints: Vec<EndpointSlot>,
     /// Non-Iroh listeners the process binds (a node-admin's `control` HTTP API), by name.
     pub listeners: Vec<(String, SocketAddr)>,
     /// `(public key hex, address)` of members to join gossip through.
@@ -43,20 +40,6 @@ pub struct Launch {
     pub mesh_id: Option<MeshId>,
 }
 
-/// `rpc-0=<token>,rpc-1=<token>`
-pub fn encode_slots(slots: &[EndpointSlot]) -> String {
-    slots.iter().map(|s| format!("{}={}", s.slot, s.freshness)).collect::<Vec<_>>().join(",")
-}
-
-pub fn decode_slots(s: &str) -> Result<Vec<EndpointSlot>> {
-    s.split(',')
-        .filter(|x| !x.is_empty())
-        .map(|e| {
-            let (slot, tok) = e.split_once('=').ok_or_else(|| format!("{ENV_SLOTS} entry `{e}` is not slot=token"))?;
-            Ok(EndpointSlot { slot: slot.into(), freshness: FreshnessToken(tok.into()) })
-        })
-        .collect()
-}
 
 /// `control=127.0.0.1:41002,...`
 pub fn encode_listeners(listeners: &[(String, SocketAddr)]) -> String {
@@ -96,7 +79,6 @@ impl Launch {
             m.insert(ENV_SUPERSEDES.into(), s.0.clone());
         }
         m.insert(ENV_TRANSPORT_ADDR.into(), self.transport_addr.to_string());
-        m.insert(ENV_SLOTS.into(), encode_slots(&self.endpoints));
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
@@ -116,7 +98,6 @@ impl Launch {
             incarnation: IncarnationId(req(ENV_INCARNATION)?),
             supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(IncarnationId),
             transport_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
-            endpoints: decode_slots(&get(ENV_SLOTS).unwrap_or_default())?,
             listeners: decode_listeners(&get(ENV_LISTENERS).unwrap_or_default())?,
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
@@ -139,7 +120,6 @@ mod tests {
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
-            endpoints: vec![EndpointSlot::fresh("rpc-0"), EndpointSlot::fresh("rpc-1")],
             listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),

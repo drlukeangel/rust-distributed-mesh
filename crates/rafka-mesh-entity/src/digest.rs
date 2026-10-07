@@ -1,7 +1,6 @@
 //! What a node publishes about itself on the fabric's membership topic.
 
-use crate::endpoint::EndpointSet;
-use crate::ids::{FabricId, IncarnationId, NodeId, TransportId};
+use crate::ids::{EndpointId, FabricId, IncarnationId, NodeId};
 use crate::path::PathName;
 use crate::runtime::RuntimeFact;
 use serde::{Deserialize, Serialize};
@@ -12,14 +11,12 @@ use std::collections::BTreeMap;
 pub struct MeshNode {
     pub node_id: NodeId,
     pub name: PathName,
-    pub transport_id: TransportId,
-    /// The one address of the birth's Iroh endpoint: where every slot is reached.
+    pub endpoint_id: EndpointId,
+    /// The one address of the birth's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
     pub incarnation: IncarnationId,
     /// The incarnation this birth replaces; `None` for the first birth.
     pub supersedes: Option<IncarnationId>,
-    /// The logical slots the birth serves, under their current tokens.
-    pub endpoints: EndpointSet,
     /// This birth's exact runtime (`runtime`): immutable for the incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeFact>,
@@ -67,18 +64,16 @@ impl MeshDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::EndpointSlot;
 
     #[test]
     fn a_birth_round_trips_as_json_for_gossip() {
         let a = MeshNode {
             node_id: NodeId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
-            transport_id: TransportId("k".into()),
+            endpoint_id: EndpointId("k".into()),
             transport_addr: "127.0.0.1:7000".parse().unwrap(),
             incarnation: IncarnationId::mint(),
             supersedes: None,
-            endpoints: EndpointSet(vec![EndpointSlot::fresh("rpc")]),
             runtime: None,
         };
         let back: MeshNode = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();

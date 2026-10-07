@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rafka.dev/schemas/node-rpc/fence.schema.json",
+  "title": "Node RPC fence (frame 0)",
+  "description": "The first frame of every invocation, length-prefixed and read alone. The receiver checks it against what it is and what it serves before the second frame is read, allocated or parsed. It is core: the same two checks for every protocol. It carries nothing about the process birth: which birth of a node a caller is talking to is the resolver's and the pool's knowledge (the incarnation, held locally and never sent); a restart's old connection dies with its process and a replacement is a new node id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target_node_id",
+    "op"
+  ],
+  "properties": {
+    "target_node_id": {
+      "$ref": "#/$defs/node_id",
+      "description": "The minted id of the node the caller resolved. A receiver whose own id differs answers STALE_TARGET and drops the connection: the caller reached a replacement at that path, or misrouted."
+    },
+    "op": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255,
+      "description": "The operation code, a row of the op ledger (catalog.rs). The ledger owns the code's family, owner and the method names registered under it. An op this node does not serve answers UNSERVED_OP and keeps the connection."
+    }
+  },
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^[0-9a-hjkmnp-tv-z]{12}$",
+      "description": "A minted node id: 60 bits, 12 lowercase Crockford characters, never a path.name, never an EndpointId."
+    }
+  }
+}

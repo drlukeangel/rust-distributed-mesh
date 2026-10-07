@@ -3,7 +3,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
 use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
@@ -88,19 +88,19 @@ struct Node {
 }
 
 /// A birth's identity, minted before its server seals.
-fn birth() -> (NodeId, IncarnationId, EndpointSlot) {
-    (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"))
+fn birth() -> (NodeId, IncarnationId) {
+    (NodeId::mint(), IncarnationId::mint())
 }
 
-fn served(b: &(NodeId, IncarnationId, EndpointSlot)) -> ServedBirth {
+fn served(b: &(NodeId, IncarnationId)) -> ServedBirth {
     ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .0.clone() }
 }
 
-async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId, EndpointSlot)) -> Node {
+async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId)) -> Node {
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id: b.0, name: name.parse().unwrap(), transport_id: key.public(), transport_addr: addr, incarnation: b.1, slots: vec![b.2] };
+    let resolved = ResolvedNode { node_id: b.0, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
     Node { router, key, resolved }
 }
 
@@ -139,14 +139,14 @@ async fn rig() -> Rig {
                 if payload == b"hold" {
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                 }
-                Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.transport_id.to_string() })
+                Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.endpoint_id.to_string() })
             }
         })
         .serve::<Echo, _, _>(TagOwner::Core, |_p, req: EchoRequest| async move {
             let EchoRequest::Echo { payload, .. } = req;
             Ok(EchoReply::Echoed { payload })
         })
-        .seal(served(&target_birth), [target_birth.2.clone()])
+        .seal(served(&target_birth))
         .unwrap();
     let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3", target_birth).await;
 
@@ -164,7 +164,7 @@ async fn rig() -> Rig {
         .carry::<Probe>()
         .carry::<Echo>()
         .serve_forward(carrier_client)
-        .seal(served(&carrier_birth), [carrier_birth.2.clone()])
+        .seal(served(&carrier_birth))
         .unwrap();
     let carrier = Node {
         router: Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server).spawn(),
@@ -172,10 +172,9 @@ async fn rig() -> Rig {
         resolved: ResolvedNode {
             node_id: carrier_birth.0,
             name: "mesh1.rpc.2".parse().unwrap(),
-            transport_id: carrier_key.public(),
+            endpoint_id: carrier_key.public(),
             transport_addr: carrier_addr,
             incarnation: carrier_birth.1,
-            slots: vec![carrier_birth.2],
         },
     };
     let origin = client_with(&[&carrier.resolved, &target.resolved]).await;

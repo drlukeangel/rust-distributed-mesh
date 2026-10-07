@@ -34,8 +34,8 @@ pub enum Applied {
     Joined,
     /// The node's next birth (it names the held one as superseded).
     Restarted { old: IncarnationId },
-    /// The held birth moved one or more endpoint slots to new freshness.
-    SlotsMoved { slots: Vec<String> },
+    /// The held birth's address changed.
+    Updated,
     /// The fact matches what is held.
     Unchanged,
     /// Not taken; the held answer stands.
@@ -123,17 +123,12 @@ impl LiveNodeResolver {
         }
         let applied = match live.nodes.get(&id) {
             None => Applied::Joined,
-            Some(held) if held.transport_id != birth.transport_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
+            Some(held) if held.endpoint_id != birth.endpoint_id => return Applied::Refused(Refusal::TransportChanged { node_id: id }),
             Some(held) if held.incarnation == birth.incarnation => {
-                let moved: Vec<String> = rafka_mesh_entity::EndpointSet(held.slots.clone())
-                    .superseded_by(&rafka_mesh_entity::EndpointSet(birth.slots.clone()))
-                    .into_iter()
-                    .map(|(slot, _, _)| slot)
-                    .collect();
-                if moved.is_empty() && held.slots == birth.slots && held.transport_addr == birth.transport_addr {
+                if held.transport_addr == birth.transport_addr {
                     return Applied::Unchanged;
                 }
-                Applied::SlotsMoved { slots: moved }
+                Applied::Updated
             }
             Some(held) if supersedes == Some(&held.incarnation) => Applied::Restarted { old: held.incarnation.clone() },
             Some(held) => {
@@ -200,7 +195,6 @@ impl NodeResolver for LiveNodeResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::EndpointSlot;
 
     fn key() -> iroh::PublicKey {
         iroh::SecretKey::generate().public()
@@ -210,15 +204,14 @@ mod tests {
         ResolvedNode {
             node_id: NodeId::mint(),
             name: path.parse().unwrap(),
-            transport_id: key(),
+            endpoint_id: key(),
             transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
             incarnation: IncarnationId::mint(),
-            slots: vec![EndpointSlot::fresh("rpc")],
         }
     }
 
     fn restart(n: &ResolvedNode, port: u16) -> ResolvedNode {
-        ResolvedNode { incarnation: IncarnationId::mint(), transport_addr: format!("127.0.0.1:{port}").parse().unwrap(), slots: vec![EndpointSlot::fresh("rpc")], ..n.clone() }
+        ResolvedNode { incarnation: IncarnationId::mint(), transport_addr: format!("127.0.0.1:{port}").parse().unwrap(), ..n.clone() }
     }
 
     fn exact(r: &LiveNodeResolver, n: &ResolvedNode) -> Result<ResolvedNode, ResolveFailure> {
@@ -240,13 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn reapplying_is_idempotent_and_a_moved_slot_is_named() {
+    fn reapplying_is_idempotent_and_a_moved_address_is_an_update() {
         let r = LiveNodeResolver::default();
         let a = birth("mesh1.rpc.1", 7000);
         r.apply(a.clone(), None);
         assert_eq!(r.apply(a.clone(), None), Applied::Unchanged);
-        let moved = ResolvedNode { slots: vec![EndpointSlot::fresh("rpc")], ..a.clone() };
-        assert_eq!(r.apply(moved, None), Applied::SlotsMoved { slots: vec!["rpc".into()] });
+        let moved = ResolvedNode { transport_addr: "127.0.0.1:7001".parse().unwrap(), ..a.clone() };
+        assert_eq!(r.apply(moved.clone(), None), Applied::Updated);
+        assert_eq!(exact(&r, &a).unwrap().transport_addr, moved.transport_addr);
     }
 
     #[test]
@@ -308,7 +302,7 @@ mod tests {
         r.apply(a.clone(), None);
         assert!(!rx.has_changed().unwrap(), "nothing moved");
         r.apply(restart(&a, 7001), Some(&a.incarnation));
-        assert!(rx.has_changed().unwrap(), "the slot's freshness moved");
+        assert!(rx.has_changed().unwrap(), "the birth moved");
         rx.borrow_and_update();
         r.depart(&a.node_id, &a.incarnation, &a.name);
         assert!(rx.has_changed().unwrap());

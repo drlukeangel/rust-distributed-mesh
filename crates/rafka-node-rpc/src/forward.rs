@@ -51,7 +51,7 @@ async fn carry_once(
             "rafka.node_rpc.request.reject.via-not-forwardable",
             inner_tag,
             target = %target,
-            caller = %peer.transport_id
+            caller = %peer.endpoint_id
         )
         .in_scope(|| tracing::info!("the inner protocol is not forwardable through this carrier"));
         return ForwardReply::NotForwardable { tag: inner_tag };
@@ -65,7 +65,7 @@ async fn carry_once(
         "rafka.node_rpc.request.serve.via-carried-inner",
         inner_tag,
         target = %target,
-        caller = %peer.transport_id,
+        caller = %peer.endpoint_id,
         caller_system = peer.context.caller_system.as_deref().unwrap_or(""),
         outcome = tracing::field::Empty
     );
@@ -85,7 +85,7 @@ async fn carry_once(
         RpcOutcome::Reply(r) => ForwardReply::Relayed { inner: r.into_value() },
         RpcOutcome::NotSent(n) => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
         RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { tag: u.tag() },
-        RpcOutcome::RejectedStale(r) => ForwardReply::InnerRejectedStale { slot: r.slot().to_string(), freshness: r.freshness().to_string() },
+        RpcOutcome::RejectedStale(r) => ForwardReply::InnerRejectedStale { target_node_id: r.target_node_id().to_string() },
         RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { reason: format!("{:?}", i.reason()) },
     }
 }

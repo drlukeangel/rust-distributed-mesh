@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rafka.dev/schemas/node-rpc/invocation.schema.json",
+  "title": "Node RPC invocation (frame 1) and reply",
+  "description": "Read only after the fence passed. One QUIC bi-stream is one invocation: frame 1 is the context and the JSON-RPC 2.0 request; the reply is one JSON-RPC 2.0 response (or, for a streaming method, a sequence of length-prefixed response frames then FIN).",
+  "$defs": {
+    "node_id": {
+      "$ref": "fence.schema.json#/$defs/node_id"
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Observability only; never participates in dispatch or semantics. A part over its bound is dropped and the call continues (context_dropped names which).",
+      "properties": {
+        "caller_system": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "The originating system (rdm, rafka, node-admin), kept across a forwarded hop."
+        },
+        "traceparent": {
+          "type": "string",
+          "maxLength": 55,
+          "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+          "description": "W3C Trace Context traceparent."
+        },
+        "tracestate": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "W3C Trace Context tracestate."
+        },
+        "baggage": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "W3C Baggage, allowlisted keys only; anything else is dropped by name.",
+          "properties": {
+            "test_case": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "scenario": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "operation": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "method",
+        "id"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ],
+          "description": "One stream is one invocation, so null is allowed; a caller that wants its own correlation names one."
+        },
+        "method": {
+          "type": "string",
+          "pattern": "^(core|rdm|rafka|testkit)\\.[a-z_]+(\\.[a-z_]+)*$",
+          "description": "The registered name of a call under the fence's op code in the op ledger. A method not registered under that op is refused by name (METHOD_NOT_UNDER_OP)."
+        },
+        "params": {
+          "type": "object",
+          "description": "Named parameters only, per the method's OpenRPC schema. Never positional."
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "jsonrpc",
+        "id"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "result"
+          ]
+        },
+        {
+          "required": [
+            "error"
+          ]
+        }
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "type": [
+            "string",
+            "integer",
+            "null"
+          ]
+        },
+        "result": {},
+        "error": {
+          "$ref": "#/$defs/error"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "data"
+      ],
+      "properties": {
+        "code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object",
+          "required": [
+            "http_status",
+            "receiver"
+          ],
+          "properties": {
+            "http_status": {
+              "type": "integer"
+            },
+            "receiver": {
+              "type": "object",
+              "required": [
+                "node_id",
+                "path"
+              ],
+              "properties": {
+                "node_id": {
+                  "$ref": "#/$defs/node_id"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "description": "Who refused: the receiver names itself, so the caller's span carries both sides."
+            },
+            "evict_connection": {
+              "type": "boolean",
+              "description": "true only for STALE_TARGET: the connection reached the wrong node and is dropped."
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rpc"
+  ],
+  "properties": {
+    "context": {
+      "$ref": "#/$defs/context"
+    },
+    "rpc": {
+      "$ref": "#/$defs/request"
+    }
+  },
+  "x-errors": {
+    "description": "Gate errors are answered from the fence alone, before frame 1 is read. Every row carries data.receiver and the refused fence field verbatim.",
+    "rows": [
+      {
+        "code": -32025,
+        "name": "STALE_TARGET",
+        "http_status": 425,
+        "evict_connection": true,
+        "when": "fence.target_node_id is not the receiver's id"
+      },
+      {
+        "code": -32027,
+        "name": "UNSERVED_OP",
+        "http_status": 421,
+        "evict_connection": false,
+        "when": "fence.op is not an op this node serves"
+      },
+      {
+        "code": -32028,
+        "name": "METHOD_NOT_UNDER_OP",
+        "http_status": 400,
+        "evict_connection": false,
+        "when": "rpc.method is not registered under fence.op in the op ledger"
+      },
+      {
+        "code": -32029,
+        "name": "FENCE_OVERSIZE",
+        "http_status": 431,
+        "evict_connection": false,
+        "when": "frame 0 exceeds its bound"
+      },
+      {
+        "code": -32030,
+        "name": "REQUEST_OVERSIZE",
+        "http_status": 413,
+        "evict_connection": false,
+        "when": "frame 1 exceeds the op's ceiling"
+      },
+      {
+        "code": -32601,
+        "name": "METHOD_NOT_FOUND",
+        "http_status": 404,
+        "evict_connection": false,
+        "when": "the method name is unknown to the ledger"
+      },
+      {
+        "code": -32602,
+        "name": "INVALID_PARAMS",
+        "http_status": 400,
+        "evict_connection": false,
+        "when": "params fail the method's schema, named by field"
+      },
+      {
+        "code": -32700,
+        "name": "PARSE_ERROR",
+        "http_status": 400,
+        "evict_connection": false,
+        "when": "frame 1 is not JSON"
+      }
+    ]
+  }
+}

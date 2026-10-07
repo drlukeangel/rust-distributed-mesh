@@ -12,7 +12,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::connections::{
     resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection,
 };
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId, NodeKind, PathName};
+use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use rafka_node_rpc::{CallOptions, HandlerFault, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, RouteChoice, RouteLeg, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
 use rafka_node_rpc_contract::outcome::{MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
@@ -95,7 +95,7 @@ struct Node {
 
 /// A node serving Probe (answering with its own name) and, with `client`, carrying Probe for others.
 async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: SecretKey, ep: iroh::Endpoint) -> Node {
-    let (node_id, incarnation, slot) = (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"));
+    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let handled = Arc::new(AtomicU64::new(0));
     let (h, me) = (handled.clone(), name.to_string());
     let mut b = ServerBuilder::new().ledger(test_ledger()).serve::<Probe, _, _>(TagOwner::Product("test".into()), move |peer: PeerContext, req: ProbeRequest| {
@@ -106,16 +106,16 @@ async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: Secre
             if payload == b"hold" {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
-            Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: me, caller: peer.transport_id.to_string() })
+            Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: me, caller: peer.endpoint_id.to_string() })
         }
     });
     if let Some(c) = carrier_client {
         b = b.carry::<Probe>().serve_forward(c);
     }
-    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }, [slot.clone()]).unwrap();
+    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), transport_id: key.public(), transport_addr: addr, incarnation, slots: vec![slot] };
+    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, key, resolved, handled }
 }
 

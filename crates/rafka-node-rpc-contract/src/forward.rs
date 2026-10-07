@@ -35,8 +35,8 @@ pub enum ForwardReply {
     InnerNotSent { reason: String },
     /// The target does not serve the inner tag.
     InnerUnserved { tag: u8 },
-    /// The target refused the inner call's slot target (`425 STALE_SLOT`).
-    InnerRejectedStale { slot: String, freshness: String },
+    /// The target refused the inner call's fence (`425 STALE_TARGET`): it is not that node.
+    InnerRejectedStale { target_node_id: String },
     /// The inner call committed at the target and its outcome is unknown.
     InnerIndeterminate { reason: String },
     /// The inner protocol is not forwardable through this carrier.
@@ -114,7 +114,7 @@ mod tests {
             ForwardReply::Relayed { inner: vec![1] },
             ForwardReply::InnerNotSent { reason: "r".into() },
             ForwardReply::InnerUnserved { tag: 7 },
-            ForwardReply::InnerRejectedStale { slot: "rpc-0".into(), freshness: "f".into() },
+            ForwardReply::InnerRejectedStale { target_node_id: "n1".into() },
             ForwardReply::InnerIndeterminate { reason: "r".into() },
             ForwardReply::NotForwardable { tag: 0x11 },
             ForwardReply::PeerUnresolved { reason: "p".into() },
