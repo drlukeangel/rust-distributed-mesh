@@ -47,7 +47,8 @@ pub struct EntryAnswer {
     pub control: serde_json::Value,
 }
 
-type Answer = dyn Fn(&EntryRequest) -> EntryAnswer + Send + Sync;
+/// The answer is awaited: what an admin holds (its fabric control state) is read through storage.
+type Answer = dyn Fn(&EntryRequest) -> std::pin::Pin<Box<dyn std::future::Future<Output = EntryAnswer> + Send>> + Send + Sync;
 
 /// Serves [`ENTRY_ALPN`]: one bi-stream per pull, the request then the answer.
 #[derive(Clone)]
@@ -62,8 +63,11 @@ impl std::fmt::Debug for EntryServer {
 }
 
 impl EntryServer {
-    pub fn new(answer: impl Fn(&EntryRequest) -> EntryAnswer + Send + Sync + 'static) -> Self {
-        Self { answer: Arc::new(answer) }
+    pub fn new<F>(answer: impl Fn(&EntryRequest) -> F + Send + Sync + 'static) -> Self
+    where
+        F: std::future::Future<Output = EntryAnswer> + Send + 'static,
+    {
+        Self { answer: Arc::new(move |req: &EntryRequest| Box::pin(answer(req)) as std::pin::Pin<Box<dyn std::future::Future<Output = EntryAnswer> + Send>>) }
     }
 }
 
@@ -72,7 +76,7 @@ impl ProtocolHandler for EntryServer {
         while let Ok((mut send, mut recv)) = connection.accept_bi().await {
             let Ok(bytes) = recv.read_to_end(64 * 1024).await else { continue };
             let Ok(req) = serde_json::from_slice::<EntryRequest>(&bytes) else { continue };
-            let answer = (self.answer)(&req);
+            let answer = (self.answer)(&req).await;
             tracing::info_span!(
                 "rafka.mesh.entry.serve.via-pull",
                 node = %req.node,

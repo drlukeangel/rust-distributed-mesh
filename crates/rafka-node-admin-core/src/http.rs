@@ -118,7 +118,7 @@ impl ControlPlane {
         };
         // The Build is durable before the pointer names it (never the pointer first).
         self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
-        let record = self.accepted.point(&build_id, "accepted").map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+        let record = self.accepted.point(&build_id, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
         self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
         tracing::info!(build_id = %build_id, "build accepted");
         self.build_submitted.notify_waiters();
@@ -293,7 +293,7 @@ async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> 
     if matches!(p.state, BuildState::Pending | BuildState::Running) {
         return Err(Refusal::Conflict(format!("Build {id} is still {:?}; only finished Builds leave history", p.state)));
     }
-    if cp.accepted.build_id().as_ref() == Some(&id) {
+    if cp.accepted.build_id().await.as_ref() == Some(&id) {
         return Err(Refusal::Conflict(format!("Build {id} is the accepted topology (Fabric.build_id); it leaves history once the pointer moves")));
     }
     cp.builds.forget(&id).await.map_err(Refusal::State)?;
@@ -329,7 +329,7 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
     let mut v = serde_json::to_value(cp.topology.read().await.fabric_view()).unwrap_or(Value::Null);
     // The shape the fabric should have, as this admin holds it.
     if let Some(o) = v.as_object_mut() {
-        o.insert("build_id".into(), serde_json::to_value(cp.accepted.build_id()).unwrap_or(Value::Null));
+        o.insert("build_id".into(), serde_json::to_value(cp.accepted.build_id().await).unwrap_or(Value::Null));
         // A fabric shutdown's progress as this admin sees it: diagnostics, never authority.
         let progress = cp.fabric_shutdown.get().and_then(|s| s.control.progress());
         o.insert("shutdown".into(), serde_json::to_value(progress).unwrap_or(Value::Null));
@@ -380,7 +380,7 @@ async fn shutdown(State(cp): State<Shared>) -> Response {
         initiated_by_node_id: seat.node_id.as_str().to_string(),
         initiated_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
     };
-    match seat.control.initiate(begun) {
+    match seat.control.initiate(begun).await {
         Ok(held) => {
             tracing::info_span!("rafka.node_admin.fabric.update.via-shutdown", node = %seat.me, initiated_by = %held.initiated_by)
                 .in_scope(|| tracing::info!("fabric shutdown begun"));

@@ -188,7 +188,7 @@ impl StatusAuthority {
             decide(self, &view, &mut declared, sender.as_ref(), req)
         };
         let reply = match (&reply, row) {
-            (StatusReply::Applied, Some(row)) => match self.nodes_storage.put_contact(&row) {
+            (StatusReply::Applied, Some(row)) => match self.nodes_storage.put_contact(&row).await {
                 Ok(()) => {
                     let mut t = self.topology.write().await;
                     if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {

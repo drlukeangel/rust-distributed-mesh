@@ -64,15 +64,15 @@ pub struct ShutdownControl {
 impl ShutdownControl {
     /// Open over `storage`: a shutdown already held there (this admin restarted or joined during
     /// one) is in force from the start.
-    pub fn open(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Result<Self, FabricStorageError> {
-        let held = storage.shutdown()?;
+    pub async fn open(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Result<Self, FabricStorageError> {
+        let held = storage.shutdown().await?;
         let progress = held.as_ref().map(|s| ShutdownProgress { initiated_by: s.initiated_by.clone(), phase: ShutdownPhase::Frozen, incomplete: Vec::new() });
         Ok(Self { storage, tx: watch::channel(held).0, node: node.into(), progress: Mutex::new(progress), publish: OnceLock::new() })
     }
 
     /// Over memory storage, holding no shutdown: for runs that need no restart survival.
-    pub fn memory(node: impl Into<String>) -> Arc<Self> {
-        Arc::new(Self::open(Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), node).expect("memory storage reads"))
+    pub async fn memory(node: impl Into<String>) -> Arc<Self> {
+        Arc::new(Self::open(Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), node).await.expect("memory storage reads"))
     }
 
     /// Where this admin broadcasts a shutdown it initiates or hands to a neighbour.
@@ -108,11 +108,11 @@ impl ShutdownControl {
 
     /// Hold `shutdown` heard `via` from `from`: persisted through `fabric.storage` before anything
     /// waits on it. Returns whether this admin learned it now (it held none before).
-    pub fn learn(&self, shutdown: FabricShutdown, via: &str, from: &str) -> Result<bool, FabricStorageError> {
+    pub async fn learn(&self, shutdown: FabricShutdown, via: &str, from: &str) -> Result<bool, FabricStorageError> {
         if self.held().is_some() {
             return Ok(false);
         }
-        let held = self.storage.put_shutdown(&shutdown)?;
+        let held = self.storage.put_shutdown(&shutdown).await?;
         *self.progress.lock().unwrap() =
             Some(ShutdownProgress { initiated_by: held.initiated_by.clone(), phase: ShutdownPhase::Frozen, incomplete: Vec::new() });
         tracing::info_span!(
@@ -128,8 +128,8 @@ impl ShutdownControl {
     }
 
     /// The fabric-primary begins a shutdown: hold it, then broadcast it.
-    pub fn initiate(&self, shutdown: FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.learn(shutdown, "initiated", "self")?;
+    pub async fn initiate(&self, shutdown: FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+        self.learn(shutdown, "initiated", "self").await?;
         let held = self.held().expect("held after learn");
         if let Some(p) = self.publish.get() {
             p(held.clone());

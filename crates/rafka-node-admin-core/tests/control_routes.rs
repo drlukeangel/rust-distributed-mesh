@@ -131,7 +131,7 @@ impl Harness {
 async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_an_attempt() {
     let h = harness(Router::new()).await;
     let before = h.cp.topology.read().await.clone();
-    let b0 = h.cp.accepted.build_id().unwrap().0;
+    let b0 = h.cp.accepted.build_id().await.unwrap().0;
     let seed = h.facts().await.len();
 
     // A change: the next complete Build, and Fabric.build_id names it.
@@ -224,7 +224,7 @@ async fn refusals_are_named_and_publish_nothing() {
 #[tokio::test]
 async fn build_history_is_readable_and_only_finished_builds_that_are_not_current_can_be_forgotten() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().unwrap().0;
+    let b0 = h.cp.accepted.build_id().await.unwrap().0;
     // A restart opens an attempt of the accepted Build: it is in flight, not history.
     let (_, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.1/restart", None).await;
     assert_eq!(v["build_id"], b0.as_str(), "{v}");
@@ -278,7 +278,7 @@ async fn shutdown_and_runtime_fault_routes_stay_outside_build() {
     );
     let h = harness(chaos).await;
     let seed = h.facts().await.len();
-    let control = seat(&h, "mesh1.admin.1");
+    let control = seat(&h, "mesh1.admin.1").await;
     let (s, _) = call(&h.app, "POST", "/api/chaos/wedge", None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(*hit.lock().unwrap(), 1);
@@ -291,9 +291,9 @@ async fn shutdown_and_runtime_fault_routes_stay_outside_build() {
 }
 
 /// A fabric shutdown seat for the admin `me` over memory storage.
-fn seat(h: &Harness, me: &str) -> Arc<rafka_node_admin_core::shutdown::ShutdownControl> {
+async fn seat(h: &Harness, me: &str) -> Arc<rafka_node_admin_core::shutdown::ShutdownControl> {
     let control = Arc::new(
-        rafka_node_admin_core::shutdown::ShutdownControl::open(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), me).unwrap(),
+        rafka_node_admin_core::shutdown::ShutdownControl::open(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), me).await.unwrap(),
     );
     let _ = h.cp.fabric_shutdown.set(Arc::new(rafka_node_admin_core::http::ShutdownSeat {
         control: control.clone(),
@@ -306,7 +306,7 @@ fn seat(h: &Harness, me: &str) -> Arc<rafka_node_admin_core::shutdown::ShutdownC
 #[tokio::test]
 async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
     let h = harness(Router::new()).await;
-    let control = seat(&h, "mesh1.admin.2");
+    let control = seat(&h, "mesh1.admin.2").await;
     let (s, body) = call(&h.app, "POST", "/api/shutdown", Some(json!({}))).await;
     assert_eq!(s, StatusCode::CONFLICT, "{body}");
     assert_eq!((body["error"].as_str(), body["fabric_primary"].as_str()), (Some("rejected-not-authority"), Some("mesh1.admin.1")), "{body}");

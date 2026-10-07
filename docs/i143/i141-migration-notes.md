@@ -111,3 +111,16 @@ the per-type spawn in `rafka-node-admin`) collapse onto `NodeKind` in i141 e4; t
   (`mesh_runtime__role_wedge`); the role declares its readiness through the testkit's declare loop
   in `start_with_client`. rafka-v2's own offline ladder (`node-admin/src/lib.rs::OfflineTickle`)
   and its readiness declarations are what i141 e3/e6 replace with the imported ones.
+
+## 9. The storage interfaces are awaited; a product binds async backends
+
+i141 e3.s1 binds Rafka's durable topics to `fabric.storage`, `mesh.storage`, `nodes.storage`,
+`connections.storage` and `builds.storage`. Rafka's store is async (a point read and a durable
+put both await the broker), so the four interfaces are `async_trait` like `builds.storage`
+(`crates/rafka-node-admin-core/src/storage.rs`, `fabric_storage.rs`); every holder that read them
+synchronously is awaited too (`AcceptedStore::{record, build_id, point}`,
+`ShutdownControl::{open, learn, initiate}`, `hydration_blocker`, the entry answer in
+`rafka-mesh-transport::entry::EntryServer`, which carries the Fabric record). A sync sink that
+must record a contact (`TopologySink::publish`) writes on its own task and names a refusal there.
+rafka-v2's backends implement the awaited traits directly: no blocking shim, no second structure
+fed from a read.

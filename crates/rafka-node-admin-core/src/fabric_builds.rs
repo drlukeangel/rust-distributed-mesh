@@ -233,7 +233,7 @@ impl FabricBuildStateAdapter {
                             Ok(w) => {
                                 let heard_fabric = w.fabric;
                                 if let Some(sd) = w.shutdown {
-                                    if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()) {
+                                    if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()).await {
                                         tracing::info_span!("rafka.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
                                             .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
                                     }
@@ -253,7 +253,7 @@ impl FabricBuildStateAdapter {
                             neighbors.lock().unwrap().insert(peer);
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
-                            let (record, pointer) = (store.record().ok().flatten(), store.build_id());
+                            let (record, pointer) = (store.record().await.ok().flatten(), store.build_id().await);
                             let in_force = held_shutdown.held();
                             tokio::spawn(async move {
                                 // A shutdown in force first: the neighbour comes up frozen.

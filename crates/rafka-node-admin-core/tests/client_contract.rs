@@ -51,7 +51,7 @@ async fn serve() -> (NodeAdminClient, Arc<ControlPlane>) {
     let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), t));
     // This admin is the fabric-primary (mesh1.admin.1): it may begin a fabric shutdown.
     let _ = cp.fabric_shutdown.set(Arc::new(rafka_node_admin_core::http::ShutdownSeat {
-        control: rafka_node_admin_core::shutdown::ShutdownControl::memory("mesh1.admin.1"),
+        control: rafka_node_admin_core::shutdown::ShutdownControl::memory("mesh1.admin.1").await,
         me: "mesh1.admin.1".parse().unwrap(),
         node_id: rafka_node_admin_core::model::NodeId::mint(),
     }));

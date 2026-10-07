@@ -16,6 +16,7 @@
 //!   declared and the admin applied (`status_rpc`).
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
+use async_trait::async_trait;
 use crate::model::{IncarnationId, MeshId, NodeId, PathName, EndpointId};
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
@@ -33,24 +34,26 @@ pub struct MeshRecord {
     pub name: String,
 }
 
+#[async_trait]
 pub trait MeshStorage: Send + Sync {
-    fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError>;
-    fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
-    fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
+    async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError>;
+    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
+    async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
 }
 
 #[derive(Debug, Default)]
 pub struct MemoryMeshStorage(Mutex<BTreeMap<String, MeshRecord>>);
 
+#[async_trait]
 impl MeshStorage for MemoryMeshStorage {
-    fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
+    async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
         Ok(self.0.lock().unwrap().get(name).cloned())
     }
-    fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
+    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
         self.0.lock().unwrap().insert(record.name.clone(), record.clone());
         Ok(())
     }
-    fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
+    async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         Ok(self.0.lock().unwrap().values().cloned().collect())
     }
 }
@@ -67,14 +70,15 @@ impl FileMeshStorage {
     }
 }
 
+#[async_trait]
 impl MeshStorage for FileMeshStorage {
-    fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
+    async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
         self.0.read(name, MESH_FORMAT)
     }
-    fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
+    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
         self.0.write(&record.name, MESH_FORMAT, record)
     }
-    fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
+    async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         self.0.list(MESH_FORMAT)
     }
 }
@@ -113,14 +117,15 @@ impl NodeRecord {
     }
 }
 
+#[async_trait]
 pub trait NodesStorage: Send + Sync {
     /// This admin's own row; `None` before its first start completed.
-    fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
-    fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
+    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError>;
     /// The births this admin last heard, by NodeId (bootstrap contacts).
-    fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError>;
-    fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
-    fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
+    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError>;
+    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
 }
 
 #[derive(Debug, Default)]
@@ -129,22 +134,23 @@ pub struct MemoryNodesStorage {
     contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
 }
 
+#[async_trait]
 impl NodesStorage for MemoryNodesStorage {
-    fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
+    async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
     }
-    fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
         *self.own.lock().unwrap() = Some(record.clone());
         Ok(())
     }
-    fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
+    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
         Ok(self.contacts.lock().unwrap().values().cloned().collect())
     }
-    fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.contacts.lock().unwrap().insert(record.node_id.clone(), record.clone());
         Ok(())
     }
-    fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
+    async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.lock().unwrap().remove(node_id);
         Ok(())
     }
@@ -165,45 +171,48 @@ impl FileNodesStorage {
     }
 }
 
+#[async_trait]
 impl NodesStorage for FileNodesStorage {
-    fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
+    async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT)
     }
-    fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.own.write("self", NODE_FORMAT, record)
     }
-    fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
+    async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
         self.contacts.list(NODE_FORMAT)
     }
-    fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
+    async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
         self.contacts.write(record.node_id.as_str(), NODE_FORMAT, record)
     }
-    fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
+    async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
         self.contacts.remove(node_id.as_str())
     }
 }
 
 // ---------------------------------------------------------------- connections.storage
 
+#[async_trait]
 pub trait ConnectionsStorage: Send + Sync {
     /// Keep `fact` as the latest for its (source, destination, kind).
-    fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError>;
-    fn connections(&self) -> Result<Vec<NodeConnection>, StorageError>;
-    fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError>;
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError>;
+    async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError>;
+    async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError>;
 }
 
 #[derive(Debug, Default)]
 pub struct MemoryConnectionsStorage(Mutex<BTreeMap<ConnectionIndex, NodeConnection>>);
 
+#[async_trait]
 impl ConnectionsStorage for MemoryConnectionsStorage {
-    fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         self.0.lock().unwrap().insert(fact.index(), fact.clone());
         Ok(())
     }
-    fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
+    async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         Ok(self.0.lock().unwrap().values().cloned().collect())
     }
-    fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
+    async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.lock().unwrap().remove(index);
         Ok(())
     }
@@ -229,14 +238,15 @@ impl FileConnectionsStorage {
     }
 }
 
+#[async_trait]
 impl ConnectionsStorage for FileConnectionsStorage {
-    fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact)
     }
-    fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
+    async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.0.list(CONNECTION_FORMAT)
     }
-    fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
+    async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
         self.0.remove(&connection_key(index))
     }
 }
@@ -277,38 +287,38 @@ mod tests {
     }
 
     /// Every boundary behaves the same in memory and on disk, and the disk copy survives reopening.
-    #[test]
-    fn mesh_nodes_and_connections_hold_their_records_in_memory_and_across_a_reopen() {
+    #[tokio::test]
+    async fn mesh_nodes_and_connections_hold_their_records_in_memory_and_across_a_reopen() {
         let d = crate::record_store::tempdir("storage");
         let mesh = MeshRecord { mesh_id: MeshId::mint(), name: "mesh1".into() };
         let (own, peer) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
         let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
-        let check = |m: &dyn MeshStorage, n: &dyn NodesStorage, c: &dyn ConnectionsStorage, fresh: bool| {
+        let check = async |m: &dyn MeshStorage, n: &dyn NodesStorage, c: &dyn ConnectionsStorage, fresh: bool| {
             if fresh {
-                assert_eq!(m.mesh("mesh1").unwrap(), None);
-                assert_eq!(n.own().unwrap(), None);
-                m.put_mesh(&mesh).unwrap();
-                n.put_own(&own).unwrap();
-                n.put_contact(&peer).unwrap();
-                c.put_connection(&up).unwrap();
-                c.put_connection(&down).unwrap();
+                assert_eq!(m.mesh("mesh1").await.unwrap(), None);
+                assert_eq!(n.own().await.unwrap(), None);
+                m.put_mesh(&mesh).await.unwrap();
+                n.put_own(&own).await.unwrap();
+                n.put_contact(&peer).await.unwrap();
+                c.put_connection(&up).await.unwrap();
+                c.put_connection(&down).await.unwrap();
             }
-            assert_eq!(m.mesh("mesh1").unwrap(), Some(mesh.clone()));
-            assert_eq!(m.meshes().unwrap(), [mesh.clone()]);
-            assert_eq!(n.own().unwrap(), Some(own.clone()));
-            assert_eq!(n.contacts().unwrap(), [peer.clone()]);
-            assert_eq!(c.connections().unwrap(), [down.clone()], "the latest fact per (source, destination, kind)");
+            assert_eq!(m.mesh("mesh1").await.unwrap(), Some(mesh.clone()));
+            assert_eq!(m.meshes().await.unwrap(), [mesh.clone()]);
+            assert_eq!(n.own().await.unwrap(), Some(own.clone()));
+            assert_eq!(n.contacts().await.unwrap(), [peer.clone()]);
+            assert_eq!(c.connections().await.unwrap(), [down.clone()], "the latest fact per (source, destination, kind)");
         };
         let mem = (MemoryMeshStorage::default(), MemoryNodesStorage::default(), MemoryConnectionsStorage::default());
-        check(&mem.0, &mem.1, &mem.2, true);
-        check(&FileMeshStorage::open(&d).unwrap(), &FileNodesStorage::open(&d).unwrap(), &FileConnectionsStorage::open(&d).unwrap(), true);
+        check(&mem.0, &mem.1, &mem.2, true).await;
+        check(&FileMeshStorage::open(&d).unwrap(), &FileNodesStorage::open(&d).unwrap(), &FileConnectionsStorage::open(&d).unwrap(), true).await;
         let (m, n, c) = (FileMeshStorage::open(&d).unwrap(), FileNodesStorage::open(&d).unwrap(), FileConnectionsStorage::open(&d).unwrap());
-        check(&m, &n, &c, false);
-        n.remove_contact(&peer.node_id).unwrap();
-        c.remove_connection(&down.index()).unwrap();
-        assert!(n.contacts().unwrap().is_empty() && c.connections().unwrap().is_empty());
+        check(&m, &n, &c, false).await;
+        n.remove_contact(&peer.node_id).await.unwrap();
+        c.remove_connection(&down.index()).await.unwrap();
+        assert!(n.contacts().await.unwrap().is_empty() && c.connections().await.unwrap().is_empty());
         assert_eq!(peer.gossip_addr().map(|a| a.id.to_string()), Some(peer.endpoint_id.0.clone()));
         std::fs::write(d.join("meshes").join("mesh1.json"), br#"{"format":"mesh-record/9","record":{}}"#).unwrap();
-        assert!(matches!(m.mesh("mesh1"), Err(StorageError::Unrecognised { .. })));
+        assert!(matches!(m.mesh("mesh1").await, Err(StorageError::Unrecognised { .. })));
     }
 }

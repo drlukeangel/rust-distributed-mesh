@@ -200,10 +200,11 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     // Entry, as a node-admin serves it: a launched node pulls what the admin hears before it
     // publishes. Without it every pull is refused and the node's join rests on gossip alone.
     let book = membership.book.clone();
-    let entry = rafka_mesh_transport::entry::EntryServer::new(move |_req| rafka_mesh_transport::entry::EntryAnswer {
-        served_by: "mesh1.admin.1".into(),
-        members: book.current(book.staleness_floor()),
-        ..Default::default()
+    let entry = rafka_mesh_transport::entry::EntryServer::new(move |_req| {
+        let book = book.clone();
+        async move {
+            rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), members: book.current(book.staleness_floor()), ..Default::default() }
+        }
     });
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_mesh_transport::entry::ENTRY_ALPN, entry).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();

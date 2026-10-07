@@ -323,27 +323,27 @@ impl AcceptedStore {
         Self { storage, wanted: Mutex::new(None), node: node.into() }
     }
 
-    pub fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.storage.fabric()
+    pub async fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+        self.storage.fabric().await
     }
 
-    pub fn build_id(&self) -> Option<BuildId> {
-        self.storage.fabric().ok().flatten().and_then(|r| r.build_id)
+    pub async fn build_id(&self) -> Option<BuildId> {
+        self.storage.fabric().await.ok().flatten().and_then(|r| r.build_id)
     }
 
     /// The accepted Build: the one the pointer names, as `builds` holds it.
     pub async fn current(&self, builds: &dyn BuildStateAdapter) -> Option<BuildProjection> {
-        let id = self.build_id()?;
+        let id = self.build_id().await?;
         builds.read_build(&id).await.ok()
     }
 
     /// Move the pointer to `build_id` (its Build is already durable in `builds.storage`), persisting
     /// the record. Returns the record now held.
-    pub fn point(&self, build_id: &BuildId, via: &str) -> Result<FabricRecord, FabricStorageError> {
-        let mut record = self.storage.fabric()?.ok_or_else(|| FabricStorageError::Io { file: "fabric.json".into(), reason: "no Fabric record to point".into() })?;
+    pub async fn point(&self, build_id: &BuildId, via: &str) -> Result<FabricRecord, FabricStorageError> {
+        let mut record = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "fabric.json".into(), reason: "no Fabric record to point".into() })?;
         let previous = record.build_id.clone();
         record.build_id = Some(build_id.clone());
-        self.storage.put_fabric(&record)?;
+        self.storage.put_fabric(&record).await?;
         tracing::info_span!(
             "rafka.node_admin.fabric.update.via-build-accepted",
             node = %self.node,
@@ -360,7 +360,7 @@ impl AcceptedStore {
     /// older than the current one; otherwise remembered until the Build's facts arrive.
     pub async fn learn(&self, record: FabricRecord, builds: &dyn BuildStateAdapter, from: &str) {
         let Some(id) = record.build_id.clone() else { return };
-        match self.storage.fabric() {
+        match self.storage.fabric().await {
             Ok(Some(mine)) if mine.fabric_id != record.fabric_id => return,
             Ok(Some(mine)) if mine.build_id.as_ref() == Some(&id) => return,
             Err(_) => return,
@@ -375,7 +375,7 @@ impl AcceptedStore {
                 return;
             }
         }
-        let _ = self.point(&id, &format!("gossip:{from}"));
+        let _ = self.point(&id, &format!("gossip:{from}")).await;
         *self.wanted.lock().unwrap() = None;
     }
 
@@ -396,7 +396,7 @@ impl AcceptedStore {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         storage
             .put_fabric(&FabricRecord { fabric_id, name: topology.fabric.clone(), build_id: None })
-            .map_err(|e| BuildStateError::Io(e.to_string()))?;
+            .await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         let store = Arc::new(Self::new(storage, me));
         let build_id = BuildId::mint();
         builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, traceparent: None, submitted_at_ms: 0 }).await?;
@@ -404,7 +404,7 @@ impl AcceptedStore {
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })
             .await?;
-        store.point(&build_id, "seeded").map_err(|e| BuildStateError::Io(e.to_string()))?;
+        store.point(&build_id, "seeded").await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         Ok(store)
     }
 }

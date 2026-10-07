@@ -130,7 +130,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     let rpc1 = &b["rpc1"];
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
     // Applied is on the subject's row before it was answered.
-    let row = rig.storage.contacts().unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    let row = rig.storage.contacts().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
     assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"));
     assert_eq!(row.incarnation_id, rpc1.node.incarnation_id.clone().unwrap());
     // The same natural key again: one logical event.
@@ -222,7 +222,7 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     assert!(matches!(out, RpcOutcome::NotSent(_)), "{out:?}");
     assert!(rig.authority.declared.lock().unwrap().nodes.is_empty());
-    assert!(rig.storage.contacts().unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
+    assert!(rig.storage.contacts().await.unwrap().iter().all(|c| c.node_id != rpc1.node.node_id));
     // Applied, reply lost: Indeterminate at the caller; the same declaration again is AlreadyApplied.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;

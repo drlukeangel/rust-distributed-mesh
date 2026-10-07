@@ -12,6 +12,7 @@
 //! fsync and atomic rename. A file this build does not recognise is refused by name, never read as
 //! a value.
 
+use async_trait::async_trait;
 use crate::model::FabricId;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -42,13 +43,14 @@ pub struct FabricShutdown {
 pub use crate::record_store::StorageError as FabricStorageError;
 
 /// node-admin's Fabric control state.
+#[async_trait]
 pub trait FabricStorage: Send + Sync {
-    fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError>;
-    fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError>;
-    fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
+    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError>;
+    async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError>;
+    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
     /// Hold `shutdown`. The first shutdown held is kept: a later one never replaces it, and it is
     /// never removed. Returns the record now held.
-    fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
+    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
 }
 
 /// What a write decides against the held shutdown: the first one is kept.
@@ -71,18 +73,19 @@ impl MemoryFabricStorage {
     }
 }
 
+#[async_trait]
 impl FabricStorage for MemoryFabricStorage {
-    fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         Ok(self.fabric.lock().unwrap().clone())
     }
-    fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
+    async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
         *self.fabric.lock().unwrap() = Some(record.clone());
         Ok(())
     }
-    fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
+    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         Ok(self.shutdown.lock().unwrap().clone())
     }
-    fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         let mut g = self.shutdown.lock().unwrap();
         let (now, _) = decide(g.clone(), shutdown);
         *g = Some(now.clone());
@@ -110,19 +113,21 @@ impl FileFabricStorage {
     }
 }
 
+#[async_trait]
 impl FabricStorage for FileFabricStorage {
-    fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         self.records.read(FABRIC_KEY, FABRIC_FORMAT)
     }
-    fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
+    async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
         self.records.write(FABRIC_KEY, FABRIC_FORMAT, record)
     }
-    fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
+    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)
     }
-    fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         let _g = self.shutdown.lock().unwrap();
-        let (now, changed) = decide(self.shutdown()?, shutdown);
+        // The held record is read through the file directly: the guard is held across no await.
+        let (now, changed) = decide(self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)?, shutdown);
         if changed {
             self.records.write(SHUTDOWN_KEY, SHUTDOWN_FORMAT, &now)?;
         }
@@ -138,33 +143,33 @@ mod tests {
         FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: "n1".into(), initiated_at_ms: 10 }
     }
 
-    #[test]
-    fn a_held_shutdown_is_never_replaced_or_removed() {
+    #[tokio::test]
+    async fn a_held_shutdown_is_never_replaced_or_removed() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, {
             let d = tempdir();
             Box::new(FileFabricStorage::open(&d).unwrap())
         }] {
-            assert_eq!(s.shutdown().unwrap(), None);
-            assert_eq!(s.put_shutdown(&shutdown()).unwrap(), shutdown());
+            assert_eq!(s.shutdown().await.unwrap(), None);
+            assert_eq!(s.put_shutdown(&shutdown()).await.unwrap(), shutdown());
             let other = FabricShutdown { initiated_by: "mesh2.admin.1".into(), ..shutdown() };
-            assert_eq!(s.put_shutdown(&other).unwrap(), shutdown(), "the first initiation is kept");
+            assert_eq!(s.put_shutdown(&other).await.unwrap(), shutdown(), "the first initiation is kept");
         }
     }
 
-    #[test]
-    fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
+    #[tokio::test]
+    async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
         let s = FileFabricStorage::open(&d).unwrap();
         let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-1".into())) };
-        s.put_fabric(&fabric).unwrap();
-        s.put_shutdown(&shutdown()).unwrap();
+        s.put_fabric(&fabric).await.unwrap();
+        s.put_shutdown(&shutdown()).await.unwrap();
         let reopened = FileFabricStorage::open(&d).unwrap();
-        assert_eq!(reopened.fabric().unwrap(), Some(fabric));
-        assert_eq!(reopened.shutdown().unwrap(), Some(shutdown()));
+        assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
+        assert_eq!(reopened.shutdown().await.unwrap(), Some(shutdown()));
         std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
-        assert!(matches!(reopened.shutdown(), Err(FabricStorageError::Unrecognised { .. })));
+        assert!(matches!(reopened.shutdown().await, Err(FabricStorageError::Unrecognised { .. })));
         std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), b"not json").unwrap();
-        assert!(matches!(reopened.shutdown(), Err(FabricStorageError::Unrecognised { .. })));
+        assert!(matches!(reopened.shutdown().await, Err(FabricStorageError::Unrecognised { .. })));
     }
 
     fn tempdir() -> std::path::PathBuf {

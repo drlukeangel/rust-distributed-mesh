@@ -240,7 +240,7 @@ connections.storage
 builds.storage
 ```
 
-RDM supplies interfaces plus memory and durable file implementations for restart/chaos proof. `builds.storage` is the existing BuildStateAdapter contract and its memory/FileJournal implementations adopted under the storage name. Rafka later binds production backends.
+RDM supplies the interfaces plus memory and durable file implementations for restart/chaos proof. Every interface is awaited (`async_trait`, as `builds.storage` always was): a production backend reads and writes a durable medium, so nothing in node-admin holds a lock or a sync callback across a storage call; the entry answer, which carries the Fabric record, is awaited too. `builds.storage` is the existing BuildStateAdapter contract and its memory/FileJournal implementations adopted under the storage name. Rafka later binds production backends.
 
 `fabric.storage` holds at least:
 
@@ -867,6 +867,12 @@ e11.s10 status/lifecycle on a role: a broker declares ReadyForTraffic to its mes
         direct then via a peer) and marked dead; its runtime still runs, so it is held, never
         replaced; thawed, the same birth is back ready
         cell: `mesh_runtime__role_wedge`
+e11.s11 what the import found: a product's durable backend is async, so the four storage
+        interfaces (fabric/mesh/nodes/connections) are awaited like builds.storage, and the entry
+        answer (which carries the Fabric record) is awaited; RDM's memory and file backends are
+        unchanged in behavior
+        cells: the existing storage, shutdown and restart cells on the awaited interfaces; the
+        gate unchanged
 ```
 
 Shape for every cell: one mesh, one node-admin, and the roles the cell names; the process provider.
