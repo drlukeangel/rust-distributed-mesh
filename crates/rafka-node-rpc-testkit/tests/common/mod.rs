@@ -237,12 +237,27 @@ pub enum Smoke {
 /// The e2.s3 smoke for the provider `spawn_type` names (the
 /// `MESH_SPAWN_TYPE` value): one rpc node deployed through every create
 /// step, every receipt present, every step span attributed.
+/// Removes every container and the network of one fabric when dropped, however the test ends.
+pub struct ContainerFabricCleanup(pub String);
+
+impl Drop for ContainerFabricCleanup {
+    fn drop(&mut self) {
+        let docker = |args: &[&str]| std::process::Command::new("docker").args(args).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+        for id in docker(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.0)]).split_whitespace() {
+            docker(&["rm", "-f", id]);
+        }
+        docker(&["network", "rm", &format!("rafka-{}", self.0)]);
+    }
+}
+
 pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
 
     let fabric_id = FabricId::mint();
     let fabric = format!("fab-{fabric_id}");
+    // A failed smoke leaves nothing running: every container of the fabric and its network go.
+    let _cleanup = (spawn_type == "container").then(|| ContainerFabricCleanup(fabric.clone()));
     let policy = FabricPolicy::bootstrap(Some(spawn_type)).expect("a known MESH_SPAWN_TYPE");
     let prepared = match rafka_node_admin_core::deployment::prepare(policy, &fabric).await {
         Ok(p) => p,

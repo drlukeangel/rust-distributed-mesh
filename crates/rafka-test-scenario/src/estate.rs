@@ -516,7 +516,7 @@ impl Estate {
                 let _ = c.wait();
             }
         }
-        while Instant::now() < until && !self.live_runtimes().is_empty() {
+        while Instant::now() < until && (!self.live_runtimes().is_empty() || !self.live_containers().is_empty()) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -591,6 +591,36 @@ impl Estate {
 
     /// Every runtime a provider started for this estate that still runs:
     /// `(data dir, pid)` from each node's `deployment.json` (process provider).
+    /// The running containers of this estate's Fabric (container provider): `(node, container id)`.
+    /// The provider labels each container with the Fabric's id and the node's path.name.
+    pub fn live_containers(&self) -> Vec<(String, String)> {
+        if self.owner.provider != "container" || self.fabric_id.is_empty() {
+            return Vec::new();
+        }
+        let out = Command::new("docker")
+            .args(["ps", "--no-trunc", "--filter", &format!("label=rafka.fabric={}", self.fabric_id), "--filter", "status=running", "--format", "{{.Label \"rafka.node\"}} {{.ID}}"])
+            .output();
+        let Ok(out) = out else { return Vec::new() };
+        String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(' ').map(|(n, i)| (n.to_string(), i.to_string()))).collect()
+    }
+
+    /// The running container of `node` (container provider).
+    pub fn container_of(&self, node: &str) -> Option<String> {
+        self.live_containers().into_iter().find(|(n, _)| n == node).map(|(_, id)| id)
+    }
+
+    /// Remove every container of this estate's Fabric and its network (container provider).
+    fn remove_containers(&self) {
+        if self.owner.provider != "container" || self.fabric_id.is_empty() {
+            return;
+        }
+        let ids = Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", self.fabric_id)]).output();
+        for id in ids.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default().split_whitespace() {
+            let _ = Command::new("docker").args(["rm", "-f", id]).output();
+        }
+        let _ = Command::new("docker").args(["network", "rm", &format!("rafka-{}", self.fabric_id)]).output();
+    }
+
     pub fn live_runtimes(&self) -> Vec<(PathBuf, u32)> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&self.root).into_iter().flatten().flatten() {
@@ -654,6 +684,8 @@ impl Drop for Estate {
             let _ = c.wait();
             sweep(self);
         }
+        // Containers outlive every admin: the estate removes its Fabric's containers and network.
+        self.remove_containers();
     }
 }
 
