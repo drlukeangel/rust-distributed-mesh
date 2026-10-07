@@ -219,6 +219,23 @@ impl OperationRunner for Runner {
 }
 
 impl Estate {
+    /// Membership repair: every `Dead` node whose runtime runs and answers, in a mesh with a live
+    /// admin to forward it, is heard again.
+    async fn hear(&self) {
+        let mut v = self.view.write().await;
+        let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.mesh.clone()).collect();
+        let mut changed = false;
+        for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::Dead && forwarded.contains(&n.mesh)) {
+            if self.world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
+                n.status = NodeStatus::ReadyForTraffic;
+                changed = true;
+            }
+        }
+        if changed {
+            rafka_node_admin_core::election::resolve(&mut v.nodes);
+        }
+    }
+
     /// A view change: `paths` are unheard (Dead) in the view; the seats are elected again.
     async fn unheard(&self, paths: &[&str]) {
         let mut v = self.view.write().await;
@@ -245,7 +262,9 @@ impl Estate {
     }
 
     /// Every live admin runs its executor until no Build is active: claims, hand-offs and
-    /// receipts are the product's.
+    /// receipts are the product's. Between passes membership does what gossip does in the
+    /// product: a runtime that runs and answers, in a mesh that has a live admin to forward its
+    /// digests, is heard again and leaves `Dead` in the view.
     async fn converge(&self) {
         for _ in 0..8 {
             let admins: Vec<String> = self.view.read().await.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.name.to_string()).collect();
@@ -256,6 +275,7 @@ impl Estate {
                     eprintln!("converge: {a} -> {done:?}");
                 }
             }
+            self.hear().await;
             let current = self.accepted.current(&*self.builds).await.unwrap();
             if !matches!(current.state, BuildState::Pending | BuildState::Running) {
                 return;
@@ -374,14 +394,7 @@ async fn members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated() 
     for m in members.iter().filter(|m| **m != primary) {
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} answers: never created over: {:?}", e.fence_of(m));
     }
-    // The view hears them again (their forwarder is back); the topology holds.
-    {
-        let mut v = e.view.write().await;
-        for n in v.nodes.iter_mut().filter(|n| members.contains(&n.name.to_string()) && n.status == NodeStatus::Dead) {
-            n.status = NodeStatus::ReadyForTraffic;
-        }
-        rafka_node_admin_core::election::resolve(&mut v.nodes);
-    }
+    // Heard again through the reborn forwarder: the topology holds.
     e.holds_the_shape().await;
 }
 
