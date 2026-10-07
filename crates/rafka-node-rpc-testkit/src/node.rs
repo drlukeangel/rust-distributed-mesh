@@ -175,6 +175,12 @@ pub async fn wait_for_signal(binary: &str) {
 /// [`start`], handing `register` the process's one client too (a product family that calls out,
 /// or carries for others, holds it before the server seals).
 pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rafka_node_rpc::LiveNodeResolver>, Arc<rafka_node_rpc::NodeRpcClient>) -> ServerBuilder) -> Result<RunningNode> {
+    start_with_seams(launch, |b, s| register(b, s.resolver, s.client)).await
+}
+
+/// [`start_with_client`], handing `register` every process seam the testkit doors act through:
+/// the resolver, the client, the connections writer and the storage fault.
+pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // membership is joined.
@@ -197,16 +203,28 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
     // store for others through it (one direct inner call per forward, never a second hop).
     // This node's own connections: hydrated from its data dir, then kept by what its client
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    // The storage fault the originate door arms (testkit only): the product's file storage,
+    // decorated.
+    let fault = Arc::new(crate::faults::StorageFault::default());
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
-        Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).map_err(|e| anyhow!("connections storage: {e}"))?),
+        Arc::new(crate::faults::FaultedConnectionsStorage::new(
+            Arc::new(rafka_node_admin_core::storage::FileConnectionsStorage::open(&launch.data_dir).map_err(|e| anyhow!("connections storage: {e}"))?),
+            fault.clone(),
+        )),
         Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
     ));
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
+    // An owed Proxy retirement whose write was refused is attempted again while owed
+    // (connections.md §10); the task ends with the process.
+    let _retirements = connections.spawn_retirement_reconciler(rafka_node_admin_core::connections_writer::RETIREMENT_RETRY);
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    let server = serve_kick(register(core_protocols(ServerBuilder::new()), resolver.clone(), client.clone()), subject.clone())
+    // Every connection this node accepts from a live peer is Direct Connected from this node
+    // to that peer (connections.md §10), reported to the same writer as its own dials.
+    let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
+    let server = serve_kick(register(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone())), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .serve_forward(client.clone())

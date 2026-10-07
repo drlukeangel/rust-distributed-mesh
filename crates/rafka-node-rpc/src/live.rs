@@ -179,6 +179,12 @@ impl LiveNodeResolver {
 
 impl LiveNodeResolver {
     /// [`NodeResolver::resolve`] as of `now`.
+    /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
+    /// this process holds no live node for (a probe's ephemeral key, a departed birth) is `None`.
+    pub fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+        self.live.read().unwrap().nodes.values().find(|n| &n.endpoint_id == endpoint).cloned()
+    }
+
     pub fn resolve_at(&self, target: &NodeTarget, now: Instant) -> Result<ResolvedNode, ResolveFailure> {
         let live = self.live.read().unwrap();
         match target {

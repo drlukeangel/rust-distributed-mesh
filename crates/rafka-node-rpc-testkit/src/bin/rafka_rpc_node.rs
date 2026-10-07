@@ -39,7 +39,10 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match node::start(&launch, |b, resolver| declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), resolver, &launch), declare_client.clone(), &launch))
+        match node::start_with_seams(&launch, |b, seams| {
+            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
+            rafka_node_rpc_testkit::originate::serve(b, seams, &launch)
+        })
             .instrument(tracing::Span::none())
             .await
         {

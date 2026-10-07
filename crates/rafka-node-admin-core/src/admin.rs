@@ -1335,8 +1335,25 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     });
     // Node RPC on the admin's one endpoint: the status declarations it applies as an authority
     // (`status_rpc`). The authority is filled once this admin holds a view; until then NotReady.
+    // This admin's own connections: hydrated from its storage, then kept by what its client
+    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
+    let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
+        rafka_mesh_entity::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
+        connections_storage.clone(),
+        Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
+    ));
+    match connections.hydrate().await {
+        Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
+        Err(e) => return Err(format!("connections storage: {e}")),
+    }
+    // An owed Proxy retirement whose write was refused is attempted again while owed
+    // (connections.md §10); the task ends with the process.
+    let _retirements = connections.spawn_retirement_reconciler(crate::connections_writer::RETIREMENT_RETRY);
+    // The process's one live-node resolver: the client's and the server's (an accepted
+    // connection's peer is named by it).
+    let node_rpc_resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
-    let core = rafka_node_rpc::ServerBuilder::new().serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
+    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(node_rpc_resolver.clone(), connections.clone()).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
         let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
         Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
     });
@@ -1496,18 +1513,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    // This admin's own connections: hydrated from its storage, then kept by what its client
-    // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
-    let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
-        rafka_mesh_entity::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
-        connections_storage.clone(),
-        Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
-    ));
-    match connections.hydrate().await {
-        Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
-        Err(e) => return Err(format!("connections storage: {e}")),
-    }
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(Arc::new(rafka_node_rpc::LiveNodeResolver::default()), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(node_rpc_resolver.clone(), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
     let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.

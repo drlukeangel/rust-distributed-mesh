@@ -191,6 +191,17 @@ pub struct ServerBuilder {
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at seal for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
+    /// The source-owned connections observer and the resolver that names an accepted peer,
+    /// when the process writes its own connection facts (connections.md §10).
+    inbound: Option<Inbound>,
+}
+
+/// An accepted connection reported to the process's connections observer as Direct Connected
+/// from this node to the peer, once the resolver names the peer's live birth.
+#[derive(Clone)]
+struct Inbound {
+    resolver: Arc<crate::LiveNodeResolver>,
+    observer: Arc<dyn crate::ConnectionObserver>,
 }
 
 impl ServerBuilder {
@@ -201,7 +212,17 @@ impl ServerBuilder {
             admission: Admission::default(),
             carried: HashMap::new(),
             carried_table: None,
+            inbound: None,
         }
+    }
+
+    /// Report every accepted connection whose peer `resolver` names as a live node to
+    /// `observer` as `direct_accepted` (connections.md §10: a connection accepted from the
+    /// destination is Direct Connected evidence like a dial of this node's own). A peer the
+    /// resolver does not hold (a probe's ephemeral key) is reported to nothing.
+    pub fn with_connection_observer(mut self, resolver: Arc<crate::LiveNodeResolver>, observer: Arc<dyn crate::ConnectionObserver>) -> Self {
+        self.inbound = Some(Inbound { resolver, observer });
+        self
     }
 
     /// Serve unary protocol `P` (owned by `owner`) with handler `f`.
@@ -252,6 +273,7 @@ impl ServerBuilder {
                 draining: AtomicBool::new(false),
                 stats: Arc::new(ServerStats::default()),
                 birth,
+                inbound: self.inbound,
             }),
         })
     }
@@ -285,6 +307,7 @@ struct Inner {
     draining: AtomicBool,
     stats: Arc<ServerStats>,
     birth: ServedBirth,
+    inbound: Option<Inbound>,
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
@@ -491,6 +514,13 @@ impl NodeRpcServer {
 impl ProtocolHandler for NodeRpcServer {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id();
+        // Once per accepted connection, never per stream: the peer's live birth, as this
+        // process resolves it now, is Direct Connected from this node (connections.md §10).
+        if let Some(inbound) = &self.inner.inbound {
+            if let Some(node) = inbound.resolver.by_endpoint(&peer) {
+                inbound.observer.direct_accepted(&node);
+            }
+        }
         while let Ok((send, recv)) = connection.accept_bi().await {
             tokio::spawn(self.clone().invocation(peer, send, recv));
         }

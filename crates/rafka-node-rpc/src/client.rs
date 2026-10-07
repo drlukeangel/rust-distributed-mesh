@@ -83,6 +83,12 @@ pub trait ConnectionObserver: Send + Sync {
     fn direct_failed(&self, node: &ResolvedNode, reason: &str);
     /// The pooled connection to `node` broke after it had opened.
     fn direct_broken(&self, node: &ResolvedNode, reason: &str);
+    /// A connection from `node` was accepted by this process's server: the same Direct
+    /// Connected evidence as a dial of its own (connections.md §10), reported once per accepted
+    /// connection. The default is the dial's own report.
+    fn direct_accepted(&self, node: &ResolvedNode) {
+        self.direct_connected(node)
+    }
 }
 
 pub struct NodeRpcClient {

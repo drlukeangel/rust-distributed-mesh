@@ -9,3 +9,5 @@ pub mod node_rpc;
 pub mod declare_probe;
 pub mod proof_store;
 pub mod resolve_probe;
+pub mod faults;
+pub mod originate;

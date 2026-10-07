@@ -68,9 +68,12 @@ for i in $(seq 0 $((NCELLS - 1))); do
     command=$(jq -r --arg j "$JOB" --argjson i "$i" '.jobs[$j].cells[$i].command' "$REG")
     dir=$(jq -r --arg j "$JOB" --argjson i "$i" '.jobs[$j].cells[$i].dir' "$REG")
     mkdir -p "$dir"
-    rm -f "$dir/gate.log" "$dir/manifest.json" "$dir/result.json" "$dir/spans.json"
+    rm -f "$dir/gate.log" "$dir/manifest.json" "$dir/result.json" "$dir/spans.json" "$dir"/*.spans.jsonl
     start=$(now)
-    I143_ACCEPTANCE_DIR="$dir" I143_ACCEPTANCE_CELL="$cell" bash -c "$command" > "$dir/gate.log" 2>&1
+    # The cell's directory is handed over absolute: a test binary runs in its crate's directory,
+    # not the root the registry's paths are relative to.
+    case "$dir" in /*) cell_dir="$dir" ;; *) cell_dir="$ROOT/$dir" ;; esac
+    I143_ACCEPTANCE_DIR="$cell_dir" I143_ACCEPTANCE_CELL="$cell" bash -c "$command" > "$dir/gate.log" 2>&1
     rc=$?
     finish=$(now)
     reason=""

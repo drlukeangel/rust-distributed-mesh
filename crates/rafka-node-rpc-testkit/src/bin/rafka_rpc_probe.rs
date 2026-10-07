@@ -40,12 +40,20 @@ struct Args {
     state: Option<String>,
     as_node_id: Option<String>,
     as_incarnation: Option<String>,
+    /// `originate`: the destination path the target node calls over its own held projection.
+    destination: Option<String>,
+    /// `fault`: how many index writes and history appends the target node refuses next, or
+    /// `--release`.
+    refuse_index: u32,
+    refuse_history: u32,
+    release: bool,
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut admin, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
     let mut no_route = false;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
+    let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -61,7 +69,11 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--state" => state = Some(take("--state")?),
             "--as-node-id" => as_node_id = Some(take("--as-node-id")?),
             "--as-incarnation" => as_incarnation = Some(take("--as-incarnation")?),
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" if op.is_none() => op = Some(a),
+            "--destination" => destination = Some(take("--destination")?),
+            "--refuse-index" => refuse_index = take("--refuse-index")?.parse().map_err(|e| format!("--refuse-index: {e}"))?,
+            "--refuse-history" => refuse_history = take("--refuse-history")?.parse().map_err(|e| format!("--refuse-history: {e}"))?,
+            "--release" => release = true,
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -79,6 +91,10 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         state,
         as_node_id,
         as_incarnation,
+        destination,
+        refuse_index,
+        refuse_history,
+        release,
     })
 }
 
@@ -204,6 +220,9 @@ async fn run(a: Args) -> Result<Value, String> {
     if a.op == "declare" {
         return run_declare(&a, &target).await;
     }
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot") {
+        return run_originate(&a, &target).await;
+    }
     let req = request(&a)?;
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
@@ -312,4 +331,57 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 fn probe_bind() -> std::net::SocketAddr {
     let ip: std::net::IpAddr = std::env::var("RAFKA_PROBE_BIND").ok().and_then(|v| v.parse().ok()).unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
     std::net::SocketAddr::new(ip, 0)
+}
+
+/// `originate --target <source> --destination path:<dest> get|put --key k [--value v]`,
+/// `fault --target <source> --refuse-index N --refuse-history M | --release`, and
+/// `snapshot --target <source>`: the testkit's originate door on the source node (op 0x73).
+async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
+    use rafka_node_rpc_testkit::originate::{Originate, OriginateReply, OriginateRequest, ProofOp};
+    let req = match a.op.as_str() {
+        "originate" => {
+            let destination = a.destination.clone().ok_or("originate needs --destination path:<path.name>")?;
+            let destination = destination.strip_prefix("path:").map(str::to_string).ok_or("--destination is path:<path.name>")?;
+            let key = a.key.as_bytes().to_vec();
+            let op = match a.value.as_ref() {
+                Some(v) => ProofOp::Put { key, value: v.as_bytes().to_vec() },
+                None => ProofOp::Get { key },
+            };
+            OriginateRequest::Call { destination, op }
+        }
+        "fault" if a.release => OriginateRequest::ReleaseFault,
+        "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history },
+        _ => OriginateRequest::Snapshot,
+    };
+    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
+    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let resolver = Arc::new(StaticResolver::new());
+    for n in resolved(&view) {
+        resolver.insert(n);
+    }
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
+        .await
+        .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
+    let (out, _) = client.call::<Originate>(target, &req, &opts).await;
+    Ok(match &out {
+        RpcOutcome::Reply(r) => match r.value() {
+            OriginateReply::Called { by, destination_node_id, route, carrier, retired, outcome, reply, pooled } => json!({
+                "outcome": "Reply", "by": by.node, "destination_node_id": destination_node_id, "route": route, "carrier": carrier,
+                "retired": retired, "call_outcome": outcome, "reply": reply.as_ref().map(self::reply), "pooled": pooled,
+            }),
+            OriginateReply::FaultArmed { by, refuse_index, refuse_history } => json!({"outcome": "Reply", "by": by.node, "fault": "armed", "refuse_index": refuse_index, "refuse_history": refuse_history}),
+            OriginateReply::FaultReleased { by, refused } => json!({"outcome": "Reply", "by": by.node, "fault": "released", "refused": refused}),
+            OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, owed, fault_refused } => json!({
+                "outcome": "Reply", "by": by.node, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
+                "active_len": active_len, "owed": owed, "fault_refused": fault_refused,
+            }),
+            other => json!({"outcome": "Reply", "refused": format!("{other:?}")}),
+        },
+        RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "reason": format!("{:?}", n.reason())}),
+        RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "reason": format!("{:?}", i.reason())}),
+        RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
+        RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "target_node_id": r.target_node_id()}),
+    })
 }

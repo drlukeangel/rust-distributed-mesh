@@ -140,6 +140,20 @@ impl NodeRpcClient {
         opts: &CallOptions,
     ) -> ConnectedCall<P::Reply> {
         let resolution = resolve(held, own, destination, policy);
+        self.call_resolved::<P>(resolution, own, destination, target, req, opts).await
+    }
+
+    /// The second half of [`Self::call_connected`]: execute `resolution` (already taken over the
+    /// held projection, so no lock is held across the call) on the exact `target`.
+    pub async fn call_resolved<P: NodeProtocol>(
+        &self,
+        resolution: rafka_mesh_entity::connections::RouteResolution,
+        own: &PathName,
+        destination: &PathName,
+        target: &NodeId,
+        req: &P::Request,
+        opts: &CallOptions,
+    ) -> ConnectedCall<P::Reply> {
         let span = tracing::info_span!(
             "rdm.node_rpc.route.resolve.via-held-projection",
             protocol = P::NAME,

@@ -147,3 +147,72 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
     assert_eq!(writer.retire_owed().await.unwrap(), 0, "nothing owed once the retirement landed");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A storage that refuses the next N index writes by name: the writer's reconciliation of an
+/// owed retirement (connections.md §10) is proven against it.
+struct RefusingIndex {
+    inner: Arc<dyn ConnectionsStorage>,
+    refuse: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait::async_trait]
+impl ConnectionsStorage for RefusingIndex {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        if self.refuse.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+            return Err(rafka_node_admin_core::record_store::StorageError::Io { file: "connections index".into(), reason: "refused by the cell".into() });
+        }
+        self.inner.put_connection(fact).await
+    }
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.connections().await
+    }
+    async fn remove_connection(&self, index: &rafka_mesh_entity::connections::ConnectionIndex) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.remove_connection(index).await
+    }
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.append_history(fact).await
+    }
+    async fn history(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.history().await
+    }
+}
+
+/// §10: a Direct Connected beside an active Proxy owes the Proxy's retirement; a refused
+/// retirement write leaves the Proxy effective and the obligation standing, derived again from
+/// the rows; once the write lands, new calls cut back to Direct. The bounded reconciler lands it
+/// by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
+    let dir = data_dir("refused-retirement");
+    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&dir).unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+    writer.hydrate().await.unwrap();
+    writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
+    writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 11)).await.unwrap();
+    // The Direct comes back (recorded durably here, as a dial's own report would land it).
+    writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 12)).await.unwrap();
+    assert_eq!(writer.owed().len(), 1, "the Proxy's retirement is owed");
+    // The retirement's index write is refused: the Proxy stays effective, the obligation stands.
+    storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
+    assert!(writer.settle_owed().await.is_err(), "the refused write is named");
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "new calls keep the Proxy");
+    assert_eq!(writer.owed().len(), 1);
+    assert!(!storage.connections().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "nothing durable says the Proxy retired");
+    // The bounded reconciler attempts it again until it lands; then Direct is effective.
+    let _task = writer.spawn_retirement_reconciler(std::time::Duration::from_millis(50));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }) {
+        assert!(std::time::Instant::now() < deadline, "the retirement never landed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true }));
+    assert!(writer.owed().is_empty());
+    let retired: Vec<NodeConnection> = storage.connections().await.unwrap().into_iter().filter(|r| r.kind == ConnectionKind::Proxy).collect();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(retired[0].state, ConnectionState::Disconnected);
+    assert_eq!(retired[0].reason.as_deref(), Some(rafka_mesh_entity::reconnect::DIRECT_RESTORED));
+    assert!(storage.history().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "the retirement joined the raw log");
+    let _ = std::fs::remove_dir_all(&dir);
+}

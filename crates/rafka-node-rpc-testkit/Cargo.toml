@@ -6,6 +6,7 @@ description = "Generic RPC proof node, protocols and probes for the i143 Mesh pr
 publish = false
 
 [dependencies]
+async-trait = "0.1"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
@@ -23,7 +24,6 @@ serde_json = { workspace = true }
 reqwest = { version = "0.13.3", features = ["json"] }
 
 [dev-dependencies]
-async-trait = "0.1"
 tracing-subscriber = { workspace = true }
 
 [[bin]]
