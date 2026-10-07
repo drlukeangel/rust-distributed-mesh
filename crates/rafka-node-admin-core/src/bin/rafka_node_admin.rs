@@ -3,6 +3,8 @@
 
 use rafka_node_admin_core::admin::{start, AdminConfig};
 
+use tracing::Instrument;
+
 #[tokio::main]
 async fn main() {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin");
@@ -61,9 +63,9 @@ async fn main() {
             std::process::exit(4);
         }
     };
+    // Instrumented, never entered across the await: the span's busy and idle time are real.
     let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown);
-    let _g = span.enter();
-    running.leave().await;
+    running.leave().instrument(span).await;
 }
 
 async fn signal() {

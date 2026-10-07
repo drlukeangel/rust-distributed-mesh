@@ -41,6 +41,7 @@ use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
 use rafka_mesh_transport::membership::{announce_leaving, gossip_interval, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use tracing::Instrument;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1145,21 +1146,49 @@ impl Running {
             *self.digest.lock().unwrap() = d.clone();
             d
         };
-        let _ = self.membership.publish(&say(MemberStatus::Draining)).await;
+        // Every leg of the leave is its own span, so a stalled leave names the leg that stalled
+        // (rafka-v2 #2942): the Draining say, each Leaving announcement on each channel, the
+        // transport shutdown.
+        let me = self.digest.lock().unwrap().node.name.to_string();
+        {
+            let started = std::time::Instant::now();
+            let span = tracing::info_span!("rdm.mesh.node.update.via-leave-draining", node = %me, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+            let r = self.membership.publish(&say(MemberStatus::Draining)).instrument(span.clone()).await;
+            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+            span.record("outcome", if r.is_ok() { "sent" } else { "refused" });
+            span.in_scope(|| tracing::info!("said Draining on the mesh channel"));
+        }
         // The hierarchy loop is stopped above, so the backbone roles stay as they were when this
         // admin began to leave: an admin primary keeps publishing its mesh's members on the
         // backbone through the linger, its own `Leaving` among them, so its self-authored departure
         // leaves the mesh by the path every member's does (Luke 2026-10-05). No other admin is a
         // publisher of this admin's membership.
+        let announcement = std::sync::atomic::AtomicU32::new(0);
         let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
             let d = say(MemberStatus::Leaving);
-            let (m, bb, control) = (self.membership.clone(), self.backbone.clone(), self.control.clone());
+            let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let (m, bb, control, me) = (self.membership.clone(), self.backbone.clone(), self.control.clone(), me.clone());
             async move {
-                let _ = m.publish(&d).await;
+                let started = std::time::Instant::now();
+                let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                let r = m.publish(&d).instrument(mesh_span.clone()).await;
+                mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                mesh_span.record("outcome", if r.is_ok() { "sent" } else { "refused" });
+                mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
                 let mesh = d.node.name.mesh.clone();
                 let mine: Vec<MeshDigest> = m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect();
-                let status = serde_json::to_value(control.topology.read().await.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                bb.publish(&m, mine, &status).await;
+                let started = std::time::Instant::now();
+                let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                let status = serde_json::to_value(control.topology.read().instrument(view_span.clone()).await.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                view_span.record("outcome", "read");
+                view_span.in_scope(|| tracing::info!("read the fabric status for the backbone frame"));
+                let started = std::time::Instant::now();
+                let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                bb.publish(&m, mine, &status).instrument(bb_span.clone()).await;
+                bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                bb_span.record("outcome", "sent");
+                bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
             }
         })
         .await;
@@ -1167,7 +1196,12 @@ impl Running {
         for t in self.tasks {
             t.abort();
         }
-        let _ = self.router.shutdown().await;
+        let started = std::time::Instant::now();
+        let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+        let r = self.router.shutdown().instrument(span.clone()).await;
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        span.record("outcome", if r.is_ok() { "closed" } else { "refused" });
+        span.in_scope(|| tracing::info!("the transport closed"));
     }
 }
 

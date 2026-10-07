@@ -703,6 +703,11 @@ impl Backbone {
         (flag.swap(on, Ordering::Relaxed) != on).then_some(if on { "start" } else { "stop" })
     }
 
+    /// Whether this backbone publishes its mesh's members now (it is the mesh's primary).
+    pub fn is_mesh_primary(&self) -> bool {
+        self.publishing.load(Ordering::Relaxed)
+    }
+
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         if let Some(role) = Self::role(&self.publishing, primary) {
