@@ -52,7 +52,7 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
     let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");
 
-    let retire_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
+    let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
     pipeline
         .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), permanent: true, observe_departure: false, keep_endpoints: false })
         .await
@@ -104,11 +104,26 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     assert_eq!(again.node.transport_addr, Some(port), "the new node took the released port");
     assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
-    let again_build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
+    // The Build names this path's storage Persistent { on_retire: Preserve }: a permanent
+    // retirement terminates the runtime and leaves the data dir, and the receipt says so.
+    let mut keep = common::add_node();
+    let preserve = rafka_mesh_entity::meta::NodeMeta {
+        storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Preserve },
+        placement: Default::default(),
+    };
+    keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
+    let again_build = publish_build(&builds, keep).await;
     pipeline
-        .retire(&RetireRequest { build_id: again_build, attempt: 1, node: again.node.clone(), handle: again.handle.clone(), permanent: true, observe_departure: false, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), permanent: true, observe_departure: false, keep_endpoints: false })
         .await
         .unwrap();
+    assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");
+    let kept = builds.read_build(&again_build).await.unwrap().steps;
+    let disposition: rafka_node_admin_core::deployment::pipeline::StorageDisposition = serde_json::from_value(
+        kept.iter().find(|r| r.step == RetireStep::ReleaseStorage.name()).and_then(|r| r.output.clone()).expect("ReleaseStorage receipted"),
+    )
+    .unwrap();
+    assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
     assert_eq!(allocator.lock().unwrap().in_use_count(), 0);
     let _ = std::fs::remove_dir_all(&template.data_root);
 }

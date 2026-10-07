@@ -183,6 +183,9 @@ pub enum BuildReject {
     EmptyFabric,
     /// A Build tried to choose a provider; provider is fabric policy (PRD §1.7).
     ProviderInBuild { fabric_provider: crate::model::ProviderKind },
+    /// A mesh's paths and its per-path meta disagree: a materialized path with no meta, or meta
+    /// for a path the mesh does not hold.
+    NodeMetaMismatch { mesh: String, missing: Vec<String>, extra: Vec<String> },
 }
 
 impl BuildReject {
@@ -200,6 +203,7 @@ impl BuildReject {
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
             Self::ProviderInBuild { .. } => "provider-mismatch",
+            Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
         }
     }
 }
@@ -220,6 +224,12 @@ impl fmt::Display for BuildReject {
             Self::ProviderInBuild { fabric_provider } => write!(
                 f,
                 "a Build may not choose a deployment provider; this fabric's policy is {fabric_provider:?}, fixed at bootstrap"
+            ),
+            Self::NodeMetaMismatch { mesh, missing, extra } => write!(
+                f,
+                "mesh `{mesh}`: every materialized path carries exactly one NodeMeta; missing [{}], without a node [{}]",
+                missing.join(", "),
+                extra.join(", ")
             ),
         }
     }

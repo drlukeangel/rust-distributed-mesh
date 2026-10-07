@@ -8,6 +8,7 @@
 pub mod connections;
 pub mod digest;
 pub mod launch;
+pub mod meta;
 pub mod ids;
 pub mod lifecycle;
 pub mod path;

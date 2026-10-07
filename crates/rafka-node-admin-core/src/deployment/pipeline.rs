@@ -10,7 +10,7 @@
 //! retire: MarkDraining (the typed Node RPC drain; its receipt carries the DrainOutcome)
 //!   -> WaitForDrain (bounded; a deadline is an arm, never a failure) -> PublishLeaving
 //!   -> CloseRpcAdmission (after an established drain)
-//!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (if permanent)
+//!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (permanent: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
 //!
@@ -44,6 +44,7 @@ use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeStatus, PathName};
 use rafka_mesh_entity::launch::Launch;
+use rafka_mesh_entity::meta::{PersistentRetireDisposition, StorageMeta};
 use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -425,6 +426,19 @@ fn now_unix_ms() -> u64 {
 /// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
 /// own journal holds the step that records it, the departure once the provider proved the
 /// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
+/// What a permanent retirement did with the logical node's storage, by the accepted Build's
+/// `StorageMeta` for its path: the ReleaseStorage step's receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "arm", rename_all = "kebab-case")]
+pub enum StorageDisposition {
+    /// Released through the exact locator.
+    Released { locator: String },
+    /// `Persistent { on_retire: Preserve }`: left where it is.
+    Preserved,
+    /// The Build holds no meta for this path: left where it is, never destroyed on missing evidence.
+    PreservedNoMeta,
+}
+
 /// How a retiring birth's admission was found closed before termination: the
 /// CloseRpcAdmission step's receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1154,18 +1168,37 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
+        // Storage disposition (the lock's StorageMeta): a restart keeps the storage; a permanent
+        // retirement does what the accepted Build's meta for this path says, read here and
+        // interpreted here, never by the provider. The receipt names the disposition.
         if req.permanent {
-            self.step(&mut run, RetireStep::ReleaseStorage.name(), async {
-                match node.data_dir.as_deref() {
-                    Some(dir) => match std::fs::remove_dir_all(dir) {
-                        Ok(()) => Ok(()),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                        Err(e) => Err(format!("{dir}: {e}")),
-                    },
-                    None => Ok(()),
-                }
-            })
-            .await?;
+            let _disposition: StorageDisposition = self
+                .step(&mut run, RetireStep::ReleaseStorage.name(), async {
+                    let storage = self
+                        .builds
+                        .read_build(&req.build_id)
+                        .await
+                        .ok()
+                        .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
+                    let release = match storage {
+                        Some(StorageMeta::Ephemeral) | Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }) => true,
+                        Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }) => false,
+                        // No meta for this path in the Build: storage is never destroyed on missing evidence.
+                        None => return Ok(StorageDisposition::PreservedNoMeta),
+                    };
+                    if !release {
+                        return Ok(StorageDisposition::Preserved);
+                    }
+                    match node.data_dir.as_deref() {
+                        Some(dir) => match std::fs::remove_dir_all(dir) {
+                            Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
+                            Err(e) => Err(format!("{dir}: {e}")),
+                        },
+                        None => Ok(StorageDisposition::Released { locator: String::new() }),
+                    }
+                })
+                .await?;
         }
         self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
             self.sink.remove(name);
