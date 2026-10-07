@@ -132,7 +132,11 @@ impl Declarer {
             };
             let classify = |reply: &StatusReply| match reply {
                 StatusReply::Applied | StatusReply::AlreadyApplied => (reply.name().to_string(), true),
-                StatusReply::RejectedStaleBirth { .. } | StatusReply::RejectedInvalidTransition { .. } => (format!("{reply:?}"), true),
+                StatusReply::RejectedStaleIncarnation { .. }
+                | StatusReply::RejectedStaleMesh { .. }
+                | StatusReply::RejectedStaleFabric { .. }
+                | StatusReply::RejectedInvalidNodeTransition { .. }
+                | StatusReply::RejectedInvalidMeshTransition { .. } => (format!("{reply:?}"), true),
                 other => (format!("{other:?}"), false),
             };
             let (outcome, finished, via) = if &target.node_id == me_id {
@@ -221,7 +225,7 @@ pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_rea
             d.owe(
                 Key::OwnState(me_incarnation.to_string(), NodeState::ReadyForTraffic),
                 Authority::FabricPrimary,
-                StatusRequest::DeclareNodeState { node_id: my.node_id.to_string(), incarnation: me_incarnation.to_string(), state: NodeState::ReadyForTraffic },
+                StatusRequest::DeclareNodeState { node_id: my.node_id.clone(), incarnation: crate::model::IncarnationId(me_incarnation.to_string()), state: NodeState::ReadyForTraffic },
             );
         }
     }
@@ -231,7 +235,7 @@ pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_rea
     if i_am_mesh_primary {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
             if mesh.status == crate::model::ScopeStatus::ReadyForTraffic {
-                d.owe(Key::Mesh(id.clone(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::ReadyForTraffic });
+                d.owe(Key::Mesh(id.clone(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::ReadyForTraffic });
             }
         }
     }
@@ -244,7 +248,7 @@ pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_rea
             d.owe(
                 Key::FabricEventAt(m.name.clone(), "ready-for-traffic".into()),
                 Authority::MeshPrimaryOf(m.name.clone()),
-                StatusRequest::ApplyFabricEvent { fabric_id: view.fabric.id.to_string(), event: FabricEvent::ReadyForTraffic },
+                StatusRequest::ApplyFabricEvent { fabric_id: view.fabric.id.clone(), event: FabricEvent::ReadyForTraffic },
             );
         }
     }
@@ -276,9 +280,9 @@ mod tests {
     }
 
     fn owe_all(d: &Declarer) {
-        d.owe(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareNodeState { node_id: "n".into(), incarnation: "inc".into(), state: NodeState::ReadyForTraffic });
-        d.owe(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: "m1".into(), state: MeshState::ReadyForTraffic });
-        d.owe(Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), Authority::MeshPrimaryOf("mesh2".into()), StatusRequest::ApplyFabricEvent { fabric_id: "f".into(), event: FabricEvent::ReadyForTraffic });
+        d.owe(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId("inc".into()), state: NodeState::ReadyForTraffic });
+        d.owe(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::ReadyForTraffic });
+        d.owe(Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), Authority::MeshPrimaryOf("mesh2".into()), StatusRequest::ApplyFabricEvent { fabric_id: crate::model::FabricId::mint(), event: FabricEvent::ReadyForTraffic });
     }
 
     #[test]

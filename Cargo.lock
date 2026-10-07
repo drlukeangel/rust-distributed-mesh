@@ -3824,6 +3824,7 @@ name = "rafka-node-rpc-contract"
 version = "0.1.0"
 dependencies = [
  "postcard",
+ "rafka-mesh-entity",
  "serde",
 ]
 

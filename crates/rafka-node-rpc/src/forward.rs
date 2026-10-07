@@ -14,7 +14,7 @@ use crate::server::{PeerContext, ServerBuilder};
 use rafka_mesh_entity::NodeId;
 use rafka_node_rpc_contract::catalog::TagOwner;
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
-use rafka_node_rpc_contract::outcome::{carried, MalformedKind, NotSentReason, PreCommit, RpcOutcome};
+use rafka_node_rpc_contract::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::sync::Arc;
 
@@ -56,9 +56,7 @@ async fn carry_once(
         .in_scope(|| tracing::info!("the inner protocol is not forwardable through this carrier"));
         return ForwardReply::NotForwardable { tag: inner_tag };
     };
-    let Ok(node_id) = NodeId::parse(&target) else {
-        return ForwardReply::Malformed { kind: MalformedKind::Corrupt };
-    };
+    let node_id = target.clone();
     // The hop is a child span of the origin's trace; the inner call carries the origin's
     // context unchanged, so the target sees the origin's caller_system and causal parent.
     let span = tracing::info_span!(
@@ -85,7 +83,10 @@ async fn carry_once(
         RpcOutcome::Reply(r) => ForwardReply::Relayed { inner: r.into_value() },
         RpcOutcome::NotSent(n) => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
         RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { tag: u.tag() },
-        RpcOutcome::RejectedStale(r) => ForwardReply::InnerRejectedStale { target_node_id: r.target_node_id().to_string() },
+        RpcOutcome::RejectedStale(r) => match NodeId::parse(r.target_node_id()) {
+            Ok(target_node_id) => ForwardReply::InnerRejectedStale { target_node_id },
+            Err(e) => ForwardReply::InnerIndeterminate { reason: format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()) },
+        },
         RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { reason: format!("{:?}", i.reason()) },
     }
 }
@@ -109,7 +110,7 @@ impl NodeRpcClient {
             Err(e) => return (pre.not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None),
         };
         let forward = ForwardRequest::Forward {
-            target: target.as_str().to_string(),
+            target: target.clone(),
             inner_tag: P::TAG,
             inner,
         };

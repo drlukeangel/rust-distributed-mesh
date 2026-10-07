@@ -998,7 +998,11 @@ async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &r
         let my = v.nodes.iter().find(|n| &n.name == me).cloned();
         (my.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), my.and_then(|n| n.incarnation_id).map(|i| i.0).unwrap_or_default())
     };
-    let request = StatusRequest::ApplyMeshState { mesh_id: mesh_id.to_string(), mesh_name: mesh.to_string(), state: MeshState::Pending };
+    let request = StatusRequest::ApplyMeshState {
+        mesh_id: crate::model::MeshId::parse(mesh_id).map_err(|e| format!("{mesh}: its mesh id {mesh_id:?} is not a MeshId: {e}"))?,
+        mesh_name: mesh.to_string(),
+        state: MeshState::Pending,
+    };
     let key = format!("mesh:{mesh_id}:Pending");
     let until = std::time::Instant::now() + Duration::from_secs(20);
     let mut attempt: u32 = 0;
@@ -1009,8 +1013,8 @@ async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &r
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
                 StatusReply::Applied => ("applied".to_string(), Some(Ok(()))),
                 StatusReply::AlreadyApplied => ("already-applied".to_string(), Some(Ok(()))),
-                StatusReply::RejectedStaleBirth { held } => (format!("rejected-stale-birth: the target holds mesh id {held}"), Some(Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the Pending hand-off is refused", target.name)))),
-                StatusReply::RejectedInvalidTransition { current } => (format!("rejected-invalid-transition: {current}"), Some(Err(format!("{} already holds its Mesh at {current}: Pending is a backward move", target.name)))),
+                StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Some(Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the Pending hand-off is refused", target.name)))),
+                StatusReply::RejectedInvalidMeshTransition { current } => (format!("rejected-invalid-mesh-transition: {current:?}"), Some(Err(format!("{} already holds its Mesh at {current:?}: Pending is a backward move", target.name)))),
                 other => (format!("{other:?}"), None),
             },
             other => (format!("{}: {other:?}", other.name()), None),
@@ -1456,7 +1460,8 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
             nodes_storage: nodes_storage.clone(),
             mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect()),
             republish: republish.clone(),
-        hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            drain: Arc::new(std::sync::OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }));
     }
 
@@ -1782,10 +1787,11 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                     .collect();
                 let silent = watched.values().map(|n| crate::offline::SilentNode { node_id: n.node_id.to_string(), path: n.name.to_string() }).collect();
                 let client = runner.node_rpc.as_ref().map(|r| r.client.clone());
-                let kick_of = |n: &Node| rafka_node_rpc_contract::status::StatusRequest::DeclareNodeState {
-                    node_id: n.node_id.to_string(),
-                    incarnation: n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(),
-                    state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic,
+                // The tickle: ask the exact birth to reassert itself.
+                // Protocol name: ProbeNodeState.
+                let kick_of = |n: &Node| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState {
+                    node_id: n.node_id.clone(),
+                    incarnation: n.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
                 };
                 let report = tickle
                     .tick(

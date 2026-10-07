@@ -377,7 +377,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         },
         ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
         ForwardReply::InnerUnserved { tag } => RpcOutcome::Unserved(Unserved { tag }),
-        ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id }),
+        ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id: target_node_id.into() }),
         ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
         ForwardReply::NotForwardable { tag } => not_sent(NotSentReason::NotForwardable { tag }),
         // The carrier refused the forward itself, before any inner call.

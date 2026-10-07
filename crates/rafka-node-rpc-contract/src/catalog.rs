@@ -107,6 +107,8 @@ pub struct CatalogEntry {
     pub max_request_frame_bytes: usize,
     pub max_reply_frame_bytes: usize,
     pub forwardable: bool,
+    /// Served while the node drains (lifecycle control), never refused `Draining`.
+    pub served_while_draining: bool,
 }
 
 impl CatalogEntry {
@@ -121,6 +123,7 @@ impl CatalogEntry {
             max_request_frame_bytes: P::MAX_REQUEST_FRAME_BYTES,
             max_reply_frame_bytes: P::MAX_REPLY_FRAME_BYTES,
             forwardable: P::FORWARDABLE,
+            served_while_draining: P::SERVED_WHILE_DRAINING,
         }
     }
 
@@ -135,6 +138,7 @@ impl CatalogEntry {
             max_request_frame_bytes,
             max_reply_frame_bytes: max_request_frame_bytes,
             forwardable: false,
+            served_while_draining: false,
         }
     }
 }

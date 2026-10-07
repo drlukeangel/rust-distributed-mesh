@@ -20,13 +20,14 @@
 //!
 //! Legal moves run forward along `Pending -> ReadyForTraffic -> Draining -> Leaving` (and
 //! `Pending -> ReadyForTraffic -> Draining -> Retired` for a Mesh), skips included; the same
-//! state again is `AlreadyApplied`, a backward move `RejectedInvalidTransition`. A declaration
+//! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
 //! for a birth the receiver holds a newer incarnation of, or holds as departed, is
-//! `RejectedStaleBirth`. A receiver that is not the authority, or a sender that is not the
+//! `RejectedStaleIncarnation`. A receiver that is not the authority, or a sender that is not the
 //! subject or its primary, is `RejectedNotAuthority`, the reply naming which.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
+use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
 use serde::{Deserialize, Serialize};
 
 pub struct Status;
@@ -69,14 +70,19 @@ impl FabricEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusRequest {
-    /// The sender's own birth declares its state.
-    DeclareNodeState { node_id: String, incarnation: String, state: NodeState },
-    /// The mesh's current primary declares the Mesh's state.
-    DeclareMeshState { mesh_id: String, state: MeshState },
-    /// The fabric-primary applies a Mesh state at that mesh's bootstrap admin (`Pending`).
-    ApplyMeshState { mesh_id: String, mesh_name: String, state: MeshState },
-    /// The fabric-primary applies a Fabric event at a mesh primary.
-    ApplyFabricEvent { fabric_id: String, event: FabricEvent },
+    /// Upward: the sender's own birth declares the lifecycle state it committed.
+    DeclareNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    /// Upward: the mesh's current primary declares the Mesh's state to the fabric-primary.
+    DeclareMeshState { mesh_id: MeshId, state: MeshState },
+    /// Downward: an authority tells the exact birth to enter `state`.
+    ApplyNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    /// Downward: an authority asks the exact birth to reassert its presence and answer its
+    /// current state; no transition.
+    ProbeNodeState { node_id: NodeId, incarnation: IncarnationId },
+    /// Downward: the fabric-primary applies a Mesh state at that mesh's bootstrap admin.
+    ApplyMeshState { mesh_id: MeshId, mesh_name: String, state: MeshState },
+    /// Downward: the fabric-primary applies a Fabric event at a mesh primary.
+    ApplyFabricEvent { fabric_id: FabricId, event: FabricEvent },
 }
 
 impl StatusRequest {
@@ -84,6 +90,8 @@ impl StatusRequest {
         match self {
             Self::DeclareNodeState { .. } => "declare-node-state",
             Self::DeclareMeshState { .. } => "declare-mesh-state",
+            Self::ApplyNodeState { .. } => "apply-node-state",
+            Self::ProbeNodeState { .. } => "probe-node-state",
             Self::ApplyMeshState { .. } => "apply-mesh-state",
             Self::ApplyFabricEvent { .. } => "apply-fabric-event",
         }
@@ -117,20 +125,27 @@ pub enum StatusReply {
     Applied,
     /// The same natural key was already at that state: one logical event.
     AlreadyApplied,
+    /// The exact birth entered `Draining` (or already was), with the work still in flight now.
+    NodeDrainingApplied { in_flight: u64 },
+    /// The exact birth's own answer to a probe: it reasserted its presence, and this is its state.
+    Current { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
     /// The receiver holds a newer incarnation of that NodeId, or holds it as departed.
-    RejectedStaleBirth { held: String },
+    RejectedStaleIncarnation { held: IncarnationId },
+    /// The receiver holds another mesh id under that mesh name.
+    RejectedStaleMesh { held: MeshId },
+    /// The receiver holds another fabric id.
+    RejectedStaleFabric { held: FabricId },
     RejectedNotAuthority { why: NotAuthority },
-    /// A move backward along the legal order.
-    RejectedInvalidTransition { current: String },
+    /// A node move backward along the legal order.
+    RejectedInvalidNodeTransition { current: NodeState },
+    /// A mesh move backward along the legal order.
+    RejectedInvalidMeshTransition { current: MeshState },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
     Draining { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
-    /// The subject's own answer to a node-admin's declaration about it (the offline tickle's
-    /// status kick): it re-published its presence, and this is its status now.
-    Current { node_id: String, incarnation: String, state: NodeState },
 }
 
 impl StatusReply {
@@ -138,16 +153,20 @@ impl StatusReply {
         match self {
             Self::Applied => "applied",
             Self::AlreadyApplied => "already-applied",
-            Self::RejectedStaleBirth { .. } => "rejected-stale-birth",
+            Self::NodeDrainingApplied { .. } => "node-draining-applied",
+            Self::Current { .. } => "current",
+            Self::RejectedStaleIncarnation { .. } => "rejected-stale-incarnation",
+            Self::RejectedStaleMesh { .. } => "rejected-stale-mesh",
+            Self::RejectedStaleFabric { .. } => "rejected-stale-fabric",
             Self::RejectedNotAuthority { .. } => "rejected-not-authority",
-            Self::RejectedInvalidTransition { .. } => "rejected-invalid-transition",
+            Self::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
+            Self::RejectedInvalidMeshTransition { .. } => "rejected-invalid-mesh-transition",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
             Self::Draining { .. } => "draining",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
-            Self::Current { .. } => "current",
         }
     }
 }
@@ -159,18 +178,23 @@ impl NodeProtocol for Status {
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
-    const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 12;
+    /// A draining node still answers its authority's probe and apply.
+    const SERVED_WHILE_DRAINING: bool = true;
+    const REQUEST_VARIANTS: u32 = 6;
+    const REPLY_VARIANTS: u32 = 16;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
 
     fn classify_reply(reply: &StatusReply) -> ReplyKind {
         match reply {
-            StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::Current { .. } => ReplyKind::Success,
-            StatusReply::RejectedStaleBirth { .. } | StatusReply::RejectedNotAuthority { .. } | StatusReply::RejectedInvalidTransition { .. } => {
-                ReplyKind::ProtocolRefusal
-            }
+            StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::NodeDrainingApplied { .. } | StatusReply::Current { .. } => ReplyKind::Success,
+            StatusReply::RejectedStaleIncarnation { .. }
+            | StatusReply::RejectedStaleMesh { .. }
+            | StatusReply::RejectedStaleFabric { .. }
+            | StatusReply::RejectedNotAuthority { .. }
+            | StatusReply::RejectedInvalidNodeTransition { .. }
+            | StatusReply::RejectedInvalidMeshTransition { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -179,7 +203,6 @@ impl NodeProtocol for Status {
             StatusReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
     }
-
     fn peer_unresolved(reason: String) -> StatusReply {
         StatusReply::PeerUnresolved { reason }
     }
@@ -202,20 +225,20 @@ impl NodeProtocol for Status {
 
 /// The one transition rule, for every scope: the same state is already applied, a forward move
 /// (skips included) applies, a backward move is refused naming the current state.
-pub fn transition<S: Ord + Copy + std::fmt::Debug>(current: Option<S>, declared: S) -> Transition {
+pub fn transition<S: Ord + Copy>(current: Option<S>, declared: S) -> Transition<S> {
     match current {
         None => Transition::Apply,
         Some(c) if c == declared => Transition::AlreadyApplied,
         Some(c) if c < declared => Transition::Apply,
-        Some(c) => Transition::Backward { current: format!("{c:?}") },
+        Some(c) => Transition::Backward { current: c },
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Transition {
+pub enum Transition<S> {
     Apply,
     AlreadyApplied,
-    Backward { current: String },
+    Backward { current: S },
 }
 
 #[cfg(test)]
@@ -227,16 +250,20 @@ mod tests {
         let all = [
             (StatusReply::Applied, ReplyKind::Success),
             (StatusReply::AlreadyApplied, ReplyKind::Success),
-            (StatusReply::RejectedStaleBirth { held: "x".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::NodeDrainingApplied { in_flight: 3 }, ReplyKind::Success),
+            (StatusReply::Current { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
+            (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedInvalidTransition { current: "Leaving".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Retired }, ReplyKind::ProtocolRefusal),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
             (Status::busy("b".into()), ReplyKind::Busy),
             (Status::draining("d".into()), ReplyKind::Draining),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
-            (StatusReply::Current { node_id: "n".into(), incarnation: "i".into(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -245,10 +272,12 @@ mod tests {
             assert_eq!(Status::classify_reply(&back), kind);
         }
         let reqs = [
-            StatusRequest::DeclareNodeState { node_id: "n".into(), incarnation: "i".into(), state: NodeState::ReadyForTraffic },
-            StatusRequest::DeclareMeshState { mesh_id: "m".into(), state: MeshState::ReadyForTraffic },
-            StatusRequest::ApplyMeshState { mesh_id: "m".into(), mesh_name: "mesh2".into(), state: MeshState::Pending },
-            StatusRequest::ApplyFabricEvent { fabric_id: "f".into(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
+            StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic },
+            StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Draining },
+            StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
+            StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
+            StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
@@ -263,7 +292,7 @@ mod tests {
         assert_eq!(transition(Some(Pending), ReadyForTraffic), Transition::Apply);
         assert_eq!(transition(Some(Pending), Leaving), Transition::Apply, "a skip is a forward move");
         assert_eq!(transition(Some(ReadyForTraffic), ReadyForTraffic), Transition::AlreadyApplied);
-        assert_eq!(transition(Some(Draining), ReadyForTraffic), Transition::Backward { current: "Draining".into() });
-        assert_eq!(transition(Some(MeshState::Retired), MeshState::Pending), Transition::Backward { current: "Retired".into() });
+        assert_eq!(transition(Some(Draining), ReadyForTraffic), Transition::Backward { current: Draining });
+        assert_eq!(transition(Some(MeshState::Retired), MeshState::Pending), Transition::Backward { current: MeshState::Retired });
     }
 }

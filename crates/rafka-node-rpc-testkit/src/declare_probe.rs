@@ -107,7 +107,12 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
                 Ok(t) => t,
                 Err(reason) => return Ok(DeclareReply::BadTarget { reason }),
             };
-            let declare = StatusRequest::DeclareNodeState { node_id: node_id.unwrap_or(own_id), incarnation: incarnation.unwrap_or(own_inc), state };
+            let node_id = match NodeId::parse(&node_id.unwrap_or(own_id)) {
+                Ok(id) => id,
+                Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("node id: {e}") }),
+            };
+            let incarnation = rafka_mesh_entity::IncarnationId(incarnation.unwrap_or(own_inc));
+            let declare = StatusRequest::DeclareNodeState { node_id, incarnation, state };
             let (out, _) = rpc.client.call::<Status>(&target, &declare, &CallOptions::default()).await;
             let (reply, reason) = match &out {
                 RpcOutcome::Reply(r) => (Some(r.value().clone()), None),

@@ -361,7 +361,9 @@ impl NodeRpcServer {
             // Constant-cost guards once the tag is known, before the body.
             if permit.is_none() {
                 if let Some(tag) = asm.head_tag() {
-                    if self.inner.draining.load(Ordering::SeqCst) {
+                    // Draining refuses every new call except the lifecycle control the catalog
+                    // marks served while draining: the authority's probe and apply still land.
+                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(tag).is_some_and(|e| e.served_while_draining) {
                         stats.draining.fetch_add(1, Ordering::SeqCst);
                         return self.refuse(tag, Refusal::Draining("node is draining".into()), send, recv).await;
                     }

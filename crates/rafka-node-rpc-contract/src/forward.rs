@@ -10,6 +10,7 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
+use rafka_mesh_entity::NodeId;
 use serde::{Deserialize, Serialize};
 
 pub struct Forward;
@@ -21,7 +22,7 @@ pub const MAX_CARRIED_BYTES: usize = 1024 * 1024;
 pub enum ForwardRequest {
     Forward {
         /// The exact final target's logical NodeId.
-        target: String,
+        target: NodeId,
         inner_tag: u8,
         inner: Vec<u8>,
     },
@@ -36,7 +37,7 @@ pub enum ForwardReply {
     /// The target does not serve the inner tag.
     InnerUnserved { tag: u8 },
     /// The target refused the inner call's fence (`425 STALE_TARGET`): it is not that node.
-    InnerRejectedStale { target_node_id: String },
+    InnerRejectedStale { target_node_id: NodeId },
     /// The inner call committed at the target and its outcome is unknown.
     InnerIndeterminate { reason: String },
     /// The inner protocol is not forwardable through this carrier.
@@ -114,7 +115,7 @@ mod tests {
             ForwardReply::Relayed { inner: vec![1] },
             ForwardReply::InnerNotSent { reason: "r".into() },
             ForwardReply::InnerUnserved { tag: 7 },
-            ForwardReply::InnerRejectedStale { target_node_id: "n1".into() },
+            ForwardReply::InnerRejectedStale { target_node_id: NodeId::mint() },
             ForwardReply::InnerIndeterminate { reason: "r".into() },
             ForwardReply::NotForwardable { tag: 0x01 },
             ForwardReply::PeerUnresolved { reason: "p".into() },

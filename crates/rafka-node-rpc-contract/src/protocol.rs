@@ -51,6 +51,9 @@ pub trait NodeProtocol: 'static + Send + Sync {
     const MAX_REPLY_FRAME_BYTES: usize;
     /// Carried execution through a peer is opt-in (node-rpc.md §36).
     const FORWARDABLE: bool = false;
+    /// Served while the node drains: a draining node refuses every new call except the
+    /// lifecycle control its authority sends it (the status family), which must still reach it.
+    const SERVED_WHILE_DRAINING: bool = false;
     /// Number of `Request` / `Reply` enum variants this build knows.
     const REQUEST_VARIANTS: u32;
     const REPLY_VARIANTS: u32;

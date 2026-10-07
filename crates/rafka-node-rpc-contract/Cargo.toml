@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 serde = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }

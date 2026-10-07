@@ -289,7 +289,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
     )
         .in_scope(|| tracing::info!("ready for traffic"));
     let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
-    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone() }));
+    let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), server: server.clone() }));
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
     let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
         let mut d = d.clone();
@@ -324,7 +324,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
     use rafka_node_rpc_contract::outcome::RpcOutcome;
     use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
     let Some(state) = *owed.lock().unwrap() else { return None };
-    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.to_string(), incarnation: me.incarnation.0.clone(), state };
+    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state };
     let mut admins: Vec<MeshDigest> = membership
         .book
         .current(membership.book.staleness_floor())
@@ -361,6 +361,8 @@ pub struct Kicked {
     membership: Membership,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
+    /// This node's server: what an `ApplyNodeState(Draining)` drains, and whose in-flight count it answers.
+    server: rafka_node_rpc::NodeRpcServer,
 }
 
 type KickSlot = Arc<std::sync::OnceLock<Arc<Kicked>>>;
@@ -375,12 +377,17 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
     }
 }
 
-/// Serve `Status` on an rpc node (fabric-node-lifecycle.md §7.3): a node-admin's status kick
-/// about this node (sent after its offline tickle's ping answered) makes it re-publish its presence
-/// (its peers handed to its mesh channel again, its digest published) and answer its status. An rpc
-/// node is never an authority: every declaration is refused by name. Until it has joined: NotReady.
+/// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
+/// has joined (until then `NotReady`). An rpc node is never an authority: every upward
+/// declaration and every mesh or fabric operation is refused by name.
+///
+/// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
+/// hands its peers to its mesh channel again, publishes its digest, and answers its current
+/// state; no transition. `ApplyNodeState(Draining)`: the server refuses new calls, the status
+/// says `Draining`, and the answer is the work still in flight, the current count on every
+/// repeat. A stale incarnation is refused with the one held.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
-    use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
+    use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
     b.serve::<Status, _, _>(TagOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: StatusRequest| {
         let slot = slot.clone();
         async move {
@@ -389,8 +396,19 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             };
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
             let from_admin = sender.as_ref().is_some_and(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin);
+            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
+            let (node_id, incarnation) = match &req {
+                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
+                _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
+            };
+            if *node_id != me.digest.node.node_id || !from_admin {
+                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself, from a node-admin".into() } });
+            }
+            if *incarnation != me.digest.node.incarnation {
+                return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
+            }
             match req {
-                StatusRequest::DeclareNodeState { node_id, .. } if node_id == me.digest.node.node_id.as_str() && from_admin => {
+                StatusRequest::ProbeNodeState { .. } => {
                     let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                     let _ = me.membership.join_peers(peers).await;
                     let status = *me.status.lock().unwrap();
@@ -399,13 +417,36 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     d.emitted_unix_ms = now_ms();
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
-                        "rafka.node_admin.status.update.via-kick",
+                        "rafka.node_admin.status.update.via-probe",
                         node = %me.digest.node.name,
-                        sender = %sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default(),
+                        sender = %sender_name,
                         state = ?node_state_of(status),
                     )
-                    .in_scope(|| tracing::info!("kicked by a node-admin: presence re-published, status answered"));
-                    Ok(StatusReply::Current { node_id: me.digest.node.node_id.to_string(), incarnation: me.digest.node.incarnation.0.clone(), state: node_state_of(status) })
+                    .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
+                    Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
+                }
+                StatusRequest::ApplyNodeState { state: NodeState::Draining, .. } => {
+                    me.server.drain();
+                    *me.status.lock().unwrap() = MemberStatus::Draining;
+                    // The work still in flight besides this call: the handler answering the
+                    // drain is itself counted by the server until it returns.
+                    let in_flight = rafka_node_rpc::ServerStats::get(&me.server.stats().in_flight).saturating_sub(1);
+                    let mut d = me.digest.clone();
+                    d.status = MemberStatus::Draining;
+                    d.emitted_unix_ms = now_ms();
+                    d.extra.insert(IN_FLIGHT.into(), in_flight.to_string());
+                    let _ = me.membership.publish(&d).await;
+                    tracing::info_span!(
+                        "rafka.node_admin.status.update.via-apply-draining",
+                        node = %me.digest.node.name,
+                        sender = %sender_name,
+                        in_flight,
+                    )
+                    .in_scope(|| tracing::info!("draining applied by a node-admin: new calls refused, in-flight work finishing"));
+                    Ok(StatusReply::NodeDrainingApplied { in_flight })
+                }
+                StatusRequest::ApplyNodeState { state, .. } => {
+                    Ok(StatusReply::NotReady { reason: format!("{} serves apply-node-state only for Draining in this build; {state:?} is not served", me.digest.node.name) })
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             }

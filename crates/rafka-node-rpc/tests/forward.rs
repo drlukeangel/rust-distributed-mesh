@@ -208,7 +208,7 @@ async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_ca
 
     // A forward built by hand for a non-forwardable tag: the carrier refuses it by type.
     let forward = ForwardRequest::Forward {
-        target: r.target.resolved.node_id.as_str().to_string(),
+        target: r.target.resolved.node_id.clone(),
         inner_tag: Ping::TAG,
         inner: Ping::encode_request(&echo).unwrap(),
     };
