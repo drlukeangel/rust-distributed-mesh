@@ -218,6 +218,9 @@ pub fn current_tracestate() -> Option<String> {
 /// §6): a pid names one process only within its pid namespace, and every container has its own.
 /// Causality is carried by `parent_span_id`; a consumer never infers it from
 /// timestamps.
+/// An evidence write at or beyond this length is named on stderr.
+pub const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[derive(Debug)]
 pub struct JsonlSpanExporter {
     service: String,
@@ -264,7 +267,16 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
             out.push('\n');
         }
         let file = self.file.clone();
+        // The write runs on the thread that closed the span, a runtime worker. A write the kernel
+        // holds (writeback throttling, a full disk queue) stalls that worker; one that exceeds
+        // [`EVIDENCE_WRITE_STALL`] is named on stderr with its length, so a runtime-wide stall in
+        // a process can be matched against it.
+        let started = std::time::Instant::now();
         let r = file.lock().map_err(|e| e.to_string()).and_then(|mut f| f.write_all(out.as_bytes()).map_err(|e| e.to_string()));
+        let took = started.elapsed();
+        if took >= EVIDENCE_WRITE_STALL {
+            eprintln!("telemetry: evidence write stalled {} ms for {} spans ({} bytes)", took.as_millis(), batch.len(), out.len());
+        }
         Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(e.into())) })
     }
 }
