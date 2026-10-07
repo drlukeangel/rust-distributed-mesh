@@ -10,7 +10,7 @@ fence_len: varint | fence | body_len: varint | body | FIN
 ## Frame 0: the fence (`schemas/node-rpc/fence.schema.json`)
 
 ```json
-{ "target_node_id": "0h7k2m9q4ztd", "target_port": "rpc-0", "op": 27 }
+{ "target_node_id": "0h7k2m9q4ztd", "op": 27 }
 ```
 
 The receiver reads exactly these bytes and checks them against what it is and what it serves,
@@ -19,16 +19,15 @@ before the body is read, allocated or parsed:
 | check | refusal | connection |
 |---|---|---|
 | `target_node_id` is not my minted id | `-32025 STALE_TARGET` (425) | dropped: the caller reached a replacement at that path, or misrouted; it re-resolves |
-| `target_port` is not a port I serve | `-32026 UNKNOWN_PORT` (421) | kept |
-| `op` is not served on that port | `-32027 UNSERVED_OP` (421) | kept |
+| `op` is not an op I serve | `-32027 UNSERVED_OP` (421) | kept |
 
-The fence is core: the same three checks for every family on every port. It carries nothing about
+The fence is core: the same two checks for every family. It carries nothing about
 the process birth: which birth a caller is talking to is the resolver's and the pool's knowledge
 (the incarnation, held locally, never sent), and a dial to a superseded birth is invalidated before
 dispatch. A restarted node keeps its id; a replacement is a new id.
 
-Encoding: JSON on every control port. The data port (op `0x12`, `data-frame`) carries the same
-three fields in the same order as postcard, because that path is hot and nothing else is.
+Encoding: JSON on the control plane. The data plane (op `0x12`, `data-frame`) carries the same
+two fields in the same order as postcard, because that path is hot and nothing else is.
 
 ## Frame 1: the invocation (`schemas/node-rpc/invocation.schema.json`)
 
@@ -71,7 +70,7 @@ fence carries the code; the body carries the method name. A retired code is neve
 ## What this replaces
 
 `RequestTarget{node_id, incarnation, slot, freshness}` and the postcard `RequestHeader`.
-`FreshnessToken`, `SlotPolicy`, the per-slot tokens and the resolver's `SlotsMoved` are deleted; a
-node kind declares `ports`, each a named service surface with the ops it serves; `TransportId` is
-`EndpointId`. Incarnation stays where it was off the wire: the Node row, the digest, the launch, the
+`FreshnessToken`, `SlotPolicy`, `EndpointSlot`, the slots themselves (no port, no named service
+surface: one endpoint per process and the op selects the handler) and the resolver's `SlotsMoved`
+are deleted; `TransportId` is `EndpointId`. Incarnation stays where it was off the wire: the Node row, the digest, the launch, the
 lifecycle events, the connections rows, the resolver's lineage and the pool key.

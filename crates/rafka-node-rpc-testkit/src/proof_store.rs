@@ -4,7 +4,7 @@
 //! reached and what state that birth holds. Its file lives in the node's data
 //! dir, so a same-node restart (same data dir) still holds every value and a
 //! replacement (fresh data dir) holds none. Every reply names the executing
-//! node, its mesh and incarnation, the slot and freshness token the call
+//! node, its mesh and incarnation, and where the call
 //! arrived on, and the op, so a test reads where a call landed from the reply
 //! itself.
 //!
@@ -83,10 +83,6 @@ pub struct Provenance {
     pub node: String,
     pub mesh: String,
     pub incarnation_id: String,
-    pub slot: String,
-    /// The freshness token of the slot the call arrived on; empty when the
-    /// node holds no assignment for that slot.
-    pub freshness: String,
     pub op: ProofOp,
 }
 
@@ -306,19 +302,16 @@ impl FileProofStore {
 }
 
 /// Serve `store` (opened from `launch`'s data dir). Every reply's provenance
-/// names this birth and the slot the call arrived on.
+/// names this birth.
 pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> ServerBuilder {
     let (node_id, node, mesh, incarnation) =
         (launch.node_id.to_string(), launch.name.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string());
-    let slots: BTreeMap<String, String> = launch.endpoints.iter().map(|e| (e.slot.clone(), e.freshness.to_string())).collect();
-    b.serve::<ProofStore, _, _>(TagOwner::Testkit, move |peer: PeerContext, req: ProofRequest| {
+    b.serve::<ProofStore, _, _>(TagOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
         let at = Provenance {
             node_id: node_id.clone(),
             node: node.clone(),
             mesh: mesh.clone(),
             incarnation_id: incarnation.clone(),
-            freshness: slots.get(&peer.slot).cloned().unwrap_or_default(),
-            slot: peer.slot,
             op: req.op(),
         };
         let store = store.clone();
@@ -328,7 +321,6 @@ pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> S
                 node = %at.node,
                 node_id = %at.node_id,
                 incarnation_id = %at.incarnation_id,
-                slot = %at.slot,
                 op = at.op.as_str(),
                 outcome = tracing::field::Empty,
             );
@@ -365,8 +357,6 @@ mod tests {
             node: "mesh1.rpc.1".into(),
             mesh: "mesh1".into(),
             incarnation_id: "i1".into(),
-            slot: "rpc-0".into(),
-            freshness: "f1".into(),
             op,
         }
     }

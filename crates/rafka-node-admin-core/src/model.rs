@@ -1,7 +1,7 @@
 //! Fabric → Mesh → Node model (i143 PRD §1, §13; ownership §4, §5.1).
 //!
-//! Every identity is opaque and compared by equality only. Freshness tokens
-//! and incarnation ids are never ordered (PRD §22).
+//! Every identity is opaque and compared by equality only. Incarnation ids
+//! are never ordered (PRD §22).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -23,10 +23,10 @@ impl fmt::Display for DeploymentId {
     }
 }
 
-// Identity, path and endpoint-slot types are the Mesh EF's (rafka-mesh-entity);
+// Identity, path and port types are the Mesh EF's (rafka-mesh-entity);
 // node-admin uses them, it does not redefine them.
 pub use rafka_mesh_entity::path::is_valid_mesh_name;
-pub use rafka_mesh_entity::{EndpointSlot, FabricId, FreshnessToken, IncarnationId, MeshId, NodeId, TransportId, NodeKind, PathName, PathNameError, SlotPolicy};
+pub use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName, PathNameError};
 
 /// Node lifecycle status as published on views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +71,7 @@ pub struct Node {
     pub kind: NodeKind,
     pub mesh: String,
     pub node_id: NodeId,
-    pub transport_id: Option<TransportId>,
+    pub endpoint_id: Option<EndpointId>,
     pub incarnation_id: Option<IncarnationId>,
     pub deployment_id: Option<DeploymentId>,
     pub provider: Option<ProviderKind>,
@@ -83,8 +83,6 @@ pub struct Node {
     pub admin_api_base: Option<String>,
     /// The one address of the birth's Iroh endpoint; `None` until it is born.
     pub transport_addr: Option<std::net::SocketAddr>,
-    /// The logical Node RPC slots the birth serves, under their tokens.
-    pub endpoints: Vec<EndpointSlot>,
     /// Non-Iroh listeners the birth binds, by name.
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
@@ -110,7 +108,7 @@ impl Node {
             mesh: name.mesh.clone(),
             name,
             node_id: NodeId::mint(),
-            transport_id: None,
+            endpoint_id: None,
             incarnation_id: None,
             deployment_id: None,
             provider: None,
@@ -120,7 +118,6 @@ impl Node {
             is_fabric_primary: false,
             admin_api_base: None,
             transport_addr: None,
-            endpoints: Vec::new(),
             listeners: Vec::new(),
             routable: true,
             declared: None,
@@ -176,7 +173,6 @@ mod tests {
         let b = IncarnationId::mint();
         assert_ne!(a, b);
         assert_eq!(a.0.len(), 32);
-        assert_ne!(FreshnessToken::mint(), FreshnessToken::mint());
     }
 
     #[test]

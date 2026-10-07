@@ -8,9 +8,8 @@ use std::net::SocketAddr;
 /// The process's one endpoint: one identity, one physical UDP socket, at
 /// exactly the transport address node-admin assigned (relay off, no
 /// discovery, Iroh's default transport configuration). Node RPC and gossip
-/// share it by ALPN. A Node RPC slot is a fence a request names in its
-/// framing; it owns no socket, so the socket decides nothing and there is
-/// never a second one.
+/// share it by ALPN. A request names its target in the fence of its framing;
+/// the socket decides nothing and there is never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
     let ep = Endpoint::builder(presets::Minimal)
         .secret_key(secret)

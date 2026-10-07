@@ -10,16 +10,15 @@
 //! - `mesh.storage`: the admin's own Mesh (id and name), so a restarted admin rejoins the same
 //!   Mesh channel rather than minting a new one.
 //! - `nodes.storage`: the admin's own row (NodeId, path.name, the incarnation it last ran, its
-//!   transport identity and endpoints), so a restart is the same logical node; the last-known
+//!   transport identity), so a restart is the same logical node; the last-known
 //!   births it heard, as bootstrap contacts (a stored contact is a hint: never topology, never
 //!   death proof); and, when this admin is a birth's authority, the lifecycle state that birth
 //!   declared and the admin applied (`status_rpc`).
 //! - `connections.storage`: the latest connection fact per (source, destination, kind).
 
-use crate::model::{IncarnationId, MeshId, NodeId, PathName, TransportId};
+use crate::model::{IncarnationId, MeshId, NodeId, PathName, EndpointId};
 use crate::record_store::{FileRecords, StorageError};
 use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
-use rafka_mesh_entity::EndpointSlot;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -89,10 +88,9 @@ pub struct NodeRecord {
     pub name: PathName,
     /// The incarnation this birth last ran (a restart supersedes it).
     pub incarnation_id: IncarnationId,
-    pub transport_id: TransportId,
+    pub endpoint_id: EndpointId,
     /// The one address of the birth's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
-    pub endpoints: Vec<EndpointSlot>,
     /// Non-Iroh listeners (the own row of a node-admin: its `control` API).
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
@@ -105,7 +103,7 @@ pub struct NodeRecord {
 impl NodeRecord {
     /// Where this birth's gossip was last reachable: its transport address, as membership dials.
     pub fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
-        let key = self.transport_id.0.parse::<iroh::PublicKey>().ok()?;
+        let key = self.endpoint_id.0.parse::<iroh::PublicKey>().ok()?;
         Some(iroh::EndpointAddr::new(key).with_ip_addr(self.transport_addr))
     }
 }
@@ -248,9 +246,8 @@ mod tests {
             node_id: NodeId::mint(),
             name: name.parse().unwrap(),
             incarnation_id: IncarnationId::mint(),
-            transport_id: TransportId(iroh::SecretKey::generate().public().to_string()),
+            endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()),
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
-            endpoints: vec![EndpointSlot::fresh("rpc-0")],
             listeners: vec![],
             declared: None,
         }
@@ -304,7 +301,7 @@ mod tests {
         n.remove_contact(&peer.node_id).unwrap();
         c.remove_connection(&down.index()).unwrap();
         assert!(n.contacts().unwrap().is_empty() && c.connections().unwrap().is_empty());
-        assert_eq!(peer.gossip_addr().map(|a| a.id.to_string()), Some(peer.transport_id.0.clone()));
+        assert_eq!(peer.gossip_addr().map(|a| a.id.to_string()), Some(peer.endpoint_id.0.clone()));
         std::fs::write(d.join("meshes").join("mesh1.json"), br#"{"format":"mesh-record/9","record":{}}"#).unwrap();
         assert!(matches!(m.mesh("mesh1"), Err(StorageError::Unrecognised { .. })));
     }

@@ -3,7 +3,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::stream::{SinkError, StreamFailure, StreamItem};
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
@@ -113,7 +113,7 @@ async fn rig() -> Rig {
     let caller_gone = Arc::new(AtomicU64::new(0));
     let finished = Arc::new(tokio::sync::Notify::new());
     let (p, g, fin) = (produced.clone(), caller_gone.clone(), finished.clone());
-    let (node_id, incarnation, slot) = (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"));
+    let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = ServerBuilder::new()
         .ledger([LedgerEntry { tag: Count::TAG, family: "count".into(), owner: TagOwner::Product("test".into()), state: TagState::Live }])
         .serve_stream::<Count, _, _>(TagOwner::Product("test".into()), move |_peer, req: CountRequest, sink| {
@@ -153,7 +153,7 @@ async fn rig() -> Rig {
                 Ok(CountFrame::Done { sent, caller_gone: gone })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }, [slot.clone()])
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .unwrap();
     let stats = server.stats();
     let key = SecretKey::generate();
@@ -164,10 +164,9 @@ async fn rig() -> Rig {
     resolver.insert(ResolvedNode {
         node_id: node_id.clone(),
         name: "mesh1.rpc.1".parse().unwrap(),
-        transport_id: key.public(),
+        endpoint_id: key.public(),
         transport_addr: addr,
         incarnation,
-        slots: vec![slot],
     });
     let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     Rig { _router: router, client: NodeRpcClient::new(cep, resolver), target: NodeTarget::ExactNode(node_id), stats, produced, caller_gone, finished }

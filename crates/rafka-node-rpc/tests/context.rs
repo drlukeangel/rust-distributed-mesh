@@ -3,7 +3,7 @@
 //! `caller_system`, `traceparent`, `tracestate` and `baggage` travel beside the target fence,
 //! never inside a protocol codec. A direct call continues the caller's trace at the target; a
 //! carried call keeps the origin's causal parent and `caller_system` through the hop. Nothing
-//! here reaches target selection, authority, freshness or the result: a missing context is
+//! here reaches target selection, authority, the fence or the result: a missing context is
 //! valid, and a malformed or over-bound part is dropped, named as `context_dropped` on the
 //! local span, while the call proceeds unchanged. Baggage propagates whole and only allowlisted
 //! keys (`test_case`, `scenario`, `operation`) become span attributes.
@@ -17,7 +17,7 @@ use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::export::trace::SpanData;
 use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
 use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId};
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
 use rafka_node_rpc_contract::context::{CallContext, MAX_BAGGAGE_BYTES, MAX_TRACESTATE_BYTES};
@@ -153,8 +153,7 @@ struct Process {
 async fn process(name: &str) -> Process {
     let key = SecretKey::generate();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let slots = vec![EndpointSlot::fresh("rpc-0")];
-    let endpoint = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let endpoint = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (s, s2) = (seen.clone(), seen.clone());
@@ -174,10 +173,10 @@ async fn process(name: &str) -> Process {
                 Ok(ProbeReply::Probed { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }, slots.clone())
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .unwrap();
     let router = Router::builder(endpoint).accept(rafka_node_rpc::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), transport_id: key.public(), transport_addr: addr, incarnation, slots };
+    let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Process { _router: router, resolved, seen }
 }
 
@@ -321,17 +320,17 @@ async fn context_never_reaches_the_fence_decision() {
     spans();
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(None, &[&p.resolved]).await;
-    // The caller's view names a token the server moved past: 425 whatever the context says.
+    // The caller's view names another node id at this process: 425 whatever the context says.
     let mut stale = p.resolved.clone();
-    stale.slots[0] = EndpointSlot::fresh("rpc-0");
+    stale.node_id = NodeId::mint();
     let (c2, _) = client(None, &[&stale]).await;
     let t = trace();
     let ctx = CallContext { baggage: Some("operation=make-it-current".into()), ..full(&t) };
-    let (out, _) = c2.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
+    let (out, _) = c2.call::<Echo>(&NodeTarget::ExactNode(stale.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
     assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
     // The refusal is still correlated with the caller's trace.
-    let refused = finished("rafka.node_rpc.connection.reject.via-stale-slot", Some(&t.id));
+    let refused = finished("rafka.node_rpc.connection.reject.via-stale-target", Some(&t.id));
     assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").as_deref() == Some("rdm")), "{refused:?}");
     // The current client serves with the same context.
     let (out, _) = c.call::<Echo>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
@@ -349,15 +348,15 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
     let carrier_resolver = Arc::new(StaticResolver::new());
     carrier_resolver.insert(target.resolved.clone());
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver).with_caller_system("carrier"));
-    let (cid, cinc, cslot) = (NodeId::mint(), IncarnationId::mint(), EndpointSlot::fresh("rpc-0"));
+    let (cid, cinc) = (NodeId::mint(), IncarnationId::mint());
     let carrier_server = ServerBuilder::new()
         .ledger(test_ledger())
         .carry::<Probe>()
         .serve_forward(carrier_client)
-        .seal(ServedBirth { node_id: cid.to_string(), incarnation: cinc.0.clone() }, [cslot.clone()])
+        .seal(ServedBirth { node_id: cid.to_string(), incarnation: cinc.0.clone() })
         .unwrap();
     let _carrier_router = Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server).spawn();
-    let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), transport_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc, slots: vec![cslot] };
+    let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };
 
     let (origin, _) = client(Some("rdm"), &[&carrier, &target.resolved]).await;
     let t = trace();
@@ -370,7 +369,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
     let seen = target.seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].context, ctx, "the carrier hands the origin's context through unchanged");
-    assert_eq!(seen[0].transport_id, carrier_key.public(), "the target authenticates the carrier, never a copied origin");
+    assert_eq!(seen[0].endpoint_id, carrier_key.public(), "the target authenticates the carrier, never a copied origin");
 
     // One trace: the Forward serve and the hop are children of the origin's span, and the
     // target's serve span keeps the origin's causal parent rather than the hop.

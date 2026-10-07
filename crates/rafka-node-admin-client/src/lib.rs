@@ -9,7 +9,7 @@
 //! The DTOs mirror node-admin core's JSON; `rafka-node-admin-core`'s
 //! `client_contract` test pins that every route decodes into them.
 
-use rafka_mesh_entity::{EndpointSlot, IncarnationId, NodeId, NodeKind, PathName};
+use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -57,7 +57,7 @@ pub struct NodeView {
     pub kind: NodeKind,
     pub mesh: String,
     pub node_id: NodeId,
-    pub transport_id: Option<String>,
+    pub endpoint_id: Option<String>,
     pub incarnation_id: Option<IncarnationId>,
     pub deployment_id: Option<String>,
     pub provider: Option<ProviderKind>,
@@ -67,7 +67,6 @@ pub struct NodeView {
     pub is_fabric_primary: bool,
     pub admin_api_base: Option<String>,
     pub transport_addr: Option<std::net::SocketAddr>,
-    pub endpoints: Vec<EndpointSlot>,
     #[serde(default)]
     pub listeners: Vec<(String, std::net::SocketAddr)>,
     /// The lifecycle state the birth declared to its authority, once applied.

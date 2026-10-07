@@ -2,8 +2,8 @@
 //! node-rpc.md §16, §26, §40).
 //!
 //! [`RequestAssembly`] is the server's request-direction state machine. A
-//! request reaches its protocol handler only after the tag was read, the
-//! target slot and freshness checked against the server's current assignment,
+//! request reaches its protocol handler only after the fence was read and
+//! checked against what this process is and serves (its node id, its ops),
 //! the length decoded, the complete payload read within the protocol ceiling, the
 //! request direction finished cleanly and the payload decoded. An unfinished
 //! or reset request never dispatches. The client's side of the same table is
@@ -12,7 +12,7 @@
 
 use crate::catalog::SealedCatalog;
 use crate::codes::ResetCode;
-use crate::framing::{parse_request_length, parse_request_target, RequestHead, RequestHeader, RequestTarget};
+use crate::framing::{parse_request_length, parse_request_target, Fence, RequestHead, RequestHeader};
 use crate::outcome::{MalformedKind, RpcOutcome};
 
 /// What the server does with a request direction.
@@ -22,8 +22,8 @@ pub enum ServerAction {
     Continue,
     /// Reset the stream with `421 UNSERVED_TAG`; no protocol dispatch.
     ResetUnserved { tag: u8 },
-    /// Reset the stream with `425 STALE_SLOT`: the target slot is unknown here
-    /// or not under that freshness token; no protocol dispatch.
+    /// Reset the stream with `425 STALE_TARGET`: the fence names another node;
+    /// no protocol dispatch.
     ResetStale { tag: u8, header: RequestHeader },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
@@ -40,7 +40,7 @@ pub enum ServerAction {
 /// The request direction, fed by the transport.
 pub struct RequestAssembly<'c> {
     catalog: &'c SealedCatalog,
-    current: &'c (dyn Fn(&RequestTarget) -> bool + Send + Sync),
+    current: &'c (dyn Fn(&Fence) -> bool + Send + Sync),
     buf: Vec<u8>,
     header: Option<RequestHeader>,
     head: Option<(u8, usize, usize)>,
@@ -54,9 +54,8 @@ impl std::fmt::Debug for RequestAssembly<'_> {
 }
 
 impl<'c> RequestAssembly<'c> {
-    /// `current(target)` answers whether this server holds the target's slot
-    /// under exactly its freshness token now.
-    pub fn new(catalog: &'c SealedCatalog, current: &'c (dyn Fn(&RequestTarget) -> bool + Send + Sync)) -> Self {
+    /// `current(fence)` answers whether this server is the fenced node.
+    pub fn new(catalog: &'c SealedCatalog, current: &'c (dyn Fn(&Fence) -> bool + Send + Sync)) -> Self {
         Self { catalog, current, buf: Vec::new(), header: None, head: None, done: false }
     }
 
@@ -76,13 +75,11 @@ impl<'c> RequestAssembly<'c> {
             let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
                 Ok(read) => read,
                 Err(RequestHead::Unserved { tag }) => return self.end(ServerAction::ResetUnserved { tag }),
-                Err(RequestHead::BadTarget { tag }) => {
-                    return self.end(ServerAction::ResetViolation { tag: Some(tag), reason: "bad request target" })
-                }
+                Err(RequestHead::BadTarget { tag }) => return self.end(ServerAction::ResetViolation { tag, reason: "bad request fence" }),
                 Err(_) => return ServerAction::Continue,
             };
             if self.header.is_none() {
-                if !(self.current)(&read.header.target) {
+                if !(self.current)(&read.header.fence) {
                     return self.end(ServerAction::ResetStale { tag: read.tag, header: read.header });
                 }
                 self.header = Some(read.header.clone());
@@ -180,11 +177,11 @@ mod tests {
     }
 
     fn target() -> RequestHeader {
-        RequestHeader::fence(RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "f1".into() })
+        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x11 })
     }
 
-    fn current(t: &RequestTarget) -> bool {
-        *t == target().target
+    fn current(f: &Fence) -> bool {
+        f.target_node_id == "n1"
     }
 
     fn assembly(c: &SealedCatalog) -> RequestAssembly<'_> {
@@ -193,7 +190,7 @@ mod tests {
 
     fn echo_frame(payload: &[u8]) -> Vec<u8> {
         let req = EchoRequest::Echo { payload: payload.to_vec() };
-        encode_request(Echo::TAG, &target(), &Echo::encode_request(&req).unwrap())
+        encode_request(&target(), &Echo::encode_request(&req).unwrap())
     }
 
     // ---- PRD §13 dispatch table ----
@@ -219,7 +216,7 @@ mod tests {
     fn known_tag_with_unknown_opcode_is_malformed_unknown_variant() {
         let mut body = Vec::new();
         encode_varint(7, &mut body); // op variant 7 does not exist
-        let f = encode_request(Echo::TAG, &target(), &body);
+        let f = encode_request(&target(), &body);
         let c = catalog();
         let mut a = assembly(&c);
         a.push(&f);
@@ -234,15 +231,17 @@ mod tests {
     fn unknown_tag_is_421_before_any_body() {
         let c = catalog();
         let mut a = assembly(&c);
-        assert_eq!(a.push(&[0x42]), ServerAction::ResetUnserved { tag: 0x42 });
-        assert_eq!(a.push(&[1, 2, 3]), ServerAction::Continue, "nothing after the decision");
+        let f = encode_request(&RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 }), b"body");
+        let fence_end = f.len() - 1 - 1 - 4; // before the context, the length and the body
+        assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetUnserved { tag: 0x42 }, "decided on the fence alone");
+        assert_eq!(a.push(&f[fence_end..]), ServerAction::Continue, "nothing after the decision");
     }
 
     #[test]
     fn known_oversize_is_typed_too_large_after_the_tag_read() {
         let c = catalog();
         let mut a = assembly(&c);
-        let mut head = encode_request(Echo::TAG, &target(), b"");
+        let mut head = encode_request(&target(), b"");
         head.pop();
         encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
         assert_eq!(a.push(&head), ServerAction::RefuseMalformed { tag: 0x11, kind: MalformedKind::TooLarge });
@@ -251,9 +250,9 @@ mod tests {
     #[test]
     fn a_stale_or_unknown_target_is_425_before_the_length_or_body() {
         let c = catalog();
-        for stale in [RequestHeader::fence(RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "old".into() }), RequestHeader::fence(RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-9".into(), freshness: "f1".into() })] {
+        for stale in [RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x11 }), RequestHeader::fence(Fence { target_node_id: "".into(), op: 0x11 })] {
             let mut a = assembly(&c);
-            let mut f = encode_request(Echo::TAG, &stale, b"");
+            let mut f = encode_request(&stale, b"");
             f.pop();
             // Only the tag and target: decided before any length is read.
             assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, header: stale.clone() });
@@ -261,8 +260,8 @@ mod tests {
         }
         // An oversize declaration behind a stale target is still 425: the target is checked first.
         let mut a = assembly(&c);
-        let stale = RequestHeader::fence(RequestTarget { node_id: "n1".into(), incarnation: "i1".into(), slot: "rpc-0".into(), freshness: "old".into() });
-        let mut f = encode_request(Echo::TAG, &stale, b"");
+        let stale = RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x11 });
+        let mut f = encode_request(&stale, b"");
         f.pop();
         encode_varint(Echo::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
         assert_eq!(a.push(&f), ServerAction::ResetStale { tag: 0x11, header: stale });
@@ -317,16 +316,16 @@ mod tests {
 
     #[test]
     fn complete_request_and_unserved_proof_is_unserved() {
-        assert_eq!(committed().reset::<EchoReply>(421, &target().target).name(), "Unserved");
+        assert_eq!(committed().reset::<EchoReply>(421, &target().fence).name(), "Unserved");
     }
 
     #[test]
     fn complete_request_and_stale_proof_is_rejected_stale_never_not_sent() {
-        let out = committed().reset::<EchoReply>(425, &target().target);
-        assert!(matches!(&out, RpcOutcome::RejectedStale(s) if s.slot() == "rpc-0" && s.freshness() == "f1"), "{out:?}");
+        let out = committed().reset::<EchoReply>(425, &target().fence);
+        assert!(matches!(&out, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{out:?}");
         assert!(out.proves_not_dispatched());
         assert_eq!(replay_verdict(&out, true), ReplayVerdict::SafeToRetry);
-        let early: RpcOutcome<EchoReply> = PreCommit::begin(0x11).stale_before_finish(&target().target);
+        let early: RpcOutcome<EchoReply> = PreCommit::begin(0x11).stale_before_finish(&target().fence);
         assert_eq!(early.name(), "RejectedStale");
     }
 
@@ -349,7 +348,7 @@ mod tests {
         assert_eq!(replay_verdict(&ind, false), ReplayVerdict::ReadMayRepeat);
         let ns: RpcOutcome<EchoReply> = PreCommit::begin(0x11).not_sent(NotSentReason::Deadline);
         assert_eq!(replay_verdict(&ns, true), ReplayVerdict::SafeToRetry);
-        assert_eq!(replay_verdict(&committed().reset::<EchoReply>(421, &target().target), true), ReplayVerdict::SafeToRetry);
+        assert_eq!(replay_verdict(&committed().reset::<EchoReply>(421, &target().fence), true), ReplayVerdict::SafeToRetry);
         let bytes = Echo::encode_reply(&Echo::busy("x".into())).unwrap();
         assert_eq!(replay_verdict(&committed().reply::<Echo>(&bytes), true), ReplayVerdict::Answered);
     }

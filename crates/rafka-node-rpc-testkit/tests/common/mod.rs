@@ -88,9 +88,9 @@ impl TopologySink for Published {
 }
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = an Echo answered on every advertised slot; drained =
+/// membership; ready = an Echo answered; drained =
 /// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
-/// admission closed = no slot runs an Echo any more.
+/// admission closed = no Echo runs any more.
 pub struct LiveMesh {
     pub membership: Membership,
     pub client: NodeRpcClient,
@@ -99,23 +99,21 @@ pub struct LiveMesh {
 
 impl LiveMesh {
     fn echo_target(&self, node: &Node) -> Result<NodeTarget, String> {
-        let transport_id = node.transport_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
+        let endpoint_id = node.endpoint_id.as_ref().ok_or("no fabric id")?.0.parse::<iroh::PublicKey>().map_err(|e| e.to_string())?;
         self.resolver.insert(ResolvedNode {
             node_id: node.node_id.clone(),
             name: node.name.clone(),
-            transport_id,
+            endpoint_id,
             incarnation: node.incarnation_id.clone().ok_or("no incarnation")?,
             transport_addr: node.transport_addr.ok_or("no transport address")?,
-            slots: node.endpoints.clone(),
         });
         Ok(NodeTarget::ExactNode(node.node_id.clone()))
     }
 
-    /// One Echo on `slot`. On loopback a live endpoint answers in
-    /// milliseconds; the budget bounds a dial to an endpoint that is gone.
-    async fn echo(&self, target: &NodeTarget, slot: &str) -> RpcOutcome<EchoReply> {
+    /// One Echo. On loopback a live endpoint answers in milliseconds; the
+    /// budget bounds a dial to an endpoint that is gone.
+    async fn echo(&self, target: &NodeTarget) -> RpcOutcome<EchoReply> {
         let opts = CallOptions {
-            slot: Some(slot.into()),
             budget: rafka_node_rpc::Budget::Overall(Duration::from_millis(500)),
             ..CallOptions::default()
         };
@@ -136,10 +134,10 @@ impl NodeObserver for LiveMesh {
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
         let target = self.echo_target(node)?;
-        for slot in &node.endpoints {
-            match self.echo(&target, &slot.slot).await {
+        {
+            match self.echo(&target).await {
                 RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {}
-                other => return Err(format!("slot {} answered {}", slot.slot, other.name())),
+                other => return Err(format!("{} answered {}", node.name, other.name())),
             }
         }
         Ok(())
@@ -164,10 +162,10 @@ impl NodeObserver for LiveMesh {
 
     async fn admission_closed(&self, node: &Node) -> Result<(), String> {
         let target = self.echo_target(node)?;
-        for slot in &node.endpoints {
-            match self.echo(&target, &slot.slot).await {
+        {
+            match self.echo(&target).await {
                 RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {
-                    return Err(format!("slot {} still runs new calls", slot.slot))
+                    return Err(format!("{} still runs new calls", node.name))
                 }
                 // A typed Draining (the handler never ran), or nothing admits the call.
                 _ => {}
@@ -289,8 +287,6 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
     let held = allocator.lock().unwrap().held(&created.node.name).cloned().expect("the allocator holds the node");
     assert_eq!(created.node.transport_addr, Some(held.transport));
-    assert_eq!(created.node.endpoints, held.slots);
-    assert_eq!(created.node.endpoints.len(), 2, "two logical slots on one socket");
 
     // A container node lives in its own network namespace, at its own
     // address on the fabric network: nothing on the host holds its ports.

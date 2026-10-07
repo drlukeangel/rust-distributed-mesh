@@ -2,12 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rafka.dev/schemas/node-rpc/fence.schema.json",
   "title": "Node RPC fence (frame 0)",
-  "description": "The first frame of every invocation, length-prefixed and read alone. The receiver checks it against what it is and what it serves before the second frame is read, allocated or parsed. It is core: the same three checks for every protocol on every port. It carries nothing about the process birth: which birth of a node a caller is talking to is the resolver's and the pool's knowledge (incarnation, held locally and never sent), and a dial to a superseded birth is invalidated before dispatch.",
+  "description": "The first frame of every invocation, length-prefixed and read alone. The receiver checks it against what it is and what it serves before the second frame is read, allocated or parsed. It is core: the same two checks for every protocol. It carries nothing about the process birth: which birth of a node a caller is talking to is the resolver's and the pool's knowledge (the incarnation, held locally and never sent); a restart's old connection dies with its process and a replacement is a new node id.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "target_node_id",
-    "target_port",
     "op"
   ],
   "properties": {
@@ -15,18 +14,11 @@
       "$ref": "#/$defs/node_id",
       "description": "The minted id of the node the caller resolved. A receiver whose own id differs answers STALE_TARGET and drops the connection: the caller reached a replacement at that path, or misrouted."
     },
-    "target_port": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 32,
-      "pattern": "^[a-z][a-z0-9-]*$",
-      "description": "The named port on the node (rpc-0, control, mesh). A port this node does not serve answers UNKNOWN_PORT and keeps the connection."
-    },
     "op": {
       "type": "integer",
       "minimum": 0,
       "maximum": 255,
-      "description": "The operation code, a row of the op ledger (catalog.rs). The ledger owns the code's family, owner and the method names registered under it. An op the port does not serve answers UNSERVED_OP and keeps the connection."
+      "description": "The operation code, a row of the op ledger (catalog.rs). The ledger owns the code's family, owner and the method names registered under it. An op this node does not serve answers UNSERVED_OP and keeps the connection."
     }
   },
   "$defs": {

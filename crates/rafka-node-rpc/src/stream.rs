@@ -239,7 +239,7 @@ where
                 "rafka.node_rpc.stream.serve.via-direct",
                 protocol = P::NAME,
                 tag = P::TAG,
-                peer = %peer.transport_id,
+                peer = %peer.endpoint_id,
                 caller_system = tracing::field::Empty,
                 context_dropped = tracing::field::Empty,
                 test_case = tracing::field::Empty,

@@ -3,7 +3,7 @@
 //!
 //! The envelope carries `caller_system`, `traceparent`, `tracestate` and `baggage` beside
 //! the target fence. They are observability only: nothing here reaches target selection,
-//! authority, freshness, lifecycle or a result. A value that is malformed or over its bound
+//! authority, the fence, lifecycle or a result. A value that is malformed or over its bound
 //! is dropped, never refused and never truncated; the call proceeds and the local span
 //! records what was dropped and why.
 

@@ -114,7 +114,7 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
                 RpcOutcome::NotSent(n) => (None, Some(format!("{:?}", n.reason()))),
                 RpcOutcome::Indeterminate(i) => (None, Some(format!("{:?}", i.reason()))),
                 RpcOutcome::Unserved(u) => (None, Some(format!("{u:?}"))),
-                RpcOutcome::RejectedStale(r) => (None, Some(format!("slot {} freshness {}", r.slot(), r.freshness()))),
+                RpcOutcome::RejectedStale(r) => (None, Some(format!("stale target {}", r.target_node_id()))),
             };
             tracing::info_span!("rafka.node_rpc.declare_probe.serve.via-request", state = ?state, outcome = out.name(), reply = reply.as_ref().map(StatusReply::name).unwrap_or(""))
                 .in_scope(|| tracing::info!("the node declared its own state"));

@@ -1,7 +1,7 @@
 //! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
 //!
-//! Per bi-stream: read the tag (unserved → `421`), the target slot and its
-//! freshness (not this birth's current one → `425`), the declared length
+//! Per bi-stream: read the fence (an unserved op → `421`; another node → `425`),
+//! the context, the declared length
 //! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
 //! `Busy`), read the body, and dispatch only after the request direction
 //! finished cleanly. A request the sender reset (`499`) or left unfinished is
@@ -21,18 +21,15 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use rafka_mesh_entity::{EndpointSlot, FreshnessToken};
 use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
-use rafka_node_rpc_contract::framing::RequestTarget;
-use std::sync::{Arc, RwLock};
+use rafka_node_rpc_contract::framing::Fence;
+use std::sync::Arc;
 use tracing::Instrument;
 
 /// Who is calling, as the transport proved it.
 #[derive(Debug, Clone)]
 pub struct PeerContext {
-    pub transport_id: iroh::PublicKey,
-    /// The endpoint slot the request named (and the server held under its token).
-    pub slot: String,
+    pub endpoint_id: iroh::PublicKey,
     /// The observability context the request carried, already sanitized: what a carrier
     /// hands into its inner call unchanged.
     pub context: CallContext,
@@ -100,8 +97,7 @@ where
                 "rafka.node_rpc.request.serve.via-direct",
                 protocol = P::NAME,
                 tag = P::TAG,
-                peer = %peer.transport_id,
-                slot = %peer.slot,
+                peer = %peer.endpoint_id,
                 caller_system = tracing::field::Empty,
                 context_dropped = tracing::field::Empty,
                 test_case = tracing::field::Empty,
@@ -155,7 +151,7 @@ pub struct ServerStats {
     pub busy: AtomicU64,
     pub draining: AtomicU64,
     pub violations: AtomicU64,
-    /// Requests refused `425 STALE_SLOT`.
+    /// Requests refused `425 STALE_TARGET` (another node).
     pub stale: AtomicU64,
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (WaitForDrain reads it).
@@ -231,10 +227,9 @@ impl ServerBuilder {
     }
 
     /// Seal the catalog before the first stream is accepted, as `birth`: the
-    /// exact node and incarnation this process is, serving `slots` under their
-    /// freshness tokens. A request is dispatched only when it names this birth
-    /// and one of its slots under the slot's current token.
-    pub fn seal(self, birth: ServedBirth, slots: impl IntoIterator<Item = EndpointSlot>) -> Result<NodeRpcServer, Vec<SealError>> {
+    /// exact node and incarnation this process is. A request is dispatched only
+    /// when its fence names this node and a served op.
+    pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
         let catalog = self.catalog.seal()?;
         if let Some(table) = &self.carried_table {
             let _ = table.set(self.carried.clone());
@@ -247,7 +242,6 @@ impl ServerBuilder {
                 draining: AtomicBool::new(false),
                 stats: Arc::new(ServerStats::default()),
                 birth,
-                slots: RwLock::new(slots.into_iter().map(|s| (s.slot, s.freshness)).collect()),
             }),
         })
     }
@@ -260,22 +254,16 @@ pub struct ServedBirth {
     pub incarnation: String,
 }
 
-/// Which part of a request's fence was not current.
+/// Which part of a request's fence this node is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FenceMismatch {
     NodeId,
-    Incarnation,
-    Slot,
-    Freshness,
 }
 
 impl FenceMismatch {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NodeId => "node_id",
-            Self::Incarnation => "incarnation",
-            Self::Slot => "slot",
-            Self::Freshness => "freshness",
         }
     }
 }
@@ -287,12 +275,10 @@ struct Inner {
     draining: AtomicBool,
     stats: Arc<ServerStats>,
     birth: ServedBirth,
-    /// Every slot this birth serves, under its current freshness token.
-    slots: RwLock<HashMap<String, FreshnessToken>>,
 }
 
-/// One sealed server for every endpoint slot of the process's one endpoint.
-/// The socket a request arrives on names no slot: the request's target does.
+/// One sealed server for the process's one endpoint. The socket a request
+/// arrives on names nothing: the request's fence does.
 #[derive(Clone)]
 pub struct NodeRpcServer {
     inner: Arc<Inner>,
@@ -300,7 +286,7 @@ pub struct NodeRpcServer {
 
 impl std::fmt::Debug for NodeRpcServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeRpcServer").field("slots", &*self.inner.slots.read().unwrap()).finish()
+        f.debug_struct("NodeRpcServer").field("birth", &self.inner.birth).finish()
     }
 }
 
@@ -309,34 +295,17 @@ fn code(c: ResetCode) -> VarInt {
 }
 
 impl NodeRpcServer {
-    /// Assign `slot` (a new freshness token, or a slot this birth did not
-    /// hold): a request naming the slot's previous token is `425` from now.
-    pub fn assign(&self, slot: EndpointSlot) {
-        self.inner.slots.write().unwrap().insert(slot.slot, slot.freshness);
-    }
-
-    /// Is `target` this exact birth, at one of its slots under exactly the
-    /// slot's current token? `Err` names the first part that is not.
-    pub fn check_fence(&self, target: &RequestTarget) -> Result<(), FenceMismatch> {
-        if target.node_id != self.inner.birth.node_id {
+    /// Is `fence` this node? `Err` names what is not. The op is the catalog's
+    /// to check.
+    pub fn check_fence(&self, fence: &Fence) -> Result<(), FenceMismatch> {
+        if fence.target_node_id != self.inner.birth.node_id {
             return Err(FenceMismatch::NodeId);
         }
-        if target.incarnation != self.inner.birth.incarnation {
-            return Err(FenceMismatch::Incarnation);
-        }
-        match self.inner.slots.read().unwrap().get(&target.slot) {
-            None => Err(FenceMismatch::Slot),
-            Some(f) if f.to_string() != target.freshness => Err(FenceMismatch::Freshness),
-            Some(_) => Ok(()),
-        }
+        Ok(())
     }
 
-    pub fn is_current(&self, target: &RequestTarget) -> bool {
-        self.check_fence(target).is_ok()
-    }
-
-    fn current_token(&self, slot: &str) -> Option<String> {
-        self.inner.slots.read().unwrap().get(slot).map(|f| f.to_string())
+    pub fn is_current(&self, fence: &Fence) -> bool {
+        self.check_fence(fence).is_ok()
     }
 
     pub fn stats(&self) -> Arc<ServerStats> {
@@ -360,7 +329,7 @@ impl NodeRpcServer {
     async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
         let stats = self.inner.stats.clone();
         let me = self.clone();
-        let current = move |t: &RequestTarget| me.is_current(t);
+        let current = move |f: &Fence| me.is_current(f);
         let mut asm = RequestAssembly::new(&self.inner.catalog, &current);
         let mut buf = vec![0u8; 16 * 1024];
         let mut permit: Option<Permit> = None;
@@ -403,19 +372,17 @@ impl NodeRpcServer {
             }
             ServerAction::ResetStale { tag, header } => {
                 stats.stale.fetch_add(1, Ordering::SeqCst);
-                let target = header.target;
-                let mismatch = self.check_fence(&target).err().map(FenceMismatch::as_str).unwrap_or("");
+                let fence = header.fence;
+                let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
                 let span = tracing::info_span!(
-                    "rafka.node_rpc.connection.reject.via-stale-slot",
+                    "rafka.node_rpc.connection.reject.via-stale-target",
                     decided_by = "target",
                     tag,
                     peer = %peer,
-                    node_id = %target.node_id,
-                    incarnation_id = %target.incarnation,
-                    slot = %target.slot,
-                    freshness = %target.freshness,
+                    node_id = %fence.target_node_id,
+                    op = fence.op,
                     mismatch,
-                    current = self.current_token(&target.slot).unwrap_or_default(),
+                    receiver_node_id = %self.inner.birth.node_id,
                     caller_system = tracing::field::Empty,
                 );
                 // Correlated with the caller's trace without reading or dispatching the body.
@@ -426,9 +393,9 @@ impl NodeRpcServer {
                 if let Some(s) = context.caller_system.as_deref() {
                     span.record("caller_system", s);
                 }
-                span.in_scope(|| tracing::info!("the request's fence is not this birth's current state: 425"));
-                let _ = send.reset(code(ResetCode::StaleSlot));
-                let _ = recv.stop(code(ResetCode::StaleSlot));
+                span.in_scope(|| tracing::info!("the request's fence is not this node: 425"));
+                let _ = send.reset(code(ResetCode::StaleTarget));
+                let _ = recv.stop(code(ResetCode::StaleTarget));
             }
             ServerAction::RefuseMalformed { tag, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
@@ -461,7 +428,7 @@ impl NodeRpcServer {
                     tracing::info_span!("rafka.node_rpc.request.update.via-context-dropped", decided_by = "target", tag, peer = %peer, context_dropped = %dropped_as_str(&dropped))
                         .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
                 }
-                let ctx = PeerContext { transport_id: peer, slot: header.target.slot, context };
+                let ctx = PeerContext { endpoint_id: peer, context };
                 let out = crate::stream::StreamOut::new(send, h.max_reply());
                 if h.is_stream() {
                     let Some(streaming) = h.stream(ctx, payload, out.clone()) else { return };
