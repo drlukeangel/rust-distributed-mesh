@@ -238,7 +238,10 @@ async fn cancelling_mid_stream_tells_the_handler_and_releases_the_invocation() {
 async fn a_slow_consumer_holds_the_producer_without_unbounded_buffering() {
     let r = rig().await;
     let (n, size) = (2_000u32, 64 * 1024u32); // 128 MiB if nothing held the producer back
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(n, size, Mode::Normal), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+    // The whole 128 MiB is read at the end: the budget covers that transfer (this cell proves the
+    // producer is held, not a throughput), so the default unary reply bound does not apply.
+    let budget = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(120) }, ..Default::default() };
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(n, size, Mode::Normal), &budget).await.map_err(|e| e.0).unwrap();
     assert!(matches!(s.next().await, Some(StreamItem::Frame(FrameKind::Started, _))));
     tokio::time::sleep(Duration::from_millis(800)).await;
     let ahead = r.produced.load(Ordering::SeqCst);
