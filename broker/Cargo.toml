@@ -10,4 +10,3 @@ path = "src/main.rs"
 [dependencies]
 rafka-node-base = { path = "../crates/rafka-node-base" }
 tokio = { workspace = true }
-anyhow = { workspace = true }

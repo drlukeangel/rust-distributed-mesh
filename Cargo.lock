@@ -2907,15 +2907,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ntapi"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
-dependencies = [
- "winapi",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3022,16 +3013,6 @@ dependencies = [
  "block2",
  "libc",
  "objc2",
- "objc2-core-foundation",
-]
-
-[[package]]
-name = "objc2-io-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
-dependencies = [
- "libc",
  "objc2-core-foundation",
 ]
 
@@ -3620,27 +3601,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
- "blake3",
  "dashmap",
  "dhat",
- "futures-lite",
- "hex",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
- "iroh",
- "iroh-gossip",
  "mimalloc",
  "opentelemetry",
  "opentelemetry-http",
- "postcard",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
- "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
- "rafka-node-base",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -3654,20 +3627,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-bridge"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dhat",
- "rafka-node-base",
- "tokio",
-]
-
-[[package]]
 name = "rafka-broker"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rafka-node-base",
  "tokio",
 ]
@@ -3696,7 +3658,6 @@ dependencies = [
 name = "rafka-compute"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rafka-node-base",
  "tokio",
 ]
@@ -3705,7 +3666,6 @@ dependencies = [
 name = "rafka-gateway"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rafka-node-base",
  "tokio",
 ]
@@ -3826,27 +3786,17 @@ name = "rafka-node-base"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "blake3",
- "dashmap",
- "dhat",
- "futures-lite",
- "hex",
  "iroh",
- "iroh-base",
- "iroh-gossip",
- "opentelemetry",
- "postcard",
- "rafka-mesh-ops",
+ "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
- "rand 0.8.6",
+ "rafka-node-admin-core",
+ "rafka-node-rpc",
+ "rafka-node-rpc-contract",
+ "rafka-node-rpc-testkit",
  "serde",
- "serde_json",
- "sysinfo",
  "tokio",
  "tracing",
- "tracing-flame",
- "tracing-opentelemetry",
 ]
 
 [[package]]
@@ -3903,7 +3853,6 @@ dependencies = [
 name = "rafka-registry"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "rafka-node-base",
  "tokio",
 ]
@@ -4662,20 +4611,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.38.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92ab6a2f8bfe508deb3c6406578252e491d299cbbf3bc0529ecc3313aee4a52f"
-dependencies = [
- "libc",
- "memchr",
- "ntapi",
- "objc2-core-foundation",
- "objc2-io-kit",
- "windows",
 ]
 
 [[package]]

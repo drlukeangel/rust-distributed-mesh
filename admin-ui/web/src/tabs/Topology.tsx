@@ -3,7 +3,6 @@ import ReactFlow, {
   Background,
   Controls,
   MiniMap,
-  type Edge,
   type Node,
 } from "reactflow";
 import { api, type TopologyResponse, type NodeType } from "../api";
@@ -13,7 +12,8 @@ const TYPE_COLOR: Record<NodeType, string> = {
   broker: "#f0883e",
   compute: "#3fb950",
   registry: "#bc8cff",
-  bridge: "#e3b341",
+  rpc_node: "#8b949e",
+  node_admin: "#e3b341",
 };
 
 function meshColor(mesh: string): string {
@@ -27,27 +27,10 @@ function meshColor(mesh: string): string {
   return palette[Math.abs(h) % palette.length];
 }
 
-/// Map a utilization ratio (used / budget) to a color used in the node
-/// tile. Green = healthy, amber = getting warm, red = saturated. Returns
-/// the muted text grey when budget is 0 (no data yet).
-function utilColor(used: number | undefined, budget: number | undefined): string {
-  if (used === undefined || budget === undefined || budget <= 0) return "#8b949e";
-  const ratio = used / budget;
-  if (ratio < 0.5) return "#3fb950";
-  if (ratio < 0.8) return "#d29922";
-  return "#f85149";
-}
-
-function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
-  // The admin-ui process registers itself with mesh_id="admin" (see
-  // admin-ui/src/main.rs ~3842). It's an observer, not a mesh participant —
-  // showing it as its own swim lane both clutters the view and breaks bridge
-  // centering (with 3 sorted meshes [admin, mesh-a, mesh-b], the row center
-  // lands exactly on mesh-a, so bridges render on top of the wrong group).
-  const observable = t.nodes.filter((n) => (n.mesh_id || "default") !== "admin");
-  const bridges = observable.filter((n) => n.type === "bridge");
-  const members = observable.filter((n) => n.type !== "bridge");
-
+/// Lay node-admin's nodes out by mesh. The view carries no peer
+/// connections, so the graph has no edges.
+function buildGraph(t: TopologyResponse): Node[] {
+  const members = t.nodes;
   const byMesh = new Map<string, typeof members>();
   for (const n of members) {
     const m = n.mesh_id || "default";
@@ -131,24 +114,12 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
               <div style={{ fontSize: 9, color: "#8b949e", marginTop: 2 }}>
                 {n.type}
               </div>
-              {(n.frames_sent_total ?? 0) > 0 && (
-                <div style={{ fontSize: 9, color: "#3fb950" }}>
-                  TX:{n.frames_sent_total}
-                </div>
-              )}
-              {(n.frames_recv_total ?? 0) > 0 && (
-                <div style={{ fontSize: 9, color: "#58a6ff" }}>
-                  RX:{n.frames_recv_total}
-                </div>
-              )}
-              {(n.cpu_budget ?? 0) > 0 && (
-                <div style={{ fontSize: 9, color: utilColor(n.cpu_used, n.cpu_budget) }}>
-                  CPU:{(n.cpu_used ?? 0).toFixed(1)}/{(n.cpu_budget ?? 0).toFixed(1)}
-                </div>
-              )}
-              {(n.ram_budget ?? 0) > 0 && (
-                <div style={{ fontSize: 9, color: utilColor(n.ram_used, n.ram_budget) }}>
-                  MEM:{(n.ram_used ?? 0).toFixed(2)}/{(n.ram_budget ?? 0).toFixed(2)}gb
+              <div style={{ fontSize: 9, color: "#8b949e" }}>
+                {n.status ?? "?"}
+              </div>
+              {(n.is_fabric_primary || n.is_primary) && (
+                <div style={{ fontSize: 9, color: "#e3b341" }}>
+                  {n.is_fabric_primary ? "fabric primary" : "mesh primary"}
                 </div>
               )}
             </div>
@@ -169,104 +140,11 @@ function buildGraph(t: TopologyResponse): { nodes: Node[]; edges: Edge[] } {
     });
   });
 
-  // Bridge nodes — placed ABOVE the mesh groups, centered horizontally
-  // across the row of meshes. Bridges visibly sit "on top of" everything
-  // they bridge, not jammed in the gap between meshes.
-  const BRIDGE_W = 110;
-  const BRIDGE_H = 86;
-  bridges.forEach((b, i) => {
-    const centerOfAllMeshes =
-      meshes.length > 0
-        ? 80 + (meshes.length - 1) * meshGap * 0.5 + meshWidth / 2
-        : 400;
-    // spread multiple bridges horizontally around the center
-    const spread = 130;
-    const x =
-      centerOfAllMeshes - BRIDGE_W / 2 + (i - (bridges.length - 1) / 2) * spread;
-    // y above the mesh group tops with some padding
-    const y = Math.max(20, meshTop - 120);
-
-    nodes.push({
-      id: b.id,
-      position: { x, y },
-      data: {
-        label: (
-          <div style={{ textAlign: "center", lineHeight: 1.15 }}>
-            <div
-              style={{
-                fontFamily: "ui-monospace, monospace",
-                fontSize: 10,
-                color: "#c9d1d9",
-              }}
-            >
-              {b.id.length > 14 ? b.id.slice(0, 12) + "…" : b.id}
-            </div>
-            <div style={{ fontSize: 9, color: "#e3b341", marginTop: 2 }}>
-              bridge
-            </div>
-            {(b.frames_sent_total ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: "#3fb950" }}>
-                TX:{b.frames_sent_total}
-              </div>
-            )}
-            {(b.frames_recv_total ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: "#58a6ff" }}>
-                RX:{b.frames_recv_total}
-              </div>
-            )}
-            {(b.cpu_budget ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: utilColor(b.cpu_used, b.cpu_budget) }}>
-                CPU:{(b.cpu_used ?? 0).toFixed(1)}/{(b.cpu_budget ?? 0).toFixed(1)}
-              </div>
-            )}
-            {(b.ram_budget ?? 0) > 0 && (
-              <div style={{ fontSize: 9, color: utilColor(b.ram_used, b.ram_budget) }}>
-                MEM:{(b.ram_used ?? 0).toFixed(2)}/{(b.ram_budget ?? 0).toFixed(2)}gb
-              </div>
-            )}
-          </div>
-        ),
-      },
-      style: {
-        background: `${TYPE_COLOR.bridge}33`,
-        border: `2px solid ${TYPE_COLOR.bridge}`,
-        color: "#fff",
-        width: BRIDGE_W,
-        height: BRIDGE_H,
-        borderRadius: 8,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      },
-    });
-  });
-
-  // Edges: server emits within-mesh full clique + bridge→anchor cross edges.
-  // Render within = dim gray (architectural, not animated). Cross = gold
-  // dashed + animated (visually distinguishes the bridge link).
-  // Drop edges that reference the filtered-out observer node (admin-ui),
-  // otherwise React Flow renders them with missing endpoints.
-  const visibleNodeIds = new Set(observable.map((n) => n.id));
-  const edges: Edge[] = t.edges
-    .filter((e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to))
-    .map((e) => {
-      const isCross = e.kind === "cross";
-      return {
-        id: `${e.from}->${e.to}`,
-        source: e.from,
-        target: e.to,
-        style: isCross
-          ? { stroke: "#e3b341", strokeWidth: 1.5, strokeDasharray: "5,4" }
-          : { stroke: "#30363d", strokeWidth: 1, opacity: 0.4 },
-        animated: isCross,
-      };
-    });
-
-  return { nodes, edges };
+  return nodes;
 }
 
 export function Topology() {
-  const [data, setData] = useState<TopologyResponse>({ nodes: [], edges: [] });
+  const [data, setData] = useState<TopologyResponse>({ nodes: [] });
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
@@ -281,7 +159,7 @@ export function Topology() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  const { nodes, edges } = useMemo(() => buildGraph(data), [data]);
+  const nodes = useMemo(() => buildGraph(data), [data]);
 
   if (err) {
     return <div className="card">topology load failed: {err}</div>;
@@ -301,7 +179,6 @@ export function Topology() {
     <div style={{ height: "calc(100vh - 220px)", border: "1px solid var(--border)", borderRadius: 6 }}>
       <ReactFlow
         nodes={nodes}
-        edges={edges}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         nodesDraggable

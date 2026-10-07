@@ -34,22 +34,6 @@ tracing-opentelemetry = { workspace = true }
 http = "1"
 urlencoding = "2"
 
-# admin-ui joins the mesh as a node via NodeRuntime. These deps power the
-# mesh-participant behavior (already in rafka-node-base, but the gossip topic
-# subscription helpers + ALPN + blake3 are needed for any direct iroh work).
-# - iroh-gossip: receive GossipDigest broadcasts from every node
-# - rafka-node-base: GossipDigest type + ALPN constants
-# - blake3: derive topic_id from mesh_id (same as nodes do)
-# - postcard: decode digest payloads
-# - futures-lite: stream adapters for the gossip receiver
-iroh = { workspace = true }
-iroh-gossip = { workspace = true }
-rafka-node-base = { path = "../crates/rafka-node-base" }
-rafka-mesh-transport = { path = "../crates/rafka-mesh-transport" }
-blake3 = "1"
-postcard = { version = "1", features = ["alloc"] }
-futures-lite = "2"
-hex = { workspace = true }
 dhat = { version = "0.3.3", optional = true }
 mimalloc = "0.1.52"
 

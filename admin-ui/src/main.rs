@@ -1,6 +1,5 @@
 // Workaround for rustc Linux toolchain (1.94 + 1.95) ICE in `check_mod_deathness`
-// when processing the unused `when_ago` / `observer_task` helpers and unused
-// struct fields. Windows MSVC toolchain compiles fine without this; Linux ICEs.
+// when processing the unused `when_ago` helper and unused struct fields. Windows MSVC toolchain compiles fine without this; Linux ICEs.
 // See memory `project_rustc_195_ice.md`.
 #![allow(dead_code)]
 
@@ -26,11 +25,10 @@ use std::{
     time::Duration,
 };
 use tower_http::services::ServeDir;
-use rafka_node_base::{GossipDigest, live_digests, message_ring, topic_membership};
 
 use tracing::{info, info_span, Instrument};
 
-const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry", "bridge"];
+const KNOWN_NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
 // dhat heap profiling — OFF by default, only built with --features dhat-heap.
 // The profiler is held in a static so a timer can drop it (which writes
@@ -180,7 +178,6 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
   <button class="spawn-btn" data-type="broker">+ Spawn broker</button>
   <button class="spawn-btn" data-type="compute">+ Spawn compute</button>
   <button class="spawn-btn" data-type="registry">+ Spawn registry</button>
-  <button class="spawn-btn" data-type="bridge">+ Spawn bridge</button>
 </div>
 
 <div id="toast"></div>
@@ -1063,31 +1060,6 @@ impl EventRing {
 }
 
 /// Live observer state — one entry per node seen via gossip in the last 30 s.
-/// Populated by `observer_task` (the Phase-C iroh observer). Throughput rates
-/// are computed as delta between two consecutive digests divided by the wall
-/// time delta. ZERO Jaeger queries — pure gossip-fed data.
-///
-/// Phase C is currently dormant on Windows (iroh bind hang). Phase A
-/// (topology_cache) is the active fallback.
-#[derive(Clone, Debug)]
-struct LiveNodeState {
-    digest: GossipDigest,
-    last_seen_ms: u64,
-    sent_per_sec: f64,
-    recv_per_sec: f64,
-}
-
-/// Phase A: snapshot of the topology computed in the background every 3 s.
-/// /api/topology + /api/heartbeats return this instantly without ever
-/// blocking on Jaeger queries on the request path.
-#[derive(Clone, Default, Debug)]
-struct TopologySnapshot {
-    nodes: Vec<Value>,
-    edges: Vec<Value>,
-    heartbeats: Vec<Value>,
-    computed_at_ms: i64,
-}
-
 #[derive(Clone)]
 struct AppState {
     http: reqwest::Client,
@@ -1099,10 +1071,6 @@ struct AppState {
     known: Arc<DashMap<String, KnownNode>>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
-    /// Phase C: live state from gossip digests, keyed by node_id (hex).
-    live: Arc<DashMap<String, LiveNodeState>>,
-    /// Phase A: background Jaeger-fed cache. Refreshed every 3 s.
-    topology_cache: Arc<tokio::sync::RwLock<TopologySnapshot>>,
     /// Red-team A#8: serialize concurrent /api/tests/run calls for the same
     /// test name. Map entry exists while a test is running.
     running_tests: Arc<DashMap<String, ()>>,
@@ -1114,12 +1082,60 @@ struct BootTraceQuery {
 }
 
 
-/// One node node-admin manages, as the views need it.
+/// One node node-admin manages, as its `GET /api/nodes` view reports it.
 #[derive(Debug, Clone)]
 struct KnownNode {
-    /// `rpc_node` or `node_admin`.
+    /// The node kind's segment: `broker`, `gateway`, `compute`, `rpc_node`, `node_admin`.
     node_type: String,
     mesh_id: String,
+    node_id: String,
+    status: String,
+    is_primary: bool,
+    is_fabric_primary: bool,
+    incarnation_id: Option<String>,
+    /// The lifecycle state the birth declared to its authority, once applied.
+    declared: Option<String>,
+}
+
+impl KnownNode {
+    fn of(n: &rafka_node_admin_client::NodeView) -> Self {
+        let kind = serde_json::to_value(n.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        let status = serde_json::to_value(&n.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        KnownNode {
+            node_type: kind,
+            mesh_id: n.mesh.clone(),
+            node_id: n.node_id.to_string(),
+            status,
+            is_primary: n.is_primary,
+            is_fabric_primary: n.is_fabric_primary,
+            incarnation_id: n.incarnation_id.as_ref().map(|i| i.to_string()),
+            declared: n.declared.clone(),
+        }
+    }
+
+    /// The node as `/api/topology` and `/api/heartbeats` render it.
+    fn view_json(&self, name: &str) -> Value {
+        json!({
+            "id": name,
+            "node_name": name,
+            "node_id": self.node_id,
+            "type": self.node_type,
+            "node_type": self.node_type,
+            "mesh_id": self.mesh_id,
+            "status": self.status,
+            "is_primary": self.is_primary,
+            "is_fabric_primary": self.is_fabric_primary,
+            "incarnation_id": self.incarnation_id,
+            "declared": self.declared,
+        })
+    }
+}
+
+/// Every node node-admin manages, sorted by path.name.
+fn known_nodes_json(state: &AppState) -> Vec<Value> {
+    let mut out: Vec<Value> = state.known.iter().map(|e| e.value().view_json(e.key())).collect();
+    out.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    out
 }
 
 async fn handle_health() -> impl IntoResponse {
@@ -1162,192 +1178,11 @@ async fn handle_tests(State(_state): State<AppState>) -> impl IntoResponse {
     (StatusCode::OK, axum::Json(json!({"reports": reports}))).into_response()
 }
 
-/// `GET /api/heartbeats` — per-instance heartbeat data for every spawned
-/// subprocess. Returns `[{node_name, node_type, node_id, mesh_id, peer_count,
-/// age_ms}]`. Used by the Heartbeat tab to render one card per instance
-/// instead of one per node_type.
+/// `GET /api/heartbeats` — one entry per node node-admin manages, from its
+/// `GET /api/nodes` view: the node's status, seat and incarnation.
 async fn handle_heartbeats(State(state): State<AppState>) -> impl IntoResponse {
-    // Mesh-native heartbeats: read from live_digests() directly.
-    let digests = live_digests();
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let mut out: Vec<Value> = Vec::new();
-    let mut known_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    for entry in digests.iter() {
-        let d = entry.value();
-        known_names.insert(d.node_name.clone());
-        let age_ms = (now_ms.saturating_sub(d.wall_time_ms)) as i64;
-        out.push(json!({
-            "node_name": d.node_name,
-            "node_type": d.node_type,
-            "node_id": d.node_id,
-            "mesh_id": d.mesh_id,
-            "peer_count": d.peer_count,
-            "frames_sent_total": d.frames_sent_total,
-            "frames_recv_total": d.frames_recv_total,
-            "age_ms": age_ms,
-        }));
-    }
-    // Pending entries (spawned, first digest not seen yet)
-    for entry in state.known.iter() {
-        if !known_names.contains(entry.key()) {
-            out.push(json!({
-                "node_name": entry.key(),
-                "node_type": entry.value().node_type,
-                "node_id": "",
-                "mesh_id": entry.value().mesh_id,
-                "peer_count": 0,
-                "frames_sent_total": 0,
-                "frames_recv_total": 0,
-                "age_ms": -1,
-            }));
-        }
-    }
-    return (
-        StatusCode::OK,
-        axum::Json(json!({"heartbeats": out, "source": "gossip"})),
-    )
-        .into_response();
-
-    // Old Jaeger fallback (unreachable; kept one rev for safety)
-    #[allow(unreachable_code)]
-    let snap = state.topology_cache.read().await.clone();
-    if !snap.heartbeats.is_empty() {
-        return (
-            StatusCode::OK,
-            axum::Json(json!({
-                "heartbeats": snap.heartbeats,
-                "computed_at_ms": snap.computed_at_ms,
-            })),
-        )
-            .into_response();
-    }
-    // Fallback: spawned_meta-only (no Jaeger enrichment yet)
-    let mut out: Vec<Value> = Vec::new();
-    for entry in state.known.iter() {
-        out.push(json!({
-            "node_name": entry.key(),
-            "node_type": entry.value().node_type,
-            "node_id": "",
-            "mesh_id": entry.value().mesh_id,
-            "peer_count": 0,
-            "age_ms": -1,
-        }));
-    }
-    if !out.is_empty() {
-        return (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response();
-    }
-    let spawned: Vec<String> = state.known.iter().map(|e| e.key().clone()).collect();
-    let now_us = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0);
-
-    // Fan out one Jaeger query per spawned node IN PARALLEL. Serial fan-out
-    // means 18 nodes × ~2s/query = 36s wall — exceeds typical browser fetch
-    // timeouts. Parallel cuts it to the slowest single query.
-    let mut handles = Vec::with_capacity(spawned.len());
-    for name in spawned {
-        let state = state.clone();
-        let known_meta = state.known.get(&name).map(|e| e.value().clone());
-        handles.push(tokio::spawn(async move {
-            let node_type = known_meta
-                .as_ref()
-                .map(|m| m.node_type.as_str().to_string())
-                .or_else(|| {
-                    KNOWN_NODE_TYPES
-                        .iter()
-                        .find(|t| name.starts_with(*t))
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_else(|| "?".to_string());
-
-            // Default to the mesh_id we KNOW from spawn time. Jaeger's reply
-            // overrides if available — but if the span hasn't flushed yet we
-            // still want the real label, not "default".
-            let known_mesh = known_meta
-                .as_ref()
-                .map(|m| m.mesh_id.clone())
-                .unwrap_or_else(|| "default".to_string());
-
-            let tags_json = serde_json::to_string(&serde_json::json!({"node_name": &name}))
-                .unwrap_or_else(|_| "{}".into());
-            let tags_enc = urlencoding::encode(&tags_json);
-            let url = format!(
-                "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=1&lookback=2m&tags={}",
-                state.jaeger_url, node_type, tags_enc
-            );
-
-            let resp = tokio::time::timeout(
-                Duration::from_secs(4),
-                state.http.get(&url).send(),
-            )
-            .await;
-
-            let (node_id, mesh_id, peer_count, age_ms) = match resp {
-                Ok(Ok(resp)) => match resp.json::<Value>().await {
-                    Ok(body) => {
-                        let s = body["data"]
-                            .as_array()
-                            .and_then(|a| a.first())
-                            .and_then(|t| t["spans"].as_array())
-                            .and_then(|a| a.first());
-                        let tags = s.and_then(|sp| sp["tags"].as_array());
-                        let nid = tags
-                            .and_then(|tt| {
-                                tt.iter()
-                                    .find(|t| t["key"] == "node_id")
-                                    .and_then(|t| t["value"].as_str())
-                            })
-                            .unwrap_or("")
-                            .to_string();
-                        let m = tags
-                            .and_then(|tt| {
-                                tt.iter()
-                                    .find(|t| t["key"] == "mesh_id")
-                                    .and_then(|t| t["value"].as_str())
-                            })
-                            .map(|s| s.to_string())
-                            .unwrap_or(known_mesh);
-                        let p = tags
-                            .and_then(|tt| {
-                                tt.iter()
-                                    .find(|t| t["key"] == "peer_count")
-                                    .and_then(|t| t["value"].as_i64())
-                            })
-                            .unwrap_or(0);
-                        let start_us = s.and_then(|sp| sp["startTime"].as_i64()).unwrap_or(0);
-                        let age = if start_us > 0 {
-                            (now_us - start_us).max(0) / 1000
-                        } else {
-                            -1
-                        };
-                        (nid, m, p, age)
-                    }
-                    Err(_) => (String::new(), known_mesh, 0, -1),
-                },
-                _ => (String::new(), known_mesh, 0, -1),
-            };
-            json!({
-                "node_name": name,
-                "node_type": node_type,
-                "node_id": node_id,
-                "mesh_id": mesh_id,
-                "peer_count": peer_count,
-                "age_ms": age_ms,
-            })
-        }));
-    }
-    let mut out = Vec::with_capacity(handles.len());
-    for h in handles {
-        if let Ok(v) = h.await {
-            out.push(v);
-        }
-    }
-    (StatusCode::OK, axum::Json(json!({"heartbeats": out}))).into_response()
+    let out = known_nodes_json(&state);
+    (StatusCode::OK, axum::Json(json!({"heartbeats": out, "source": "node-admin"}))).into_response()
 }
 
 /// One-line description per chaos primitive. Returned alongside every chaos
@@ -1378,12 +1213,13 @@ fn primitive_description(name: &str) -> &'static str {
 /// (node.ready). Replaces the chaos-only /api/chaos/timeline so the Timeline
 /// tab shows EVERYTHING happening on the substrate, not just chaos triggers.
 async fn handle_unified_timeline(State(state): State<AppState>) -> impl IntoResponse {
-    // QA F5: resolve Jaeger-sourced peer events' node_name from the live
-    // gossip digest map, so the timeline shows broker-abc12345 instead of
-    // just "broker". Built once per request from live_digests().
-    let id_to_name: std::collections::HashMap<String, String> = live_digests()
+    // Resolve Jaeger-sourced peer events' node_name through node-admin's
+    // view, so the timeline shows the path.name instead of the kind alone.
+    let id_to_name: std::collections::HashMap<String, String> = state
+        .known
         .iter()
-        .map(|e| (e.key().clone(), e.value().node_name.clone()))
+        .filter(|e| !e.value().node_id.is_empty())
+        .map(|e| (e.value().node_id.clone(), e.key().clone()))
         .collect();
 
     // Fan out 15+ Jaeger queries in parallel so the timeline tab returns in
@@ -1632,33 +1468,15 @@ async fn handle_cluster_summary(State(state): State<AppState>) -> impl IntoRespo
     // every 3s; the Jaeger-backed version was 5+ serial queries adding 10s of
     // latency on every poll and starving the rest of the UI.
     let spawned_count = state.known.iter().count() as i64;
-    // EXCLUDE the "bridge" + "default" sentinels — those aren't real meshes,
-    // they're "bridge has no mesh" / "node spawned without RAFKA_MESH_ID".
-    let meshes: std::collections::HashSet<String> = state
-        .known
-        .iter()
-        .filter(|e| {
-            let m = &e.value().mesh_id;
-            m != "bridge" && m != "default"
-        })
-        .map(|e| e.value().mesh_id.clone())
-        .collect();
+    let meshes: std::collections::HashSet<String> =
+        state.known.iter().map(|e| e.value().mesh_id.clone()).collect();
     let mut meshes_vec: Vec<String> = meshes.into_iter().collect();
     meshes_vec.sort();
 
-    // Mean peer count: pull from spawned_meta if heartbeats are slow.
-    // Counts non-bridge nodes' actual peer counts.
+    // node-admin's view carries no peer counts; a node's peers within its
+    // mesh are the mesh's other nodes.
     let mean_peers = {
-        let snap: Vec<i64> = state
-            .known
-            .iter()
-            .filter(|e| e.value().node_type != "bridge")
-            .map(|_| 0i64) // placeholder; real values come from heartbeat enrichment
-            .collect();
-        // Approximate: peer_count for each non-bridge node is roughly
-        // (total non-bridge nodes - 1) since iroh+mdns auto-discovers
-        // within mesh. Honest if not measured.
-        let n = snap.len() as f64;
+        let n = spawned_count as f64;
         if n > 1.0 { n - 1.0 } else { 0.0 }
     };
 
@@ -1821,557 +1639,15 @@ async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
             }
         }
     }
-    // Resource threshold alerts — surface any node whose latest gossip digest
-    // reports resource use above the configured threshold. Empty-shell release
-    // nodes baseline ~0.02 cores CPU and ~0.06 GB RAM; thresholds default to
-    // 0.10 cores and 0.5 GB respectively (≥5× baseline). Read straight from
-    // live_digests(); no Jaeger round-trip.
-    let cpu_threshold: f32 = std::env::var("RAFKA_CPU_ALERT_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.10);
-    let ram_threshold: f32 = std::env::var("RAFKA_RAM_ALERT_THRESHOLD_GB")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0.5);
-    let now_us: i64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or(0);
-    for entry in live_digests().iter() {
-        let d = entry.value();
-        // Skip admin-ui itself — it does extra HTTP/orchestration work beyond
-        // pure substrate participation (web server, chaos controller, JSON UI
-        // polls). Its baseline sits near 0.10 cores even at release-opt, so it
-        // trips the threshold without representing a regression. Substrate-only
-        // nodes are what the threshold is calibrated against.
-        if d.node_type == "admin-ui" {
-            continue;
-        }
-        if d.cpu_used > cpu_threshold {
-            alerts.push(json!({
-                "ts_us": now_us,
-                "severity": "warn",
-                "node_name": d.node_name.clone(),
-                "mesh_id": d.mesh_id.clone(),
-                "message": format!(
-                    "{} CPU {:.3} cores exceeds threshold {:.2}",
-                    d.node_type, d.cpu_used, cpu_threshold
-                ),
-            }));
-        }
-        if d.ram_used > ram_threshold {
-            alerts.push(json!({
-                "ts_us": now_us,
-                "severity": "warn",
-                "node_name": d.node_name.clone(),
-                "mesh_id": d.mesh_id.clone(),
-                "message": format!(
-                    "{} RAM {:.3} GB exceeds threshold {:.2}",
-                    d.node_type, d.ram_used, ram_threshold
-                ),
-            }));
-        }
-    }
     (StatusCode::OK, axum::Json(json!({"alerts": alerts}))).into_response()
 }
 
-/// `GET /api/topology` — return adjacency for the live mesh.
-/// Nodes: ONE PER SPAWNED SUBPROCESS (so 3 brokers = 3 distinct nodes). Each
-/// node's mesh_id is resolved by querying Jaeger heartbeats filtered on
-/// `node_name` tag. Edges: within-mesh full clique + cross-mesh dashed edges.
+/// `GET /api/topology` — the nodes node-admin manages, one per path.name,
+/// each with its status, seat and incarnation from node-admin's view. The
+/// view carries no peer connections, so the response carries no edges.
 async fn handle_topology(State(state): State<AppState>) -> impl IntoResponse {
-    // Mesh-native topology: read from rafka_node_base::live_digests(),
-    // populated in real time by every gossip digest received by THIS
-    // node (admin-ui is a node, joined the mesh via NodeRuntime).
-    // Zero Jaeger. Sub-millisecond response.
-    let digests = live_digests();
-    let mut nodes: Vec<Value> = Vec::new();
-    // id_to_name for resolving peer_ids → friendly names
-    let mut id_to_name: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for entry in digests.iter() {
-        id_to_name.insert(entry.key().clone(), entry.value().node_name.clone());
-    }
-    for entry in digests.iter() {
-        let d = entry.value();
-        // Look up spawn time so the UI can render a monotonic "age" (lifetime)
-        // distinct from `wall_time_ms` which is per-digest emit time.
-        // Node-admin's view carries no spawn time; the digest's age stands.
-        let spawn_time_ms: Option<i64> = None;
-        nodes.push(json!({
-            "id": d.node_name,
-            "node_id": d.node_id,
-            "type": d.node_type,
-            "mesh_id": d.mesh_id,
-            "peer_count": d.peer_count,
-            "peer_ids": d.peer_ids,
-            "frames_sent_total": d.frames_sent_total,
-            "frames_recv_total": d.frames_recv_total,
-            "wall_time_ms": d.wall_time_ms,
-            "spawn_time_ms": spawn_time_ms,
-            "cpu_used": d.cpu_used,
-            "cpu_budget": d.cpu_budget,
-            "ram_used": d.ram_used,
-            "ram_budget": d.ram_budget,
-            "status": "live",
-        }));
-    }
-    // Also include spawned_meta entries we haven't seen via gossip yet
-    // (they just spawned and their first digest hasn't arrived).
-    let known_names: std::collections::HashSet<String> =
-        digests.iter().map(|e| e.value().node_name.clone()).collect();
-    for entry in state.known.iter() {
-        if !known_names.contains(entry.key()) {
-            nodes.push(json!({
-                "id": entry.key(),
-                "node_id": "",
-                "type": entry.value().node_type,
-                "mesh_id": entry.value().mesh_id,
-                "peer_count": 0,
-                "peer_ids": Vec::<String>::new(),
-                "frames_sent_total": 0,
-                "frames_recv_total": 0,
-                "wall_time_ms": 0,
-                "spawn_time_ms": Value::Null,
-                "cpu_used": 0.0,
-                "cpu_budget": 0.0,
-                "ram_used": 0.0,
-                "ram_budget": 0.0,
-                "status": "pending",
-            }));
-        }
-    }
-    // Edges = authoritative gossip-topic membership intersections.
-    // For each topic we've subscribed to (from topic_membership()):
-    //   - All nodes whose digests landed on that topic are co-members
-    //   - Draw an edge between every pair of co-members
-    // Edge kind = "within" if the pair share their primary mesh_id; "cross"
-    // if either endpoint is a bridge (a bridge sits in multiple topics by
-    // design, so cross-topic edges incident on it are real cross-mesh
-    // connections).
-    //
-    // This replaces the peer_ids approach which conflated iroh-mdns
-    // discovery (everyone-sees-everyone) with gossip-topic membership.
-    let canon = |a: &str, b: &str| -> (String, String) {
-        if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
-    };
-    let mut name_to_meta: std::collections::HashMap<String, (String, String)> =
-        std::collections::HashMap::new();
-    for entry in digests.iter() {
-        let d = entry.value();
-        name_to_meta.insert(d.node_name.clone(), (d.mesh_id.clone(), d.node_type.clone()));
-    }
-    for entry in state.known.iter() {
-        if !name_to_meta.contains_key(entry.key()) {
-            name_to_meta.insert(
-                entry.key().clone(),
-                (entry.value().mesh_id.clone(), entry.value().node_type.clone()),
-            );
-        }
-    }
-    let mut edge_set: std::collections::HashSet<(String, String, &'static str)> =
-        std::collections::HashSet::new();
-    for topic_entry in topic_membership().iter() {
-        // Collect node_names of members on this topic. Skip ids we can't
-        // resolve (digest hasn't landed yet for them).
-        let mut members: Vec<String> = topic_entry
-            .value()
-            .iter()
-            .filter_map(|nid| id_to_name.get(nid).cloned())
-            .collect();
-        members.sort();
-        members.dedup();
-        for i in 0..members.len() {
-            for j in (i + 1)..members.len() {
-                let (a, b) = canon(&members[i], &members[j]);
-                // QA postfix R2 fix: enforce bridge-architecture invariant in
-                // the edge generator itself. Possible classifications:
-                //   1. Either endpoint is a bridge → "cross" (legitimate
-                //      cross-mesh through bridge)
-                //   2. Both share primary mesh_id → "within"
-                //   3. Both non-bridge, DIFFERENT mesh_id → SUPPRESS
-                //      (non-bridge cross-mesh peers cannot directly
-                //      connect in the bridge architecture; if both appear
-                //      in the same topic_membership entry, one of them is
-                //      almost certainly an observer (admin-ui) whose
-                //      primary mesh_id differs from real mesh peers)
-                //   4. Meta missing for either side → SUPPRESS (don't
-                //      classify with incomplete info; was producing
-                //      spurious "cross" via the old catch-all)
-                let kind: Option<&'static str> = match (
-                    name_to_meta.get(&a),
-                    name_to_meta.get(&b),
-                ) {
-                    (Some((_, at)), Some((_, bt))) if at == "bridge" || bt == "bridge" => {
-                        Some("cross")
-                    }
-                    (Some((am, _)), Some((bm, _))) if am == bm => Some("within"),
-                    _ => None,
-                };
-                if let Some(k) = kind {
-                    edge_set.insert((a, b, k));
-                }
-            }
-        }
-    }
-    let edges: Vec<Value> = edge_set
-        .into_iter()
-        .map(|(a, b, kind)| json!({"from": a, "to": b, "kind": kind}))
-        .collect();
-    return (
-        StatusCode::OK,
-        axum::Json(json!({
-            "nodes": nodes,
-            "edges": edges,
-            "source": "gossip",
-        })),
-    )
-        .into_response();
-
-    // Old Jaeger-backed fallback below kept for one rev in case mesh is empty
-    #[allow(unreachable_code)]
-    let snap = state.topology_cache.read().await.clone();
-    if !snap.nodes.is_empty() {
-        return (
-            StatusCode::OK,
-            axum::Json(json!({
-                "nodes": snap.nodes,
-                "edges": snap.edges,
-                "computed_at_ms": snap.computed_at_ms,
-            })),
-        )
-            .into_response();
-    }
-    let _span = info_span!("rafka.ui.topology.fallback", "otel.kind" = "internal").entered();
-
-    // Build name → id lookup from live digests so we can map spawned_meta
-    // entries (keyed by name) to live entries (keyed by id).
-    let mut name_to_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut id_to_live: std::collections::HashMap<String, LiveNodeState> =
-        std::collections::HashMap::new();
-    for entry in state.live.iter() {
-        name_to_id.insert(entry.value().digest.node_name.clone(), entry.key().clone());
-        id_to_live.insert(entry.key().clone(), entry.value().clone());
-    }
-
-    // Nodes: union of spawned_meta (definitive existence) + live (gossip-seen).
-    // Spawned but not yet in live → "pending" with zero throughput. Live but
-    // not in spawned_meta → external node (e.g. spawned outside this UI).
-    let mut nodes: Vec<Value> = Vec::new();
-    let mut emitted_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-    for entry in state.known.iter() {
-        let name = entry.key().clone();
-        let meta = entry.value();
-        let live = name_to_id.get(&name).and_then(|id| id_to_live.get(id));
-        emitted_names.insert(name.clone());
-        nodes.push(json!({
-            "id": name,
-            "node_id": name_to_id.get(&name).cloned().unwrap_or_default(),
-            "type": meta.node_type,
-            "mesh_id": meta.mesh_id,
-            "peer_count": live.map(|l| l.digest.peer_count).unwrap_or(0),
-            "frames_sent_total": live.map(|l| l.digest.frames_sent_total).unwrap_or(0),
-            "frames_recv_total": live.map(|l| l.digest.frames_recv_total).unwrap_or(0),
-            "sent_per_sec": live.map(|l| l.sent_per_sec).unwrap_or(0.0),
-            "recv_per_sec": live.map(|l| l.recv_per_sec).unwrap_or(0.0),
-            "status": if live.is_some() { "live" } else { "pending" },
-        }));
-    }
-
-    // Phase C edges: cross-reference peer_ids from each live digest. An edge
-    // exists when both endpoints are in live_state AND each lists the other
-    // as a peer. ZERO Jaeger queries. Deletion of a node removes it from
-    // live within 30s (observer's stale-prune) and edges drop automatically.
-    let canon = |a: &str, b: &str| -> (String, String) {
-        if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
-    };
-    let mut edge_set: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-    for entry in state.live.iter() {
-        let self_name = entry.value().digest.node_name.clone();
-        for peer_id in &entry.value().digest.peer_ids {
-            if let Some(peer_live) = id_to_live.get(peer_id) {
-                edge_set.insert(canon(&self_name, &peer_live.digest.node_name));
-            }
-        }
-    }
-    let mut edges: Vec<Value> = Vec::new();
-    for (a, b) in &edge_set {
-        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
-        let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => continue,
-        };
-        let kind = if mesh_a == mesh_b { "within" } else { "cross" };
-        edges.push(json!({
-            "from": a,
-            "to": b,
-            "kind": kind,
-            "frame_count": 0, // per-edge counts require per-peer counters; node total reported separately
-        }));
-    }
-
-    return (StatusCode::OK, axum::Json(json!({"nodes": nodes, "edges": edges}))).into_response();
-    #[allow(unreachable_code)]
-    {
-
-    // Edges + per-node frame counts are derived from REAL Jaeger spans.
-    // Nothing is synthesized from mesh_id labels. If two nodes haven't
-    // emitted peer.connected or frame.sent spans, no edge is drawn.
-    //
-    // 1) Fan out heartbeat queries per service to build a {node_id_hex →
-    //    node_name} map (needed to resolve the peer_id tags below).
-    // 2) Fan out peer.connected queries per service → set of
-    //    (self_name, peer_id_hex) pairs.
-    // 3) Fan out frame.sent queries per service (last 60s) → counter map
-    //    over (self_name, peer_id_hex).
-    // 4) Resolve all peer_id_hex via map; emit one undirected edge per
-    //    distinct {a, b} with frame_count = a→b + b→a.
-    let mut hb_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=20&lookback=2m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        hb_handles.push(tokio::spawn(async move {
-            // Per-call 20s timeout overrides global 4s so a busy Jaeger doesn't
-            // collapse the id_to_name map and zero the entire edge set.
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            // Return (node_id, node_name, peer_count) per heartbeat span.
-            // QA round-2 F#3: topology needs per-node peer_count which only
-            // heartbeats carry, so extract it alongside the name.
-            let mut found: Vec<(String, String, i64)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            let tags = s["tags"].as_array();
-                            let nid = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("");
-                            let nname = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_name"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("");
-                            let pcount = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_count"))
-                                .and_then(|x| x["value"].as_i64())
-                                .unwrap_or(0);
-                            if !nid.is_empty() && !nname.is_empty() {
-                                found.push((nid.to_string(), nname.to_string(), pcount));
-                            }
-                        }
-                    }
-                }
-            }
-            found
-        }));
-    }
-    let mut id_to_name: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut name_to_peer_count: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
-    for h in hb_handles {
-        if let Ok(rows) = h.await {
-            for (nid, name, pcount) in rows {
-                id_to_name.insert(nid, name.clone());
-                // Keep the highest peer_count observed (multiple heartbeats over 2m)
-                let cur = name_to_peer_count.entry(name).or_insert(0);
-                if pcount > *cur {
-                    *cur = pcount;
-                }
-            }
-        }
-    }
-
-    // peer.connected — observed connections (any direction)
-    let mut pc_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.peer.connected&limit=200&lookback=10m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        pc_handles.push(tokio::spawn(async move {
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            // frame.sent + peer.connected carry node_id (hex), NOT node_name.
-            // Return raw (self_id, peer_id) pairs; caller resolves via id_to_name.
-            let mut pairs: Vec<(String, String)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            if s["operationName"] != "rafka.mesh.peer.connected" {
-                                continue;
-                            }
-                            let tags = s["tags"].as_array();
-                            let self_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let peer_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !self_id.is_empty() && !peer_id.is_empty() {
-                                pairs.push((self_id, peer_id));
-                            }
-                        }
-                    }
-                }
-            }
-            pairs
-        }));
-    }
-
-    // frame.sent — real traffic counts, last 60s
-    let mut fs_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.frame.sent&limit=500&lookback=1m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        fs_handles.push(tokio::spawn(async move {
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            let mut rows: Vec<(String, String)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            if s["operationName"] != "rafka.mesh.frame.sent" {
-                                continue;
-                            }
-                            let tags = s["tags"].as_array();
-                            let self_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let peer_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !self_id.is_empty() && !peer_id.is_empty() {
-                                rows.push((self_id, peer_id));
-                            }
-                        }
-                    }
-                }
-            }
-            rows
-        }));
-    }
-
-    let mut pc_pairs: Vec<(String, String)> = Vec::new();
-    for h in pc_handles {
-        if let Ok(p) = h.await {
-            pc_pairs.extend(p);
-        }
-    }
-    let mut fs_pairs: Vec<(String, String)> = Vec::new();
-    for h in fs_handles {
-        if let Ok(p) = h.await {
-            fs_pairs.extend(p);
-        }
-    }
-
-    // Canonical undirected edge key + count
-    let canon = |a: &str, b: &str| -> (String, String) {
-        if a <= b {
-            (a.to_string(), b.to_string())
-        } else {
-            (b.to_string(), a.to_string())
-        }
-    };
-    let mut edge_counts: std::collections::HashMap<(String, String), u64> =
-        std::collections::HashMap::new();
-    let mut frames_per_node: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
-
-    // fs_pairs and pc_pairs both carry (self_id, peer_id) — resolve both via
-    // id_to_name. If either side hasn't emitted a heartbeat yet, drop the
-    // edge; we don't fabricate names.
-    for (self_id, peer_id) in &fs_pairs {
-        let self_name = match id_to_name.get(self_id) {
-            Some(n) => n.clone(),
-            None => continue,
-        };
-        let peer_name = match id_to_name.get(peer_id) {
-            Some(n) => n.clone(),
-            None => continue,
-        };
-        *frames_per_node.entry(self_name.clone()).or_insert(0) += 1;
-        *edge_counts.entry(canon(&self_name, &peer_name)).or_insert(0) += 1;
-    }
-
-    for (self_id, peer_id) in &pc_pairs {
-        let self_name = match id_to_name.get(self_id) {
-            Some(n) => n.clone(),
-            None => continue,
-        };
-        let peer_name = match id_to_name.get(peer_id) {
-            Some(n) => n.clone(),
-            None => continue,
-        };
-        edge_counts.entry(canon(&self_name, &peer_name)).or_insert(0);
-    }
-
-    // QA round-2 F#4: filter edges where either endpoint is not in spawned_meta.
-    // Without this, a deleted node lingers in topology edges for up to 60s
-    // because Jaeger still has its frame.sent spans in the lookback window.
-    let mut edges: Vec<Value> = Vec::new();
-    for ((a, b), count) in &edge_counts {
-        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
-        // Both endpoints MUST currently exist — drop ghosts from killed nodes.
-        let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => continue,
-        };
-        let kind = if mesh_a == mesh_b { "within" } else { "cross" };
-        edges.push(json!({
-            "from": a,
-            "to": b,
-            "kind": kind,
-            "frame_count": *count,
-        }));
-    }
-
-    // QA round-2 F#3: wire per-node peer_count from the heartbeat map.
-    // Also compute frames_per_min from local frame.sent aggregation.
-    for n in nodes.iter_mut() {
-        let id = n["id"].as_str().unwrap_or("").to_string();
-        let count = *frames_per_node.get(&id).unwrap_or(&0);
-        let pcount = *name_to_peer_count.get(&id).unwrap_or(&0);
-        n["frames_per_min"] = json!(count);
-        n["peer_count"] = json!(pcount);
-    }
-
-    (
-        StatusCode::OK,
-        axum::Json(json!({"nodes": nodes, "edges": edges})),
-    )
-        .into_response()
-    }
+    let nodes = known_nodes_json(&state);
+    (StatusCode::OK, axum::Json(json!({"nodes": nodes, "source": "node-admin"}))).into_response()
 }
 
 async fn handle_nodes(State(state): State<AppState>) -> impl IntoResponse {
@@ -2667,18 +1943,6 @@ struct RunTestRequest {
 /// POST /api/tests/run — invoke `rfa.exe mesh test run <name> --seed <s>` and
 /// return the resulting report. Spawns rfa as a subprocess (it owns the per-test
 /// runners) and reads back the JSON written to E:/tmp/rafka-tests/<name>-<s>.json.
-/// GET /api/messages — live data-plane traffic flowing through admin-ui.
-/// Returns the last 500 frames received via run_frame_reader. Newest first.
-/// Source: rafka_node_base::message_ring() (process-global VecDeque).
-async fn handle_messages() -> impl IntoResponse {
-    let ring = message_ring();
-    let guard = ring.lock().unwrap();
-    let mut items: Vec<_> = guard.iter().cloned().collect();
-    drop(guard);
-    items.reverse(); // newest first
-    items.truncate(500);
-    (StatusCode::OK, axum::Json(json!({"messages": items}))).into_response()
-}
 
 async fn handle_test_run(
     State(state): State<AppState>,
@@ -2911,448 +2175,6 @@ async fn trace_middleware(req: Request, next: Next) -> Response {
 /// (crashed, panicked, OOM-killed) but whose handle still sits in the DashMap.
 /// Without this, chaos primitives keep picking dead names from /api/nodes/spawned
 /// and DELETE returns 404, polluting the soak report.
-/// Phase A: background topology snapshot refresher. Every 3 seconds, fans
-/// out Jaeger queries for heartbeats + peer.connected + frame.sent, resolves
-/// peer_id ↔ node_name, builds real edges + per-node frame counts, and
-/// stores the result in state.topology_cache. /api/topology +
-/// /api/heartbeats then read the cache instantly (no Jaeger on the request
-/// path). Trades: 3-second snapshot staleness for sub-millisecond reads.
-async fn topology_refresher(state: AppState) {
-    loop {
-        let new_snap = compute_snapshot(&state).await;
-        // Sticky-edges policy: nodes come from spawned_meta and are always
-        // fresh; edges + per-node throughput come from Jaeger fan-out and
-        // can transiently return empty when Jaeger is hammered. Don't blow
-        // away the last good edges on a single failed cycle — the operator
-        // shouldn't see the topology flicker empty. Replace only when we
-        // observed at least one edge OR one frame.
-        let got_data = !new_snap.edges.is_empty()
-            || new_snap.nodes.iter().any(|n| {
-                n["frames_per_min"].as_u64().unwrap_or(0) > 0
-            });
-        let mut slot = state.topology_cache.write().await;
-        if got_data || slot.edges.is_empty() {
-            *slot = new_snap;
-        } else {
-            // Keep edges + throughput from the previous good snapshot, but
-            // refresh the node list (membership) from this cycle so the UI
-            // sees adds/removes immediately.
-            slot.nodes = new_snap.nodes;
-            slot.heartbeats = new_snap.heartbeats;
-            slot.computed_at_ms = new_snap.computed_at_ms;
-        }
-        drop(slot);
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    }
-}
-
-async fn compute_snapshot(state: &AppState) -> TopologySnapshot {
-    let now_us = now_us();
-
-    // ── Step 1: heartbeat fan-out → id_to_name + name_to_peer_count + heartbeats rows ──
-    let mut hb_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.heartbeat&limit=30&lookback=2m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        let svc_s = svc.to_string();
-        hb_handles.push(tokio::spawn(async move {
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            let mut found: Vec<(String, String, i64, i64)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            let tags = s["tags"].as_array();
-                            let nid = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let nname = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_name"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let pcount = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_count"))
-                                .and_then(|x| x["value"].as_i64())
-                                .unwrap_or(0);
-                            let start_us = s["startTime"].as_i64().unwrap_or(0);
-                            if !nid.is_empty() && !nname.is_empty() {
-                                found.push((nid, nname, pcount, start_us));
-                            }
-                        }
-                    }
-                }
-            }
-            (svc_s, found)
-        }));
-    }
-    let mut id_to_name: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut name_to_peer_count: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
-    let mut name_to_age_ms: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
-    let mut name_to_node_id: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for h in hb_handles {
-        if let Ok((_svc, rows)) = h.await {
-            for (nid, name, pcount, start_us) in rows {
-                id_to_name.insert(nid.clone(), name.clone());
-                name_to_node_id.insert(name.clone(), nid);
-                let cur_p = name_to_peer_count.entry(name.clone()).or_insert(0);
-                if pcount > *cur_p {
-                    *cur_p = pcount;
-                }
-                let age = if start_us > 0 {
-                    ((now_us - start_us).max(0)) / 1000
-                } else {
-                    -1
-                };
-                let cur_a = name_to_age_ms.entry(name).or_insert(i64::MAX);
-                if age < *cur_a {
-                    *cur_a = age;
-                }
-            }
-        }
-    }
-
-    // ── Step 2: peer.connected fan-out for edge membership ──
-    let mut pc_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.peer.connected&limit=300&lookback=10m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        pc_handles.push(tokio::spawn(async move {
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            let mut pairs: Vec<(String, String)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            if s["operationName"] != "rafka.mesh.peer.connected" {
-                                continue;
-                            }
-                            let tags = s["tags"].as_array();
-                            let self_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let peer_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !self_id.is_empty() && !peer_id.is_empty() {
-                                pairs.push((self_id, peer_id));
-                            }
-                        }
-                    }
-                }
-            }
-            pairs
-        }));
-    }
-
-    // ── Step 3: frame.sent fan-out for edge weights + per-node throughput ──
-    let mut fs_handles = Vec::new();
-    for svc in KNOWN_NODE_TYPES.iter() {
-        let url = format!(
-            "{}/api/traces?service={}&operation=rafka.mesh.frame.sent&limit=500&lookback=1m",
-            state.jaeger_url, svc
-        );
-        let http = state.http.clone();
-        fs_handles.push(tokio::spawn(async move {
-            let body: Value = match http.get(&url).timeout(Duration::from_secs(20)).send().await {
-                Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-                Err(_) => json!({"data":[]}),
-            };
-            let mut rows: Vec<(String, String)> = Vec::new();
-            if let Some(arr) = body["data"].as_array() {
-                for trace in arr {
-                    if let Some(spans) = trace["spans"].as_array() {
-                        for s in spans {
-                            if s["operationName"] != "rafka.mesh.frame.sent" {
-                                continue;
-                            }
-                            let tags = s["tags"].as_array();
-                            let self_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "node_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let peer_id = tags
-                                .and_then(|t| t.iter().find(|x| x["key"] == "peer_id"))
-                                .and_then(|x| x["value"].as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if !self_id.is_empty() && !peer_id.is_empty() {
-                                rows.push((self_id, peer_id));
-                            }
-                        }
-                    }
-                }
-            }
-            rows
-        }));
-    }
-
-    let mut pc_pairs: Vec<(String, String)> = Vec::new();
-    for h in pc_handles {
-        if let Ok(p) = h.await {
-            pc_pairs.extend(p);
-        }
-    }
-    let mut fs_pairs: Vec<(String, String)> = Vec::new();
-    for h in fs_handles {
-        if let Ok(p) = h.await {
-            fs_pairs.extend(p);
-        }
-    }
-
-    // ── Build edges + per-node frame rates ──
-    let canon = |a: &str, b: &str| -> (String, String) {
-        if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
-    };
-    let mut edge_counts: std::collections::HashMap<(String, String), u64> =
-        std::collections::HashMap::new();
-    let mut frames_per_node: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
-
-    for (self_id, peer_id) in &fs_pairs {
-        let self_name = match id_to_name.get(self_id) { Some(n) => n.clone(), None => continue };
-        let peer_name = match id_to_name.get(peer_id) { Some(n) => n.clone(), None => continue };
-        *frames_per_node.entry(self_name.clone()).or_insert(0) += 1;
-        *edge_counts.entry(canon(&self_name, &peer_name)).or_insert(0) += 1;
-    }
-    for (self_id, peer_id) in &pc_pairs {
-        let self_name = match id_to_name.get(self_id) { Some(n) => n.clone(), None => continue };
-        let peer_name = match id_to_name.get(peer_id) { Some(n) => n.clone(), None => continue };
-        edge_counts.entry(canon(&self_name, &peer_name)).or_insert(0);
-    }
-
-    // Build nodes from spawned_meta + enrich with heartbeat data
-    let mut nodes: Vec<Value> = Vec::new();
-    let mut heartbeats: Vec<Value> = Vec::new();
-    for entry in state.known.iter() {
-        let name = entry.key().clone();
-        let meta = entry.value();
-        let pcount = *name_to_peer_count.get(&name).unwrap_or(&0);
-        let frames = *frames_per_node.get(&name).unwrap_or(&0);
-        let age_ms = *name_to_age_ms.get(&name).unwrap_or(&-1);
-        let nid = name_to_node_id.get(&name).cloned().unwrap_or_default();
-        nodes.push(json!({
-            "id": name,
-            "node_id": nid,
-            "type": meta.node_type,
-            "mesh_id": meta.mesh_id,
-            "peer_count": pcount,
-            "frames_per_min": frames,
-            "status": if age_ms >= 0 && age_ms < 30000 { "live" } else { "pending" },
-        }));
-        heartbeats.push(json!({
-            "node_name": name,
-            "node_type": meta.node_type,
-            "node_id": name_to_node_id.get(&entry.key().clone()).cloned().unwrap_or_default(),
-            "mesh_id": meta.mesh_id,
-            "peer_count": pcount,
-            "age_ms": age_ms,
-        }));
-    }
-
-    // Edges only between currently-spawned endpoints (filters ghost edges)
-    let mut edges: Vec<Value> = Vec::new();
-    for ((a, b), count) in &edge_counts {
-        let mesh_a = state.known.get(a).map(|e| e.value().mesh_id.clone());
-        let mesh_b = state.known.get(b).map(|e| e.value().mesh_id.clone());
-        let (mesh_a, mesh_b) = match (mesh_a, mesh_b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => continue,
-        };
-        let kind = if mesh_a == mesh_b { "within" } else { "cross" };
-        edges.push(json!({
-            "from": a,
-            "to": b,
-            "kind": kind,
-            "frame_count": *count,
-        }));
-    }
-
-    TopologySnapshot {
-        nodes,
-        edges,
-        heartbeats,
-        computed_at_ms: now_us / 1000,
-    }
-}
-
-/// Phase C: read-only mesh observer. Spawns an iroh endpoint with the same
-/// ALPN as nodes, subscribes to iroh-gossip on every mesh topic discovered
-/// via spawned_meta. On each received GossipDigest, updates state.live with
-/// the latest counters and computes a throughput rate from the delta against
-/// the previous digest. Bypasses Jaeger entirely on the hot path.
-///
-/// Observer-tainted invariants:
-/// - never broadcasts a digest of its own (subscribe-only)
-/// - never appears in spawned_meta (so chaos can't pick it)
-/// - rendered separately in the UI if it ever appears as a peer
-async fn observer_task(state: AppState) {
-    use futures_lite::StreamExt;
-    use iroh_gossip::api::Event;
-    use std::str::FromStr;
-
-    tracing::info!("observer: bringing up iroh endpoint via IrohMeshTransport (same path nodes use)");
-    let secret = iroh::SecretKey::generate();
-    let bind_addr: std::net::SocketAddrV4 = "127.0.0.1:0".parse().unwrap();
-    let mdns_enable: bool = std::env::var("RAFKA_MDNS_ENABLE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(true);
-    let transport = match rafka_mesh_transport::IrohMeshTransport::new(secret, bind_addr, mdns_enable).await {
-        Ok(t) => t,
-        Err(err) => {
-            tracing::error!(error = %err, "observer: IrohMeshTransport::new failed");
-            return;
-        }
-    };
-    let endpoint = transport.endpoint.clone();
-    let observer_node_id = endpoint.id().to_string();
-    tracing::info!(
-        observer_node_id = %observer_node_id,
-        "observer: iroh endpoint bound; subscribing to mesh topics as they appear"
-    );
-
-    let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
-
-    // Track subscribed mesh ids so we don't re-subscribe to the same topic.
-    let mut subscribed: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    loop {
-        // Discover meshes via spawned_meta. Skip the "bridge" sentinel and
-        // empty values — those aren't real meshes.
-        let current: std::collections::HashSet<String> = state
-            .known
-            .iter()
-            .map(|e| e.value().mesh_id.clone())
-            .filter(|m| !m.is_empty() && m != "bridge")
-            .collect();
-
-        for mesh in current.difference(&subscribed).cloned().collect::<Vec<_>>() {
-            let topic_bytes: [u8; 32] = *blake3::hash(mesh.as_bytes()).as_bytes();
-            let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
-            match gossip.subscribe(topic_id, Vec::new()).await {
-                Ok(topic) => {
-                    subscribed.insert(mesh.clone());
-                    tracing::info!(mesh = %mesh, topic = %hex::encode(topic_bytes), "observer: subscribed");
-                    let (_sender, mut receiver) = topic.split();
-                    let live = Arc::clone(&state.live);
-                    let mesh_for_task = mesh.clone();
-                    tokio::spawn(async move {
-                        while let Some(event_res) = receiver.next().await {
-                            let event = match event_res {
-                                Ok(e) => e,
-                                Err(err) => {
-                                    tracing::warn!(mesh = %mesh_for_task, error = %err, "observer: gossip stream error");
-                                    continue;
-                                }
-                            };
-                            let bytes = match event {
-                                Event::Received(msg) => msg.content,
-                                _ => continue,
-                            };
-                            let digest: GossipDigest = match postcard::from_bytes(&bytes) {
-                                Ok(d) => d,
-                                Err(err) => {
-                                    tracing::warn!(error = %err, "observer: digest decode failed");
-                                    continue;
-                                }
-                            };
-                            let now_ms = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0);
-                            let prev = live.get(&digest.node_id).map(|e| e.value().clone());
-                            let (sent_rate, recv_rate) = match prev {
-                                Some(p) => {
-                                    let dt_ms = now_ms.saturating_sub(p.last_seen_ms);
-                                    if dt_ms == 0 {
-                                        (p.sent_per_sec, p.recv_per_sec)
-                                    } else {
-                                        let ds = digest
-                                            .frames_sent_total
-                                            .saturating_sub(p.digest.frames_sent_total)
-                                            as f64;
-                                        let dr = digest
-                                            .frames_recv_total
-                                            .saturating_sub(p.digest.frames_recv_total)
-                                            as f64;
-                                        let factor = 1000.0 / dt_ms as f64;
-                                        (ds * factor, dr * factor)
-                                    }
-                                }
-                                None => (0.0, 0.0),
-                            };
-                            live.insert(
-                                digest.node_id.clone(),
-                                LiveNodeState {
-                                    digest,
-                                    last_seen_ms: now_ms,
-                                    sent_per_sec: sent_rate,
-                                    recv_per_sec: recv_rate,
-                                },
-                            );
-                        }
-                    });
-                }
-                Err(err) => {
-                    tracing::warn!(mesh = %mesh, error = %err, "observer: subscribe failed");
-                }
-            }
-        }
-
-        // Periodically prune entries whose last_seen_ms is >30s old —
-        // means the node died and its gossip stopped reaching us.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let stale: Vec<String> = state
-            .live
-            .iter()
-            .filter(|e| now_ms.saturating_sub(e.value().last_seen_ms) > 30_000)
-            .map(|e| e.key().clone())
-            .collect();
-        for k in stale {
-            state.live.remove(&k);
-        }
-
-        // Re-feed mdns-discovered iroh peers into each topic so the gossip
-        // swarm forms with the observer included. Cheap, idempotent.
-        for mesh in &subscribed {
-            let topic_bytes: [u8; 32] = *blake3::hash(mesh.as_bytes()).as_bytes();
-            let topic_id = iroh_gossip::proto::TopicId::from_bytes(topic_bytes);
-            // Best effort — collect peers from spawned_meta if their node_id is known.
-            // For now leave empty; iroh mdns will surface them.
-            let _ = (topic_id, iroh::EndpointId::from_str("0").is_ok()); // no-op to satisfy borrow
-        }
-
-        tokio::time::sleep(Duration::from_secs(3)).await;
-    }
-}
-
 /// Keep `state.known` equal to node-admin's `GET /api/nodes`: the UI's
 /// read-only projection of what node-admin manages.
 async fn known_nodes_refresher(state: AppState) {
@@ -3365,8 +2187,7 @@ async fn known_nodes_refresher(state: AppState) {
                 let names: std::collections::HashSet<String> = nodes.iter().map(|n| n.name.to_string()).collect();
                 state.known.retain(|k, _| names.contains(k));
                 for n in nodes {
-                    let kind = serde_json::to_value(n.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-                    state.known.insert(n.name.to_string(), KnownNode { node_type: kind, mesh_id: n.mesh });
+                    state.known.insert(n.name.to_string(), KnownNode::of(&n));
                 }
             }
             Err(e) => tracing::info!(error = %e, "node-admin view unavailable"),
@@ -3463,6 +2284,8 @@ fn main() -> Result<()> {
 }
 
 async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
+    // admin-ui is a node-admin client, not a node: it owns its own telemetry.
+    let _telemetry = rafka_mesh_telemetry::init_telemetry("rafka-admin-ui");
     tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed (pre-runtime)");
     #[cfg(feature = "dhat-heap")]
     {
@@ -3477,121 +2300,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
             std::process::exit(0);
         });
     }
-    // admin-ui IS a node. The NodeRuntime call below owns telemetry
-    // initialization + iroh endpoint + gossip subscription + heartbeat
-    // broadcast — same path the broker / gateway / compute / registry /
-    // bridge binaries take. We DO NOT init telemetry separately here;
-    // tracing_subscriber's global init would panic on the second call.
-    //
-    // RAFKA_OBSERVER_MESHES: admin-ui subscribes to every mesh's gossip
-    // topic, not just its own. Without this, iroh-gossip's topic isolation
-    // means admin-ui only sees one mesh's digests at a time. We default to
-    // mesh-a + mesh-b (bootstrap composition); operator can override.
-    if std::env::var("RAFKA_OBSERVER_MESHES").is_err() {
-        // Watch every legit mesh: the two bootstrap meshes plus the bridge
-        // mesh (bridges live there). No "default" anymore — spawn_one now
-        // rejects nodes without an explicit RAFKA_MESH_ID.
-        std::env::set_var("RAFKA_OBSERVER_MESHES", "mesh-a,mesh-b,bridge");
-    }
-    // QA postfix NF-4 fix: admin-ui was appearing in topology/heartbeats with
-    // id=`<unspawned>` and mesh_id=`default` because NodeRuntime falls back to
-    // those placeholders when env vars are missing. Set them explicitly so
-    // admin-ui has identifiable values that say "this IS the admin-ui process".
-    if std::env::var("RAFKA_NODE_NAME").is_err() {
-        std::env::set_var("RAFKA_NODE_NAME", "admin-ui");
-    }
-    if std::env::var("RAFKA_MESH_ID").is_err() {
-        // admin-ui is not on any single mesh — give it a dedicated identifier
-        // that distinguishes it from the placeholder "default".
-        std::env::set_var("RAFKA_MESH_ID", "admin");
-    }
-    // Pin admin-ui to a deterministic bind port so spawned children can
-    // include it in their RAFKA_SEED_NODES and dial back to it. Default 14819
-    // (one below the spawn-pool base 14820). Operator can override via the
-    // env var before launching admin-ui — we only set it when unset.
-    let admin_bind_port: u16 = if std::env::var("RAFKA_NODE_BIND_ADDR").is_err() {
-        std::env::set_var("RAFKA_NODE_BIND_ADDR", "127.0.0.1:14819");
-        14819
-    } else {
-        // Parse whatever the operator set so we can construct seed entries.
-        std::env::var("RAFKA_NODE_BIND_ADDR")
-            .unwrap()
-            .parse::<std::net::SocketAddr>()
-            .map(|a| a.port())
-            .unwrap_or(14819)
-    };
-    // Pre-mint admin-ui's iroh identity so we know its node_id before
-    // NodeRuntime starts. This mirrors the pattern spawn_one uses for children.
-    // NodeRuntime will load the same file (via RAFKA_DATA_DIR + node-identity.json)
-    // and boot with the same key → same node_id guaranteed.
-    let admin_data_dir = std::env::var("RAFKA_DATA_DIR")
-        .unwrap_or_else(|_| "./data/admin-ui".to_string());
-    let admin_data_path = std::path::PathBuf::from(&admin_data_dir);
-    let _ = std::fs::create_dir_all(&admin_data_path);
-    // Ensure NodeRuntime picks up this data dir.
-    std::env::set_var("RAFKA_DATA_DIR", &admin_data_dir);
-    let admin_identity_path = admin_data_path.join("node-identity.json");
-    let admin_node_id_hex: String = if admin_identity_path.exists() {
-        let raw = std::fs::read_to_string(&admin_identity_path)
-            .expect("read existing admin-ui identity");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&raw).expect("parse admin-ui identity JSON");
-        let hex_str = parsed["secret_key_hex"]
-            .as_str()
-            .expect("secret_key_hex field missing");
-        let bytes = hex::decode(hex_str).expect("hex decode of secret_key_hex");
-        let key_arr: [u8; 32] = bytes
-            .try_into()
-            .expect("secret_key_hex must be 32 bytes");
-        let sk = iroh::SecretKey::from_bytes(&key_arr);
-        sk.public().to_string()
-    } else {
-        let sk = iroh::SecretKey::generate();
-        let pubkey = sk.public().to_string();
-        let json = serde_json::json!({ "secret_key_hex": hex::encode(sk.to_bytes()) });
-        std::fs::write(&admin_identity_path, json.to_string())
-            .expect("write admin-ui identity");
-        pubkey
-    };
-    tracing::info!(
-        admin_node_id = %admin_node_id_hex,
-        admin_bind_port,
-        "admin-ui identity pre-minted; children will seed via this node"
-    );
-    // Load admin-ui's own .env.dev (dev preset for the observer process).
-    rafka_node_base::load_env_dev_from(env!("CARGO_MANIFEST_DIR"));
-
-    // Parse CLI budget flags (admin-ui itself accepts them when launched
-    // directly with --cpu-budget / --ram-budget, same as any other node).
-    let cli_budgets = rafka_node_base::parse_budget_cli_args();
-    let cpu_budget: Option<f32> = if cli_budgets.cpu_budget.is_some() {
-        cli_budgets.cpu_budget
-    } else {
-        rafka_node_base::read_dev_cpu_budget()
-    };
-    let ram_budget: Option<f32> = if cli_budgets.ram_budget.is_some() {
-        cli_budgets.ram_budget
-    } else {
-        rafka_node_base::read_dev_ram_budget()
-    };
-    rafka_node_base::announce_dev_state(cpu_budget, ram_budget);
-
-    // Spawned as a tokio task so axum can run in parallel in this same
-    // process. Same tokio runtime, same lifecycle.
-    let node_handle = tokio::spawn(async move {
-        let mut rt = rafka_node_base::NodeRuntime::new("admin-ui")
-            .with_role(rafka_node_base::Role::Observer);
-        if let Some(c) = cpu_budget {
-            rt = rt.with_cpu_budget(c);
-        }
-        if let Some(r) = ram_budget {
-            rt = rt.with_ram_budget(r);
-        }
-        if let Err(e) = rt.run().await {
-            eprintln!("[admin-ui node] runtime exited: {e}");
-        }
-    });
-
     // Accept either env var name during the topology-ui → admin-ui rename.
     let bind_addr = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
         .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
@@ -3632,8 +2340,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         known: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
-        live: Arc::new(DashMap::new()),
-        topology_cache: Arc::new(tokio::sync::RwLock::new(TopologySnapshot::default())),
         running_tests: Arc::new(DashMap::new()),
     };
 
@@ -3662,23 +2368,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
             }
         });
     }
-
-    // Phase A: background snapshot refresher. Every 3 s, recomputes
-    // /api/topology + /api/heartbeats data via parallel Jaeger fan-out and
-    // stores the result in state.topology_cache. Request handlers read the
-    // cache instantly — Jaeger latency moves off the hot path.
-    let state_for_refresher = state.clone();
-    supervise("topology_refresher", move || {
-        let s = state_for_refresher.clone();
-        async move { topology_refresher(s).await }
-    });
-
-    // observer_task removed — the NodeRuntime task spawned above IS the
-    // observer; admin-ui's own iroh endpoint sees every other node's
-    // gossip digest. state.live wiring is now read directly from the
-    // process-wide mesh_counters() + the peer registry inside node-base
-    // (TODO next: expose those for HTTP read).
-    let _live_observer_via_noderuntime = &node_handle;
 
     let state_for_known = state.clone();
     supervise("known_nodes_refresher", move || {
@@ -3713,7 +2402,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/chaos/stop", post(handle_chaos_stop))
         .route("/api/chaos/state", get(handle_chaos_state))
         .route("/api/tests/run", post(handle_test_run))
-        .route("/api/messages", get(handle_messages))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state.clone())
         .merge(control::router(state.admin.clone(), Arc::new(TimelineEvents(state.events.clone()))))

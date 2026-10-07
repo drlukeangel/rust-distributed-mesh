@@ -143,6 +143,39 @@ fn now_ms() -> u64 {
 
 /// Bring the node up exactly as `launch` says.
 pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder) -> Result<RunningNode> {
+    start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
+}
+
+/// Until this process is told to stop: a SIGTERM/ctrl-c, or the mesh transport stopping for
+/// good (a runtime that can neither be heard nor answer ends; its exit is the death proof the
+/// fabric recovers from). `binary` names the process in the exit line.
+pub async fn wait_for_signal(binary: &str) {
+    let stopped = async {
+        let reason = rafka_mesh_transport::membership::until_transport_stopped().await;
+        tracing::info_span!("rafka.mesh.node.delete.via-transport-stopped", reason = %reason)
+            .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
+        eprintln!("{binary}: the mesh transport stopped: {reason}");
+        std::process::exit(4);
+    };
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+            () = stopped => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        () = stopped => {}
+    }
+}
+
+/// [`start`], handing `register` the process's one client too (a product family that calls out,
+/// or carries for others, holds it before the server seals).
+pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rafka_node_rpc::LiveNodeResolver>, Arc<rafka_node_rpc::NodeRpcClient>) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // membership is joined.
@@ -163,7 +196,7 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<raf
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    let server = serve_kick(register(core_protocols(ServerBuilder::new()), resolver.clone()), subject.clone())
+    let server = serve_kick(register(core_protocols(ServerBuilder::new()), resolver.clone(), client.clone()), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .serve_forward(client.clone())

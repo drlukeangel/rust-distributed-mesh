@@ -1,4 +1,4 @@
-export type NodeType = "gateway" | "broker" | "compute" | "registry" | "bridge";
+export type NodeType = "gateway" | "broker" | "compute" | "registry" | "rpc_node" | "node_admin";
 
 /// The node kinds node-admin manages; every change is a Build there.
 export type ManagedKind = "rpc_node" | "node_admin";
@@ -8,42 +8,21 @@ export interface BuildAccepted {
   build_id: string;
 }
 
+/// One node node-admin manages, as its `GET /api/nodes` view reports it.
 export interface TopologyNode {
   id: string;
   type: NodeType;
   mesh_id: string;
   node_id?: string;
-  peer_count?: number;
-  /// hex node_ids of every peer this node has an active iroh connection
-  /// to. Resolve to friendly names via the topology's id→name map.
-  peer_ids?: string[];
-  /// monotonic frame counters from GossipDigest (live mesh, no Jaeger)
-  frames_sent_total?: number;
-  frames_recv_total?: number;
-  /// per-digest emit time (staleness, bounces with gossip cadence)
-  wall_time_ms?: number;
-  /// UNIX-ms timestamp when admin-ui spawned this child. Used for the
-  /// "age" (lifetime) display — monotonically increasing.
-  spawn_time_ms?: number;
-  /// CPU + RAM from GossipDigest. cores / GB respectively. Optional
-  /// because pre-load-telemetry nodes (mid-rollout) may not populate them.
-  cpu_used?: number;
-  cpu_budget?: number;
-  ram_used?: number;
-  ram_budget?: number;
-  status?: "live" | "pending";
-  /// legacy — Jaeger-era, kept for back-compat
-  frames_per_min?: number;
-}
-export interface TopologyEdge {
-  from: string;
-  to: string;
-  kind: "within" | "cross";
-  frame_count?: number;
+  status?: string;
+  is_primary?: boolean;
+  is_fabric_primary?: boolean;
+  incarnation_id?: string | null;
+  /// The lifecycle state the birth declared to its authority, once applied.
+  declared?: string | null;
 }
 export interface TopologyResponse {
   nodes: TopologyNode[];
-  edges: TopologyEdge[];
 }
 
 export interface Heartbeat {
@@ -51,8 +30,10 @@ export interface Heartbeat {
   node_name: string;
   node_type: NodeType;
   mesh_id: string;
-  peer_count: number;
-  age_ms: number;
+  status?: string;
+  is_primary?: boolean;
+  is_fabric_primary?: boolean;
+  incarnation_id?: string | null;
 }
 export interface HeartbeatsResponse {
   heartbeats: Heartbeat[];
@@ -138,22 +119,10 @@ const j = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   return r.json() as Promise<T>;
 };
 
-export interface MeshMessage {
-  ts_ms: number;
-  from_peer_id: string;
-  frame_kind: string;
-  bytes: number;
-  summary: string;
-}
-export interface MessagesResponse {
-  messages: MeshMessage[];
-}
-
 export const api = {
   topology: () => j<TopologyResponse>("/api/topology"),
   heartbeats: () => j<HeartbeatsResponse>("/api/heartbeats"),
   summary: () => j<ClusterSummary>("/api/cluster/summary"),
-  messages: () => j<MessagesResponse>("/api/messages"),
   bootWaterfall: (node?: string) =>
     j<BootWaterfallResponse>(
       `/api/boot-trace${node ? `?service=${encodeURIComponent(node)}` : ""}`,

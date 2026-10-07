@@ -39,12 +39,10 @@ fn fixture(doc: &str, members: &[&str], dirs: &[&str]) -> tempdir::Dir {
 const HEAD: &str = "## Legacy binary dispositions\n\n| binary | disposition | why |\n|---|---|---|\n";
 
 fn rows(extra: &str) -> String {
-    format!(
-        "{HEAD}| `broker` | retained-example | x |\n| `gateway` | retained-example | x |\n| `compute` | retained-example | x |\n| `registry` | retained-example | x |\n{extra}"
-    )
+    format!("{HEAD}{extra}")
 }
 
-const ALL: &[&str] = &["broker", "gateway", "compute", "registry", "bridge"];
+const ALL: &[&str] = &["bridge"];
 
 #[test]
 fn gate_passes_a_complete_table() {
@@ -83,8 +81,14 @@ fn gate_fails_dead_code_left_in_the_workspace() {
 }
 
 #[test]
+fn gate_passes_a_deleted_binary_that_is_gone() {
+    let d = fixture(&rows("| `bridge` | dead-deleted | x |\n"), &[], &[]);
+    assert_eq!(legacy::check_dispositions(d.path()), vec![]);
+}
+
+#[test]
 fn gate_fails_a_retained_binary_that_is_gone() {
-    let d = fixture(&rows("| `bridge` | retained-example | x |\n"), &ALL[..4], &ALL[..4]);
+    let d = fixture(&rows("| `bridge` | retained-example | x |\n"), &[], &[]);
     assert_eq!(legacy::check_dispositions(d.path()), vec![Violation::LiveButAbsent("bridge".into())]);
 }
 
@@ -97,17 +101,17 @@ fn gate_fails_a_missing_audit_doc() {
 
 #[test]
 fn proof_shape_scan_names_a_legacy_role_node() {
-    let yaml = "shape: MN\nmeshes:\n  - name: mesh1\n    node_admin: 2\n    broker: 3\n";
+    let yaml = "shape: MN\nmeshes:\n  - name: mesh1\n    node_admin: 2\n    bridge: 3\n";
     let v = legacy::scan_proof_shape_text(Path::new("s.yaml"), yaml);
     assert_eq!(
         v,
-        vec![Violation::LegacyRoleInProofShape { file: "s.yaml".into(), line: 5, role: "broker".into() }]
+        vec![Violation::LegacyRoleInProofShape { file: "s.yaml".into(), line: 5, role: "bridge".into() }]
     );
 }
 
 #[test]
-fn proof_shape_scan_ignores_substrings_and_rpc_nodes() {
-    let yaml = "shape: MN\nmeshes:\n  - name: mesh1\n    node_admin: 2\n    rpc_node: 3\n# brokerage is not a role\n";
+fn proof_shape_scan_ignores_substrings_and_role_nodes() {
+    let yaml = "shape: MN\nmeshes:\n  - name: mesh1\n    node_admin: 2\n    rpc_node: 3\n    broker: 1\n# bridges is not a role\n";
     assert_eq!(legacy::scan_proof_shape_text(Path::new("s.yaml"), yaml), vec![]);
 }
 
@@ -115,7 +119,7 @@ fn proof_shape_scan_ignores_substrings_and_rpc_nodes() {
 fn proof_shape_scan_reads_scenario_dirs() {
     let d = tempdir::Dir::new();
     std::fs::create_dir_all(d.path().join("crates/x/scenarios")).unwrap();
-    std::fs::write(d.path().join("crates/x/scenarios/a.yaml"), "rpc_node: 1\ngateway: 1\n").unwrap();
+    std::fs::write(d.path().join("crates/x/scenarios/a.yaml"), "rpc_node: 1\nbridge: 1\n").unwrap();
     let v = legacy::check_proof_shapes(d.path());
     assert_eq!(v.len(), 1, "{v:?}");
 }

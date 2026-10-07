@@ -475,7 +475,7 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("backpressure-stream-flood", "chaos",    "32 concurrent bi-streams flood 1 KiB payloads for 10s; passes if 0 errors AND >= 200 round-trips (proves bi-stream plane back-pressures smoothly without OOM or stall)"),
     ("chaos-soak-9prim-1min",   "chaos",      "1-minute soak with 9-primitive pool; expects 100% pass; gates the substrate"),
     ("chaos-soak-9prim-5min",   "chaos",      "5-minute soak with 9-primitive pool; balanced primitive distribution"),
-    ("mesh-five-types-present", "chaos",      "spawn 5 nodes (gateway+broker+compute+registry+bridge), verify all 5 visible in topology + heartbeats fresh"),
+    ("mesh-five-types-present", "chaos",      "spawn 4 nodes (gateway+broker+compute+registry), verify all 4 visible in topology + heartbeats fresh"),
     ("remove-resilience",       "chaos",      "spawn 6, remove 3, verify survivors detect disconnects within 15s (peer_count adjusts)"),
     ("gossip-swarm-forms",      "chaos",      "spawn 4 nodes, wait, verify rafka.mesh.gossip.received spans exist (peers exchanging digests via iroh-gossip swarm)"),
     ("gossip-mesh-to-mesh",     "chaos",      "spawn nodes in mesh-A + mesh-B; verify each mesh's gossip stays isolated (separate topic_id per mesh_id) AND cross.peer_connected spans fire"),
@@ -912,7 +912,7 @@ async fn pick_node_of_type(api_url: &str, type_prefix: &str) -> Option<String> {
 async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
     use std::collections::HashSet;
     let client = reqwest::Client::new();
-    for t in ["gateway", "broker", "compute", "registry", "bridge"] {
+    for t in ["gateway", "broker", "compute", "registry"] {
         let _ = client
             .post(format!("{api_url}/api/nodes/spawn"))
             .json(&serde_json::json!({"node_type": t, "mesh_id": "mesh-a"}))
@@ -938,13 +938,13 @@ async fn run_mesh_five_types_present(api_url: &str) -> (&'static str, String) {
                 .collect()
         })
         .unwrap_or_default();
-    let expected: HashSet<String> = ["gateway", "broker", "compute", "registry", "bridge"]
+    let expected: HashSet<String> = ["gateway", "broker", "compute", "registry"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let missing: Vec<String> = expected.difference(&types).cloned().collect();
     if missing.is_empty() {
-        ("passed", format!("all 5 types present: {types:?}"))
+        ("passed", format!("all 4 types present: {types:?}"))
     } else {
         ("failed", format!("missing types: {missing:?}; saw {types:?}"))
     }
@@ -1013,7 +1013,7 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
     // peer service and aggregate; a hit on any service is proof the cross-
     // mesh handshake is happening somewhere.
     let mut cross_count: i64 = 0;
-    for svc in ["bridge", "gateway", "broker", "compute", "registry"] {
+    for svc in ["gateway", "broker", "compute", "registry"] {
         let url = format!(
             "http://localhost:16686/api/traces?service={svc}&operation=rafka.mesh.cross.peer_connected&limit=20&lookback=2m"
         );

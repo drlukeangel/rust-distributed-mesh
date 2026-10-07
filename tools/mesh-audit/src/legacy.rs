@@ -1,17 +1,17 @@
 //! Legacy role-binary disposition gate (i143.e0.s1, PRD §4 / R21).
 //!
-//! RDM's `broker`, `gateway`, `compute`, `bridge` and `registry` binaries
-//! predate the generic Mesh product. Each one carries exactly one disposition
-//! in the checked-in audit doc, and none of them may stand in as a node of a
-//! proof shape (SN/MN/MM): the proof estate uses generic node-admins and RPC
-//! proof nodes only.
+//! RDM's `bridge` binary predates the generic Mesh product. It carries exactly
+//! one disposition in the checked-in audit doc. `broker`, `gateway`, `compute`
+//! and `registry` are the e11 role binaries built on `rafka-node-base`; none of
+//! them stands in as a node of a proof shape (SN/MN/MM): the proof estate uses
+//! generic node-admins and RPC proof nodes only.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The five legacy role binaries named by PRD §4 and ownership §17.
-pub const LEGACY_BINARIES: &[&str] = &["broker", "gateway", "compute", "bridge", "registry"];
+/// The legacy binary named by PRD §4 and ownership §17 that no role replaced.
+pub const LEGACY_BINARIES: &[&str] = &["bridge"];
 
 /// The audit doc that carries the disposition table.
 pub const AUDIT_DOC: &str = "docs/i143/e0-workspace-audit.md";

@@ -7,13 +7,11 @@ import { Alerts } from "./tabs/Alerts";
 import { Chaos } from "./tabs/Chaos";
 import { Timeline } from "./tabs/Timeline";
 import { Tests } from "./tabs/Tests";
-import { Messages } from "./tabs/Messages";
 import { api, type ClusterSummary } from "./api";
 
 const TABS = [
   "Topology",
   "Nodes",
-  "Messages",
   "Boot Waterfall",
   "Chaos",
   "Timeline",
@@ -65,7 +63,6 @@ export function App() {
         {tab === "Timeline" && <Timeline />}
         {tab === "Alerts" && <Alerts />}
         {tab === "Tests" && <Tests />}
-        {tab === "Messages" && <Messages />}
       </main>
     </div>
   );

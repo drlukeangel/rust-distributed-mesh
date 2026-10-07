@@ -2,27 +2,23 @@
 name = "rafka-node-base"
 version = "0.1.0"
 edition = "2021"
+description = "The product node base: a role process composed on the imported Mesh substrate (i143.e11)"
+publish = false
 
+# Exactly the import manifest a product takes (i141 PRD §3): the generic packages, by workspace
+# path here, by one git+rev downstream. Nothing else of RDM.
 [dependencies]
-rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
+rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
-rafka-mesh-ops = { path = "../rafka-mesh-ops" }
+rafka-node-rpc = { path = "../rafka-node-rpc" }
+rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }
+rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-opentelemetry = { workspace = true }
-opentelemetry = { workspace = true }
-iroh = { workspace = true }
-iroh-gossip = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-hex = { workspace = true }
-rand = { workspace = true }
-dashmap = { workspace = true }
-postcard = { version = "1", features = ["alloc"] }
-futures-lite = "2"
-blake3 = "1"
-sysinfo = "0.38.4"
-tracing-flame = "0.2.0"
-dhat = "0.3.3"
-iroh-base = { workspace = true }
+iroh = { workspace = true }
+
+[dev-dependencies]
+rafka-node-admin-core = { path = "../rafka-node-admin-core" }

@@ -29,7 +29,7 @@ export function Chaos() {
         <span className="muted mono">total events: {s.total_events}</span>
       </div>
       <div className="muted">
-        Chaos kills a random non-bridge node every {Math.round(s.cadence_ms / 1000)}s
+        Chaos kills a random node every {Math.round(s.cadence_ms / 1000)}s
         and spawns a same-type replacement in the same mesh. Bridges are
         protected. Use the buttons in the top bar to toggle.
       </div>

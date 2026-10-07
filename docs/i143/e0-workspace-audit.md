@@ -16,19 +16,13 @@ declaration (scenario YAML under `crates/*/scenarios/`, or a node-admin
 
 | binary | disposition | why |
 |---|---|---|
-| `broker` | retained-example | 43-line wrapper: `NodeRuntime::new("broker").with_role(Role::Broker)`. `Role::Broker` has no behavior of its own in `rafka-node-base`. Kept as a legacy demo program for the legacy Admin UI (`KNOWN_NODE_TYPES`, `/api/bootstrap`), `rafka-chaos` soak targets and `rfa`. Outside the import manifest; never a proof-shape node. |
-| `gateway` | retained-example | Same wrapper as `broker` with `Role::Gateway` (no behavior). Same consumers, same status. |
-| `compute` | retained-example | Same wrapper with `Role::Compute` (no behavior). Same consumers, same status. |
-| `registry` | retained-example | Same wrapper with `Role::Registry` (no behavior). Same consumers, same status. |
-| `bridge` | extraction-input | `Role::Bridge` is the only role with behavior: it joins several mesh ids (`RAFKA_BRIDGE_TARGET_MESHES`), records each peer's mesh from the `Hello` frame (`MeshIdRegistry`) and emits per-peer-mesh aggregates. That peer→mesh association is generic multi-mesh membership input for the Mesh EF (e4: exact-node identity/membership, cross-mesh reachability). The binary itself stays a legacy demo until e4 owns the behavior. |
+| `bridge` | dead-deleted | Its one behavior (joining several mesh ids and recording each peer's mesh from the `Hello` frame) is the fabric: every node holds every mesh's nodes through gossip, and a peer mesh is reached through the backbone. Nothing consumes it. |
 
-No legacy binary is dead: each is reachable from the legacy Admin UI spawn
-path, the chaos soak and the `rfa` CLI. None is deleted in e0. The retained
-programs leave the workspace when their last consumer does — the Admin UI
-becomes a node-admin client in e1, and the chaos crate moves to public
-control/probe interfaces in e8 — and each removal edits this table to
-`dead-deleted` in the same commit (the gate then requires the crate to be
-gone).
+`broker`, `gateway`, `compute` and `registry` are not legacy binaries: they are
+the e11 role binaries, each `rafka_node_base::run(Role::<role>())` on the
+imported composition, born by node-admin as `NodeKind::{Broker, Gateway,
+Compute}` and `RpcNode` path.names. The Admin UI is a node-admin client; the
+chaos crate drives node-admin's control API.
 
 The i143 proof estate (SN/MN/MM) is built from generic node-admins and generic
 RPC proof nodes only (PRD §1 decision 13, ownership §17).
@@ -44,7 +38,7 @@ RPC proof nodes only (PRD §1 decision 13, ownership §17).
 | `crates/rafka-chaos` (1,728 lines) | `ChaosPrimitive` trait; Kill/Restart/BurstKill go through Admin UI HTTP (`/api/nodes/spawned`, `DELETE /api/nodes/{name}`, `/api/nodes/spawn`). Wedge = OS suspend (`pgrep`/`kill -STOP` on unix, PowerShell on Windows). Partition/Subset/FlapLink/FirewallInbound are PowerShell-only (Windows firewall). ClockSkew/NatShift respawn with env. Soak driver counts detections, not semantic outcomes. | `rafka-chaos` (kept). Needs: public control/probe interfaces instead of Admin UI globals, container/network backend on Linux, failpoints, deterministic network/time, semantic wedge detectors. | R17, R18, R19, R20 |
 | `crates/rafka-telemetry` (166 lines) | `init_telemetry(service)` OTLP/gRPC exporter. | Shared by every package; e7 adds an OTLP JSONL evidence sink. | R16 |
 | `cli/rfa` (1,708 lines) | Operator CLI over the Admin UI HTTP surface; chaos primitive shortcuts by legacy role. | Becomes a `rafka-node-admin-client` consumer after e1. | — |
-| `broker`/`gateway`/`compute`/`registry`/`bridge` | See the disposition table above. | — | R21 |
+| `bridge` | See the disposition table above. | — | R21 |
 
 Packages absent today: `rafka-node-rpc-contract`, `rafka-mesh-entity`,
 `rafka-node-rpc`, `rafka-node-admin-core`, `rafka-node-admin-client`,
