@@ -200,15 +200,16 @@ impl Pool {
         let started = Instant::now();
         let resolver = spec.resolver.clone();
         let target = spec.target.clone();
-        // Released the moment the resolver stops naming this exact target.
+        // Released the moment the resolver stops naming this exact target: subscribed first, then
+        // checked, so a move between the dial's registration and this subscription is seen too.
         let moved = async {
             let Some(mut changes) = resolver.changes() else { return std::future::pending::<()>().await };
             loop {
-                if changes.changed().await.is_err() {
-                    return std::future::pending::<()>().await;
-                }
                 if !key.is_current(resolver.resolve(&target).ok().as_ref()) {
                     return;
+                }
+                if changes.changed().await.is_err() {
+                    return std::future::pending::<()>().await;
                 }
             }
         };
