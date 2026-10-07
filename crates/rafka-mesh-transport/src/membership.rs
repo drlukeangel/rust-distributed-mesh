@@ -94,14 +94,24 @@ pub fn leave_linger_from_env() -> Duration {
 /// How often a leaving node repeats its `Leaving` during the linger.
 pub const LEAVE_EVERY: Duration = Duration::from_millis(200);
 
-/// How long this process has spent runnable but waiting for a CPU since it started
-/// (`/proc/self/schedstat`, second field); `None` where the kernel does not expose it. The
-/// difference across a bounded operation says whether a late wakeup was the process waiting
-/// to run, from the process's own evidence.
+/// How long this process's threads, summed, have spent runnable but waiting for a CPU since
+/// they started (`/proc/self/task/*/schedstat`, second field); `None` where the kernel does not
+/// expose it. Every thread is summed because the runtime's workers are what run a future and the
+/// main thread sits in `block_on`; the difference across a bounded operation says whether a late
+/// wakeup was the process waiting to run, from the process's own evidence.
 pub fn runqueue_wait() -> Option<Duration> {
-    let s = std::fs::read_to_string("/proc/self/schedstat").ok()?;
-    let ns: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
-    Some(Duration::from_nanos(ns))
+    let tasks = std::fs::read_dir("/proc/self/task").ok()?;
+    let mut total: u64 = 0;
+    let mut any = false;
+    for t in tasks.flatten() {
+        if let Ok(s) = std::fs::read_to_string(t.path().join("schedstat")) {
+            if let Some(ns) = s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()) {
+                total += ns;
+                any = true;
+            }
+        }
+    }
+    any.then(|| Duration::from_nanos(total))
 }
 
 /// The runqueue wait accrued since `since` (a [`runqueue_wait`] reading), in ms; 0 where unknown.
