@@ -779,21 +779,17 @@ impl DeploymentPipeline<'_> {
                 run.done.clear();
             }
         } else if let Some(Some(v)) = run.done.get(CreateStep::AllocateEndpoints.name()) {
-            // The earlier attempt allocated endpoints and never reached a runtime: that receipt
-            // was a claim of its executor's allocator, gone with it, and the record check says
-            // whether another node's birth holds a socket of it by now. Named by another node,
-            // the endpoints are decided afresh; the identity (never born) is kept.
-            if let Ok(a) = serde_json::from_value::<Assignment>(v.clone()) {
-                let mut allocator = self.allocator.lock().unwrap();
-                if let Some((holder, socket)) = allocator.named_by_another(&req.node, &a) {
-                    tracing::info!(node = %req.node, %holder, %socket, "the earlier attempt's endpoints are another node's now: allocated afresh");
-                    run.done.remove(CreateStep::AllocateEndpoints.name());
-                } else if !allocator.reclaim_assignment(&req.node, &a) {
-                    // The receipt's claims died with their executor and a live process holds one
-                    // of its sockets now (another fabric on this host): theirs, allocated afresh.
-                    tracing::info!(node = %req.node, "the earlier attempt's endpoints are claimed by a live process now: allocated afresh");
-                    run.done.remove(CreateStep::AllocateEndpoints.name());
-                }
+            // The earlier attempt allocated endpoints and never recorded a runtime. Its receipt is
+            // reused only while it is still this allocator's reservation for the node: the same
+            // live executor, whose record is the reservation (rafka-v2 node-admin: the spawn
+            // record holds the port while node-admin lives). Any other executor never takes it:
+            // whatever that attempt launched may still bind it after its executor died, so the
+            // endpoints are allocated afresh by the claim and the bind probe; the identity (never
+            // born) is kept.
+            let ours = serde_json::from_value::<Assignment>(v.clone()).ok().is_some_and(|a| self.allocator.lock().unwrap().held(&req.node) == Some(&a));
+            if !ours {
+                tracing::info!(node = %req.node, "the earlier attempt's endpoints are not this executor's reservation: allocated afresh");
+                run.done.remove(CreateStep::AllocateEndpoints.name());
             }
         }
         let prior = req.restart_of.clone();
@@ -810,11 +806,9 @@ impl DeploymentPipeline<'_> {
         let reused_endpoints = run.reusing && run.done.contains_key(CreateStep::AllocateEndpoints.name());
         let assigned: Assignment = self
             .step(&mut run, CreateStep::AllocateEndpoints.name(), async {
-                let mut a = self.allocator.lock().unwrap();
-                if let Some(held) = prior.as_ref().and_then(Assignment::of_node) {
-                    a.adopt(&req.node, held);
-                }
-                a.assign(&req.node, req.spec, prior.is_some()).map_err(|e| e.to_string())
+                // A restart reuses identity and data dir and binds fresh ports
+                // (fabric-node-lifecycle.md), never its recorded ones.
+                self.allocator.lock().unwrap().assign(&req.node, req.spec).map_err(|e| e.to_string())
             })
             .await?;
         if reused_endpoints {

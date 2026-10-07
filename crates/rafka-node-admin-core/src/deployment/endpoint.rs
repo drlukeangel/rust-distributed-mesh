@@ -80,8 +80,6 @@ pub enum AllocationError {
     Exhausted { first: u16, last: u16 },
     /// Every node address of the range is held.
     AddressesExhausted,
-    /// A restart was asked to keep what it has no prior assignment for.
-    NoPriorAssignment { node: PathName, socket: String },
 }
 
 impl fmt::Display for AllocationError {
@@ -89,7 +87,6 @@ impl fmt::Display for AllocationError {
         match self {
             Self::Exhausted { first, last } => write!(f, "no free port left in {first}..={last}"),
             Self::AddressesExhausted => write!(f, "every node address of the range is held"),
-            Self::NoPriorAssignment { node, socket } => write!(f, "{node} {socket}: a restart keeps it, but none was assigned"),
         }
     }
 }
@@ -192,46 +189,6 @@ impl EndpointAllocator {
         self
     }
 
-    /// Reclaim a reused assignment host-wide before it is launched again: the executor whose
-    /// allocator reserved it may have died (its claims with it), and another allocator may have
-    /// taken a socket over since. Every socket is reserved as this process; a socket a live
-    /// process holds makes the whole assignment theirs (`false`, nothing kept), and the caller
-    /// allocates afresh.
-    pub fn reclaim_assignment(&mut self, node: &PathName, a: &Assignment) -> bool {
-        if !matches!(self.addressing, Addressing::SharedHost(_)) {
-            self.held.insert(node.clone(), a.clone());
-            for (_, addr, _) in a.sockets() {
-                self.in_use.insert(addr);
-            }
-            return true;
-        }
-        let mut taken = Vec::new();
-        for (_, addr, _) in a.sockets() {
-            if self.in_use.contains(&addr) || reserve_on_host(addr) {
-                taken.push(addr);
-            } else {
-                for t in taken {
-                    if !self.in_use.contains(&t) {
-                        release_on_host(t);
-                    }
-                }
-                return false;
-            }
-        }
-        for addr in taken {
-            self.in_use.insert(addr);
-        }
-        self.held.insert(node.clone(), a.clone());
-        true
-    }
-
-    /// A socket of `a` that the topology names under a node other than `node`, if any: an
-    /// assignment that is somebody else's now and is never reused.
-    pub fn named_by_another(&self, node: &PathName, a: &Assignment) -> Option<(PathName, SocketAddr)> {
-        let named = self.held_sockets.now();
-        a.sockets().into_iter().find_map(|(_, addr, _)| named.iter().find(|(n, s)| *s == addr && n != node).cloned())
-    }
-
     pub fn with_held_elsewhere(mut self, probe: HeldElsewhere) -> Self {
         if let Addressing::PerNode { held_elsewhere, .. } = &mut self.addressing {
             *held_elsewhere = probe;
@@ -302,7 +259,7 @@ impl EndpointAllocator {
                 // binding. A claimed port that a probe finds held is released again.
                 Addressing::SharedHost(_) => {
                     reserve_on_host(a) && {
-                        let unbound = UdpSocket::bind(a).is_ok() && std::net::TcpListener::bind(a).is_ok();
+                        let unbound = port_bindable(a.port());
                         if !unbound {
                             release_on_host(a);
                         }
@@ -325,17 +282,7 @@ impl EndpointAllocator {
     ///   address and a new address per listener;
     /// - restart (`restart = true`): the transport and listener addresses are
     ///   kept.
-    pub fn assign(&mut self, node: &PathName, spec: &KindSpec, restart: bool) -> Result<Assignment, AllocationError> {
-        if restart {
-            let prior = self.held.get(node).cloned().ok_or_else(|| AllocationError::NoPriorAssignment { node: node.clone(), socket: "transport".into() })?;
-            // A restart keeps every socket its kind declares: one the prior assignment lacks is
-            // refused by name, never launched without.
-            if let Some(missing) = spec.listeners.iter().find(|l| !prior.listeners.iter().any(|(n, _)| n == *l)) {
-                return Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: missing.to_string() });
-            }
-            self.held.insert(node.clone(), prior.clone());
-            return Ok(prior);
-        }
+    pub fn assign(&mut self, node: &PathName, spec: &KindSpec) -> Result<Assignment, AllocationError> {
         self.release(node);
         let ip = self.node_ip(node)?;
         let mut taken = Vec::new();
@@ -377,23 +324,6 @@ impl EndpointAllocator {
         let transport = self.take_addr(ip)?;
         self.held.insert(node.clone(), Assignment { transport, listeners: Vec::new() });
         Ok(transport)
-    }
-
-    /// Reclaim `addr` for `node` on a restart, before it is bound again. The claim the previous
-    /// incarnation held died with that process, and a dead owner's claim is any allocator's to
-    /// take over, so a bind without the claim races a birth that was just handed the same port.
-    /// `false` when a live process holds the claim now: the address is theirs, and the caller
-    /// takes a fresh one.
-    pub fn reclaim_transport(&mut self, node: &PathName, addr: SocketAddr) -> bool {
-        let claimed = match self.addressing {
-            Addressing::SharedHost(_) => reserve_on_host(addr),
-            Addressing::PerNode { .. } => true,
-        };
-        if claimed {
-            self.in_use.insert(addr);
-            self.held.insert(node.clone(), Assignment { transport: addr, listeners: Vec::new() });
-        }
-        claimed
     }
 
     /// Release every address of `node` (retire pipeline `ReleaseEndpoints`).
@@ -478,6 +408,13 @@ fn claim_owner(path: &std::path::Path) -> Option<u32> {
 
 /// Claim `addr` host-wide. `false` when a live process holds the claim or it
 /// cannot be written; a claim whose owner process is gone is taken over.
+/// Whether `port` can be bound right now on every interface, over TCP AND UDP: a node binds
+/// its mesh port over UDP and a listener over TCP, so a port free on one protocol only is not
+/// free. (rafka-v2 node-admin's `port_bindable`, the system check of its one port search.)
+pub fn port_bindable(port: u16) -> bool {
+    std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok()
+}
+
 fn reserve_on_host(addr: SocketAddr) -> bool {
     let path = reservation_path(addr);
     with_claims_locked(|_| {
@@ -731,7 +668,7 @@ mod tests {
         let mut a = alloc();
         let mut seen = BTreeSet::new();
         for i in 1..=400 {
-            let got = a.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE, false).unwrap();
+            let got = a.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE).unwrap();
             assert!(seen.insert(got.transport), "port {} handed out twice", got.transport);
             assert!(got.listeners.is_empty());
         }
@@ -739,54 +676,42 @@ mod tests {
         assert_eq!(a.in_use_count(), 400);
     }
 
+    /// CONTRACT (fabric-node-lifecycle.md: a restart "reuses identity and data dir, binds fresh
+    /// ports"; rafka-v2 node-admin's respawn rule): a node assigned again is handed fresh ports,
+    /// never its recorded ones, and the recorded ones are released.
     #[test]
-    fn a_restart_keeps_the_transport_and_a_replacement_takes_a_new_one() {
+    fn a_respawn_is_handed_fresh_ports_never_the_recorded_ones() {
         let mut a = alloc();
         let node = p("mesh1.rpc.2");
-        let first = a.assign(&node, &RPC_NODE, false).unwrap();
-        let again = a.assign(&node, &RPC_NODE, true).unwrap();
-        assert_eq!(first.transport, again.transport, "the transport stays across a restart");
-        assert_eq!(a.in_use_count(), 1, "a restart takes no new port");
-        let replaced = a.assign(&node, &RPC_NODE, false).unwrap();
-        assert_ne!(replaced.transport, again.transport, "a replacement is a new assignment");
-        assert_eq!(a.in_use_count(), 1, "the replaced assignment was released");
+        let first = a.assign(&node, &RPC_NODE).unwrap();
+        let again = a.assign(&node, &RPC_NODE).unwrap();
+        assert_ne!(first.transport, again.transport, "a respawn is handed a fresh transport");
+        assert_eq!(a.in_use_count(), 1, "the recorded assignment was released");
     }
 
     #[test]
     fn a_listener_kind_gets_its_own_tcp_address_beside_the_transport() {
         let mut a = alloc();
-        let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, false).unwrap();
+        let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN).unwrap();
         assert_eq!(got.listeners.len(), 1);
         assert_eq!(got.listeners[0].0, "control");
         assert_ne!(got.listeners[0].1, got.transport);
         let sockets = got.sockets();
         assert_eq!(sockets[0].2, SlotTransport::Udp);
         assert_eq!(sockets[1].2, SlotTransport::Tcp);
-        let again = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, true).unwrap();
-        assert_eq!(again.listeners, got.listeners, "a restart keeps the listener address");
+        let again = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN).unwrap();
+        assert_ne!(again.listeners, got.listeners, "a respawn is handed a fresh listener address");
     }
 
     #[test]
-    fn released_ports_return_and_a_restart_without_prior_is_named() {
+    fn released_ports_return() {
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30000, 30001);
-        a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
-        a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).unwrap();
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::Exhausted { .. })));
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
+        a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
+        a.assign(&p("mesh1.rpc.2"), &RPC_NODE).unwrap();
+        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE), Err(AllocationError::Exhausted { .. })));
+        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
         a.release(&p("mesh1.rpc.1"));
-        assert!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false).is_ok());
-        assert_eq!(
-            a.assign(&p("mesh1.rpc.9"), &RPC_NODE, true),
-            Err(AllocationError::NoPriorAssignment { node: p("mesh1.rpc.9"), socket: "transport".into() })
-        );
-    }
-
-    #[test]
-    fn a_restart_missing_a_declared_listener_is_refused_by_name() {
-        let mut a = alloc();
-        let node = p("mesh1.admin.2");
-        a.adopt(&node, Assignment { transport: "127.0.0.1:27999".parse().unwrap(), listeners: vec![] });
-        assert_eq!(a.assign(&node, &NODE_ADMIN, true), Err(AllocationError::NoPriorAssignment { node: node.clone(), socket: "control".into() }));
+        assert!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE).is_ok());
     }
 
     #[test]
@@ -794,9 +719,9 @@ mod tests {
         let held: BTreeSet<IpAddr> = ["10.9.0.2".parse().unwrap(), "10.9.0.3".parse().unwrap()].into_iter().collect();
         let mut a = EndpointAllocator::per_node("10.9.0.2".parse().unwrap(), "10.9.0.9".parse().unwrap(), 20000, 20010)
             .with_held_elsewhere(HeldElsewhere::new(move || held.clone()));
-        let got = a.assign(&"mesh1.rpc.1".parse().unwrap(), &RPC_NODE, false).unwrap();
+        let got = a.assign(&"mesh1.rpc.1".parse().unwrap(), &RPC_NODE).unwrap();
         assert_eq!(got.transport.ip(), "10.9.0.4".parse::<IpAddr>().unwrap(), "the two addresses other births hold are skipped");
-        let next = a.assign(&"mesh1.rpc.2".parse().unwrap(), &RPC_NODE, false).unwrap();
+        let next = a.assign(&"mesh1.rpc.2".parse().unwrap(), &RPC_NODE).unwrap();
         assert_eq!(next.transport.ip(), "10.9.0.5".parse::<IpAddr>().unwrap());
     }
 
@@ -815,35 +740,30 @@ mod tests {
     #[test]
     fn a_partial_listener_allocation_frees_what_it_took() {
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30010, 30010);
-        assert!(matches!(a.assign(&p("mesh1.admin.1"), &NODE_ADMIN, false), Err(AllocationError::Exhausted { .. })));
+        assert!(matches!(a.assign(&p("mesh1.admin.1"), &NODE_ADMIN), Err(AllocationError::Exhausted { .. })));
         assert_eq!(a.in_use_count(), 0, "the transport taken before the listener failed was freed");
-        assert!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).is_ok());
+        assert!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).is_ok());
     }
 
     #[test]
     fn per_node_addressing_gives_each_node_its_own_address_kept_across_a_restart() {
         let first = std::net::Ipv4Addr::new(10, 9, 0, 2);
         let mut a = EndpointAllocator::per_node(first, std::net::Ipv4Addr::new(10, 9, 0, 3), 41000, 41000);
-        let one = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
-        let two = a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).unwrap();
+        let one = a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
+        let two = a.assign(&p("mesh1.rpc.2"), &RPC_NODE).unwrap();
         assert_eq!(one.transport.ip(), IpAddr::from(first));
         assert_eq!(two.transport.ip(), IpAddr::from([10, 9, 0, 3]));
         assert_eq!(one.transport.port(), two.transport.port(), "ports repeat across node addresses");
-        assert_eq!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false), Err(AllocationError::AddressesExhausted));
+        assert_eq!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE), Err(AllocationError::AddressesExhausted));
         a.release(&p("mesh1.rpc.2"));
-        a.assign(&p("mesh1.rpc.3"), &RPC_NODE, false).unwrap();
-        // A restart keeps the node's address.
-        let mut b = EndpointAllocator::per_node(first, first, 41000, 41000);
-        let before = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
-        let after = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, true).unwrap();
-        assert_eq!(after.transport, before.transport);
+        a.assign(&p("mesh1.rpc.3"), &RPC_NODE).unwrap();
     }
 
     #[test]
     fn a_port_bound_by_another_process_is_never_handed_out() {
         let squatter = UdpSocket::bind("127.0.0.1:30100").unwrap();
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30100, 30102);
-        let got = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        let got = a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
         assert_ne!(got.transport.port(), 30100);
         drop(squatter);
     }
@@ -857,57 +777,24 @@ mod tests {
             EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
             EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30207),
         );
-        let x = a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
-        let y = b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap();
+        let x = a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
+        let y = b.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
         assert_ne!(x.transport, y.transport, "{} handed out twice", x.transport);
         // A released port is free to the other allocator again.
         a.release(&p("mesh1.rpc.1"));
         b.release(&p("mesh1.rpc.1"));
         let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30200, 30200);
-        assert!(c.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).is_ok(), "released reservations are gone");
+        assert!(c.assign(&p("mesh1.rpc.1"), &RPC_NODE).is_ok(), "released reservations are gone");
     }
 
-    /// A restarted admin reclaims the address it last held before binding it: the claim died
-    /// with its previous process and any allocator takes a dead owner's claim over, so a bind
-    /// without the claim races a birth handed the same port. A claim a live process holds is
-    /// theirs, and the restart takes a fresh reserved port instead.
+    /// The record check: a socket any node's record names is never handed out.
     #[test]
-    fn a_restart_reclaims_its_kept_transport_unless_a_live_process_holds_the_claim() {
-        let kept = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30400);
-        let path = reservation_path(kept);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "4194305").unwrap();
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30400, 30401);
-        assert!(a.reclaim_transport(&p("mesh1.admin.2"), kept), "a dead owner's claim is reclaimed");
-        assert_eq!(claim_owner(&path), Some(std::process::id()));
-        let mut b = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30400, 30401);
-        assert_eq!(b.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30401, "a reclaimed address is never handed out");
-        let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
-        let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30402);
-        std::fs::write(reservation_path(theirs), live.id().to_string()).unwrap();
-        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30402, 30403);
-        assert!(!c.reclaim_transport(&p("mesh1.admin.3"), theirs), "a live process's claim is theirs");
-        assert_eq!(c.take_transport(&p("mesh1.admin.3")).unwrap().port(), 30403);
-        live.kill().ok();
-        live.wait().ok();
-        std::fs::remove_file(reservation_path(theirs)).ok();
-        a.release(&p("mesh1.admin.2"));
-        b.release(&p("mesh1.rpc.1"));
-        c.release(&p("mesh1.admin.3"));
-    }
-
-    /// The record check: a socket any node's record names is never handed out, and an assignment
-    /// a different node's record names is reported as theirs.
-    #[test]
-    fn a_socket_the_topology_names_is_never_handed_out_and_another_nodes_assignment_is_named() {
+    fn a_socket_the_topology_names_is_never_handed_out() {
         let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30500);
         let holder = p("mesh1.admin.2");
         let (h, s) = (holder.clone(), theirs);
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30500, 30501).with_held_sockets(HeldSockets::new(move || vec![(h.clone(), s)]));
-        assert_eq!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30501, "the named port is skipped without a probe");
-        let dead = Assignment { transport: theirs, listeners: vec![] };
-        assert_eq!(a.named_by_another(&p("mesh1.rpc.4"), &dead), Some((holder.clone(), theirs)));
-        assert_eq!(a.named_by_another(&holder, &dead), None, "a node's own record is not another's");
+        assert_eq!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap().transport.port(), 30501, "the named port is skipped without a probe");
         a.release(&p("mesh1.rpc.1"));
     }
 
@@ -933,33 +820,9 @@ mod tests {
         live.wait().ok();
         std::fs::remove_file(reservation_path(admins)).ok();
         let mut other = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30600, 30601);
-        assert_eq!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30601, "the runtime's port is never handed out");
+        assert_eq!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap().transport.port(), 30601, "the runtime's port is never handed out");
         other.release(&p("mesh1.rpc.1"));
         std::fs::remove_file(&path).ok();
-    }
-
-    /// A reused assignment is reclaimed host-wide before launch: a dead owner's claim is taken
-    /// as this process; a socket a live process claims makes the assignment theirs.
-    #[test]
-    fn a_reused_assignment_is_reclaimed_or_refused_by_the_host_claims() {
-        let mine = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30700);
-        std::fs::create_dir_all(reservation_path(mine).parent().unwrap()).unwrap();
-        std::fs::write(reservation_path(mine), "4194305").unwrap();
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30700, 30703);
-        assert!(a.reclaim_assignment(&p("mesh1.rpc.4"), &Assignment { transport: mine, listeners: vec![] }), "a dead owner's claim is reclaimed");
-        assert_eq!(claim_owner(&reservation_path(mine)), Some(std::process::id()));
-        assert_eq!(a.in_use_count(), 1);
-        let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
-        let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30702);
-        std::fs::write(reservation_path(theirs), live.id().to_string()).unwrap();
-        let mut b = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30700, 30703);
-        assert!(!b.reclaim_assignment(&p("mesh1.rpc.5"), &Assignment { transport: theirs, listeners: vec![("control".into(), SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703))] }), "a live process's claim makes it theirs");
-        assert_eq!(b.in_use_count(), 0, "nothing kept of a refused assignment");
-        assert!(!reservation_path(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703)).exists() || claim_owner(&reservation_path(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703))) != Some(std::process::id()), "a socket taken on the way is released again");
-        live.kill().ok();
-        live.wait().ok();
-        a.release(&p("mesh1.rpc.4"));
-        std::fs::remove_file(reservation_path(theirs)).ok();
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.
@@ -971,7 +834,7 @@ mod tests {
         // pid_max on Linux is at most 2^22: this pid cannot be live.
         std::fs::write(&path, "4194305").unwrap();
         let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30300, 30300);
-        assert!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE, false).is_ok());
+        assert!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE).is_ok());
         a.release(&p("mesh1.rpc.2"));
         assert!(!path.exists(), "release removes the reservation");
     }

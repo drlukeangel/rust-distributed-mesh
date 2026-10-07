@@ -22,8 +22,8 @@ fn ready(node: &Value) -> bool {
 }
 
 /// CONTRACT: an RPC node restarted through Build comes back as the same logical
-/// node (same node id and transport identity, new process incarnation) at the
-/// same transport address, still serves the
+/// node (same node id and transport identity, new process incarnation) on fresh
+/// ports (fabric-node-lifecycle.md: a restart binds fresh ports), still serves the
 /// value written before the restart from its own data dir, resets an unfinished
 /// request with 499 (NotSent), and leaves a Build -> deployment -> node-lifecycle
 /// span chain linked by ParentSpanId.
@@ -100,8 +100,8 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(after["name"], before["name"]);
     assert_ne!(after["deployment_id"].as_str(), Some(deployment_before.as_str()), "a new runtime deployment");
 
-    // 6. The process keeps its one transport address.
-    assert_eq!(after["transport_addr"], before["transport_addr"], "a restart keeps the transport address");
+    // 6. A restart binds fresh ports, never its recorded ones (fabric-node-lifecycle.md).
+    assert_ne!(after["transport_addr"], before["transport_addr"], "a restart binds a fresh transport port");
 
     // 7. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
     let get = estate.probe(&["get", "--target", &exact, "--key", "41"]);

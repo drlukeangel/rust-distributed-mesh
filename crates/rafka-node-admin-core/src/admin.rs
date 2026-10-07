@@ -1354,22 +1354,12 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
     let alpns = vec![iroh_gossip::ALPN.to_vec(), rafka_node_rpc::ALPN.to_vec()];
-    // A restart rebinds the address it last held so its peers' contacts stay good, and reclaims
-    // it host-wide first: the claim the previous incarnation held died with that process, and
-    // another admin's allocator takes a dead owner's claim over, so a bind without the claim
-    // races a birth that was just handed the same port. A claim a live process holds is theirs,
-    // and a fresh reserved port serves (peers learn it by gossip).
+    // A restart reuses identity and data dir and binds a fresh port (fabric-node-lifecycle.md),
+    // never the one it last held: its peers learn the new address from its digest.
     let mesh_addr = match &restart {
-        Some(_) => {
-            let mut allocator = crate::deployment::endpoint::EndpointAllocator::from_env();
-            if allocator.reclaim_transport(&name, mesh_addr) {
-                mesh_addr
-            } else {
-                let fresh = allocator.take_transport(&name).map_err(|e| format!("mesh address {mesh_addr} is claimed by a live process and no reserved port is free: {e}"))?;
-                tracing::info!(addr = %mesh_addr, fresh = %fresh, "the mesh address this admin last held is claimed by a live process; binding a reserved fresh port");
-                fresh
-            }
-        }
+        Some(_) => crate::deployment::endpoint::EndpointAllocator::from_env()
+            .take_transport(&name)
+            .map_err(|e| format!("no reserved port is free for this restart's mesh address: {e}"))?,
         None => mesh_addr,
     };
     // A launched admin holds its handed addresses as itself before binding them: the admin

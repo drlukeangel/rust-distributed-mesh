@@ -4,7 +4,7 @@
 //! invokes the broker through it (`--via path:mesh1.gateway.1`), so the gateway's one
 //! `NodeRpcClient` holds the pooled connection to the broker's birth.
 //! 1. By `ExactNode` and by `CurrentPath`, the gateway reaches the broker: it served, nobody else.
-//! 2. The broker restarts (same NodeId, new incarnation, same transport address).
+//! 2. The broker restarts (same NodeId, new incarnation, fresh ports).
 //! 3. The next call through the gateway reaches the new birth: the gateway evicted the old
 //!    incarnation's connection (`rdm.node_rpc.connection.evict.via-incarnation-superseded`,
 //!    naming the old incarnation) and dialed the new one; the value written before the restart is
@@ -54,14 +54,14 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(by_path["reply"]["executing_node"], broker_id, "{by_path}");
     assert_eq!(by_path["reply"]["result"], json!({"found": true, "value": "before-restart"}));
 
-    // 2. The broker restarts: same NodeId, new incarnation, same address.
+    // 2. The broker restarts: same NodeId, new incarnation, fresh ports.
     let (status, restart) = estate.post("/api/nodes/mesh1.broker.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{restart}");
     estate.await_build(restart["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     let reborn = estate.settled(&want, Duration::from_secs(30)).await.into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
     assert_ne!(s(&reborn["incarnation_id"]), old_birth, "a restart is a new birth: {reborn}");
-    assert_eq!(s(&reborn["transport_addr"]), addr, "a restart keeps the address: {reborn}");
+    assert_ne!(s(&reborn["transport_addr"]), addr, "a restart binds a fresh port: {reborn}");
 
     // 3. Through the gateway again: the new birth serves, and the value survived in its data dir.
     let after = estate.probe(&["get", "--target", &exact, "--via", via, "--key", "f1"]);
