@@ -56,8 +56,9 @@ pub fn core_ledger() -> Vec<LedgerEntry> {
         state: TagState::Live,
     };
     vec![
+        LedgerEntry { tag: 0x01, family: "ping".into(), owner: TagOwner::Core, state: TagState::Live },
         rafka(0x10, "legacy-control"),
-        LedgerEntry { tag: 0x11, family: "echo".into(), owner: TagOwner::Core, state: TagState::Live },
+        LedgerEntry { tag: 0x11, family: "echo".into(), owner: TagOwner::Core, state: TagState::Retired },
         rafka(0x12, "data-frame"),
         rafka(0x13, "snapshot"),
         rafka(0x14, "control"),
@@ -157,6 +158,8 @@ pub enum SealError {
     /// A ledger row breaks the testkit range: a testkit family outside
     /// [`TESTKIT_TAGS`], or a core/product family inside it.
     TestkitRange { tag: u8, family: String, owner: TagOwner },
+    /// Op `0` is reserved as invalid: a zeroed fence is never served.
+    ReservedZero { name: String },
 }
 
 impl fmt::Display for SealError {
@@ -178,6 +181,7 @@ impl fmt::Display for SealError {
                 TESTKIT_TAGS.start(),
                 TESTKIT_TAGS.end()
             ),
+            Self::ReservedZero { name } => write!(f, "op 0 ({name}) is reserved as invalid: a zeroed fence is never served"),
         }
     }
 }
@@ -211,6 +215,9 @@ impl CatalogBuilder {
         let mut errors = Vec::new();
         let mut ledger: BTreeMap<u8, &LedgerEntry> = BTreeMap::new();
         for row in &self.ledger {
+            if row.tag == 0 {
+                errors.push(SealError::ReservedZero { name: row.family.clone() });
+            }
             if ledger.insert(row.tag, row).is_some() {
                 errors.push(SealError::DuplicateLedgerRow { tag: row.tag });
             }
@@ -221,6 +228,10 @@ impl CatalogBuilder {
         let mut served: BTreeMap<u8, CatalogEntry> = BTreeMap::new();
         for e in self.entries {
             let named = |e: &CatalogEntry| (e.tag, e.name.clone());
+            if e.tag == 0 {
+                errors.push(SealError::ReservedZero { name: e.name.clone() });
+                continue;
+            }
             if let Some(first) = served.get(&e.tag) {
                 errors.push(SealError::DuplicateTag { tag: e.tag, first: first.name.clone(), second: e.name.clone() });
                 continue;
@@ -287,18 +298,19 @@ impl SealedCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::echo::Echo;
+    use crate::ping::Ping;
     use crate::framing::{parse_request_head, RequestHead};
 
     fn echo() -> CatalogEntry {
-        CatalogEntry::canonical::<Echo>(TagOwner::Core, Shape::Unary)
+        CatalogEntry::canonical::<Ping>(TagOwner::Core, Shape::Unary)
     }
 
     #[test]
     fn core_echo_seals_and_serves_only_what_it_registered() {
         let c = CatalogBuilder::new().serve(echo()).seal().unwrap();
-        assert_eq!(c.lookup(0x11).unwrap().name, "echo");
-        assert_eq!(c.request_ceiling(0x11), Some(64 * 1024));
+        assert_eq!(c.lookup(0x01).unwrap().name, "ping");
+        assert_eq!(c.request_ceiling(0x01), Some(64 * 1024));
+        assert_eq!(c.lookup(0x11), None, "0x11 (echo) is retired");
         for tag in [0x10u8, 0x12, 0x17, 0x19, 0x42] {
             assert_eq!(c.lookup(tag), None, "ledger-reserved or free, an unregistered tag is unserved: {tag:#x}");
         }
@@ -307,7 +319,7 @@ mod tests {
     #[test]
     fn a_duplicate_tag_refuses_the_seal() {
         let err = CatalogBuilder::new().serve(echo()).serve(echo()).seal().unwrap_err();
-        assert_eq!(err, vec![SealError::DuplicateTag { tag: 0x11, first: "echo".into(), second: "echo".into() }]);
+        assert_eq!(err, vec![SealError::DuplicateTag { tag: 0x01, first: "ping".into(), second: "ping".into() }]);
     }
 
     #[test]
@@ -323,7 +335,7 @@ mod tests {
     fn an_unledgered_tag_or_a_wrong_owner_refuses_the_seal() {
         let err = CatalogBuilder::new()
             .serve(CatalogEntry::transitional(0x42, "mystery", "rafka", "u9", 1024))
-            .serve(CatalogEntry::transitional(0x11, "echo-legacy", "rafka", "u1", 1024))
+            .serve(CatalogEntry::transitional(0x01, "ping-legacy", "rafka", "u1", 1024))
             .seal()
             .unwrap_err();
         assert_eq!(
@@ -331,8 +343,8 @@ mod tests {
             vec![
                 SealError::UnledgeredTag { tag: 0x42, name: "mystery".into() },
                 SealError::OwnerMismatch {
-                    tag: 0x11,
-                    name: "echo-legacy".into(),
+                    tag: 0x01,
+                    name: "ping-legacy".into(),
                     ledger: TagOwner::Core,
                     entry: TagOwner::Product("rafka".into())
                 },
@@ -368,7 +380,7 @@ mod tests {
 
     #[test]
     fn structural_rules_are_named() {
-        let mut core_t = CatalogEntry::transitional(0x11, "echo", "rafka", "x", 10);
+        let mut core_t = CatalogEntry::transitional(0x01, "ping", "rafka", "x", 10);
         core_t.owner = TagOwner::Core;
         let mut stream = echo();
         stream.shape = Shape::ServerStreaming;
@@ -378,11 +390,11 @@ mod tests {
         zero.owner = TagOwner::Product("rafka".into());
         zero.max_request_frame_bytes = 0;
         let e1 = CatalogBuilder::new().serve(core_t).seal().unwrap_err();
-        assert!(e1.contains(&SealError::CoreTransitional { tag: 0x11, name: "echo".into() }), "{e1:?}");
+        assert!(e1.contains(&SealError::CoreTransitional { tag: 0x01, name: "ping".into() }), "{e1:?}");
         let e2 = CatalogBuilder::new().serve(stream).seal().unwrap_err();
-        assert!(e2.contains(&SealError::ForwardableStream { tag: 0x11, name: "echo".into() }), "{e2:?}");
+        assert!(e2.contains(&SealError::ForwardableStream { tag: 0x01, name: "ping".into() }), "{e2:?}");
         let e3 = CatalogBuilder::new().serve(zero).seal().unwrap_err();
-        assert!(e3.contains(&SealError::ZeroCeiling { tag: 0x13, name: "echo".into() }), "{e3:?}");
+        assert!(e3.contains(&SealError::ZeroCeiling { tag: 0x13, name: "ping".into() }), "{e3:?}");
         let e4 = CatalogBuilder::new()
             .ledger([LedgerEntry { tag: 0x11, family: "dup".into(), owner: TagOwner::Core, state: TagState::Live }])
             .seal()
@@ -391,13 +403,25 @@ mod tests {
     }
 
     #[test]
+    fn op_zero_is_reserved_and_never_sealed() {
+        let e = CatalogBuilder::new()
+            .ledger([LedgerEntry { tag: 0, family: "zeroed".into(), owner: TagOwner::Product("rdm".into()), state: TagState::Live }])
+            .serve(CatalogEntry::transitional(0, "zeroed", "rdm", "x", 16))
+            .seal()
+            .unwrap_err();
+        assert!(e.contains(&SealError::ReservedZero { name: "zeroed".into() }), "{e:?}");
+    }
+
+    #[test]
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.tag).collect();
-        assert_eq!(tags, vec![0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x70, 0x71, 0x72]);
+        assert_eq!(tags, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x70, 0x71, 0x72]);
+        assert_eq!(l.iter().find(|r| r.tag == 0x11).map(|r| r.state), Some(TagState::Retired), "echo is retired forever; ping took op 1");
+        assert!(l.iter().all(|r| r.tag != 0), "op 0 is reserved as invalid");
         assert_eq!(l.iter().find(|r| r.tag == 0x1B).map(|r| r.owner.clone()), Some(TagOwner::Product("rdm".into())), "status is RDM's control family, not core");
-        let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core).map(|r| r.tag).collect();
-        assert_eq!(core, vec![0x11, 0x1A], "the core tags are exactly Echo and Forward");
+        let core: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Core && r.state == TagState::Live).map(|r| r.tag).collect();
+        assert_eq!(core, vec![0x01, 0x1A], "the live core ops are exactly ping and Forward");
         let testkit: Vec<u8> = l.iter().filter(|r| r.owner == TagOwner::Testkit).map(|r| r.tag).collect();
         assert_eq!(testkit, vec![0x70, 0x71, 0x72], "the testkit tags are the proof store, the resolve probe and the declare probe");
     }

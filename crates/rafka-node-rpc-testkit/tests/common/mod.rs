@@ -27,7 +27,7 @@ use rafka_node_admin_core::deployment::pipeline::{
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentStatus, FabricPolicy, TerminationMode};
 use rafka_node_admin_core::model::{Node, NodeStatus, PathName};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -88,9 +88,9 @@ impl TopologySink for Published {
 }
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = an Echo answered; drained =
+/// membership; ready = an Ping answered; drained =
 /// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
-/// admission closed = no Echo runs any more.
+/// admission closed = no Ping runs any more.
 pub struct LiveMesh {
     pub membership: Membership,
     pub client: NodeRpcClient,
@@ -110,15 +110,15 @@ impl LiveMesh {
         Ok(NodeTarget::ExactNode(node.node_id.clone()))
     }
 
-    /// One Echo. On loopback a live endpoint answers in milliseconds; the
+    /// One Ping. On loopback a live endpoint answers in milliseconds; the
     /// budget bounds a dial to an endpoint that is gone.
-    async fn echo(&self, target: &NodeTarget) -> RpcOutcome<EchoReply> {
+    async fn echo(&self, target: &NodeTarget) -> RpcOutcome<PingReply> {
         let opts = CallOptions {
             budget: rafka_node_rpc::Budget::Overall(Duration::from_millis(500)),
             ..CallOptions::default()
         };
-        let req = EchoRequest::Echo { payload: b"ready?".to_vec() };
-        self.client.call::<Echo>(target, &req, &opts).await.0
+        let req = PingRequest::Ping { payload: b"ready?".to_vec() };
+        self.client.call::<Ping>(target, &req, &opts).await.0
     }
 }
 
@@ -136,7 +136,7 @@ impl NodeObserver for LiveMesh {
         let target = self.echo_target(node)?;
         {
             match self.echo(&target).await {
-                RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {}
+                RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. }) => {}
                 other => return Err(format!("{} answered {}", node.name, other.name())),
             }
         }
@@ -164,7 +164,7 @@ impl NodeObserver for LiveMesh {
         let target = self.echo_target(node)?;
         {
             match self.echo(&target).await {
-                RpcOutcome::Reply(r) if matches!(r.value(), EchoReply::Echoed { .. }) => {
+                RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. }) => {
                     return Err(format!("{} still runs new calls", node.name))
                 }
                 // A typed Draining (the handler never ran), or nothing admits the call.

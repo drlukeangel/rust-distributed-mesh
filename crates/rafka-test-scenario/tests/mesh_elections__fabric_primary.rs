@@ -144,7 +144,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let (status, a) = estate.delete(&format!("/api/nodes/{removed}")).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    assert!(!estate.nodes().await.iter().any(|n| n["name"] == removed.as_str() && n["status"] != "dead"), "the node was retired");
+    assert!(!estate.nodes().await.iter().any(|n| n["name"] == removed.as_str() && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))), "the node was retired");
 
     // And the whole fabric stops from the new primary.
     estate.stop().await;
@@ -189,7 +189,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     let pid = estate.pid_of("mesh1.rpc.2").await;
     assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
     wait_for("the frozen member is dead in the view", Duration::from_secs(30), || async {
-        (estate.node_opt("mesh1.rpc.2").await?["status"] == "dead").then_some(())
+        (estate.node_opt("mesh1.rpc.2").await?["status"].as_str().is_some_and(|s| s == "dead" || s == "pending-reconnect")).then_some(())
     })
     .await;
 
@@ -292,7 +292,7 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
         let v = estate.nodes_at(&survivor_base).await;
         let fp = expected_fabric_primary(&v);
         let fp_id = fp.as_deref().and_then(|name| v.iter().find(|n| n["name"] == name)).map(|n| s(&n["node_id"]));
-        let killed_gone = !v.iter().any(|n| s(&n["node_id"]) == winner_id && n["status"] != "dead");
+        let killed_gone = !v.iter().any(|n| s(&n["node_id"]) == winner_id && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")));
         (killed_gone && fp_id.is_some() && fp_id.as_deref() != Some(winner_id.as_str()) && seats_as_expected(&v).is_ok()).then_some(v)
     })
     .await;

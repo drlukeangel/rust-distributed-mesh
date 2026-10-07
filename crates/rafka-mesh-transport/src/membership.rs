@@ -30,10 +30,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a member stays heard without a fresh word.
-pub const SILENT_AFTER: Duration = Duration::from_secs(3);
-/// The backbone publication cadence.
-pub const PUBLISH_EVERY: Duration = Duration::from_millis(1000);
+fn env_ms(key: &str, default_ms: u64) -> Duration {
+    Duration::from_millis(std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default_ms))
+}
+
+/// The staleness floor, `RAFKA_STALENESS_MS` (default 30 s): how long a member stays heard without
+/// a fresh word, local receipt age (fabric-node-lifecycle.md §7.3, i77 PRD row 18). Past it a
+/// member is `PendingReconnect`: soft and reversible, never death.
+pub fn staleness_floor() -> Duration {
+    static FLOOR: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *FLOOR.get_or_init(|| env_ms("RAFKA_STALENESS_MS", 30_000))
+}
+
+/// The mesh channel's gossip interval, `RAFKA_GOSSIP_INTERVAL_MS` (default 2 s; never slower,
+/// gossip.md §3.2): how often a node publishes its digest. Each gossip topic has its own interval.
+pub fn gossip_interval() -> Duration {
+    static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| env_ms("RAFKA_GOSSIP_INTERVAL_MS", 2_000))
+}
+
+/// The backbone topic's gossip interval, `RAFKA_BACKBONE_INTERVAL_MS` (default 2 s,
+/// fabric-node-lifecycle.md:355): how often a mesh's primary publishes its mesh on the backbone.
+pub fn backbone_gossip_interval() -> Duration {
+    static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *EVERY.get_or_init(|| env_ms("RAFKA_BACKBONE_INTERVAL_MS", 2_000))
+}
 /// The largest encoded frame: iroh-gossip's default maximum message is 4096
 /// bytes; the rest is its own framing.
 const MAX_FRAME: usize = 3800;
@@ -178,7 +199,7 @@ pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::Endpoint
 ///
 /// Membership through iroh-gossip's own API (`gossip.md` §6): a peer that
 /// leaves the live list it is asked to join and returns is joined again, and
-/// a channel with no neighbour for [`SILENT_AFTER`] is handed every peer it
+/// a channel with no neighbour for one staleness floor is handed every peer it
 /// knows again, once per window while that holds. A node whose neighbours all
 /// dropped (a partition longer than the connections' idle timeout) is
 /// otherwise never dialed again. Nothing is sent.
@@ -295,13 +316,13 @@ impl Channel {
         tokio::spawn(async move {
             let mut alone_since: Option<Instant> = None;
             loop {
-                tokio::time::sleep(PUBLISH_EVERY).await;
+                tokio::time::sleep(backbone_gossip_interval()).await;
                 if !neighbors.lock().unwrap().is_empty() {
                     alone_since = None;
                     continue;
                 }
                 let since = *alone_since.get_or_insert_with(Instant::now);
-                if since.elapsed() < SILENT_AFTER {
+                if since.elapsed() < staleness_floor() {
                     continue;
                 }
                 let peers: Vec<iroh::EndpointId> = me.peers.lock().unwrap().iter().copied().collect();
@@ -353,12 +374,18 @@ fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Option<String
 /// learned each mesh from.
 #[derive(Clone, Default)]
 struct View {
+    /// This node's own mesh: its members are heard directly on the mesh channel.
+    mesh: String,
     book: DigestBook,
     fabric_status: Arc<Mutex<Option<(FabricStatus, Instant)>>>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
 }
 
 impl View {
+    fn new(mesh: &str) -> Self {
+        Self { mesh: mesh.to_string(), ..Self::default() }
+    }
+
     /// Hold what `f` carries; the digests it carries (for their addresses).
     fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         match f {
@@ -378,7 +405,11 @@ impl View {
                 }
                 let mine: Vec<MeshDigest> = digests.iter().filter(|d| &d.fabric_id == fabric).cloned().collect();
                 for d in &mine {
-                    if self.book.record_forwarded(d.clone()) {
+                    // A member of this node's own mesh is heard directly on its mesh channel: an
+                    // aggregate copy is never "heard only through forwarded topology", so it earns
+                    // no forwarded grace (gossip.md §3.2).
+                    let taken = if d.node.name.mesh == self.mesh { self.book.record(d.clone()) } else { self.book.record_forwarded(d.clone()) };
+                    if taken {
                         self.note(d, via);
                     }
                 }
@@ -418,7 +449,7 @@ pub struct Membership {
 impl Membership {
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let view = View::default();
+        let view = View::new(mesh);
         let lookup_slot: Arc<Mutex<Option<MemoryLookup>>> = Arc::default();
         let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
@@ -446,7 +477,7 @@ impl Membership {
             let mut held: BTreeSet<String> = BTreeSet::new();
             let mut heard_others = false;
             loop {
-                let current = book.current(SILENT_AFTER);
+                let current = book.current(book.staleness_floor());
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
                 heard_others |= others > 0;
                 let off = heard_others && others == 0;
@@ -500,12 +531,12 @@ impl Membership {
 
     /// How many meshes this node holds a live member of.
     pub fn meshes_held(&self) -> usize {
-        self.book.current(SILENT_AFTER).into_iter().map(|d| d.node.name.mesh).collect::<BTreeSet<_>>().len()
+        self.book.current(self.book.staleness_floor()).into_iter().map(|d| d.node.name.mesh).collect::<BTreeSet<_>>().len()
     }
 
     /// The fabric status this node last heard, while fresh.
     pub fn fabric_status(&self) -> Option<FabricStatus> {
-        self.view.fabric_status.lock().unwrap().as_ref().filter(|(_, at)| at.elapsed() <= SILENT_AFTER * 2).map(|(s, _)| s.clone())
+        self.view.fabric_status.lock().unwrap().as_ref().filter(|(_, at)| at.elapsed() <= self.book.staleness_floor() * 2).map(|(s, _)| s.clone())
     }
 
     /// Broadcast this member's digest on its mesh channel (and record it).
@@ -705,23 +736,30 @@ impl Backbone {
     }
 }
 
-/// How much longer a member heard only through its mesh primary's forwarded
-/// aggregate stays heard: one primary succession. The successor hears the
-/// loss after `SILENT_AFTER` and publishes on its next round.
-pub const SUCCESSION: Duration = Duration::from_millis(SILENT_AFTER.as_millis() as u64 + PUBLISH_EVERY.as_millis() as u64);
 
 /// Whether a node's view may authorize anything. Cut off: it heard other
 /// members and now hears none. Healed: it hears one again, but the rest of
 /// its view still holds every member it lost as silent until each publishes
-/// again, which every live member does within [`SILENT_AFTER`]. A view
-/// authorizes nothing while cut off, nor for `SILENT_AFTER` after it healed.
-#[derive(Debug, Default)]
+/// again, which every live member does within one staleness floor. A view
+/// authorizes nothing while cut off, nor for one staleness floor after it healed.
+#[derive(Debug)]
 pub struct CutOff {
     off: bool,
     healed_at: Option<Instant>,
+    staleness_floor: Duration,
+}
+
+impl Default for CutOff {
+    fn default() -> Self {
+        Self::with_floor(staleness_floor())
+    }
 }
 
 impl CutOff {
+    pub fn with_floor(staleness_floor: Duration) -> Self {
+        Self { off: false, healed_at: None, staleness_floor }
+    }
+
     /// Record whether the node is cut off at `now`; the change, if any
     /// (`"start"` / `"stop"`).
     pub fn observe(&mut self, off: bool, now: Instant) -> Option<&'static str> {
@@ -741,7 +779,7 @@ impl CutOff {
 
     /// May the view authorize anything at `now`?
     pub fn authorizes(&self, now: Instant) -> bool {
-        !self.off && self.healed_at.is_none_or(|t| now.saturating_duration_since(t) >= SILENT_AFTER)
+        !self.off && self.healed_at.is_none_or(|t| now.saturating_duration_since(t) >= self.staleness_floor)
     }
 }
 
@@ -760,6 +798,10 @@ pub struct DigestBook {
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
     retention: Duration,
+    /// The staleness floor.
+    staleness_floor: Duration,
+    /// The backbone topic's gossip interval.
+    backbone_gossip_interval: Duration,
 }
 
 impl Default for DigestBook {
@@ -780,13 +822,14 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
     .in_scope(|| tracing::info!("a digest of a departed node: refused, the departure stands"));
 }
 
-/// How long `d` has been silent: since it was taken, or, for a forwarded
-/// copy, since one primary succession after that.
-fn silence(at: &Instant, forwarded: bool) -> Duration {
+/// How long a member has gone unheard at `now`, measured against the staleness floor: a forwarded
+/// copy is measured against the forwarded staleness floor, so the difference is taken off.
+fn unheard(at: &Instant, forwarded: bool, extra: Duration, now: Instant) -> Duration {
+    let age = now.saturating_duration_since(*at);
     if forwarded {
-        at.elapsed().saturating_sub(SUCCESSION)
+        age.saturating_sub(extra)
     } else {
-        at.elapsed()
+        age
     }
 }
 
@@ -814,23 +857,50 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 
 impl DigestBook {
     pub fn with_retention(retention: Duration) -> Self {
+        Self::with_floor(retention, staleness_floor(), backbone_gossip_interval())
+    }
+
+    /// A book with this staleness floor and backbone gossip interval.
+    pub fn with_floor(retention: Duration, staleness_floor: Duration, backbone_gossip_interval: Duration) -> Self {
         Self {
             inner: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
             retention,
+            staleness_floor,
+            backbone_gossip_interval,
         }
     }
 
+    /// The staleness floor: a member unheard for longer is `PendingReconnect`.
+    pub fn staleness_floor(&self) -> Duration {
+        self.staleness_floor
+    }
+
+    /// The staleness floor of a member heard only through forwarded topology: the staleness floor,
+    /// plus one backbone gossip interval, plus the time its mesh's next primary takes to forward it
+    /// (the staleness floor and one backbone gossip interval), gossip.md §3.2.
+    pub fn forwarded_staleness_floor(&self) -> Duration {
+        self.staleness_floor + self.backbone_gossip_interval + self.staleness_floor + self.backbone_gossip_interval
+    }
+
     fn expire_departed(&self) {
-        let now = Instant::now();
+        self.expire_departed_at(Instant::now())
+    }
+
+    fn expire_departed_at(&self, now: Instant) {
         self.departed.lock().unwrap().retain(|_, (_, at)| now.duration_since(*at) < self.retention);
     }
 
     /// Has this node been accepted as departed, within the retention?
     pub fn is_departed(&self, node_id: &str) -> bool {
-        self.expire_departed();
+        self.is_departed_at(node_id, Instant::now())
+    }
+
+    /// Is `node_id` held as departed at `now`?
+    pub fn is_departed_at(&self, node_id: &str, now: Instant) -> bool {
+        self.expire_departed_at(now);
         self.departed.lock().unwrap().contains_key(node_id)
     }
 
@@ -838,14 +908,19 @@ impl DigestBook {
     /// held departed for the retention, and every overlay of the operation
     /// clears. `false` when the departure was already held.
     pub fn depart(&self, op: LifecycleOp) -> bool {
-        self.expire_departed();
+        self.depart_at(op, Instant::now())
+    }
+
+    /// Accept the departure `op` at `now`.
+    pub fn depart_at(&self, op: LifecycleOp, now: Instant) -> bool {
+        self.expire_departed_at(now);
         let id = op.node_id.to_string();
         {
             let mut departed = self.departed.lock().unwrap();
             if departed.contains_key(&id) {
                 return false;
             }
-            departed.insert(id.clone(), (op.clone(), Instant::now()));
+            departed.insert(id.clone(), (op.clone(), now));
         }
         self.in_flight.lock().unwrap().remove(&op.key());
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
@@ -925,7 +1000,12 @@ impl DigestBook {
     /// stands for the retention, whatever incarnation the digest names.
     /// `false` when `d` was not taken.
     pub fn record(&self, d: MeshDigest) -> bool {
-        if self.is_departed(d.node.node_id.as_str()) {
+        self.record_at(d, Instant::now())
+    }
+
+    /// [`Self::record`], heard at `now`.
+    pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
+        if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
             return false;
         }
@@ -944,7 +1024,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d, Instant::now(), false));
+        inner.insert(d.node.node_id.to_string(), (d, now, false));
         drop(inner);
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
@@ -957,7 +1037,12 @@ impl DigestBook {
     /// member it hears: an equal copy of the held digest keeps the member
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
     pub fn record_forwarded(&self, d: MeshDigest) -> bool {
-        if self.is_departed(d.node.node_id.as_str()) {
+        self.record_forwarded_at(d, Instant::now())
+    }
+
+    /// [`Self::record_forwarded`], heard at `now`.
+    pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
+        if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
         }
@@ -976,7 +1061,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d, Instant::now(), true));
+        inner.insert(d.node.node_id.to_string(), (d, now, true));
         drop(inner);
         if birth_changed {
             self.births.send_modify(|v| *v += 1);
@@ -992,12 +1077,24 @@ impl DigestBook {
     }
 
     pub fn current(&self, fresh: Duration) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().filter(|(_, at, fw)| silence(at, *fw) <= fresh).map(|(d, _, _)| d.clone()).collect()
+        self.current_at(fresh, Instant::now())
+    }
+
+    /// Digests heard within `fresh` of `now`.
+    pub fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
+        let extra = self.forwarded_staleness_floor() - self.staleness_floor;
+        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, extra, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The member's latest digest and how long it has been silent.
     pub fn get(&self, node_id: &str) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), silence(at, *fw)))
+        self.get_at(node_id, Instant::now())
+    }
+
+    /// The member's latest digest and how long it has gone unheard at `now`.
+    pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
+        let extra = self.forwarded_staleness_floor() - self.staleness_floor;
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, extra, now)))
     }
 
     pub fn all(&self) -> Vec<MeshDigest> {
@@ -1065,14 +1162,15 @@ mod tests {
     fn a_late_digest_never_refreshes_a_member_or_reverts_its_status() {
         let book = DigestBook::default();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 200)));
-        std::thread::sleep(Duration::from_millis(30));
-        assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100)), "an older digest of the same birth");
-        assert!(!book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "a duplicate");
-        let (held, age) = book.get(id.as_str()).unwrap();
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(30);
+        assert!(book.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 200), t0));
+        assert!(!book.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 100), later), "an older digest of the same birth");
+        assert!(!book.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), later), "a duplicate");
+        let (held, age) = book.get_at(id.as_str(), later).unwrap();
         assert_eq!(held.status, MemberStatus::Leaving, "the status is not reverted");
-        assert!(age >= Duration::from_millis(30), "the member's silence is not reset");
-        assert!(book.record(digest(&id, &birth, None, MemberStatus::Leaving, 300)), "a newer digest is taken");
+        assert_eq!(age, Duration::from_millis(30), "the member's unheard time is not reset");
+        assert!(book.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 300), later), "a newer digest is taken");
     }
 
     fn op(id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
@@ -1110,14 +1208,15 @@ mod tests {
     fn a_departed_node_id_never_returns_under_any_incarnation_until_the_retention_passes() {
         let book = DigestBook::with_retention(Duration::from_millis(40));
         let (id, inc, next) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
-        book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100));
-        book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1"));
-        assert!(!book.record(digest(&id, &inc, None, MemberStatus::Leaving, 900)), "the departed birth's late digest");
-        assert!(!book.record_forwarded(digest(&id, &next, Some(inc.clone()), MemberStatus::ReadyForTraffic, 950)), "a later incarnation of the deleted NodeId");
-        assert!(book.is_departed(id.as_str()));
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(!book.is_departed(id.as_str()), "forgotten after the retention");
-        assert!(book.record(digest(&id, &next, Some(inc), MemberStatus::ReadyForTraffic, 960)), "after the retention the id is unknown, not departed");
+        let t0 = Instant::now();
+        book.record_at(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100), t0);
+        book.depart_at(op(&id, &inc, "retire-node:mesh1.rpc.1"), t0);
+        assert!(!book.record_at(digest(&id, &inc, None, MemberStatus::Leaving, 900), t0), "the departed birth's late digest");
+        assert!(!book.record_forwarded_at(digest(&id, &next, Some(inc.clone()), MemberStatus::ReadyForTraffic, 950), t0), "a later incarnation of the deleted NodeId");
+        assert!(book.is_departed_at(id.as_str(), t0));
+        let after = t0 + Duration::from_millis(60);
+        assert!(!book.is_departed_at(id.as_str(), after), "forgotten after the retention");
+        assert!(book.record_at(digest(&id, &next, Some(inc), MemberStatus::ReadyForTraffic, 960), after), "after the retention the id is unknown, not departed");
     }
 
     #[test]
@@ -1214,11 +1313,12 @@ mod tests {
     fn a_forwarded_copy_keeps_a_member_heard_and_never_reverts_it() {
         let book = DigestBook::default();
         let (id, birth) = (NodeId::mint(), IncarnationId::mint());
-        assert!(book.record(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)));
-        std::thread::sleep(Duration::from_millis(30));
-        assert!(book.record_forwarded(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200)), "an equal forwarded copy");
-        assert!(book.get(id.as_str()).unwrap().1 < Duration::from_millis(30), "keeps the member heard");
-        assert!(!book.record_forwarded(digest(&id, &birth, None, MemberStatus::Pending, 100)), "an older copy is not taken");
+        let t0 = Instant::now();
+        let later = t0 + Duration::from_millis(30);
+        assert!(book.record_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), t0));
+        assert!(book.record_forwarded_at(digest(&id, &birth, None, MemberStatus::ReadyForTraffic, 200), later), "an equal forwarded copy");
+        assert_eq!(book.get_at(id.as_str(), later).unwrap().1, Duration::ZERO, "keeps the member heard");
+        assert!(!book.record_forwarded_at(digest(&id, &birth, None, MemberStatus::Pending, 100), later), "an older copy is not taken");
     }
 
     #[test]
@@ -1245,22 +1345,68 @@ mod tests {
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, second);
     }
 
-    /// A peer mesh's members are heard through its primary's forwarded
-    /// aggregate. When that primary is lost its successor takes over only
-    /// after it hears the loss (`SILENT_AFTER`) and publishes on its next
-    /// round: a forwarded member stays heard through one succession, while a
-    /// member heard directly falls silent at `SILENT_AFTER`.
+    /// A peer mesh's members are heard through its primary's forwarded aggregate. When that primary
+    /// is lost its successor takes over only after it hears the loss (the floor) and publishes on
+    /// its next round: a forwarded member stays heard through that grace, while a member heard
+    /// directly falls silent at the floor (gossip.md §3.2). Small windows here; the defaults are
+    /// the documented ones.
     #[test]
     fn a_forwarded_member_stays_heard_through_one_primary_succession() {
         let book = DigestBook::default();
+        let (floor, backbone) = (staleness_floor(), backbone_gossip_interval());
+        assert_eq!(book.forwarded_staleness_floor(), floor + backbone + floor + backbone);
         let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
         assert!(book.record(digest(&direct, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
         assert!(book.record_forwarded(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100)));
-        std::thread::sleep(SILENT_AFTER + Duration::from_millis(500));
-        let heard: Vec<String> = book.current(SILENT_AFTER).into_iter().map(|d| d.node.node_id.to_string()).collect();
-        assert!(!heard.contains(&direct.to_string()), "a member heard directly is silent after SILENT_AFTER");
-        assert!(heard.contains(&forwarded.to_string()), "a forwarded member is still heard while its mesh's primary is succeeded");
-        assert!(book.get(forwarded.as_str()).unwrap().1 <= SILENT_AFTER, "its silence has not begun");
+        // Just past the staleness floor: the direct member is unheard, the forwarded one is not.
+        let now = Instant::now() + floor + Duration::from_millis(1);
+        let heard: Vec<String> = book.current_at(floor, now).into_iter().map(|d| d.node.node_id.to_string()).collect();
+        assert!(!heard.contains(&direct.to_string()), "a member heard directly is unheard past the staleness floor");
+        assert!(heard.contains(&forwarded.to_string()), "a forwarded member is still heard while its mesh's next primary takes over");
+        // Past the forwarded staleness floor it is unheard too.
+        let later = Instant::now() + book.forwarded_staleness_floor() + Duration::from_millis(1);
+        assert!(book.current_at(floor, later).is_empty());
+    }
+
+    /// The documented defaults: a 30 s floor, a 2 s heartbeat and a 2 s backbone cadence.
+    #[test]
+    fn the_windows_default_to_the_documented_values() {
+        if std::env::var("RAFKA_STALENESS_MS").is_err() {
+            assert_eq!(staleness_floor(), Duration::from_secs(30));
+        }
+        if std::env::var("RAFKA_GOSSIP_INTERVAL_MS").is_err() {
+            assert_eq!(gossip_interval(), Duration::from_secs(2));
+        }
+        if std::env::var("RAFKA_BACKBONE_INTERVAL_MS").is_err() {
+            assert_eq!(backbone_gossip_interval(), Duration::from_secs(2));
+        }
+    }
+
+    /// A member of this node's own mesh is heard directly on the mesh channel. An aggregate carrying
+    /// it as well (its mesh primary's backbone `Members`) is not "heard only through forwarded
+    /// topology" (gossip.md §3.2), so it never earns the forwarded grace: the node's own primary
+    /// falls silent to its successor at the floor, before a peer mesh's grace for the same members
+    /// runs out. Found by the seeded soak, seed 7 round 5: the successor held its own dead primary
+    /// as forwarded and noticed the loss together with the peer mesh.
+    #[test]
+    fn an_own_mesh_member_in_an_aggregate_is_still_heard_directly() {
+        let view = View::new("mesh1");
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let id = NodeId::mint();
+        let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
+        assert!(view.book.record(d.clone()));
+        let aggregate = Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, sent_unix_ms: 100, digests: vec![d], in_flight: vec![], departed: vec![] };
+        let _ = view.take(&aggregate, &fabric, "backbone");
+        let (_, at, forwarded) = view.book.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
+        assert!(!forwarded, "its own mesh's member is held as heard directly, never forwarded");
+        let _ = at;
+        // A peer mesh's member in the same kind of aggregate is forwarded.
+        let peer = NodeId::mint();
+        let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
+        p.node.name = "mesh2.rpc.1".parse().unwrap();
+        let aggregate = Frame::Members { mesh: "mesh2".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, sent_unix_ms: 100, digests: vec![p], in_flight: vec![], departed: vec![] };
+        let _ = view.take(&aggregate, &fabric, "backbone");
+        assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2, "a peer mesh's member is forwarded");
     }
 
     /// The first `Leaving` is lost; one of the later announcements in the
@@ -1318,15 +1464,16 @@ mod tests {
     #[test]
     fn a_healed_view_authorizes_nothing_until_every_member_could_be_heard_again() {
         let t0 = Instant::now();
-        let mut c = CutOff::default();
+        let floor = Duration::from_secs(3);
+        let mut c = CutOff::with_floor(floor);
         assert!(c.authorizes(t0), "never cut off");
         assert_eq!(c.observe(true, t0), Some("start"));
         assert!(!c.authorizes(t0), "cut off");
         let healed = t0 + Duration::from_secs(10);
         assert_eq!(c.observe(false, healed), Some("stop"));
         assert!(!c.authorizes(healed + Duration::from_millis(250)), "healed, but the view still holds lost members as silent");
-        assert!(!c.authorizes(healed + SILENT_AFTER - Duration::from_millis(1)));
-        assert!(c.authorizes(healed + SILENT_AFTER), "every live member has published again");
-        assert_eq!(c.observe(false, healed + SILENT_AFTER), None);
+        assert!(!c.authorizes(healed + floor - Duration::from_millis(1)));
+        assert!(c.authorizes(healed + floor), "every live member has published again");
+        assert_eq!(c.observe(false, healed + floor), None);
     }
 }

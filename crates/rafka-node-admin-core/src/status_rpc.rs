@@ -47,6 +47,9 @@ pub struct StatusAuthority {
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, String> + Send + Sync>,
+    /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
+    /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
+    pub republish: Republish,
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
@@ -93,6 +96,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
                         transport_addr: sender.transport_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0))),
                         listeners: sender.listeners.clone(),
                         declared: Some(format!("{state:?}")),
+                        status: None,
                     };
                     (StatusReply::Applied, Some(row))
                 }
@@ -165,6 +169,39 @@ fn apply_mesh(declared: &mut Declared, mesh_id: &str, state: MeshState) -> (Stat
 
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
+/// A node's re-publish of its presence, filled once it has joined its mesh.
+pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+
+/// What a node is now, in the declaration vocabulary.
+pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
+    use crate::model::NodeStatus as S;
+    match s {
+        S::Pending => NodeState::Pending,
+        S::ReadyForTraffic => NodeState::ReadyForTraffic,
+        S::Draining => NodeState::Draining,
+        S::Leaving | S::PendingReconnect | S::Dead => NodeState::Leaving,
+    }
+}
+
+/// The status kick (fabric-node-lifecycle.md §7.3, after the offline tickle's ping answered): a
+/// node-admin declares this node's own state to it. `Some(reply)` when `req` is that kick: the node
+/// re-published its presence and answers its status. `None` for every other request.
+async fn kick(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish) -> Option<StatusReply> {
+    let StatusRequest::DeclareNodeState { node_id, .. } = req else { return None };
+    if me.node_id.as_str() != node_id || !sender.is_some_and(|s| s.kind == NodeKind::NodeAdmin && s.name != me.name) {
+        return None;
+    }
+    if let Some(republish) = republish.get() {
+        republish().await;
+    }
+    let state = node_state_of(me.status);
+    tracing::info_span!("rafka.node_admin.status.update.via-kick", node = %me.name, sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), state = ?state)
+        .in_scope(|| tracing::info!("kicked by a node-admin: presence re-published, status answered"));
+    Some(StatusReply::Current { node_id: me.node_id.to_string(), incarnation: me.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(), state })
+}
+
+/// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
+/// declaration is `NotReady` by name.
 pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -> ServerBuilder {
     b.serve::<Status, _, _>(TagOwner::Product("rdm".into()), move |peer: PeerContext, req: StatusRequest| {
         let authority = authority.clone();
@@ -175,6 +212,11 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
             let view = auth.topology.read().await.clone();
             let peer_id = EndpointId(peer.endpoint_id.to_string());
             let sender = view.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer_id)).cloned();
+            if let Some(me) = view.nodes.iter().find(|n| n.name == auth.me) {
+                if let Some(reply) = kick(me, sender.as_ref(), &req, &auth.republish).await {
+                    return Ok(reply);
+                }
+            }
             let (reply, row) = {
                 let mut declared = auth.declared.lock().unwrap();
                 decide(&auth, &view, &mut declared, sender.as_ref(), &req)

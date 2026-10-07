@@ -116,7 +116,7 @@ mod tests {
             ForwardReply::InnerUnserved { tag: 7 },
             ForwardReply::InnerRejectedStale { target_node_id: "n1".into() },
             ForwardReply::InnerIndeterminate { reason: "r".into() },
-            ForwardReply::NotForwardable { tag: 0x11 },
+            ForwardReply::NotForwardable { tag: 0x01 },
             ForwardReply::PeerUnresolved { reason: "p".into() },
             ForwardReply::NotReady { reason: "n".into() },
             ForwardReply::Busy { reason: "b".into() },

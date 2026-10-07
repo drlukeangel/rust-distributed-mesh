@@ -80,6 +80,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         declared: Arc::new(Mutex::new(Declared::default())),
         nodes_storage: storage.clone(),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
+        republish: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());

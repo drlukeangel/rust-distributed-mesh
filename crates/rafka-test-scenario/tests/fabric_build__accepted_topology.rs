@@ -104,7 +104,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let held_pid = estate.pid_of("mesh1.rpc.3").await;
     let quiet_from = now_ns();
     signal(held_pid, "-STOP");
-    wait_for("mesh1.rpc.3 is silent in the view", Duration::from_secs(15), || async { (estate.node_opt("mesh1.rpc.3").await?["status"] == "dead").then_some(()) }).await;
+    wait_for("mesh1.rpc.3 is silent in the view", Duration::from_secs(15), || async { (estate.node_opt("mesh1.rpc.3").await?["status"].as_str().is_some_and(|s| s == "dead" || s == "pending-reconnect")).then_some(()) }).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     signal(held_pid, "-CONT");
     let quiet_until = now_ns();

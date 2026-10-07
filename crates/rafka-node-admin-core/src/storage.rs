@@ -98,6 +98,11 @@ pub struct NodeRecord {
     /// this admin is that authority. Never liveness: membership still says what is heard.
     #[serde(default)]
     pub declared: Option<String>,
+    /// The status the mesh primary holds for this birth while it is silent (fabric-node-lifecycle.md
+    /// §7.3): `PendingReconnect`, then `Dead` once its offline tickle found no path on two rounds a
+    /// staleness floor apart. `None` while the birth is heard. Never a reason to restart or delete it.
+    #[serde(default)]
+    pub status: Option<crate::model::NodeStatus>,
 }
 
 impl NodeRecord {
@@ -250,6 +255,7 @@ mod tests {
             transport_addr: "127.0.0.1:41001".parse().unwrap(),
             listeners: vec![],
             declared: None,
+            status: None,
         }
     }
 

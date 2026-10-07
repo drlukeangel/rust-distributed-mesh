@@ -1,5 +1,5 @@
 //! The lifecycle/status declaration protocol on tag `0x1B`, RDM's control family (the core
-//! families stay exactly Echo and Forward) (node-rpc.md §38; fabric-mesh-ops.md §3; i143.e6.s7).
+//! families stay exactly Ping and Forward) (node-rpc.md §38; fabric-mesh-ops.md §3; i143.e6.s7).
 //!
 //! A node or a primary declares a committed state upward to its authority and gets the typed
 //! result of applying it. Gossip stays the dissemination plane; this is certainty that one
@@ -128,6 +128,9 @@ pub enum StatusReply {
     Draining { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
+    /// The subject's own answer to a node-admin's declaration about it (the offline tickle's
+    /// status kick): it re-published its presence, and this is its status now.
+    Current { node_id: String, incarnation: String, state: NodeState },
 }
 
 impl StatusReply {
@@ -144,6 +147,7 @@ impl StatusReply {
             Self::Draining { .. } => "draining",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::Current { .. } => "current",
         }
     }
 }
@@ -156,14 +160,14 @@ impl NodeProtocol for Status {
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
     const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 11;
+    const REPLY_VARIANTS: u32 = 12;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
 
     fn classify_reply(reply: &StatusReply) -> ReplyKind {
         match reply {
-            StatusReply::Applied | StatusReply::AlreadyApplied => ReplyKind::Success,
+            StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::Current { .. } => ReplyKind::Success,
             StatusReply::RejectedStaleBirth { .. } | StatusReply::RejectedNotAuthority { .. } | StatusReply::RejectedInvalidTransition { .. } => {
                 ReplyKind::ProtocolRefusal
             }

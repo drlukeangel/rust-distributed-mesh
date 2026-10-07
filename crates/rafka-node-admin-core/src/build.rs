@@ -511,7 +511,7 @@ mod tests {
         let ops = plan(&BuildIntent::ReconcileMesh { desired: MeshDesired { name: "mesh1".into(), node_admin: 3, rpc_node: 5 } }, &mn()).unwrap();
         assert_eq!(ops.operations, vec![create("mesh1.admin.3"), create("mesh1.rpc.4"), create("mesh1.rpc.5")]);
         let mut t = mn();
-        t.nodes[3].status = NodeStatus::Dead; // rpc.2 lost
+        t.nodes[3].status = NodeStatus::PendingReconnect; // rpc.2 lost
         let ops = plan(&desired(&[("mesh1", 2, 3)]), &t).unwrap();
         assert_eq!(ops.operations, vec![create("mesh1.rpc.2")], "the lost slot is recreated, nothing else");
     }
@@ -620,7 +620,7 @@ mod tests {
             Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: "mesh1".into() })
         );
         let mut dead = mn();
-        dead.nodes[3].status = NodeStatus::Dead;
+        dead.nodes[3].status = NodeStatus::PendingReconnect;
         assert_eq!(plan(&BuildIntent::RemoveNode { node: p("mesh1.rpc.2"), incarnation: None }, &dead), Err(BuildReject::NodeNotLive { node: "mesh1.rpc.2".into() }));
     }
 

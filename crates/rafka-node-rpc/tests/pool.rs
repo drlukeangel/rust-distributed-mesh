@@ -14,14 +14,14 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallOptions, Decode, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::TagOwner;
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn echo(p: &[u8]) -> EchoRequest {
-    EchoRequest::Echo { payload: p.to_vec() }
+fn echo(p: &[u8]) -> PingRequest {
+    PingRequest::Ping { payload: p.to_vec() }
 }
 
 fn blackhole() -> (UdpSocket, SocketAddr) {
@@ -30,7 +30,7 @@ fn blackhole() -> (UdpSocket, SocketAddr) {
     (s, a)
 }
 
-/// A node serving Echo from one endpoint and one socket.
+/// A node serving Ping from one endpoint and one socket.
 /// `hang` never replies; `slow` replies after 1.5 s; anything else echoes at once.
 struct Node {
     _router: Router,
@@ -45,8 +45,8 @@ async fn node() -> Node {
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let server = ServerBuilder::new()
-        .serve::<Echo, _, _>(TagOwner::Core, |_peer, req: EchoRequest| async move {
-            let EchoRequest::Echo { payload, .. } = req;
+        .serve::<Ping, _, _>(TagOwner::Core, |_peer, req: PingRequest| async move {
+            let PingRequest::Ping { payload, .. } = req;
             match payload.as_slice() {
                 b"hang" => {
                     tokio::time::sleep(Duration::from_secs(3600)).await;
@@ -54,9 +54,9 @@ async fn node() -> Node {
                 }
                 b"slow" => {
                     tokio::time::sleep(Duration::from_millis(1500)).await;
-                    Ok(EchoReply::Echoed { payload })
+                    Ok(PingReply::Pong { payload })
                 }
-                _ => Ok(EchoReply::Echoed { payload }),
+                _ => Ok(PingReply::Pong { payload }),
             }
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
@@ -84,14 +84,14 @@ async fn rig(record: ResolvedNode) -> Rig {
 }
 
 impl Rig {
-    async fn ping(&self) -> (RpcOutcome<EchoReply>, rafka_node_rpc::CallEvidence) {
-        let (out, ev) = self.client.call::<Echo>(&self.target, &echo(b"ping"), &CallOptions::default()).await;
+    async fn ping(&self) -> (RpcOutcome<PingReply>, rafka_node_rpc::CallEvidence) {
+        let (out, ev) = self.client.call::<Ping>(&self.target, &echo(b"ping"), &CallOptions::default()).await;
         (out, ev.expect("a resolved call carries evidence"))
     }
 }
 
 /// The caller found the target stale: `RejectedStale`, never `NotSent`.
-fn superseded(out: &RpcOutcome<EchoReply>) -> bool {
+fn superseded(out: &RpcOutcome<PingReply>) -> bool {
     matches!(out, RpcOutcome::RejectedStale(_)) && out.proves_not_dispatched()
 }
 
@@ -111,7 +111,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
     let budget = CallOptions { budget: Budget::Overall(Duration::from_secs(3)), ..Default::default() };
     let started = Instant::now();
     let rr = &r;
-    let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
+    let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let rec = rr.record.clone();
         rr.resolver.insert(rec);
@@ -125,7 +125,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
     let budget = CallOptions { budget: Budget::Overall(Duration::from_secs(4)), ..Default::default() };
     let started = Instant::now();
     let rr = &r;
-    let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
+    let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let mut rec = rr.record.clone();
         rec.incarnation = IncarnationId::mint();
@@ -154,7 +154,7 @@ async fn late_superseded_dial_never_pools() {
     let fp = Arc::new(Failpoint::default());
     let opts = CallOptions { after_connect: Some(fp.clone()), ..Default::default() };
     let rr = &r;
-    let (out, ()) = tokio::join!(async { rr.client.call::<Echo>(&rr.target, &echo(b"x"), &opts).await.0 }, async {
+    let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &opts).await.0 }, async {
         // The handshake completed; before it is pooled, the birth moves.
         fp.reached.notified().await;
         let mut rec = rr.record.clone();
@@ -173,12 +173,12 @@ async fn repeated_timeout_evicts_poisoned_connection_without_marking_node_unreac
     let (_, first) = r.ping().await;
     // A long call already riding the pooled connection.
     let (slow, on0) = (echo(b"slow"), CallOptions::default());
-    let long = r.client.call::<Echo>(&r.target, &slow, &on0);
+    let long = r.client.call::<Ping>(&r.target, &slow, &on0);
     let strikes = async {
         let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) }, ..Default::default() };
         let mut seen = Vec::new();
         for _ in 0..2 {
-            let (out, ev) = r.client.call::<Echo>(&r.target, &echo(b"hang"), &opts).await;
+            let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
             assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{out:?}");
             seen.push(ev.unwrap());
         }
@@ -202,9 +202,9 @@ async fn refusal_reply_keeps_healthy_connection_pooled() {
     for _ in 0..3 {
         let (out, ev) = r
             .client
-            .invoke_raw::<EchoReply, _>(&r.target, 0x42, vec![1, 2, 3], 1024, &CallOptions::default(), |d| match d {
-                Decode::Committed(c, b) => c.reply::<Echo>(b),
-                Decode::Early(e, b) => e.reply::<Echo>(b),
+            .invoke_raw::<PingReply, _>(&r.target, 0x42, vec![1, 2, 3], 1024, &CallOptions::default(), |d| match d {
+                Decode::Committed(c, b) => c.reply::<Ping>(b),
+                Decode::Early(e, b) => e.reply::<Ping>(b),
             })
             .await;
         assert!(matches!(out, RpcOutcome::Unserved(_)), "{out:?}");

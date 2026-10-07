@@ -36,6 +36,13 @@ pub enum NodeStatus {
     ReadyForTraffic,
     Draining,
     Leaving,
+    /// Unheard past the staleness floor (`RAFKA_STALENESS_MS`, 30 s): this node's own pruner marks
+    /// the silent peer in place and keeps it; its next digest flips it back (fabric-node-lifecycle.md
+    /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
+    PendingReconnect,
+    /// True offline: half a floor after the mark the mesh primary's one QUIC connect found no path,
+    /// on two rounds at least one staleness floor apart. Observer inferred only; never sent, never a
+    /// reason to restart or delete the node.
     Dead,
 }
 
@@ -193,6 +200,6 @@ mod tests {
         assert!(NodeStatus::ReadyForTraffic.is_live());
         assert!(NodeStatus::Draining.is_live());
         assert!(!NodeStatus::Leaving.is_live());
-        assert!(!NodeStatus::Dead.is_live());
+        assert!(!NodeStatus::PendingReconnect.is_live());
     }
 }

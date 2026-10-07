@@ -311,7 +311,7 @@ mod tests {
         ];
         resolve(&mut nodes);
         assert_eq!(fabric(&nodes), ["mesh1.admin.2"]);
-        nodes[1].status = NodeStatus::Dead;
+        nodes[1].status = NodeStatus::PendingReconnect;
         resolve(&mut nodes);
         assert_eq!(primaries(&nodes), ["mesh1.admin.3", "mesh2.admin.1"]);
         assert_eq!(fabric(&nodes), ["mesh2.admin.1"], "the fabric candidates are the mesh primaries only");

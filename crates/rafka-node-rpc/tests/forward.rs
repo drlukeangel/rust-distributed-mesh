@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, TagOwner, TagState};
-use rafka_node_rpc_contract::echo::{Echo, EchoReply, EchoRequest};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -121,7 +121,7 @@ struct Rig {
     applied: Arc<tokio::sync::Notify>,
 }
 
-/// target serves Probe and Echo; the carrier serves forward and carries Probe (and Echo, which is
+/// target serves Probe and Ping; the carrier serves forward and carries Probe (and Ping, which is
 /// not forwardable and so is never carried); the origin knows only the carrier and the target.
 async fn rig() -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
@@ -142,9 +142,9 @@ async fn rig() -> Rig {
                 Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.endpoint_id.to_string() })
             }
         })
-        .serve::<Echo, _, _>(TagOwner::Core, |_p, req: EchoRequest| async move {
-            let EchoRequest::Echo { payload, .. } = req;
-            Ok(EchoReply::Echoed { payload })
+        .serve::<Ping, _, _>(TagOwner::Core, |_p, req: PingRequest| async move {
+            let PingRequest::Ping { payload, .. } = req;
+            Ok(PingReply::Pong { payload })
         })
         .seal(served(&target_birth))
         .unwrap();
@@ -162,7 +162,7 @@ async fn rig() -> Rig {
     let carrier_server = ServerBuilder::new()
         .ledger(test_ledger())
         .carry::<Probe>()
-        .carry::<Echo>()
+        .carry::<Ping>()
         .serve_forward(carrier_client)
         .seal(served(&carrier_birth))
         .unwrap();
@@ -202,18 +202,18 @@ async fn a_carried_call_reaches_the_target_once_and_the_target_sees_the_carrier(
 #[tokio::test]
 async fn a_non_forwardable_family_is_refused_by_type_at_the_origin_and_at_the_carrier() {
     let r = rig().await;
-    let echo = EchoRequest::Echo { payload: b"x".to_vec() };
-    let (out, _) = r.origin.call_via::<Echo>(&carrier_of(&r), &r.target.resolved.node_id, &echo, &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NotForwardable { tag: Echo::TAG }), "{out:?}");
+    let echo = PingRequest::Ping { payload: b"x".to_vec() };
+    let (out, _) = r.origin.call_via::<Ping>(&carrier_of(&r), &r.target.resolved.node_id, &echo, &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::NotForwardable { tag: Ping::TAG }), "{out:?}");
 
     // A forward built by hand for a non-forwardable tag: the carrier refuses it by type.
     let forward = ForwardRequest::Forward {
         target: r.target.resolved.node_id.as_str().to_string(),
-        inner_tag: Echo::TAG,
-        inner: Echo::encode_request(&echo).unwrap(),
+        inner_tag: Ping::TAG,
+        inner: Ping::encode_request(&echo).unwrap(),
     };
     let (out, _) = r.origin.call::<Forward>(&carrier_of(&r), &forward, &CallOptions::default()).await;
-    assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { tag: Echo::TAG }));
+    assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { tag: Ping::TAG }));
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
