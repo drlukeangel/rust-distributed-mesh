@@ -1155,7 +1155,7 @@ impl DeploymentPipeline<'_> {
                     break;
                 }
                 if Instant::now() >= until {
-                    let names: Vec<String> = held.iter().map(|h| format!("{} {}", h.0, h.1)).collect();
+                    let names: Vec<String> = held.iter().map(|h| format!("{} {} ({})", h.0, h.1, super::endpoint::port_holder(h.1, h.2))).collect();
                     return Err(format!("{name} exited, but the operating system still holds {} after {:?}", names.join(", "), started.elapsed()));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
