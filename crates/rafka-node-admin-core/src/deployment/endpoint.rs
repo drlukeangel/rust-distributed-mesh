@@ -462,6 +462,17 @@ fn reserve_on_host(addr: SocketAddr) -> bool {
     .unwrap_or(false)
 }
 
+/// A runtime holds the host-wide claims of the addresses it was handed, as itself, right before
+/// it binds them, wherever no live process holds them: the admin that reserved them may die
+/// (its claims die with its pid, and a dead owner's claim is any allocator's to take over) while
+/// this runtime lives on the ports. A claim the admin still holds stays the admin's: a restart
+/// keeps its addresses through the admin's allocator, and the admin outlives the runtime.
+pub fn hold_as_runtime(addrs: impl IntoIterator<Item = SocketAddr>) {
+    for a in addrs {
+        let _ = reserve_on_host(a);
+    }
+}
+
 /// Record a claim for an address this admin adopted (it already runs).
 fn claim_on_host(addr: SocketAddr) {
     let path = reservation_path(addr);
@@ -734,6 +745,33 @@ mod tests {
         assert_eq!(a.named_by_another(&p("mesh1.rpc.4"), &dead), Some((holder.clone(), theirs)));
         assert_eq!(a.named_by_another(&holder, &dead), None, "a node's own record is not another's");
         a.release(&p("mesh1.rpc.1"));
+    }
+
+    /// A runtime holds its handed addresses as itself: once it has, the death of the admin that
+    /// reserved them leaves no dead-owner claim for another allocator to take over.
+    #[test]
+    fn a_runtime_holding_its_addresses_keeps_them_out_of_another_allocators_hands() {
+        let handed = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30600);
+        let path = reservation_path(handed);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The reserving admin died: its claim names a pid that cannot be live.
+        std::fs::write(&path, "4194305").unwrap();
+        // The runtime it launched takes the claim as itself (a live process).
+        hold_as_runtime([handed]);
+        assert_eq!(claim_owner(&path), Some(std::process::id()));
+        // A claim a live process holds (the admin, across this runtime's restarts) stays theirs.
+        let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let admins = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30602);
+        std::fs::write(reservation_path(admins), live.id().to_string()).unwrap();
+        hold_as_runtime([admins]);
+        assert_eq!(claim_owner(&reservation_path(admins)), Some(live.id()), "the admin's live claim is not overwritten");
+        live.kill().ok();
+        live.wait().ok();
+        std::fs::remove_file(reservation_path(admins)).ok();
+        let mut other = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30600, 30601);
+        assert_eq!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30601, "the runtime's port is never handed out");
+        other.release(&p("mesh1.rpc.1"));
+        std::fs::remove_file(&path).ok();
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.

@@ -1291,6 +1291,11 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }
         None => mesh_addr,
     };
+    // A launched admin holds its handed addresses as itself before binding them: the admin
+    // that reserved them may die while this one lives on them.
+    if let Some(l) = &cfg.launch {
+        crate::deployment::endpoint::hold_as_runtime(std::iter::once(l.transport_addr).chain(l.listeners.iter().map(|(_, a)| *a)));
+    }
     let endpoint = match rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), transport.clone()).await {
         Ok(ep) => ep,
         // A process outside the allocator may hold the reclaimed address; then a fresh port serves.
@@ -1539,16 +1544,21 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         // taken, whichever process reserved it and however that reservation ended.
         allocator: Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
             let topology = control.topology.clone();
-            move || match topology.try_read() {
-                Ok(view) => view
-                    .nodes
+            move || {
+                // The view is read, never skipped: a writer holds it for microseconds.
+                let view = loop {
+                    match topology.try_read() {
+                        Ok(v) => break v,
+                        Err(_) => std::thread::yield_now(),
+                    }
+                };
+                view.nodes
                     .iter()
                     .flat_map(|n| {
                         let name = n.name.clone();
                         n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(move |a| (name.clone(), a))
                     })
-                    .collect(),
-                Err(_) => Vec::new(),
+                    .collect()
             }
         }))),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),

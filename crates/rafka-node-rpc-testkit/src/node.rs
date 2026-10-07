@@ -186,6 +186,9 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
+    // This runtime holds the claims of its handed addresses as itself before binding them: the
+    // admin that reserved them may die while this node lives on them.
+    rafka_node_admin_core::deployment::endpoint::hold_as_runtime(std::iter::once(launch.transport_addr).chain(launch.listeners.iter().map(|(_, a)| *a)));
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
     let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.transport_addr)
         .await
