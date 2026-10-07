@@ -4,9 +4,10 @@
 //! - every cohort's advertised primary is the one the canonical election computes from the
 //!   view's NodeIds and statuses (`seats_as_expected`), a role cohort like an rpc cohort;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
-//!   `rafka.mesh.election.resolve.via-recompute` span with `kind = broker`, and the view's broker
-//!   primary is that node — read the way a product reads it, by `is_primary` on node-admin's view
-//!   (`rafka-node-admin-client` `nodes()`), never computed product-side.
+//!   `rafka.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
+//!   primary is the election's answer on the same sample (drift rebirths the path as a new NodeId
+//!   that wins or not by it) — read the way a product reads it, by `is_primary` on node-admin's
+//!   view (`rafka-node-admin-client` `nodes()`), never computed product-side.
 
 use rafka_node_admin_client::NodeAdminClient;
 use rafka_test_scenario::elections::{advertised_primaries, seats_as_expected, Cohort};
@@ -82,12 +83,19 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     })
     .await;
 
-    // A product reads the seat from node-admin's view and never computes it.
+    // A product reads the seat from node-admin's view and never computes it. Drift recovery
+    // rebirths the killed path within seconds as a new NodeId that wins or not by it, so the seat
+    // is checked against the election's answer on the same sample, never against the announced
+    // successor alone: the one advertised broker primary is the lowest ready NodeId of that view,
+    // and the killed birth is no longer ready anywhere in it.
     let client = NodeAdminClient::new(estate.admin.clone());
-    let view = wait_for("the view's broker primary is the successor", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
+    let view = wait_for("the view's one broker primary is the election's answer and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
         let view = client.nodes().await.ok()?;
-        let primary = view.iter().find(|n| n.mesh == "mesh1" && n.kind == rafka_mesh_entity::NodeKind::Broker && n.is_primary)?;
-        (primary.name.to_string() == succ && !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == rafka_node_admin_client::NodeStatus::ReadyForTraffic)).then_some(view)
+        let ready: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == rafka_mesh_entity::NodeKind::Broker && n.status == rafka_node_admin_client::NodeStatus::ReadyForTraffic).collect();
+        let advertised: Vec<_> = ready.iter().filter(|n| n.is_primary).collect();
+        let lowest = ready.iter().min_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()))?;
+        let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == rafka_node_admin_client::NodeStatus::ReadyForTraffic);
+        (advertised.len() == 1 && advertised[0].node_id == lowest.node_id && killed_gone).then_some(view)
     })
     .await;
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
