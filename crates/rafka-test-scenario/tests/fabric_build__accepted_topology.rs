@@ -64,6 +64,9 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
 
     // 1. Day 0: the first Build, exact.
     let b0 = pointer(&estate).await;
+    // The fabric seat appears one gossip interval before the executor's next pass: wait for the
+    // Build itself, never for the seat that precedes it.
+    estate.await_build(&b0, Duration::from_secs(60)).await;
     let (_, day0) = estate.get(&format!("/api/builds?id={b0}")).await;
     assert_eq!(paths(&day0, "mesh1"), ["mesh1.admin.1"], "{day0}");
     assert_eq!(day0["state"], "complete", "{day0}");
@@ -104,7 +107,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let held_pid = estate.pid_of("mesh1.rpc.3").await;
     let quiet_from = now_ns();
     signal(held_pid, "-STOP");
-    wait_for("mesh1.rpc.3 is silent in the view", Duration::from_secs(15), || async { (estate.node_opt("mesh1.rpc.3").await?["status"].as_str().is_some_and(|s| s == "dead" || s == "pending-reconnect")).then_some(()) }).await;
+    wait_for("mesh1.rpc.3 is silent in the view", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(15), || async { (estate.node_opt("mesh1.rpc.3").await?["status"].as_str().is_some_and(|s| s == "dead" || s == "pending-reconnect")).then_some(()) }).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     signal(held_pid, "-CONT");
     let quiet_until = now_ns();

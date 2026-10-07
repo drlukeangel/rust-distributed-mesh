@@ -252,7 +252,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let mut build_id = s(&a["build_id"]);
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     estate.settled_shape(&SHAPE, Duration::from_secs(60)).await;
-    rafka_test_scenario::estate::wait_for("every live admin holds the same births", Duration::from_secs(60), || converged_everywhere(&estate)).await;
+    rafka_test_scenario::estate::wait_for("every live admin holds the same births", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(60), || converged_everywhere(&estate)).await;
 
     let ops = ["node-restart", "admin-restart", "runtime-kill", "replace", "mesh-primary-loss", "fabric-primary-loss"];
     let deadline = Instant::now() + Duration::from_secs(secs);

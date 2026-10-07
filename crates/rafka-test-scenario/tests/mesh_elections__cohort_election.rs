@@ -142,7 +142,7 @@ async fn successor(estate: &Estate, base: &str, before: &[Value], c: &Cohort, go
     .await;
     // Another admin may announce first: `base`'s own view holds the killed birth dead before
     // anything is read from it.
-    wait_for(&format!("{base} no longer hears {gone_id}"), Duration::from_secs(30), || async {
+    wait_for(&format!("{base} no longer hears {gone_id}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
         (!estate.nodes_at(base).await.iter().any(|n| n["node_id"] == gone_id && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))).then_some(())
     })
     .await;

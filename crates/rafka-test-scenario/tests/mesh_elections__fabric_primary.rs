@@ -98,7 +98,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     // Find control again through the advertised endpoints alone: ask each
     // advertised admin for the fabric, and take the primary it advertises
     // once that primary's own control API answers and agrees.
-    let control = wait_for("an advertised admin leads to a live fabric primary", Duration::from_secs(60), || {
+    let control = wait_for("an advertised admin leads to a live fabric primary", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), || {
         let advertised = advertised.clone();
         let old = old_primary.clone();
         async move {
@@ -188,7 +188,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     .await;
     let pid = estate.pid_of("mesh1.rpc.2").await;
     assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
-    wait_for("the frozen member is dead in the view", Duration::from_secs(30), || async {
+    wait_for("the frozen member is unheard in the view", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
         (estate.node_opt("mesh1.rpc.2").await?["status"].as_str().is_some_and(|s| s == "dead" || s == "pending-reconnect")).then_some(())
     })
     .await;
@@ -227,7 +227,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     })
     .await;
     kill(estate.pid_of("mesh1.rpc.2").await);
-    wait_for("a new birth restores two ready rpc nodes", Duration::from_secs(60), || async {
+    wait_for("a new birth restores two ready rpc nodes", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(60), || async {
         let nodes = estate.nodes().await;
         let ready: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").collect();
         (ready.len() == 2 && !ready.iter().any(|n| n["incarnation_id"] == gone["incarnation_id"])).then_some(())
@@ -288,7 +288,7 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
     // rebirth may even take the seat back by NodeId order. What moved is the seat away from the
     // killed NodeId.
     let winner_id = s(&winner_node["node_id"]);
-    let after = wait_for("the fabric seat moves off the killed winner's NodeId", Duration::from_secs(60), || async {
+    let after = wait_for("the fabric seat moves off the killed winner's NodeId", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), || async {
         let v = estate.nodes_at(&survivor_base).await;
         let fp = expected_fabric_primary(&v);
         let fp_id = fp.as_deref().and_then(|name| v.iter().find(|n| n["name"] == name)).map(|n| s(&n["node_id"]));

@@ -236,6 +236,7 @@ mod tests {
             (Status::draining("d".into()), ReplyKind::Draining),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
+            (StatusReply::Current { node_id: "n".into(), incarnation: "i".into(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {

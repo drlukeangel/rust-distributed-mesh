@@ -194,7 +194,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     estate.kill_node(&old_name).await;
     let dead: BTreeMap<String, u64> = [(old_name.clone(), now_ns())].into_iter().collect();
     // Tracked by NodeId: drift recovery may rebirth the killed path under a new NodeId.
-    let successor = wait_for("mesh2 elects a successor", Duration::from_secs(30), || async {
+    let successor = wait_for("mesh2 elects a successor", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
         let p = primary(&estate.nodes().await, "mesh2");
         (!s(&p["name"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["name"]))
     })
@@ -349,7 +349,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
     let before: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
     let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
-    wait_for(&format!("{lone_name} is cut off"), Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} is cut off"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
@@ -388,7 +388,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
             assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
         }
     }
-    wait_for(&format!("{lone_name} hears the fabric again"), Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} hears the fabric again"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
