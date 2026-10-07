@@ -19,7 +19,7 @@ use rafka_mesh_entity::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, Runtime
 use rafka_mesh_transport::membership::DigestBook;
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
-use rafka_node_admin_core::build_state::{BuildState, BuildStateAdapter, MemoryBuildStateAdapter};
+use rafka_node_admin_core::build_state::{BuildState, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner};
 use rafka_node_admin_core::fence::{fence, FenceOutcome, PathProbe};
@@ -165,7 +165,7 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
     let mut n = Node::allocated(path.parse().unwrap());
     n.node_id = NodeId::mint();
     n.incarnation_id = Some(IncarnationId::mint());
-    n.transport_id = Some(TransportId(iroh::SecretKey::generate().public().to_string()));
+    n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
     n.status = NodeStatus::ReadyForTraffic;
     let pid = world.add(path, n.node_id.as_str());
     book.record(MeshDigest {
@@ -173,11 +173,10 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
         node: MeshNode {
             node_id: n.node_id.clone(),
             name: n.name.clone(),
-            transport_id: n.transport_id.clone().unwrap(),
+            endpoint_id: n.endpoint_id.clone().unwrap(),
             transport_addr: "127.0.0.1:1".parse().unwrap(),
             incarnation: n.incarnation_id.clone().unwrap(),
             supersedes,
-            endpoints: Default::default(),
             runtime: Some(fact(pid)),
         },
         status: MemberStatus::ReadyForTraffic,
