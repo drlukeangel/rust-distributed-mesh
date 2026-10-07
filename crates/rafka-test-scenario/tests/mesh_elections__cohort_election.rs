@@ -189,6 +189,9 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
     let before = id_of(&nodes, &other_rpc[1]);
     accepted_build(&estate, estate.post(&format!("/api/nodes/{}/restart", other_rpc[1]), &json!({})).await).await;
+    // The Build completed on the executor; the asked admin's view holds the reborn node once its
+    // Ready has reached it (one gossip round): wait for the shape, as after the Build above.
+    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     let nodes = settle(&estate, &base1, "restart non-primary").await;
     assert_eq!(id_of(&nodes, &other_rpc[1]), before, "restart keeps the NodeId");
     steady(&estate, &base1, "restart non-primary", hold).await;
