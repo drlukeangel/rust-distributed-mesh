@@ -12,9 +12,9 @@ mod common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::FabricTopology;
-use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
+use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
-use rafka_node_admin_core::deployment::pipeline::{
+use rafka_node_admin_core::deployment::pipeline::{AdmissionClosure, DrainOutcome, 
     CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
 };
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
@@ -39,6 +39,9 @@ impl NodeObserver for DeparturesLost<'_> {
     }
     async fn ready(&self, node: &Node) -> Result<(), String> {
         self.live.ready(node).await
+    }
+    async fn drain(&self, node: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
+        self.live.drain(node).await
     }
     async fn drained(&self, _: &Node) -> bool {
         true
@@ -234,7 +237,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     .await;
     let retired = pipeline
         .retire(&RetireRequest {
-            build_id: build,
+            build_id: build.clone(),
             attempt: 1,
             node: b.node.clone(),
             handle: b.handle.clone(),
@@ -243,18 +246,20 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
             keep_endpoints: false,
         })
         .await;
-    let err = retired.expect_err("B still runs and admits work: A's exit does not close B");
-    assert_eq!(err.step, "CloseRpcAdmission", "{err}");
-    assert!(
-        matches!(process.inspect(&b.handle).await, DeploymentStatus::Running),
-        "B runs"
-    );
-
-    process
-        .terminate(&b.handle, TerminationMode::Immediate)
-        .await
-        .unwrap();
-    let _ = std::fs::remove_dir_all(&template.data_root);
+    // Under the lock the bounded drain never blocks an authorized retirement: B's drain was
+    // established (B is live and admits its node-admin) and drained to nothing in flight; its
+    // Leaving never came (departures lost), so CloseRpcAdmission records its deadline arm and the
+    // provider's ladder terminates B. A's exit counts for nothing: every proof is on B's own handle.
+    retired.unwrap_or_else(|e| panic!("retire B: {e}"));
+    assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
+    let steps = builds.read_build(&build).await.unwrap().steps;
+    let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
+    let drained: DrainOutcome = serde_json::from_value(output("MarkDraining")).unwrap();
+    assert!(matches!(drained, DrainOutcome::Established { .. }), "B admitted the typed drain: {drained:?}");
+    let waited: DrainOutcome = serde_json::from_value(output("WaitForDrain")).unwrap();
+    assert!(matches!(waited, DrainOutcome::Established { in_flight: 0 }), "B drained to nothing in flight: {waited:?}");
+    let closure: AdmissionClosure = serde_json::from_value(output("CloseRpcAdmission")).unwrap();
+    assert!(matches!(closure, AdmissionClosure::Deadline { .. }), "A's exit never closed B; the deadline did: {closure:?}");
 }
 
 /// CONTRACT (Luke 2026-10-05, a mesh retire's departure barrier): inside a whole-mesh retire, the

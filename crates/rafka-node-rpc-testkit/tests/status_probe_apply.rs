@@ -37,28 +37,7 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     let provider = prepared.provider.clone();
     let admin = common::admin_side(prepared.admin_ip, &fabric_id).await;
     let observer = &admin.observer;
-    // The admin side joins membership but publishes nothing; the node admits a downward
-    // operation only from a node-admin it holds in its own book, so the admin publishes its
-    // digest as a real node-admin does on joining.
-    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let admin_digest = rafka_mesh_entity::digest::MeshDigest {
-        fabric_id: fabric_id.clone(),
-        node: rafka_mesh_entity::digest::MeshNode {
-            node_id: rafka_mesh_entity::NodeId::mint(),
-            name: "mesh1.admin.1".parse().unwrap(),
-            endpoint_id: rafka_mesh_entity::EndpointId(admin.seed.0.clone()),
-            transport_addr: admin.seed.1,
-            incarnation: IncarnationId::mint(),
-            supersedes: None,
-            runtime: None,
-        },
-        status: rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic,
-        admin_api_base: None,
-        emitted_unix_ms: now_ms,
-        data_dir: None,
-        extra: Default::default(),
-    };
-    observer.membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    // The admin side publishes its digest on joining (`common::admin_side`), so the node holds it as a node-admin.
     let template = common::template(&fabric_id, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = common::publish_build(&builds, common::add_node()).await;

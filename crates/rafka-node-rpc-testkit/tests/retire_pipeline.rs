@@ -64,6 +64,11 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let want: Vec<(&str, &StepOutcome, &str)> =
         RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
     assert_eq!(got, want);
+    // MarkDraining is the typed Node RPC drain: its receipt carries what the call established.
+    let mark = view.steps.iter().find(|r| r.step == RetireStep::MarkDraining.name()).expect("MarkDraining receipted");
+    let drain: rafka_node_admin_core::deployment::pipeline::DrainOutcome =
+        serde_json::from_value(mark.output.clone().expect("the drain outcome is the step's output")).expect("a DrainOutcome");
+    assert!(matches!(drain, rafka_node_admin_core::deployment::pipeline::DrainOutcome::Established { .. }), "{drain:?}");
 
     // What each step did, from outside.
     let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();

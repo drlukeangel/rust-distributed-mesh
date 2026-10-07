@@ -482,6 +482,9 @@ pub fn authority_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
 /// after it starts refusing new work with a typed `Draining` (node-rpc §35).
 pub struct MembershipObserver {
     pub book: DigestBook,
+    /// The process's one Node RPC client (ruling X), over which the typed drain reaches the
+    /// exact birth; `None` only in a cell that observes without a transport.
+    pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
 }
 
 impl MembershipObserver {
@@ -510,6 +513,33 @@ impl NodeObserver for MembershipObserver {
             Some(d) => Err(format!("{} reports {:?}", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
+    }
+
+    async fn drain(&self, node: &Node) -> crate::deployment::pipeline::DrainOutcome {
+        use crate::deployment::pipeline::DrainOutcome;
+        use rafka_node_rpc_contract::outcome::RpcOutcome;
+        use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+        let Some(client) = self.client.as_ref() else {
+            return DrainOutcome::NotSent { reason: "this admin holds no Node RPC client".into() };
+        };
+        let Some(incarnation) = node.incarnation_id.clone() else {
+            return DrainOutcome::NotSent { reason: format!("{} has no known birth to drain", node.name) };
+        };
+        let req = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining };
+        let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+        let outcome = match &out {
+            RpcOutcome::Reply(r) => match r.value() {
+                StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
+                other => DrainOutcome::Refused { reply: other.name().to_string() },
+            },
+            RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
+            RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
+            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.tag()) },
+            RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
+        };
+        tracing::info_span!("rafka.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the typed drain was sent to the exact birth"));
+        outcome
     }
 
     async fn drained(&self, node: &Node) -> bool {
@@ -1490,7 +1520,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let runner = Arc::new(AdminRunner {
         provider: prepared.provider.clone(),
         allocator: Mutex::new(prepared.allocator),
-        observer: Arc::new(MembershipObserver { book: book.clone() }),
+        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
         records: records.clone(),
         builds: builds.clone(),
         template,

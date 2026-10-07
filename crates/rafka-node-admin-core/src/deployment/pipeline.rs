@@ -7,7 +7,9 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! retire: MarkDraining -> WaitForDrain -> PublishLeaving -> CloseRpcAdmission
+//! retire: MarkDraining (the typed Node RPC drain; its receipt carries the DrainOutcome)
+//!   -> WaitForDrain (bounded; a deadline is an arm, never a failure) -> PublishLeaving
+//!   -> CloseRpcAdmission (after an established drain)
 //!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (if permanent)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
@@ -337,7 +339,11 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
-    /// After the stop signal: has this birth finished its in-flight work
+    /// The typed drain: `ApplyNodeState(Draining)` to the exact birth over Node RPC (the
+    /// lifecycle op commands downward; fabric-mesh-ops.md §3). Answers what the call
+    /// established, never a guess: the work in flight, or by name why nothing was established.
+    async fn drain(&self, node: &Node) -> DrainOutcome;
+    /// After the drain: has this birth finished its in-flight work
     /// (it reports `Draining` with nothing in flight, or `Leaving`)?
     async fn drained(&self, node: &Node) -> bool;
     /// Does the node refuse new Node RPC work (a typed
@@ -419,6 +425,39 @@ fn now_unix_ms() -> u64 {
 /// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
 /// own journal holds the step that records it, the departure once the provider proved the
 /// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
+/// How a retiring birth's admission was found closed before termination: the
+/// CloseRpcAdmission step's receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "arm", rename_all = "kebab-case")]
+pub enum AdmissionClosure {
+    /// The birth itself refuses new work (its digest says Draining or Leaving).
+    Heard,
+    /// This deployment's own runtime has exited: it admits nothing.
+    ThisRuntimeExited,
+    /// The drain deadline passed with the closure unheard; the provider's terminal proof closes it.
+    Deadline { last_refusal: String },
+    /// No drain was established, so no closure was awaited.
+    DrainNotEstablished,
+}
+
+/// What the typed drain of a retiring birth established (the lock's RetireNode contract): the
+/// MarkDraining step's receipt carries it, so a termination that followed no established drain
+/// is visible in durable evidence and in the trace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "arm", rename_all = "kebab-case")]
+pub enum DrainOutcome {
+    /// The exact birth entered Draining; this much work was still in flight.
+    Established { in_flight: u64 },
+    /// The call never reached the birth (no route, dial refused, connection lost before the send).
+    NotSent { reason: String },
+    /// The call may have reached the birth; no reply came back.
+    Indeterminate { reason: String },
+    /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).
+    Refused { reply: String },
+    /// The drain was established and the lifecycle drain deadline passed before `Leaving`.
+    Deadline { last_in_flight: Option<u64> },
+}
+
 #[async_trait::async_trait]
 pub trait LifecycleEvents: Send + Sync {
     async fn deleting(&self, op: &LifecycleOp);
@@ -984,44 +1023,64 @@ impl DeploymentPipeline<'_> {
             None
         };
         node.status = NodeStatus::Draining;
-        self.step(&mut run, RetireStep::MarkDraining.name(), async {
-            self.sink.publish(node.clone());
-            self.provider.signal_stop(handle).await.map_err(|e| e.to_string())
-        })
-        .await?;
-        self.step(&mut run, RetireStep::WaitForDrain.name(), async {
-            let drained = poll(self.timeouts.drain, || async {
-                self.observer.drained(&node).await || matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. })
+        // MarkDraining is the typed Node RPC drain to the exact birth; the provider sends no
+        // signal here (it terminates and inspects, later). The outcome is the step's receipt.
+        let drain: DrainOutcome = self
+            .step(&mut run, RetireStep::MarkDraining.name(), async {
+                self.sink.publish(node.clone());
+                Ok(self.observer.drain(&node).await)
             })
-            .await;
-            if drained {
-                Ok(())
-            } else {
-                Err(format!("{name} still had work in flight after {:?}", self.timeouts.drain))
-            }
-        })
-        .await?;
+            .await?;
+        // WaitForDrain: an established drain waits for the birth's own Leaving (or its runtime's
+        // exit) up to the lifecycle drain deadline; the deadline is an arm, recorded, never a
+        // failure: an authorized retirement is not made immortal by a birth that will not finish
+        // (the lock's escape hatch). A drain that was not established waits for nothing.
+        let drain: DrainOutcome = self
+            .step(&mut run, RetireStep::WaitForDrain.name(), async {
+                let DrainOutcome::Established { .. } = &drain else { return Ok(drain.clone()) };
+                let drained = poll(self.timeouts.drain, || async {
+                    self.observer.drained(&node).await || matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. })
+                })
+                .await;
+                if drained {
+                    Ok(drain.clone())
+                } else {
+                    let last_in_flight = match self.observer.drain(&node).await {
+                        DrainOutcome::Established { in_flight } => Some(in_flight),
+                        _ => None,
+                    };
+                    Ok(DrainOutcome::Deadline { last_in_flight })
+                }
+            })
+            .await?;
+        let drain_established = matches!(drain, DrainOutcome::Established { .. });
         node.status = NodeStatus::Leaving;
         self.step(&mut run, RetireStep::PublishLeaving.name(), async {
             self.sink.publish(node.clone());
             Ok(())
         })
         .await?;
-        self.step(&mut run, RetireStep::CloseRpcAdmission.name(), async {
-            let until = Instant::now() + self.timeouts.drain;
-            loop {
-                match self.observer.admission_closed(&node).await {
-                    Ok(()) => return Ok(()),
-                    // This birth's own runtime has exited: it admits nothing,
-                    // whatever the fabric last heard from it. Only `handle`
-                    // (this deployment) counts, never another birth at the path.
-                    Err(_) if matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) => return Ok(()),
-                    Err(e) if Instant::now() >= until => return Err(e),
-                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        // CloseRpcAdmission: after an established drain, the birth's own closure (its typed
+        // refusal of new work, or this deployment's exit) is awaited up to the drain deadline;
+        // the deadline is an arm, recorded, and the provider's terminal proof below is then
+        // what closes admission. Only `handle` (this deployment) counts, never another birth
+        // at the path. A drain that was not established awaits nothing.
+        let _closure: AdmissionClosure = self
+            .step(&mut run, RetireStep::CloseRpcAdmission.name(), async {
+                if !drain_established {
+                    return Ok(AdmissionClosure::DrainNotEstablished);
                 }
-            }
-        })
-        .await?;
+                let until = Instant::now() + self.timeouts.drain;
+                loop {
+                    match self.observer.admission_closed(&node).await {
+                        Ok(()) => return Ok(AdmissionClosure::Heard),
+                        Err(_) if matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) => return Ok(AdmissionClosure::ThisRuntimeExited),
+                        Err(reason) if Instant::now() >= until => return Ok(AdmissionClosure::Deadline { last_refusal: reason }),
+                        Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+                    }
+                }
+            })
+            .await?;
         self.step(&mut run, RetireStep::TerminateRuntime.name(), async {
             self.provider
                 .terminate(handle, TerminationMode::Graceful { grace: self.timeouts.stop_grace })

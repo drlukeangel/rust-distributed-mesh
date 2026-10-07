@@ -143,6 +143,27 @@ impl NodeObserver for LiveMesh {
         Ok(())
     }
 
+    async fn drain(&self, node: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
+        use rafka_node_admin_core::deployment::pipeline::DrainOutcome;
+        use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+        let target = match self.echo_target(node) {
+            Ok(t) => t,
+            Err(reason) => return DrainOutcome::NotSent { reason },
+        };
+        let Some(incarnation) = node.incarnation_id.clone() else { return DrainOutcome::NotSent { reason: "no incarnation".into() } };
+        let req = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining };
+        match self.client.call::<Status>(&target, &req, &CallOptions::default()).await.0 {
+            RpcOutcome::Reply(r) => match r.value() {
+                StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
+                other => DrainOutcome::Refused { reply: other.name().to_string() },
+            },
+            RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
+            RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
+            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.tag()) },
+            RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
+        }
+    }
+
     async fn drained(&self, node: &Node) -> bool {
         use rafka_mesh_entity::MemberStatus;
         self.membership.book.get(node.node_id.as_str()).is_some_and(|(d, _)| {
@@ -208,6 +229,28 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     });
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_mesh_transport::entry::ENTRY_ALPN, entry).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
+    // A node admits a downward lifecycle operation (a probe, a drain) only from a node-admin it
+    // holds in its own membership book, so the admin side publishes its digest as a real
+    // node-admin does on joining.
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let admin_digest = rafka_mesh_entity::digest::MeshDigest {
+        fabric_id: fabric.clone(),
+        node: rafka_mesh_entity::digest::MeshNode {
+            node_id: NodeId::mint(),
+            name: "mesh1.admin.1".parse().unwrap(),
+            endpoint_id: rafka_mesh_entity::EndpointId(admin_ep.id().to_string()),
+            transport_addr: addr,
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            runtime: None,
+        },
+        status: rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic,
+        admin_api_base: None,
+        emitted_unix_ms: now_ms,
+        data_dir: None,
+        extra: Default::default(),
+    };
+    membership.publish(&admin_digest).await.expect("the admin's digest publishes");
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver },

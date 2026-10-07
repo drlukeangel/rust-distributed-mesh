@@ -145,6 +145,21 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .expect("the runtime was terminated and inspected");
     assert!(start(deleted[0]) > terminal, "the departure follows the terminal proof");
     assert!(start(deleting[0]) < start(deleted[0]));
+    // The drain leg (fabric-mesh-ops.md §4): the executor's typed drain reached the exact birth
+    // (the victim's own `via-apply-draining`), after the pre-notice and before the terminal
+    // proof; the MarkDraining step's receipt carries an established drain.
+    let drained_at = named(&spans, "rafka.node_admin.status.update.via-apply-draining")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .map(start)
+        .min()
+        .expect("the victim answered the typed drain");
+    assert!(drained_at > start(deleting[0]) && drained_at < terminal, "the drain lands between the pre-notice and the terminal proof");
+    let mark_draining = named(&spans, "rafka.node_admin.deployment.update.via-step")
+        .into_iter()
+        .find(|sp| sp["attributes"]["step"] == "MarkDraining" && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
+        .expect("MarkDraining completed on the executor");
+    assert!(start(mark_draining) < terminal, "the drain step precedes termination");
     let heard_deleting = named(&spans, "rafka.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rafka.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     assert!(heard_deleting >= 5, "every other node heard the pre-notice: {heard_deleting}");
