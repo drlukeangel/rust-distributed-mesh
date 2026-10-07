@@ -778,6 +778,17 @@ impl DeploymentPipeline<'_> {
                 tracing::info!(node = %req.node, "the earlier attempt's runtime is gone: a fresh birth");
                 run.done.clear();
             }
+        } else if let Some(Some(v)) = run.done.get(CreateStep::AllocateEndpoints.name()) {
+            // The earlier attempt allocated endpoints and never reached a runtime: that receipt
+            // was a claim of its executor's allocator, gone with it, and the record check says
+            // whether another node's birth holds a socket of it by now. Named by another node,
+            // the endpoints are decided afresh; the identity (never born) is kept.
+            if let Ok(a) = serde_json::from_value::<Assignment>(v.clone()) {
+                if let Some((holder, socket)) = self.allocator.lock().unwrap().named_by_another(&req.node, &a) {
+                    tracing::info!(node = %req.node, %holder, %socket, "the earlier attempt's endpoints are another node's now: allocated afresh");
+                    run.done.remove(CreateStep::AllocateEndpoints.name());
+                }
+            }
         }
         let prior = req.restart_of.clone();
         let id: Identity = self

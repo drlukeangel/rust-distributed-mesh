@@ -143,6 +143,28 @@ impl std::fmt::Debug for HeldElsewhere {
     }
 }
 
+/// Every socket the topology names right now, by the node that holds it: the record check.
+/// A port a node's record names is never handed out, whichever process reserved it and however
+/// that reservation ended (an executor that died with its claims, a receipt of a dead attempt).
+#[derive(Clone, Default)]
+pub struct HeldSockets(Option<std::sync::Arc<dyn Fn() -> Vec<(PathName, SocketAddr)> + Send + Sync>>);
+
+impl HeldSockets {
+    pub fn new(f: impl Fn() -> Vec<(PathName, SocketAddr)> + Send + Sync + 'static) -> Self {
+        Self(Some(std::sync::Arc::new(f)))
+    }
+
+    fn now(&self) -> Vec<(PathName, SocketAddr)> {
+        self.0.as_ref().map(|f| f()).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for HeldSockets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "HeldSockets(topology)" } else { "HeldSockets(none)" })
+    }
+}
+
 /// Allocates advertised endpoints. Addresses already handed out are never
 /// handed out again until released.
 #[derive(Debug)]
@@ -153,16 +175,30 @@ pub struct EndpointAllocator {
     next: u16,
     held: BTreeMap<PathName, Assignment>,
     in_use: BTreeSet<SocketAddr>,
+    held_sockets: HeldSockets,
 }
 
 impl EndpointAllocator {
     pub fn new(host: IpAddr, first: u16, last: u16) -> Self {
         assert!(first <= last, "empty port range");
-        Self { addressing: Addressing::SharedHost(host), first, last, next: first, held: BTreeMap::new(), in_use: BTreeSet::new() }
+        Self { addressing: Addressing::SharedHost(host), first, last, next: first, held: BTreeMap::new(), in_use: BTreeSet::new(), held_sockets: HeldSockets::default() }
     }
 
     /// One address per node from `first_ip..=last_ip`, ports from `first..=last`.
     /// [`Self::per_node`] that also skips every address `held_elsewhere` reports.
+    /// Skip every socket `held` reports (the topology's records), on any addressing.
+    pub fn with_held_sockets(mut self, held: HeldSockets) -> Self {
+        self.held_sockets = held;
+        self
+    }
+
+    /// A socket of `a` that the topology names under a node other than `node`, if any: an
+    /// assignment that is somebody else's now and is never reused.
+    pub fn named_by_another(&self, node: &PathName, a: &Assignment) -> Option<(PathName, SocketAddr)> {
+        let named = self.held_sockets.now();
+        a.sockets().into_iter().find_map(|(_, addr, _)| named.iter().find(|(n, s)| *s == addr && n != node).cloned())
+    }
+
     pub fn with_held_elsewhere(mut self, probe: HeldElsewhere) -> Self {
         if let Addressing::PerNode { held_elsewhere, .. } = &mut self.addressing {
             *held_elsewhere = probe;
@@ -180,7 +216,7 @@ impl EndpointAllocator {
             last,
             next: first,
             held: BTreeMap::new(),
-            in_use: BTreeSet::new(),
+            in_use: BTreeSet::new(), held_sockets: HeldSockets::default(),
         }
     }
 
@@ -221,6 +257,10 @@ impl EndpointAllocator {
             let a = SocketAddr::new(ip, self.next);
             self.next = if self.next == self.last { self.first } else { self.next + 1 };
             if self.in_use.contains(&a) {
+                continue;
+            }
+            // The record check: a socket any node's record names is taken, whoever reserved it.
+            if self.held_sockets.now().iter().any(|(_, s)| *s == a) {
                 continue;
             }
             let free = match self.addressing {
@@ -679,6 +719,21 @@ mod tests {
         a.release(&p("mesh1.admin.2"));
         b.release(&p("mesh1.rpc.1"));
         c.release(&p("mesh1.admin.3"));
+    }
+
+    /// The record check: a socket any node's record names is never handed out, and an assignment
+    /// a different node's record names is reported as theirs.
+    #[test]
+    fn a_socket_the_topology_names_is_never_handed_out_and_another_nodes_assignment_is_named() {
+        let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30500);
+        let holder = p("mesh1.admin.2");
+        let (h, s) = (holder.clone(), theirs);
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30500, 30501).with_held_sockets(HeldSockets::new(move || vec![(h.clone(), s)]));
+        assert_eq!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30501, "the named port is skipped without a probe");
+        let dead = Assignment { transport: theirs, listeners: vec![] };
+        assert_eq!(a.named_by_another(&p("mesh1.rpc.4"), &dead), Some((holder.clone(), theirs)));
+        assert_eq!(a.named_by_another(&holder, &dead), None, "a node's own record is not another's");
+        a.release(&p("mesh1.rpc.1"));
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.

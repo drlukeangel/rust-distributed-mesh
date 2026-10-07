@@ -1535,7 +1535,22 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let hooks = HookRegistry::new().seal().map_err(|e| format!("{e:?}"))?;
     let runner = Arc::new(AdminRunner {
         provider: prepared.provider.clone(),
-        allocator: Mutex::new(prepared.allocator),
+        // The record check (rafka-v2 node-admin's ports_held): every socket the topology names is
+        // taken, whichever process reserved it and however that reservation ended.
+        allocator: Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
+            let topology = control.topology.clone();
+            move || match topology.try_read() {
+                Ok(view) => view
+                    .nodes
+                    .iter()
+                    .flat_map(|n| {
+                        let name = n.name.clone();
+                        n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(move |a| (name.clone(), a))
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        }))),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
         records: records.clone(),
         builds: builds.clone(),
