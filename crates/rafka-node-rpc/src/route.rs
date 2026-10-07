@@ -16,10 +16,11 @@
 
 use crate::client::{CallEvidence, CallOptions, NodeRpcClient};
 use crate::resolve::NodeTarget;
-use rafka_mesh_entity::connections::EffectiveRoute;
+use rafka_mesh_entity::connections::{resolve, CarrierPolicy, ConnectionsHeld, EffectiveRoute, NodeConnection};
 use rafka_mesh_entity::{NodeId, PathName};
 use rafka_node_rpc_contract::outcome::{NotSentReason, PreCommit, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
+use tracing::Instrument;
 
 /// What connections chose for reaching the exact target: the execution-relevant part of an
 /// [`EffectiveRoute`]. The Proxy record a `ViaPeer` was chosen by stays with the caller, which
@@ -107,5 +108,51 @@ impl NodeRpcClient {
         span.record("outcome", out.name());
         span.in_scope(|| tracing::info!(leg = leg.token(), "one exact target, one route, executed as chosen"));
         (out, evidence, leg)
+    }
+}
+
+/// What a call over the held connections projection answered, beside what the resolution found
+/// on the way: the route it took, and the own Proxy found invalid and why, which the caller
+/// retires. The seam writes nothing (i143.e6.s5).
+#[derive(Debug)]
+pub struct ConnectedCall<R> {
+    pub outcome: RpcOutcome<R>,
+    pub evidence: Option<CallEvidence>,
+    pub leg: RouteLeg,
+    pub route: EffectiveRoute,
+    pub retire: Option<(NodeConnection, &'static str)>,
+}
+
+impl NodeRpcClient {
+    /// Invoke `P` on the exact `target`, whose path is `destination`, over the route the held
+    /// connections projection chooses for `own` under `policy` (connections.md §5): a valid own
+    /// Proxy is reused with no direct dial, else an active Direct, else nothing is sent. The
+    /// outcome is handed back as is: an `Indeterminate` says nothing about the route and retires
+    /// no Proxy; only the resolution's own verdict on the Proxy is returned, for the caller.
+    pub async fn call_connected<P: NodeProtocol>(
+        &self,
+        held: &ConnectionsHeld,
+        own: &PathName,
+        destination: &PathName,
+        target: &NodeId,
+        policy: CarrierPolicy,
+        req: &P::Request,
+        opts: &CallOptions,
+    ) -> ConnectedCall<P::Reply> {
+        let resolution = resolve(held, own, destination, policy);
+        let span = tracing::info_span!(
+            "rdm.node_rpc.route.resolve.via-held-projection",
+            protocol = P::NAME,
+            own = %own,
+            destination = %destination,
+            route = resolution.route.token(),
+            retire = tracing::field::Empty,
+        );
+        if let Some((_, why)) = &resolution.retire {
+            span.record("retire", *why);
+        }
+        let choice = RouteChoice::from(&resolution.route);
+        let (outcome, evidence, leg) = self.call_routed::<P>(target, &choice, req, opts).instrument(span).await;
+        ConnectedCall { outcome, evidence, leg, route: resolution.route, retire: resolution.retire }
     }
 }
