@@ -51,10 +51,17 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
         return FenceOutcome::Clear { gone: None };
     };
     let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
-    if prev.status.is_live() || prev.incarnation_id.is_none() {
-        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
-            .in_scope(|| tracing::info!("the view holds a live birth at this path: nothing to fence"));
+    if prev.incarnation_id.is_none() {
+        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
+            .in_scope(|| tracing::info!("the view holds a path with no birth at it: nothing to fence"));
         return FenceOutcome::Clear { gone: None };
+    }
+    // The plan was made on an older view: the path's birth is live here now (heard again through
+    // a reborn forwarder, as the attempt ran). It keeps the path; a create over it is a duplicate.
+    if prev.status.is_live() {
+        tracing::info_span!("rafka.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "predecessor-live")
+            .in_scope(|| tracing::info!("the view holds a live birth at this path: it stays, never created over"));
+        return FenceOutcome::Alive;
     }
     // Unheard is not dead: a healthy member's digests can stop arriving for a window (its
     // forwarder left, its connections are timing out). A predecessor that answers is alive.

@@ -156,7 +156,7 @@ async fn estate() -> Estate {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let fp = view.read().await.fabric_primary().unwrap().name.to_string();
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
-    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()) });
+    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
     Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner }
 }
 
@@ -197,6 +197,9 @@ struct Runner {
     fabric_id: FabricId,
     ran: Mutex<Vec<(String, BuildOperation, FenceOutcome)>>,
     born: Mutex<Vec<String>>,
+    /// Membership repair runs right after every birth, before the attempt's next operation: what a
+    /// reborn forwarder does to the executor's view mid-attempt.
+    hear_after_birth: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -213,27 +216,35 @@ impl OperationRunner for Runner {
             v.nodes.push(n);
             rafka_node_admin_core::election::resolve(&mut v.nodes);
             self.born.lock().unwrap().push(path.to_string());
+            drop(v);
+            if self.hear_after_birth.load(std::sync::atomic::Ordering::SeqCst) {
+                hear(&self.world, &self.view).await;
+            }
         }
         Ok(())
     }
 }
 
+/// Membership repair: every `Dead` node whose runtime runs and answers, in a mesh with a live admin
+/// to forward it, is heard again.
+async fn hear(world: &World, view: &RwLock<Topology>) {
+    let mut v = view.write().await;
+    let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.mesh.clone()).collect();
+    let mut changed = false;
+    for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::Dead && forwarded.contains(&n.mesh)) {
+        if world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
+            n.status = NodeStatus::ReadyForTraffic;
+            changed = true;
+        }
+    }
+    if changed {
+        rafka_node_admin_core::election::resolve(&mut v.nodes);
+    }
+}
+
 impl Estate {
-    /// Membership repair: every `Dead` node whose runtime runs and answers, in a mesh with a live
-    /// admin to forward it, is heard again.
     async fn hear(&self) {
-        let mut v = self.view.write().await;
-        let forwarded: BTreeSet<String> = v.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.mesh.clone()).collect();
-        let mut changed = false;
-        for n in v.nodes.iter_mut().filter(|n| n.status == NodeStatus::Dead && forwarded.contains(&n.mesh)) {
-            if self.world.of(n.node_id.as_str()).is_some_and(|r| matches!(r.status, DeploymentStatus::Running) && r.answers) {
-                n.status = NodeStatus::ReadyForTraffic;
-                changed = true;
-            }
-        }
-        if changed {
-            rafka_node_admin_core::election::resolve(&mut v.nodes);
-        }
+        hear(&self.world, &self.view).await;
     }
 
     /// A view change: `paths` are unheard (Dead) in the view; the seats are elected again.
@@ -412,4 +423,29 @@ async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
     e.converge().await;
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "the absent-but-running path is held, not created over");
     assert_eq!(e.fence_of("mesh1.rpc.3"), vec![FenceOutcome::Held]);
+}
+
+/// The seeded soak's finding (seed 7, round 3, trace in the spans of
+/// `fabric_soak__seeded`): the lost mesh's primary is reborn as the attempt's first operation, its
+/// members are heard again through it before the attempt's next operation, and that operation
+/// must find them live and leave them alone. A plan made on the older view is not a licence.
+#[tokio::test]
+async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_created_over() {
+    let e = estate().await;
+    e.runner.hear_after_birth.store(true, std::sync::atomic::Ordering::SeqCst);
+    let fp = e.fabric_primary().await;
+    let fp_mesh = fp.split('.').next().unwrap().to_string();
+    let lost = if fp_mesh == "mesh1" { "mesh2" } else { "mesh1" };
+    let primary = e.view.read().await.cohort_primary(lost, NodeKind::NodeAdmin).unwrap().name.to_string();
+    e.world.kill(&e.node_id(&primary).await);
+    let members: Vec<String> = e.view.read().await.nodes.iter().filter(|n| n.mesh == lost).map(|n| n.name.to_string()).collect();
+    let refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    e.unheard(&refs).await;
+    e.drift().await.expect("the one proven loss opens the next attempt");
+    e.converge().await;
+    assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is reborn: {:?}", e.runner.ran.lock().unwrap());
+    for m in members.iter().filter(|m| **m != primary) {
+        assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.fence_of(m));
+    }
+    e.holds_the_shape().await;
 }

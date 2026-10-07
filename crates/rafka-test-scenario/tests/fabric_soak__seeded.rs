@@ -206,18 +206,22 @@ async fn born_at(estate: &Estate, build_id: &str, path: &str, after_attempt: u64
 
 /// Every live admin's view holds exactly `birth` at `path`, ready for traffic, and the replaced
 /// incarnation `old` nowhere live.
-async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: &str) -> bool {
+async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: &str) -> Result<(), String> {
     let nodes = estate.nodes().await;
     for base in admin_bases(&nodes) {
-        let Some(v) = try_get(&base, "/api/nodes").await else { return false };
+        let Some(v) = try_get(&base, "/api/nodes").await else { return Err(format!("{base}: /api/nodes unanswered")) };
         let theirs = v["nodes"].as_array().cloned().unwrap_or_default();
+        let at_path: Vec<String> = theirs.iter().filter(|n| n["name"] == path).map(|n| format!("{}/{}:{}", s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["status"]))).collect();
         let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
-        let old_live = theirs.iter().any(|n| n["incarnation_id"] == old && n["status"] != "dead");
-        if !holds || old_live {
-            return false;
+        let old_live: Vec<String> = theirs.iter().filter(|n| n["incarnation_id"] == old && n["status"] != "dead").map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
+        if !holds {
+            return Err(format!("{base} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", birth.0, birth.1));
+        }
+        if !old_live.is_empty() {
+            return Err(format!("{base} still holds the replaced incarnation {old} live: {old_live:?}"));
         }
     }
-    true
+    Ok(())
 }
 
 /// Every rpc node answers a real Node RPC on its current birth: reachable and current.
@@ -374,9 +378,18 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 let sequence_done = match (&removed, &born) {
                     (Some((path, old)), Some(birth)) => {
                         entry["born"] = json!({"path": path, "node_id": birth.0, "incarnation": birth.1, "replaced": old});
-                        birth_held_everywhere(&estate, path, birth, old).await
+                        match birth_held_everywhere(&estate, path, birth, old).await {
+                            Ok(()) => true,
+                            Err(why) => {
+                                entry["waiting_on"] = json!(why);
+                                false
+                            }
+                        }
                     }
-                    (Some(_), None) => false,
+                    (Some(_), None) => {
+                        entry["waiting_on"] = json!("the Build has not completed the rebirth");
+                        false
+                    }
                     (None, _) => true,
                 };
                 if sequence_done {
