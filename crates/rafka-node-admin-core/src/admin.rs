@@ -1555,21 +1555,25 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         // taken, whichever process reserved it and however that reservation ended.
         allocator: Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
             let topology = control.topology.clone();
+            // The view is read without waiting (the allocator is used under its own mutex, inside
+            // the pipeline's steps); when a writer holds or awaits it, the last snapshot read
+            // answers, never an empty one: the records only ever grow between two reads.
+            let last: std::sync::Mutex<Vec<(crate::model::PathName, std::net::SocketAddr)>> = std::sync::Mutex::new(Vec::new());
             move || {
-                // The view is read, never skipped: a writer holds it for microseconds.
-                let view = loop {
-                    match topology.try_read() {
-                        Ok(v) => break v,
-                        Err(_) => std::thread::yield_now(),
-                    }
-                };
-                view.nodes
-                    .iter()
-                    .flat_map(|n| {
-                        let name = n.name.clone();
-                        n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(move |a| (name.clone(), a))
-                    })
-                    .collect()
+                if let Ok(view) = topology.try_read() {
+                    let now: Vec<_> = view
+                        .nodes
+                        .iter()
+                        .flat_map(|n| {
+                            let name = n.name.clone();
+                            n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(move |a| (name.clone(), a))
+                        })
+                        .collect();
+                    *last.lock().unwrap() = now.clone();
+                    now
+                } else {
+                    last.lock().unwrap().clone()
+                }
             }
         }))),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
