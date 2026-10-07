@@ -239,41 +239,44 @@ impl EndpointAllocator {
         }
     }
 
-    /// The next free port on `ip`. On a shared host a port bound by any other
-    /// process is skipped (checked by a probe bind of UDP and TCP).
+    /// The next free port on `ip`: rafka-v2 node-admin's one port search ([`lease_port_block`])
+    /// over this allocator's range, from its cursor, once around. Held = every socket this
+    /// allocator holds and every socket the topology names on `ip`; free = not held, claimed on
+    /// the host (a shared host's cross-admin reservation, the record other admins read) and
+    /// bindable over TCP and UDP ([`port_bindable`]).
     fn take_addr(&mut self, ip: IpAddr) -> Result<SocketAddr, AllocationError> {
-        let span = (self.last - self.first) as u32 + 1;
-        for _ in 0..span {
-            let a = SocketAddr::new(ip, self.next);
-            self.next = if self.next == self.last { self.first } else { self.next + 1 };
-            if self.in_use.contains(&a) {
-                continue;
+        let mut held: std::collections::BTreeSet<u16> = self.in_use.iter().filter(|a| a.ip() == ip).map(|a| a.port()).collect();
+        held.extend(self.held_sockets.now().iter().filter(|(_, s)| s.ip() == ip).map(|(_, s)| s.port()));
+        let shared = matches!(self.addressing, Addressing::SharedHost(_));
+        // Claim first, probe after: a port another live admin claims is never probe-bound, so a
+        // probe here never holds, for an instant, a port another admin's birth is binding. A
+        // claimed port that a probe finds held is released again.
+        let free = |p: u16| {
+            if !shared {
+                return true;
             }
-            // The record check: a socket any node's record names is taken, whoever reserved it.
-            if self.held_sockets.now().iter().any(|(_, s)| *s == a) {
-                continue;
-            }
-            let free = match self.addressing {
-                // Claim first, probe after: a port another live admin claims is never probe-bound,
-                // so a probe here never holds, for an instant, a port another admin's birth is
-                // binding. A claimed port that a probe finds held is released again.
-                Addressing::SharedHost(_) => {
-                    reserve_on_host(a) && {
-                        let unbound = port_bindable(a.port());
-                        if !unbound {
-                            release_on_host(a);
-                        }
-                        unbound
-                    }
+            let a = SocketAddr::new(ip, p);
+            reserve_on_host(a) && {
+                let bindable = port_bindable(p);
+                if !bindable {
+                    release_on_host(a);
                 }
-                Addressing::PerNode { .. } => true,
-            };
-            if free {
+                bindable
+            }
+        };
+        let port = lease_port_block(self.next, 1, self.last, &held, &free).or_else(|_| lease_port_block(self.first, 1, self.last, &held, &free));
+        match port {
+            Ok(p) => {
+                self.next = if p == self.last { self.first } else { p + 1 };
+                let a = SocketAddr::new(ip, p);
                 self.in_use.insert(a);
-                return Ok(a);
+                Ok(a)
+            }
+            Err(reason) => {
+                tracing::info!(%reason, "no port free in this allocator's range");
+                Err(AllocationError::Exhausted { first: self.first, last: self.last })
             }
         }
-        Err(AllocationError::Exhausted { first: self.first, last: self.last })
     }
 
     /// Assign `node` everything a process birth needs.
@@ -408,6 +411,38 @@ fn claim_owner(path: &std::path::Path) -> Option<u32> {
 
 /// Claim `addr` host-wide. `false` when a live process holds the claim or it
 /// cannot be written; a claim whose owner process is gone is taken over.
+/// rafka-v2 node-admin's one port search: the lowest block of `count` contiguous ports at or
+/// above `hint` (and at most `ceiling`) in which every port is not `held` (every port a record
+/// or the topology names) and is `bindable` on the system ([`port_bindable`]). `Err` names the
+/// searched range and how many ports each rule refused.
+pub fn lease_port_block(hint: u16, count: u16, ceiling: u16, held: &std::collections::BTreeSet<u16>, bindable: impl Fn(u16) -> bool) -> Result<u16, String> {
+    let count = count.max(1);
+    let floor = hint.max(1024);
+    let (mut by_record, mut by_system) = (0u32, 0u32);
+    let mut base = floor;
+    while base <= ceiling.saturating_sub(count - 1) {
+        let blocked = (base..base + count).find(|p| {
+            if held.contains(p) {
+                by_record += 1;
+                true
+            } else if !bindable(*p) {
+                by_system += 1;
+                true
+            } else {
+                false
+            }
+        });
+        match blocked {
+            None => return Ok(base),
+            Some(p) => base = p + 1,
+        }
+    }
+    Err(format!(
+        "no {count} free contiguous port(s) in {floor}..={ceiling}: \
+         {by_record} held by a spawn record or the topology, {by_system} not bindable over TCP and UDP"
+    ))
+}
+
 /// Whether `port` can be bound right now on every interface, over TCP AND UDP: a node binds
 /// its mesh port over UDP and a listener over TCP, so a port free on one protocol only is not
 /// free. (rafka-v2 node-admin's `port_bindable`, the system check of its one port search.)
@@ -701,6 +736,38 @@ mod tests {
         assert_eq!(sockets[1].2, SlotTransport::Tcp);
         let again = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN).unwrap();
         assert_ne!(again.listeners, got.listeners, "a respawn is handed a fresh listener address");
+    }
+
+    fn held_ports(ports: &[u16]) -> std::collections::BTreeSet<u16> {
+        ports.iter().copied().collect()
+    }
+
+    /// CONTRACT (rafka-v2 node-admin port_lease): a port an in-flight spawn's placeholder holds is
+    /// never handed to a second spawn, though nothing has bound it yet.
+    #[test]
+    fn a_port_held_by_an_in_flight_placeholder_is_never_handed_out_again() {
+        assert_eq!(lease_port_block(24_006, 1, 60_000, &held_ports(&[24_006]), |_| true), Ok(24_007));
+    }
+
+    /// CONTRACT (rafka-v2 node-admin port_lease): a port the system will not bind is skipped.
+    #[test]
+    fn a_port_the_system_will_not_bind_is_skipped() {
+        assert_eq!(lease_port_block(24_000, 1, 60_000, &held_ports(&[]), |p| p != 24_000 && p != 24_001), Ok(24_002));
+    }
+
+    /// CONTRACT (rafka-v2 node-admin port_lease): one held port moves the whole block past it.
+    #[test]
+    fn a_block_starts_past_any_held_port_inside_it() {
+        assert_eq!(lease_port_block(24_000, 4, 60_000, &held_ports(&[24_002]), |_| true), Ok(24_003));
+    }
+
+    /// CONTRACT (rafka-v2 node-admin port_lease): an exhausted range is refused by name, with how
+    /// many ports each rule refused, never answered with a port that may be taken.
+    #[test]
+    fn an_exhausted_range_is_refused_by_name() {
+        let err = lease_port_block(59_999, 1, 60_000, &held_ports(&[59_999]), |p| p != 60_000).expect_err("nothing free");
+        assert!(err.contains("59999..=60000"), "{err}");
+        assert!(err.contains("1 held by a spawn record or the topology") && err.contains("1 not bindable"), "{err}");
     }
 
     #[test]
