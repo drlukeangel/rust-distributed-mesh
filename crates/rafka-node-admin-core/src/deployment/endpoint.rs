@@ -192,6 +192,39 @@ impl EndpointAllocator {
         self
     }
 
+    /// Reclaim a reused assignment host-wide before it is launched again: the executor whose
+    /// allocator reserved it may have died (its claims with it), and another allocator may have
+    /// taken a socket over since. Every socket is reserved as this process; a socket a live
+    /// process holds makes the whole assignment theirs (`false`, nothing kept), and the caller
+    /// allocates afresh.
+    pub fn reclaim_assignment(&mut self, node: &PathName, a: &Assignment) -> bool {
+        if !matches!(self.addressing, Addressing::SharedHost(_)) {
+            self.held.insert(node.clone(), a.clone());
+            for (_, addr, _) in a.sockets() {
+                self.in_use.insert(addr);
+            }
+            return true;
+        }
+        let mut taken = Vec::new();
+        for (_, addr, _) in a.sockets() {
+            if self.in_use.contains(&addr) || reserve_on_host(addr) {
+                taken.push(addr);
+            } else {
+                for t in taken {
+                    if !self.in_use.contains(&t) {
+                        release_on_host(t);
+                    }
+                }
+                return false;
+            }
+        }
+        for addr in taken {
+            self.in_use.insert(addr);
+        }
+        self.held.insert(node.clone(), a.clone());
+        true
+    }
+
     /// A socket of `a` that the topology names under a node other than `node`, if any: an
     /// assignment that is somebody else's now and is never reused.
     pub fn named_by_another(&self, node: &PathName, a: &Assignment) -> Option<(PathName, SocketAddr)> {
@@ -772,6 +805,30 @@ mod tests {
         assert_eq!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE, false).unwrap().transport.port(), 30601, "the runtime's port is never handed out");
         other.release(&p("mesh1.rpc.1"));
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A reused assignment is reclaimed host-wide before launch: a dead owner's claim is taken
+    /// as this process; a socket a live process claims makes the assignment theirs.
+    #[test]
+    fn a_reused_assignment_is_reclaimed_or_refused_by_the_host_claims() {
+        let mine = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30700);
+        std::fs::create_dir_all(reservation_path(mine).parent().unwrap()).unwrap();
+        std::fs::write(reservation_path(mine), "4194305").unwrap();
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30700, 30703);
+        assert!(a.reclaim_assignment(&p("mesh1.rpc.4"), &Assignment { transport: mine, listeners: vec![] }), "a dead owner's claim is reclaimed");
+        assert_eq!(claim_owner(&reservation_path(mine)), Some(std::process::id()));
+        assert_eq!(a.in_use_count(), 1);
+        let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30702);
+        std::fs::write(reservation_path(theirs), live.id().to_string()).unwrap();
+        let mut b = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 30700, 30703);
+        assert!(!b.reclaim_assignment(&p("mesh1.rpc.5"), &Assignment { transport: theirs, listeners: vec![("control".into(), SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703))] }), "a live process's claim makes it theirs");
+        assert_eq!(b.in_use_count(), 0, "nothing kept of a refused assignment");
+        assert!(!reservation_path(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703)).exists() || claim_owner(&reservation_path(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), 30703))) != Some(std::process::id()), "a socket taken on the way is released again");
+        live.kill().ok();
+        live.wait().ok();
+        a.release(&p("mesh1.rpc.4"));
+        std::fs::remove_file(reservation_path(theirs)).ok();
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.

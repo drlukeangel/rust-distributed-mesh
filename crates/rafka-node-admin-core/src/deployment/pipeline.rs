@@ -784,8 +784,14 @@ impl DeploymentPipeline<'_> {
             // whether another node's birth holds a socket of it by now. Named by another node,
             // the endpoints are decided afresh; the identity (never born) is kept.
             if let Ok(a) = serde_json::from_value::<Assignment>(v.clone()) {
-                if let Some((holder, socket)) = self.allocator.lock().unwrap().named_by_another(&req.node, &a) {
+                let mut allocator = self.allocator.lock().unwrap();
+                if let Some((holder, socket)) = allocator.named_by_another(&req.node, &a) {
                     tracing::info!(node = %req.node, %holder, %socket, "the earlier attempt's endpoints are another node's now: allocated afresh");
+                    run.done.remove(CreateStep::AllocateEndpoints.name());
+                } else if !allocator.reclaim_assignment(&req.node, &a) {
+                    // The receipt's claims died with their executor and a live process holds one
+                    // of its sockets now (another fabric on this host): theirs, allocated afresh.
+                    tracing::info!(node = %req.node, "the earlier attempt's endpoints are claimed by a live process now: allocated afresh");
                     run.done.remove(CreateStep::AllocateEndpoints.name());
                 }
             }
