@@ -552,13 +552,20 @@ mod tests {
         assert_eq!(candidate_subnets(pool, "fabric-a"), nets, "deterministic per fabric");
     }
 
+    /// The negative half probes a port this process still owns but does not listen on (a
+    /// connected stream's local end), never a port just handed back to the kernel: the table is
+    /// the whole network namespace, and a released port is anyone's to listen on next.
     #[test]
     fn a_tcp_listener_is_found_and_a_bare_socket_is_not() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
         assert_eq!(netns_listens_tcp(std::process::id(), addr), Ok(true));
+        let bare = std::net::TcpStream::connect(addr).unwrap();
+        let bare_addr = bare.local_addr().unwrap();
+        assert_ne!(bare_addr, addr);
+        assert_eq!(netns_listens_tcp(std::process::id(), bare_addr), Ok(false), "held, connected, not listening");
+        drop(bare);
         drop(l);
-        assert_eq!(netns_listens_tcp(std::process::id(), addr), Ok(false));
     }
 
     #[test]
