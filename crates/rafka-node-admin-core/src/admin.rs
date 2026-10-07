@@ -250,7 +250,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
             continue;
         }
         let silent = age > book.staleness_floor();
-        if silent && d.status == MemberStatus::Leaving {
+        // A graceful departure: a terminal `Leaving` digest, then nothing for one gossip interval.
+        // It leaves the view within one tick (fabric-node-lifecycle.md §6), never a staleness floor.
+        if d.status == MemberStatus::Leaving && age > gossip_interval() {
             continue;
         }
         if let Some(id) = d.extra.get(MESH_ID).and_then(|v| MeshId::parse(v).ok()) {

@@ -823,10 +823,11 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 }
 
 /// How long a member has gone unheard at `now`, measured against the staleness floor: a forwarded
-/// copy is measured against the forwarded staleness floor, so the difference is taken off.
-fn unheard(at: &Instant, forwarded: bool, extra: Duration, now: Instant) -> Duration {
+/// copy is measured against the forwarded staleness floor, so the difference is taken off. A
+/// terminal `Leaving` is never succeeded, so it earns no forwarded extra.
+fn unheard(d: &MeshDigest, at: &Instant, forwarded: bool, extra: Duration, now: Instant) -> Duration {
     let age = now.saturating_duration_since(*at);
-    if forwarded {
+    if forwarded && d.status != rafka_mesh_entity::MemberStatus::Leaving {
         age.saturating_sub(extra)
     } else {
         age
@@ -1083,7 +1084,7 @@ impl DigestBook {
     /// Digests heard within `fresh` of `now`.
     pub fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
-        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, extra, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
+        self.inner.lock().unwrap().values().filter(|(d, at, fw)| unheard(d, at, *fw, extra, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The member's latest digest and how long it has been silent.
@@ -1094,7 +1095,7 @@ impl DigestBook {
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, extra, now)))
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, extra, now)))
     }
 
     pub fn all(&self) -> Vec<MeshDigest> {
@@ -1368,7 +1369,19 @@ mod tests {
         assert!(book.current_at(floor, later).is_empty());
     }
 
-    /// The documented defaults: a 30 s floor, a 2 s heartbeat and a 2 s backbone cadence.
+    /// A peer mesh's member that said `Leaving` is not succeeded: its forwarded copy earns no
+    /// extra, so it leaves every view one gossip interval after it stops, like a direct one.
+    #[test]
+    fn a_forwarded_leaving_member_earns_no_extra() {
+        let book = DigestBook::default();
+        let id = NodeId::mint();
+        let t0 = Instant::now();
+        assert!(book.record_forwarded_at(digest(&id, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0));
+        let later = t0 + Duration::from_secs(3);
+        assert_eq!(book.get_at(id.as_str(), later).unwrap().1, Duration::from_secs(3), "measured from when it was heard");
+    }
+
+    /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
     #[test]
     fn the_windows_default_to_the_documented_values() {
         if std::env::var("RAFKA_STALENESS_MS").is_err() {
