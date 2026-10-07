@@ -970,10 +970,38 @@ impl DeploymentPipeline<'_> {
                 .map_err(|e| e.to_string())?;
             // Only an exact inspection that says the runtime exited is terminal proof.
             match self.provider.inspect(handle).await {
-                DeploymentStatus::Running => Err(format!("{name} still runs after the stop ladder")),
-                DeploymentStatus::Unknown => Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
-                DeploymentStatus::Exited { .. } => Ok(()),
+                DeploymentStatus::Running => return Err(format!("{name} still runs after the stop ladder")),
+                DeploymentStatus::Unknown => return Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
+                DeploymentStatus::Exited { .. } => {}
             }
+            // Exited is not yet released: the kernel frees a dead process's sockets after the
+            // process is gone, so its advertised addresses can read as held for a few tens of
+            // milliseconds more. A successor at the same addresses (a restart) must not race that:
+            // the operating system is asked, as `WaitForBind` asks it, until nothing holds them.
+            let mut held: Vec<(String, SocketAddr, super::endpoint::SlotTransport)> = Vec::new();
+            if let Some(t) = node.transport_addr {
+                held.push(("transport".into(), t, super::endpoint::SlotTransport::Udp));
+            }
+            held.extend(node.listeners.iter().map(|(n, a)| (n.clone(), *a, super::endpoint::SlotTransport::Tcp)));
+            let until = Instant::now() + Duration::from_secs(3);
+            let still = |h: &(String, SocketAddr, super::endpoint::SlotTransport)| match h.2 {
+                super::endpoint::SlotTransport::Udp => super::endpoint::udp_port_is_held(h.1),
+                super::endpoint::SlotTransport::Tcp => super::endpoint::tcp_port_is_held(h.1),
+            };
+            let started = Instant::now();
+            loop {
+                held.retain(|h| still(h));
+                if held.is_empty() {
+                    break;
+                }
+                if Instant::now() >= until {
+                    let names: Vec<String> = held.iter().map(|h| format!("{} {}", h.0, h.1)).collect();
+                    return Err(format!("{name} exited, but the operating system still holds {} after {:?}", names.join(", "), started.elapsed()));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tracing::info!(node = %name, released_after_ms = started.elapsed().as_millis() as u64, "the runtime exited and the operating system released its addresses");
+            Ok(())
         })
         .await?;
         // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything
