@@ -1081,10 +1081,19 @@ impl DigestBook {
         self.current_at(fresh, Instant::now())
     }
 
-    /// Digests heard within `fresh` of `now`.
+    /// Digests heard within `fresh` of `now`. A graceful departure (a terminal `Leaving`, then
+    /// nothing for one gossip interval) is gone within that tick (fabric-node-lifecycle.md §6): it
+    /// is not current, so no view and no aggregate carries it on.
     pub fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
-        self.inner.lock().unwrap().values().filter(|(d, at, fw)| unheard(d, at, *fw, extra, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(d, at, fw)| unheard(d, at, *fw, extra, now) <= fresh)
+            .filter(|(d, at, _)| !(d.status == rafka_mesh_entity::MemberStatus::Leaving && now.saturating_duration_since(*at) > gossip_interval()))
+            .map(|(d, _, _)| d.clone())
+            .collect()
     }
 
     /// The member's latest digest and how long it has been silent.
@@ -1379,6 +1388,19 @@ mod tests {
         assert!(book.record_forwarded_at(digest(&id, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0));
         let later = t0 + Duration::from_secs(3);
         assert_eq!(book.get_at(id.as_str(), later).unwrap().1, Duration::from_secs(3), "measured from when it was heard");
+    }
+
+    /// A graceful departure is not current one gossip interval after its last `Leaving`, whether
+    /// it was heard directly or forwarded: no aggregate carries a departed member on.
+    #[test]
+    fn a_departed_member_is_not_current_one_gossip_interval_after_its_leaving() {
+        let book = DigestBook::default();
+        let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
+        let t0 = Instant::now();
+        book.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
+        book.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
+        assert_eq!(book.current_at(book.staleness_floor(), t0 + gossip_interval()).len(), 2, "within the tick it is still saying Leaving");
+        assert!(book.current_at(book.staleness_floor(), t0 + gossip_interval() + Duration::from_millis(1)).is_empty());
     }
 
     /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
