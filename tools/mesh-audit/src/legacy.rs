@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 pub const LEGACY_BINARIES: &[&str] = &["bridge"];
 
 /// The audit doc that carries the disposition table.
-pub const AUDIT_DOC: &str = "docs/i143/e0-workspace-audit.md";
+/// The legacy-binary disposition table: audit data the gate reads, held with the gate. One
+/// row per legacy binary; `check_dispositions` holds the workspace to it.
+pub const DISPOSITIONS: &str = "## Legacy binary dispositions\n\n| binary | disposition | why |\n|---|---|---|\n| `bridge` | dead-deleted | Its one behavior (joining several mesh ids and recording each peer's mesh from the `Hello` frame) is the fabric: every node holds every mesh's nodes through gossip, and a peer mesh is reached through the backbone. Nothing consumes it. |\n";
 
 /// One of the three dispositions PRD §4 allows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +42,6 @@ impl Disposition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Violation {
-    AuditDocMissing(PathBuf),
     /// A legacy binary has no row in the disposition table.
     Unclassified(String),
     /// A legacy binary has more than one row.
@@ -60,7 +61,6 @@ pub enum Violation {
 impl fmt::Display for Violation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AuditDocMissing(p) => write!(f, "audit doc {} is missing", p.display()),
             Self::Unclassified(b) => write!(f, "legacy binary `{b}` has no disposition row"),
             Self::Duplicate { binary, rows } => {
                 write!(f, "legacy binary `{binary}` has {rows} disposition rows, expected exactly one")
@@ -123,14 +123,15 @@ pub fn workspace_members(root: &Path) -> Vec<String> {
 
 /// Check the disposition table against the workspace.
 pub fn check_dispositions(root: &Path) -> Vec<Violation> {
-    let doc_path = root.join(AUDIT_DOC);
-    let Ok(doc) = std::fs::read_to_string(&doc_path) else {
-        return vec![Violation::AuditDocMissing(doc_path)];
-    };
+    check_dispositions_in(root, DISPOSITIONS)
+}
+
+/// Check `doc`'s disposition table against the workspace at `root`.
+pub fn check_dispositions_in(root: &Path, doc: &str) -> Vec<Violation> {
     let members = workspace_members(root);
     let mut by_binary: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut out = Vec::new();
-    for (binary, cell) in parse_disposition_rows(&doc) {
+    for (binary, cell) in parse_disposition_rows(doc) {
         if !LEGACY_BINARIES.contains(&binary.as_str()) {
             out.push(Violation::UnknownBinary(binary));
             continue;

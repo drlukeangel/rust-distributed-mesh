@@ -31,8 +31,7 @@ fn fixture(doc: &str, members: &[&str], dirs: &[&str]) -> tempdir::Dir {
         std::fs::create_dir_all(d.path().join(dir)).unwrap();
         std::fs::write(d.path().join(dir).join("Cargo.toml"), "").unwrap();
     }
-    std::fs::create_dir_all(d.path().join("docs/i143")).unwrap();
-    std::fs::write(d.path().join(legacy::AUDIT_DOC), doc).unwrap();
+    let _ = doc;
     d
 }
 
@@ -46,57 +45,55 @@ const ALL: &[&str] = &["bridge"];
 
 #[test]
 fn gate_passes_a_complete_table() {
-    let d = fixture(&rows("| `bridge` | extraction-input | x |\n"), ALL, ALL);
-    assert_eq!(legacy::check_dispositions(d.path()), vec![]);
+    let doc = rows("| `bridge` | extraction-input | x |\n");
+    let d = fixture(&doc, ALL, ALL);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc), vec![]);
 }
 
 #[test]
 fn gate_fails_an_unclassified_binary() {
-    let d = fixture(&rows(""), ALL, ALL);
-    assert_eq!(legacy::check_dispositions(d.path()), vec![Violation::Unclassified("bridge".into())]);
+    let doc = rows("");
+    let d = fixture(&doc, ALL, ALL);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc), vec![Violation::Unclassified("bridge".into())]);
 }
 
 #[test]
 fn gate_fails_a_duplicate_row() {
-    let d = fixture(&rows("| `bridge` | extraction-input | x |\n| `bridge` | retained-example | y |\n"), ALL, ALL);
-    assert_eq!(
-        legacy::check_dispositions(d.path()),
+    let doc = rows("| `bridge` | extraction-input | x |\n| `bridge` | retained-example | y |\n");
+    let d = fixture(&doc, ALL, ALL);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc),
         vec![Violation::Duplicate { binary: "bridge".into(), rows: 2 }]
     );
 }
 
 #[test]
 fn gate_fails_an_unknown_disposition() {
-    let d = fixture(&rows("| `bridge` | keep-for-now | x |\n"), ALL, ALL);
-    assert_eq!(
-        legacy::check_dispositions(d.path()),
+    let doc = rows("| `bridge` | keep-for-now | x |\n");
+    let d = fixture(&doc, ALL, ALL);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc),
         vec![Violation::UnknownDisposition { binary: "bridge".into(), cell: "keep-for-now".into() }]
     );
 }
 
 #[test]
 fn gate_fails_dead_code_left_in_the_workspace() {
-    let d = fixture(&rows("| `bridge` | dead-deleted | x |\n"), ALL, ALL);
-    assert_eq!(legacy::check_dispositions(d.path()), vec![Violation::DeadButPresent("bridge".into())]);
+    let doc = rows("| `bridge` | dead-deleted | x |\n");
+    let d = fixture(&doc, ALL, ALL);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc), vec![Violation::DeadButPresent("bridge".into())]);
 }
 
 #[test]
 fn gate_passes_a_deleted_binary_that_is_gone() {
-    let d = fixture(&rows("| `bridge` | dead-deleted | x |\n"), &[], &[]);
-    assert_eq!(legacy::check_dispositions(d.path()), vec![]);
+    let doc = rows("| `bridge` | dead-deleted | x |\n");
+    let d = fixture(&doc, &[], &[]);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc), vec![]);
 }
 
 #[test]
 fn gate_fails_a_retained_binary_that_is_gone() {
-    let d = fixture(&rows("| `bridge` | retained-example | x |\n"), &[], &[]);
-    assert_eq!(legacy::check_dispositions(d.path()), vec![Violation::LiveButAbsent("bridge".into())]);
-}
-
-#[test]
-fn gate_fails_a_missing_audit_doc() {
-    let d = tempdir::Dir::new();
-    std::fs::write(d.path().join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
-    assert!(matches!(legacy::check_dispositions(d.path())[..], [Violation::AuditDocMissing(_)]));
+    let doc = rows("| `bridge` | retained-example | x |\n");
+    let d = fixture(&doc, &[], &[]);
+    assert_eq!(legacy::check_dispositions_in(d.path(), &doc), vec![Violation::LiveButAbsent("bridge".into())]);
 }
 
 #[test]

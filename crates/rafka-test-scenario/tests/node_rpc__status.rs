@@ -7,9 +7,9 @@
 //!    authority's view shows them as `declared` before any probe asks.
 //! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
 //!    event); membership's `status` is untouched.
-//! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidTransition`.
+//! 2. `Pending` after `ReadyForTraffic`: `RejectedInvalidNodeTransition`.
 //! 3. A declaration under another node's id: `RejectedNotAuthority` (sender-not-subject); under
-//!    a wrong incarnation: `RejectedStaleBirth`.
+//!    a wrong incarnation: `RejectedStaleIncarnation`.
 //! 4. A declaration to the non-primary admin: `RejectedNotAuthority` (receiver-not-primary).
 //! 5. `Draining`, then `Leaving`: `Applied`, and the view follows.
 //! Every decision is one `rafka.node_admin.status.update.via-declaration` span on the authority.
@@ -72,7 +72,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     // 2. Backward is refused by name.
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "pending"]);
     let (reply, detail) = declared(&r);
-    assert_eq!(reply, "rejected-invalid-transition", "{r}");
+    assert_eq!(reply, "rejected-invalid-node-transition", "{r}");
     assert!(detail.contains("ReadyForTraffic"), "{r}");
 
     // 3. Not the subject; a stale birth.
@@ -81,7 +81,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("SenderNotSubject"), "{r}");
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", "00000000000000000000000000000000"]);
-    assert_eq!(declared(&r).0, "rejected-stale-birth", "{r}");
+    assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
     // 4. The non-primary admin is not the authority.
     let not_primary = format!("exact:{}", other_admin["node_id"].as_str().unwrap());
@@ -108,10 +108,10 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert!(on_primary("already-applied") >= 1, "the oracle's repeat, and the node's own Draining/Leaving at stop: {decided:?}");
     // The oracle's Pending after ReadyForTraffic; and, once the oracle moved the node to Leaving, the
     // node's own Draining at stop is a backward move too: refused by name, never regressing.
-    let backward: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-invalid-transition" && s["attributes"]["sender"] == "mesh1.rpc.1").collect();
+    let backward: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-invalid-node-transition" && s["attributes"]["sender"] == "mesh1.rpc.1").collect();
     assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
     assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Leaving"), "{backward:?}");
-    assert_eq!(on_primary("rejected-stale-birth"), 1);
+    assert_eq!(on_primary("rejected-stale-incarnation"), 1);
     assert_eq!(on_primary("rejected-not-authority"), 1, "sender-not-subject on the primary");
     // Births try their mesh's admins in path order, so the non-primary admin refuses each once
     // (receiver-not-primary) besides the oracle's probe.
