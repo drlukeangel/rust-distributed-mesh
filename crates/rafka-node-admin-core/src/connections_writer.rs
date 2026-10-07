@@ -40,6 +40,10 @@ struct Inner {
     /// The last stamp this writer gave a row: every row it writes carries a later one, so two
     /// facts in one millisecond never tie (the held projection keeps one stamp per key).
     last_stamp: Mutex<u64>,
+    /// Observation writes spawned and not yet landed or refused; [`ConnectionsWriter::drain`]
+    /// waits for this to reach zero, `idle` wakes it when a write finishes.
+    in_flight: std::sync::atomic::AtomicUsize,
+    idle: tokio::sync::Notify,
 }
 
 fn now_ms() -> u64 {
@@ -68,7 +72,7 @@ fn state_name(s: ConnectionState) -> &'static str {
 impl ConnectionsWriter {
     /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
-        Self { inner: Arc::new(Inner { own, storage, held, runtime: tokio::runtime::Handle::current(), last_stamp: Mutex::new(0) }) }
+        Self { inner: Arc::new(Inner { own, storage, held, runtime: tokio::runtime::Handle::current(), last_stamp: Mutex::new(0), in_flight: std::sync::atomic::AtomicUsize::new(0), idle: tokio::sync::Notify::new() }) }
     }
 
     pub fn held(&self) -> Arc<Mutex<ConnectionsHeld>> {
@@ -78,6 +82,26 @@ impl ConnectionsWriter {
     /// This node, as the source every row it writes names.
     pub fn own(&self) -> &ConnectionEnd {
         &self.inner.own
+    }
+
+    /// Observation writes spawned by [`ConnectionObserver`] calls that have not yet landed or
+    /// been refused. The held projection already carries each; the raw log, the index and the
+    /// observation's span follow when its write completes.
+    pub fn in_flight(&self) -> usize {
+        self.inner.in_flight.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Resolves once every observation write spawned before the call has completed: the moment
+    /// after which the index and the evidence hold every fact this writer was handed.
+    pub async fn drain(&self) {
+        loop {
+            let mut notified = std::pin::pin!(self.inner.idle.notified());
+            notified.as_mut().enable();
+            if self.in_flight() == 0 {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// Hydrate the held projection from the index: every latest row this node wrote (its own
@@ -211,6 +235,7 @@ impl ConnectionsWriter {
         let _ = self.inner.held.lock().unwrap().apply(row.clone());
         let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
         let w = self.clone();
+        self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.inner.runtime.spawn(async move {
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.update.via-observed",
@@ -230,6 +255,9 @@ impl ConnectionsWriter {
             if settles {
                 let _ = w.settle_owed().await;
             }
+            drop(span);
+            w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            w.inner.idle.notify_waiters();
         });
     }
 }

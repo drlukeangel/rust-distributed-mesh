@@ -137,7 +137,10 @@ async fn source_reconnect_failures_grow_log_keep_two_current_members() {
     assert_eq!(plan.len(), 1);
     assert_eq!(plan[0].recovery.attempt_ordinal, ATTEMPTS, "the reconnect schedule continues from the latest failure");
 
-    // The evidence: direct observations, then every span this process emitted.
+    // The evidence: direct observations, then every span this process emitted. Every observation
+    // write has landed (and closed its span) before the exporter is shut down.
+    writer.drain().await;
+    assert_eq!(writer.in_flight(), 0);
     drop(telemetry);
     let spans = collect_spans(&dir);
     let observed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.update.via-observed").collect();
