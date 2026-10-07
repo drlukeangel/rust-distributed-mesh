@@ -98,7 +98,7 @@ impl AdminConfig {
             .map(|b| b.parse().map_err(|e| format!("RAFKA_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let passthrough = ["RAFKA_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RAFKA_ENDPOINT_PORT_RANGE", "RAFKA_CONTAINER_SUBNET_POOL"]
+        let passthrough = ["RAFKA_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RAFKA_ENDPOINT_PORT_RANGE", "RAFKA_CONTAINER_SUBNET_POOL", "RAFKA_STALENESS_MS", "RAFKA_GOSSIP_INTERVAL_MS", "RAFKA_BACKBONE_INTERVAL_MS", "RAFKA_LEAVE_LINGER_MS"]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
