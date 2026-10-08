@@ -67,7 +67,7 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (PeerUnresolved { reason: "p".into() }, "050170"),
         (Busy { reason: "b".into() }, "060162"),
         (Draining { reason: "d".into() }, "070164"),
-        (Malformed { kind: MalformedKind::Corrupt }, "0801"),
+        (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
     ];
