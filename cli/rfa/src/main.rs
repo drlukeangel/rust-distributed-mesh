@@ -271,8 +271,8 @@ enum TopologyFormat {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Use SimpleSpanProcessor for short-lived CLI — synchronous export on span
-    // close means no flush race vs runtime teardown, no pre-exit sleep needed.
+    // Spans export in the background; the guard's drop and `exit_flushed` drain them, each
+    // waiting at most the telemetry drain bound.
     let _guard = rafka_mesh_telemetry::init_telemetry_for_cli("rfa");
 
     let cli = Cli::parse();
@@ -1618,7 +1618,7 @@ async fn cmd_node_add(
     } else {
         let err = body["error"].as_str().unwrap_or("unknown error");
         eprintln!("spawn failed ({status}): {err}");
-        std::process::exit(1);
+        exit_flushed(1);
     }
 }
 
@@ -1648,12 +1648,12 @@ async fn cmd_node_remove(
         }
         404 => {
             eprintln!("node not found: {node_name}");
-            std::process::exit(2);
+            exit_flushed(2);
         }
         _ => {
             let err = body["error"].as_str().unwrap_or("unknown error");
             eprintln!("kill failed ({status}): {err}");
-            std::process::exit(1);
+            exit_flushed(1);
         }
     }
 }
@@ -1700,9 +1700,16 @@ async fn cmd_wait_converged(
             eprintln!(
                 "timeout after {timeout_str}: {current}/{target} nodes ({poll_count} polls)"
             );
-            std::process::exit(1);
+            exit_flushed(1);
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+/// End the process with `code` after the telemetry queue has drained (bounded: a collector that is
+/// down never holds the exit).
+fn exit_flushed(code: i32) -> ! {
+    rafka_mesh_telemetry::flush_before_exit();
+    std::process::exit(code)
 }

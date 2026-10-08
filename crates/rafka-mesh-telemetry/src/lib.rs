@@ -2,56 +2,82 @@ use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SimpleSpanProcessor, TracerProvider};
+use tracing_subscriber::filter::{filter_fn, FilterExt};
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
+pub mod export;
 pub mod logs;
 pub mod watchdog;
 
-pub struct TelemetryGuard {
+use export::{ExportRuntime, WatchedLogs, WatchedSpans};
+
+/// The exporters one `init_*` built: drained at most once, by whichever of the guard's `Drop` and
+/// [`flush_before_exit`] comes first.
+#[derive(Clone)]
+struct Exporters {
     provider: TracerProvider,
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
+    drained: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// What an intentional `process::exit` flushes: the exporters the guard owns, which `exit` never drops.
-static EXIT_FLUSH: std::sync::OnceLock<(TracerProvider, Option<opentelemetry_sdk::logs::LoggerProvider>)> = std::sync::OnceLock::new();
+impl Exporters {
+    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> Self {
+        Self { provider, logs, drained: Default::default() }
+    }
 
-/// Flush and shut down the exporters before a deliberate `process::exit`, which skips the guard's
-/// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
-/// collector. A process that never initialised telemetry has nothing to flush.
-pub fn flush_before_exit() {
-    if let Some((provider, logs)) = EXIT_FLUSH.get() {
-        let _ = provider.force_flush();
-        let _ = provider.shutdown();
-        if let Some(logs) = logs {
-            let _ = logs.force_flush();
-            let _ = logs.shutdown();
+    /// Shut the providers down (the shutdown drains what is queued), each on a thread of its own,
+    /// and wait at most [`export::DRAIN_BOUND`] for them together. The local evidence sink is the
+    /// provider's first processor, so it is drained before the collector's.
+    fn drain(&self, what: &'static str) {
+        if self.drained.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
         }
+        let provider = self.provider.clone();
+        let mut jobs: Vec<Box<dyn FnOnce() + Send>> = vec![Box::new(move || {
+            if let Err(e) = provider.shutdown() {
+                eprintln!("telemetry shutdown error: {e}");
+            }
+        })];
+        if let Some(logs) = self.logs.clone() {
+            jobs.push(Box::new(move || {
+                if let Err(e) = logs.shutdown() {
+                    eprintln!("telemetry log shutdown error: {e}");
+                }
+            }));
+        }
+        export::bounded(what, jobs);
+    }
+}
+
+pub struct TelemetryGuard {
+    exporters: Exporters,
+}
+
+/// What an intentional `process::exit` drains: the exporters the guard owns, which `exit` never drops.
+static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
+
+/// Drain and shut down the exporters before a deliberate `process::exit`, which skips the guard's
+/// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
+/// collector. A process that never initialised telemetry has nothing to drain. The wait is bounded
+/// by [`export::DRAIN_BOUND`]: an unreachable collector never holds the exit.
+pub fn flush_before_exit() {
+    if let Some(exporters) = EXIT_FLUSH.get() {
+        exporters.drain("the exit drain");
     }
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        for result in self.provider.force_flush() {
-            if let Err(e) = result {
-                eprintln!("telemetry flush error: {e}");
-            }
-        }
-        if let Err(e) = self.provider.shutdown() {
-            eprintln!("telemetry shutdown error: {e}");
-        }
-        if let Some(logs) = &self.logs {
-            for result in logs.force_flush() {
-                if let Err(e) = result {
-                    eprintln!("telemetry log flush error: {e}");
-                }
-            }
-            if let Err(e) = logs.shutdown() {
-                eprintln!("telemetry log shutdown error: {e}");
-            }
-        }
+        self.exporters.drain("the guard's drain");
     }
+}
+
+fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> TelemetryGuard {
+    let exporters = Exporters::new(provider, logs);
+    let _ = EXIT_FLUSH.set(exporters.clone());
+    TelemetryGuard { exporters }
 }
 
 /// Initialize OTLP tracing for long-running services (gateway, broker, compute,
@@ -67,22 +93,22 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    TelemetryGuard { provider, logs: None }
+    guard(provider, None)
 }
 
 /// Initialize OTLP tracing for short-lived CLI processes (rfa, future rf).
-/// Uses SimpleSpanProcessor — synchronous export on span close. No batch race,
-/// no need for a pre-exit flush sleep. Cost: one export per span (higher
-/// overhead than batching). Suitable for low span volume + short process lifetime.
+/// Spans export in the background like a service's; the guard's `Drop` and
+/// [`flush_before_exit`] drain what is queued, each waiting at most [`export::DRAIN_BOUND`],
+/// so a CLI never waits on a collector that is down.
 ///
 /// Also installs the W3C TraceContext propagator globally.
 ///
 /// Returns a guard whose `Drop` flushes and shuts down the exporter.
 pub fn init_telemetry_for_cli(service_name: &str) -> TelemetryGuard {
     install_propagator();
-    let (provider, tracer) = build_simple_provider(service_name);
+    let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    TelemetryGuard { provider, logs: None }
+    guard(provider, None)
 }
 
 fn install_propagator() {
@@ -116,12 +142,17 @@ fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
     opentelemetry_sdk::Resource::new(attrs)
 }
 
-fn build_exporter(endpoint: String) -> SpanExporter {
-    SpanExporter::builder()
+/// The OTLP span exporter, built on the export runtime so its connection lives there, with
+/// every request bounded by [`export::EXPORT_TIMEOUT`].
+fn build_exporter(endpoint: String) -> WatchedSpans<SpanExporter> {
+    let _export = ExportRuntime::get().enter();
+    let inner = SpanExporter::builder()
         .with_tonic()
-        .with_endpoint(endpoint)
+        .with_endpoint(endpoint.clone())
+        .with_timeout(export::EXPORT_TIMEOUT)
         .build()
-        .expect("OTLP span exporter")
+        .expect("OTLP span exporter");
+    WatchedSpans::new(inner, &endpoint)
 }
 
 fn build_batch_provider(
@@ -131,12 +162,10 @@ fn build_batch_provider(
     let exporter = build_exporter(endpoint);
     let resource = build_resource(&resolved);
 
-    let batch_config = BatchConfigBuilder::default()
-        .with_scheduled_delay(std::time::Duration::from_millis(200))
-        .build();
-    let processor = BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_batch_config(batch_config)
-        .build();
+    let processor = {
+        let _export = ExportRuntime::get().enter();
+        BatchSpanProcessor::builder(exporter, ExportRuntime::get().clone()).with_batch_config(batch_config()).build()
+    };
 
     let provider = TracerProvider::builder()
         .with_span_processor(processor)
@@ -146,19 +175,13 @@ fn build_batch_provider(
     (provider, tracer)
 }
 
-fn build_simple_provider(
-    service_name: &str,
-) -> (TracerProvider, opentelemetry_sdk::trace::Tracer) {
-    let (endpoint, resolved) = resolve_endpoint_and_service(service_name);
-    let exporter = build_exporter(endpoint);
-    let resource = build_resource(&resolved);
-
-    let provider = TracerProvider::builder()
-        .with_span_processor(SimpleSpanProcessor::new(Box::new(exporter)))
-        .with_resource(resource)
-        .build();
-    let tracer = provider.tracer(resolved);
-    (provider, tracer)
+/// The batch processors' bounds: 200 ms between exports, a full queue drops, and one export
+/// request takes at most [`export::EXPORT_TIMEOUT`].
+fn batch_config() -> opentelemetry_sdk::trace::BatchConfig {
+    BatchConfigBuilder::default()
+        .with_scheduled_delay(std::time::Duration::from_millis(200))
+        .with_max_export_timeout(export::EXPORT_TIMEOUT)
+        .build()
 }
 
 fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
@@ -169,7 +192,8 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
     // `iroh_quinn_proto=trace`) wins over the per-layer floor, so debug
     // visibility is opt-in per debugging session rather than always-on.
     let fmt_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into());
+        .add_directive(tracing::Level::INFO.into())
+        .and(filter_fn(export::admits_source));
     // OTLP layer floor is INFO, NOT debug. Under chaos churn, iroh/noq/gossip
     // emit a DEBUG firehose (binding / path selection / socket transports /
     // hyparview internals). tracing-opentelemetry's `on_event` appends every
@@ -198,7 +222,8 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
         .add_directive("tower=off".parse().expect("static directive"))
         .add_directive("opentelemetry=off".parse().expect("static directive"))
         .add_directive("opentelemetry_sdk=off".parse().expect("static directive"))
-        .add_directive("opentelemetry_otlp=off".parse().expect("static directive"));
+        .add_directive("opentelemetry_otlp=off".parse().expect("static directive"))
+        .and(filter_fn(export::admits_source));
 
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(otel_filter);
@@ -388,23 +413,25 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     }
     let mut logs = None;
     if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        let export_rt = ExportRuntime::get();
+        let _export = export_rt.enter();
         // The log adapter's provider: every log line to the collector's log store, beside spans.
-        match opentelemetry_otlp::LogExporter::builder().with_tonic().with_endpoint(endpoint.clone()).build() {
+        match opentelemetry_otlp::LogExporter::builder().with_tonic().with_endpoint(endpoint.clone()).with_timeout(export::EXPORT_TIMEOUT).build() {
             Ok(exporter) => {
                 logs = Some(
                     opentelemetry_sdk::logs::LoggerProvider::builder()
                         .with_resource(build_resource(&service))
-                        .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+                        .with_batch_exporter(WatchedLogs::new(exporter, &endpoint), export_rt.clone())
                         .build(),
                 );
             }
             Err(e) => eprintln!("telemetry: the OTLP log exporter for {endpoint} could not be built: {e}"),
         }
-        let processor = BatchSpanProcessor::builder(build_exporter(endpoint), opentelemetry_sdk::runtime::Tokio).build();
+        let processor = BatchSpanProcessor::builder(build_exporter(endpoint), export_rt.clone()).with_batch_config(batch_config()).build();
         builder = builder.with_span_processor(processor);
         any = true;
     }
-    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into());
+    let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source));
     if !any {
         let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter)).try_init();
         return None;
@@ -416,13 +443,15 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .add_directive("iroh=warn".parse().expect("static directive"))
         .add_directive("iroh_gossip=warn".parse().expect("static directive"))
         .add_directive("noq=warn".parse().expect("static directive"))
-        .add_directive("noq_proto=warn".parse().expect("static directive"));
+        .add_directive("noq_proto=warn".parse().expect("static directive"))
+        .and(filter_fn(export::admits_source));
     let log_filter = EnvFilter::from_default_env()
         .add_directive(tracing::Level::INFO.into())
         .add_directive("iroh=warn".parse().expect("static directive"))
         .add_directive("iroh_gossip=warn".parse().expect("static directive"))
         .add_directive("noq=warn".parse().expect("static directive"))
-        .add_directive("noq_proto=warn".parse().expect("static directive"));
+        .add_directive("noq_proto=warn".parse().expect("static directive"))
+        .and(filter_fn(export::admits_source));
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
@@ -431,6 +460,5 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .with(log_layer)
         .try_init();
     let _ = watchdog::spawn();
-    let _ = EXIT_FLUSH.set((provider.clone(), logs.clone()));
-    Some(TelemetryGuard { provider, logs })
+    Some(guard(provider, logs))
 }

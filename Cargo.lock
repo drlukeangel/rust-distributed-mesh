@@ -3553,6 +3553,7 @@ dependencies = [
 name = "rafka-mesh-telemetry"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures-util",
  "http",
  "opentelemetry",
@@ -3562,6 +3563,7 @@ dependencies = [
  "opentelemetry_sdk",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-flame",
  "tracing-opentelemetry",

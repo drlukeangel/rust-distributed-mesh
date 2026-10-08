@@ -17,6 +17,8 @@ tracing-flame = "0.2.0"
 serde_json = { workspace = true }
 futures-util = "0.3"
 tokio = { workspace = true }
+tokio-stream = "0.1"
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "time"] }
