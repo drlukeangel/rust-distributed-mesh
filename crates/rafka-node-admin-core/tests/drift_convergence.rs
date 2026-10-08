@@ -295,7 +295,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &mut started).await
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started).await
     }
 
     /// Every live admin runs its executor until no Build is active: claims, hand-offs and
@@ -543,4 +543,57 @@ async fn every_other_exit_is_replaced_one_birth_per_attempt_in_path_order() {
     assert!(e.fence_of("mesh1.rpc.2").iter().all(|o| matches!(o, FenceOutcome::Clear { gone: Some(_) })));
     e.holds_the_shape().await;
     assert_eq!(e.drift().await, None, "nothing is left to repair");
+}
+
+/// A successor fabric primary that never heard a dead sibling holds nothing of it but the durable
+/// row its predecessor handed over: that row is the exact runtime to inspect.
+#[tokio::test]
+async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row() {
+    let e = estate().await;
+    let before = e.accepted.current(&*e.builds).await.unwrap();
+    // mesh1's cohort is lost; its second admin is one the successor never heard.
+    let lost = "mesh1.admin.2";
+    let old = e.node_id(lost).await;
+    let row = {
+        let (d, _) = e.book.get(&old).unwrap();
+        rafka_node_admin_core::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
+    };
+    e.world.kill(&old);
+    // The successor's membership and view: everything but the lost admin.
+    let heard = DigestBook::default();
+    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+        heard.record(d);
+    }
+    let mut t = e.view.read().await.clone();
+    t.nodes.retain(|n| n.name.to_string() != lost);
+    rafka_node_admin_core::election::resolve(&mut t.nodes);
+    let me: PathName = t.fabric_primary().unwrap().name.clone();
+    let mut started = HashSet::new();
+    let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started).await;
+    assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
+}
+
+#[tokio::test]
+async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
+    let e = estate().await;
+    let lost = "mesh1.admin.2";
+    let old = e.node_id(lost).await;
+    let row = {
+        let (d, _) = e.book.get(&old).unwrap();
+        rafka_node_admin_core::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }
+    };
+    e.world.freeze(&old);
+    let heard = DigestBook::default();
+    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+        heard.record(d);
+    }
+    let mut t = e.view.read().await.clone();
+    t.nodes.retain(|n| n.name.to_string() != lost);
+    rafka_node_admin_core::election::resolve(&mut t.nodes);
+    let me: PathName = t.fabric_primary().unwrap().name.clone();
+    let mut started = HashSet::new();
+    let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started).await;
+    assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }

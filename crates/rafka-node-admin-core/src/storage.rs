@@ -117,8 +117,32 @@ impl NodeRecord {
     }
 }
 
+/// One birth's exact runtime as this admin first held it: the durable map a successor fabric
+/// primary proves an exit from when its own membership never heard the birth. Its own keyed row
+/// (NodeId + IncarnationId), written once by a blind put, never rewritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRow {
+    pub node_id: NodeId,
+    pub name: PathName,
+    pub incarnation_id: IncarnationId,
+    pub runtime: rafka_mesh_entity::RuntimeFact,
+    /// The data dir the birth reported: where its process runtime records an exit code.
+    pub data_dir: Option<String>,
+}
+
+impl RuntimeRow {
+    /// The row's key: the birth it describes.
+    pub fn key(&self) -> String {
+        format!("{}--{}", self.node_id, self.incarnation_id.0)
+    }
+}
+
 #[async_trait]
 pub trait NodesStorage: Send + Sync {
+    /// Keep the runtime of one birth (a blind put of its own row).
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
+    /// Every birth's runtime row this admin holds; folded by the reader.
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
     /// This admin's own row; `None` before its first start completed.
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError>;
@@ -130,12 +154,20 @@ pub trait NodesStorage: Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
+    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
     own: Mutex<Option<NodeRecord>>,
     contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
 }
 
 #[async_trait]
 impl NodesStorage for MemoryNodesStorage {
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
+        self.runtimes.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
+        Ok(self.runtimes.lock().unwrap().values().cloned().collect())
+    }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
     }
@@ -157,22 +189,30 @@ impl NodesStorage for MemoryNodesStorage {
 }
 
 const NODE_FORMAT: &str = "node-record/1";
+const RUNTIME_FORMAT: &str = "node-runtime/1";
 
 /// `<data dir>/nodes/self.json` and `<data dir>/nodes/contacts/<node id>.json`.
 #[derive(Debug)]
 pub struct FileNodesStorage {
     own: FileRecords,
     contacts: FileRecords,
+    runtimes: FileRecords,
 }
 
 impl FileNodesStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
-        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")? })
+        Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")? })
     }
 }
 
 #[async_trait]
 impl NodesStorage for FileNodesStorage {
+    async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
+        self.runtimes.write(&row.key(), RUNTIME_FORMAT, row).await
+    }
+    async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
+        self.runtimes.list(RUNTIME_FORMAT)
+    }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT)
     }

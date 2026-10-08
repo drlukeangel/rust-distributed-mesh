@@ -461,8 +461,10 @@ pub async fn reconcile_drift(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     builds: &dyn BuildStateAdapter,
     contexts: &crate::build_claim::AttemptContexts,
+    durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
 ) -> Option<(crate::build::BuildId, u32)> {
+    let _ = durable;
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
     if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
@@ -2438,6 +2440,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
         let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
         let frozen = shutdown_control.clone();
+        let drift_nodes = nodes_storage.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
             loop {
@@ -2455,7 +2458,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // (its view then authorizes nothing). The fabric authority first
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &mut started).await;
+                    let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
