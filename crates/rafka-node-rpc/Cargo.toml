@@ -5,6 +5,10 @@ edition = "2021"
 description = "Generic Node RPC runtime over Iroh: exact-target client/server, commit cut, admission (i143)"
 publish = false
 
+# No doctest exists here, and a doctest build links the unhashed libiroh.rlib that any concurrent cargo run rewrites (vendor/iroh is a path crate).
+[lib]
+doctest = false
+
 [dependencies]
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }

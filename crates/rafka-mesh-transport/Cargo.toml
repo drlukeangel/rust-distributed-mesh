@@ -3,6 +3,10 @@ name = "rafka-mesh-transport"
 version = "0.1.0"
 edition = "2021"
 
+# No doctest exists here, and a doctest build links the unhashed libiroh.rlib that any concurrent cargo run rewrites (vendor/iroh is a path crate).
+[lib]
+doctest = false
+
 [dependencies]
 tokio = { workspace = true }
 futures-lite = "2"
