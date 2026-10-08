@@ -5,10 +5,14 @@
 //!
 //! CONTRACT: on a real fabric, an observer that joined the backbone and a mesh channel before a
 //! status change decodes the frames the fabric puts there. A quiet fabric carries heartbeats and
-//! aggregates and no status frame at all. A new mesh's primary publishes its mesh's status as its
-//! own frame exactly five times, one per second, all at one instant, and then nothing. A member
-//! that joins afterwards is told the held statuses by their holder, with the original publisher and
-//! instant, and then hears no status frame. The topology change is a Build through the node-admin.
+//! aggregates and no status frame at all. A new mesh's primary sends its mesh's status five times,
+//! one per second, as the SAME message (one `changed_at_rafka_ms`), and then nothing: the five
+//! sends are proven at the SENDER by its `via-status-send` span for each send, never by counting
+//! frames at an observer, which already holds the first copy and drops the identical rest. A member
+//! that joins while the sends are running holds the status once, with the original publisher and
+//! change instant. A member that joins afterwards is told the held statuses by their holder, with
+//! the original publisher and instant, and then hears no status frame. The topology change is a
+//! Build through the node-admin.
 
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
@@ -131,6 +135,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let (anchor, anchor_unix_ns) = (Instant::now(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
 
     // The fabric: mesh1, shaped by a Build through its node-admin.
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
@@ -153,7 +158,6 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The change: a Build adds mesh2. Its first (and only) admin becomes mesh2's primary and
     // publishes mesh2's status. The Build is the node-admin's rectifier; nothing is killed.
-    let change_build_at = Instant::now();
     let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 1, "rpc_node": 1}]});
     let (status, a) = estate.post("/api/build", &shape).await;
     assert_eq!(status, 202, "{a}");
@@ -164,19 +168,23 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let authored = |o: &Observer| -> Vec<Seen> {
         o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(&x.frame, Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
     };
-    wait_for("the observer heard the fifth send of mesh2's status", Duration::from_secs(30), || async { (authored(&early).len() >= 5).then_some(()) }).await;
-    let sends = authored(&early);
-    // No further send arrives: the fifth is the last.
-    let last_at = sends.iter().map(|x| x.at).max().unwrap();
-    tokio::time::sleep(Duration::from_secs(6)).await;
-    let sends_after = authored(&early);
-    assert_eq!(sends_after.len(), 5, "mesh2's status was sent exactly five times, then nothing: {:#?}", sends_after.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
-    let instants: Vec<u64> = sends_after.iter().map(|x| parts(&x.frame).5).collect();
-    assert!(instants.iter().all(|i| *i == instants[0]), "all five sends carry the one instant of the change: {instants:?}");
-    assert!(sends_after.iter().all(|x| parts(&x.frame).2 == "ready-for-traffic"), "the status the five sends carry");
-    let gaps_ms: Vec<u64> = sends_after.windows(2).map(|w| w[1].at.duration_since(w[0].at).as_millis() as u64).collect();
-    assert!(gaps_ms.iter().all(|g| (800..=1500).contains(g)), "one send per second: {gaps_ms:?}");
-    assert!(last_at.duration_since(change_build_at) > Duration::from_secs(4));
+    wait_for("the early observer heard mesh2's status", Duration::from_secs(30), || async { (!authored(&early).is_empty()).then_some(()) }).await;
+    // A member joins while the sends are still running (the first was just heard; the second is due
+    // within a second): it holds the status once.
+    let joiner = Observer::join(&fabric, &mesh1_id, seeds_of(&estate.nodes().await)).await;
+    let joined_at = Instant::now();
+    wait_for("the member that joined mid-window holds mesh2's status", Duration::from_secs(30), || async { (!authored(&joiner).is_empty()).then_some(()) }).await;
+    let joiner_heard_at = joiner.statuses().iter().filter(|x| matches!(&x.frame, Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).map(|x| x.at).min().unwrap();
+    // Let the five sends finish, then keep watching: nothing more is sent.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let early_copies = authored(&early);
+    let early_encoded: std::collections::BTreeSet<Vec<u8>> = early_copies.iter().map(|x| x.frame.encode()).collect();
+    assert_eq!(early_encoded.len(), 1, "every copy the early observer holds is the one identical message: {:#?}", early_copies.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
+    let instants: Vec<u64> = early_copies.iter().map(|x| parts(&x.frame).5).collect();
+    assert_eq!(parts(&early_copies[0].frame).2, "ready-for-traffic", "the status mesh2's primary sent");
+    let joiner_copies = authored(&joiner);
+    let joiner_encoded: std::collections::BTreeSet<Vec<u8>> = joiner_copies.iter().map(|x| x.frame.encode()).collect();
+    assert_eq!(joiner_encoded, early_encoded, "the member that joined mid-window holds the very message the early observer holds");
 
     // The quiet window: nothing changes, the fabric primary stays the same, and no status frame
     // crosses either channel while the heartbeat and the aggregate keep going.
@@ -232,6 +240,38 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     estate.stop().await;
     let spans = estate.spans();
     let roles: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-publisher");
+    // The five sends, proven at the SENDER: one `via-status-send` span per send on mesh2's primary,
+    // the first at once and the rest one second apart, all carrying the one changed_at_rafka_ms,
+    // and no sixth however long the estate ran afterwards.
+    let mut sender_sends: Vec<(u64, u64)> = named(&spans, "rdm.mesh.fabric.update.via-status-send")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && sp["attributes"]["scope"] == "mesh:mesh2")
+        .map(|sp| (sp["start_unix_nano"].as_u64().unwrap(), s(&sp["attributes"]["changed_at_rafka_ms"]).parse::<u64>().unwrap()))
+        .collect();
+    sender_sends.sort();
+    assert_eq!(sender_sends.len(), 5, "mesh2's primary sent its status exactly five times: {sender_sends:?}");
+    assert!(sender_sends.iter().all(|(_, at)| *at == instants[0]), "all five sends are the one message, changed_at_rafka_ms {}: {sender_sends:?}", instants[0]);
+    let send_offsets_ms: Vec<u64> = sender_sends.iter().map(|(t, _)| (t - sender_sends[0].0) / 1_000_000).collect();
+    for (k, o) in send_offsets_ms.iter().enumerate() {
+        assert!((k as u64 * 1_000..k as u64 * 1_000 + 500).contains(o), "send {k} is due {k} s after the first: {send_offsets_ms:?}");
+    }
+    // Nothing on an unchanged status: no send of any status begins during the quiet window.
+    let unix_ns = |t: Instant| -> u64 { anchor_unix_ns + t.duration_since(anchor).as_nanos() as u64 };
+    let (quiet_from, quiet_to) = (unix_ns(window_start), unix_ns(window_start + Duration::from_secs(10)));
+    let in_quiet: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| (quiet_from..quiet_to).contains(&sp["start_unix_nano"].as_u64().unwrap())).collect();
+    assert!(in_quiet.is_empty(), "no status is sent in the quiet window: {in_quiet:?}");
+    // The mid-window joiner against the sender's own record: when it arrived, when the author's
+    // NeighborUp for it fired, and when each send was made. Replay and send are the same bytes, so
+    // the joiner cannot tell which copy it holds; the sender's record places both.
+    let joiner_short = joiner.endpoint.id().fmt_short().to_string();
+    let rel_ms = |ns: u64| -> i64 { (ns as i128 - sender_sends[0].0 as i128).div_euclid(1_000_000) as i64 };
+    let author_neighbour_up_ms: Vec<i64> = named(&spans, "rdm.mesh.connection.update.via-neighbour-up")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && s(&sp["attributes"]["peer"]) == joiner_short)
+        .map(|sp| rel_ms(sp["start_unix_nano"].as_u64().unwrap()))
+        .collect();
+    let joiner_heard_ms = rel_ms(unix_ns(joiner_heard_at));
+    let joiner_joined_ms = rel_ms(unix_ns(joined_at));
     let early_rows: Vec<Value> = early.statuses().iter().map(|x| row(&early, x)).collect();
     let late_rows: Vec<Value> = late.statuses().iter().map(|x| row(&late, x)).collect();
     let result = json!({
@@ -239,7 +279,9 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
         "fabric_id": fabric.to_string(),
         "mesh1_id": mesh1_id.to_string(),
         "early_observer_status_frames": early_rows,
-        "mesh2_status_sends": { "count": sends_after.len(), "gaps_ms": gaps_ms, "changed_at_rafka_ms": instants, "publisher": "mesh2.admin.1" },
+        "mesh2_status_sends_at_the_sender": { "count": sender_sends.len(), "offsets_ms_from_first": send_offsets_ms, "changed_at_rafka_ms": instants[0], "publisher": "mesh2.admin.1" },
+        "early_observer_mesh2_copies_held": early_copies.len(),
+        "mid_window_joiner": { "joined_ms_after_first_send": joiner_joined_ms, "first_heard_ms_after_first_send": joiner_heard_ms, "author_neighbour_up_ms_after_first_send": author_neighbour_up_ms, "copies_held": joiner_copies.len(), "same_bytes_as_early_observer": true },
         "quiet_window": {
             "seconds": 10,
             "status_frames": status_in_window.len(),
@@ -255,4 +297,5 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     early.endpoint.close().await;
     late.endpoint.close().await;
+    joiner.endpoint.close().await;
 }
