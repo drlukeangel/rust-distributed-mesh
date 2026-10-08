@@ -41,6 +41,17 @@ pub enum OriginateRequest {
     ArmFault { refuse_index: u32, refuse_history: u32 },
     ReleaseFault,
     Snapshot,
+    /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
+    /// them (connections.md section 7): `failed_attempts` Direct Failed observations through the
+    /// writer's own observer path, then `Proxy Connected` through `carrier`, both naming the
+    /// births this node's membership holds now. Testkit only: the product writes a Proxy after
+    /// cold discovery, which nothing in this repository runs.
+    RecordProxy { destination: String, carrier: String, failed_attempts: u32 },
+    /// One direct core Ping to `destination`, outside route resolution, as a node's own
+    /// background traffic reaches a peer: the pooled connection it opens is reported to the
+    /// destination's writer as Direct Connected from the destination's side (accepted) and to
+    /// this node's writer as its own dial.
+    Dial { destination: String },
 }
 
 /// Who answered.
@@ -77,6 +88,10 @@ pub enum OriginateReply {
     Draining { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
+    /// The facts a `RecordProxy` wrote, with the births they name.
+    ProxyRecorded { by: AnsweredBy, destination_node_id: String, destination_incarnation: String, carrier_node_id: String, carrier_incarnation: String, failed_attempts: u32 },
+    /// The answer of a `Dial`: the typed outcome name of the one Ping.
+    Dialed { by: AnsweredBy, destination_node_id: String, outcome: String },
 }
 
 impl NodeProtocol for Originate {
@@ -85,13 +100,18 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 11;
+    const REQUEST_VARIANTS: u32 = 6;
+    const REPLY_VARIANTS: u32 = 13;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
         match reply {
-            OriginateReply::Called { .. } | OriginateReply::FaultArmed { .. } | OriginateReply::FaultReleased { .. } | OriginateReply::Snapshot { .. } => ReplyKind::Success,
+            OriginateReply::Called { .. }
+            | OriginateReply::FaultArmed { .. }
+            | OriginateReply::FaultReleased { .. }
+            | OriginateReply::Snapshot { .. }
+            | OriginateReply::ProxyRecorded { .. }
+            | OriginateReply::Dialed { .. } => ReplyKind::Success,
             OriginateReply::BadDestination { .. } => ReplyKind::ProtocolRefusal,
             OriginateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             OriginateReply::NotReady { .. } => ReplyKind::NotReady,
@@ -144,6 +164,8 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
                     OriginateReply::FaultArmed { by, refuse_index, refuse_history }
                 }
                 OriginateRequest::ReleaseFault => OriginateReply::FaultReleased { by, refused: seams.fault.release() },
+                OriginateRequest::RecordProxy { destination, carrier, failed_attempts } => record_proxy(&by, &seams, &destination, &carrier, failed_attempts).await,
+                OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
                 OriginateRequest::Snapshot => {
                     let held = seams.connections.held();
                     let held = held.lock().unwrap();
@@ -209,6 +231,64 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
         outcome,
         reply,
         pooled: seams.client.pooled().into_iter().map(|k| format!("{k:?}")).collect(),
+    }
+}
+
+async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateReply {
+    use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+    let path: PathName = match destination.parse() {
+        Ok(p) => p,
+        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
+    };
+    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+        Ok(n) => n,
+        Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
+    };
+    let (out, _) = seams.client.call::<Ping>(&NodeTarget::ExactNode(target.node_id.clone()), &PingRequest::Ping { payload: b"dial".to_vec() }, &CallOptions::default()).await;
+    OriginateReply::Dialed { by: by.clone(), destination_node_id: target.node_id.to_string(), outcome: out.name().to_string() }
+}
+
+async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind};
+    use rafka_node_rpc::ConnectionObserver;
+    let bad = |reason: String| OriginateReply::BadDestination { by: by.clone(), reason };
+    let mut ends = Vec::new();
+    for what in [destination, carrier] {
+        let path: PathName = match what.parse() {
+            Ok(p) => p,
+            Err(e) => return bad(format!("{what:?}: {e}")),
+        };
+        match seams.resolver.resolve(&NodeTarget::CurrentPath(path)) {
+            Ok(n) => ends.push(n),
+            Err(f) => return bad(format!("{what} does not resolve on this node: {f:?}")),
+        }
+    }
+    let (dest, via) = (ends.remove(0), ends.remove(0));
+    for _ in 0..failed_attempts {
+        seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
+    }
+    seams.connections.drain().await;
+    let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let row = NodeConnection {
+        source: seams.connections.own().clone(),
+        destination: end(&dest),
+        kind: ConnectionKind::Proxy,
+        state: ConnectionState::Connected,
+        carrier: Some(end(&via)),
+        recovery: None,
+        reason: None,
+        logged_at_ms: now_ms().saturating_add(1),
+    };
+    if let Err(e) = seams.connections.record(row).await {
+        return bad(format!("the Proxy row was refused by this node's storage: {e}"));
+    }
+    OriginateReply::ProxyRecorded {
+        by: by.clone(),
+        destination_node_id: dest.node_id.to_string(),
+        destination_incarnation: dest.incarnation.to_string(),
+        carrier_node_id: via.node_id.to_string(),
+        carrier_incarnation: via.incarnation.to_string(),
+        failed_attempts,
     }
 }
 

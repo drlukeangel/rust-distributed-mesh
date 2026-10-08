@@ -109,7 +109,7 @@ fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
 fn members(held: &mut ConnectionsHeld, ends: &[&ConnectionEnd]) -> Arc<StaticIncarnations> {
     let m = Arc::new(StaticIncarnations::default());
     for e in ends {
-        m.set(e.name.clone(), e.incarnation.clone().unwrap());
+        m.set(e.node_id.clone(), e.name.clone(), e.incarnation.clone().unwrap());
     }
     held.set_membership(m.clone());
     m
@@ -123,7 +123,7 @@ fn a_stale_destination_incarnation_is_fenced() {
     held.apply(p.clone()).unwrap();
     assert_eq!(proxy_invalid(&held, &p), None, "membership holds the birth the Proxy recorded");
     // The destination restarts: membership now holds process d2 at its path.
-    m.set(dest.name.clone(), IncarnationId("d2".into()));
+    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId("d2".into()));
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
     assert_eq!(r.route, EffectiveRoute::NoActiveRoute);
@@ -136,7 +136,7 @@ fn a_stale_carrier_incarnation_is_fenced() {
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    m.set(carrier.name.clone(), IncarnationId("c2".into()));
+    m.set(carrier.node_id.clone(), carrier.name.clone(), IncarnationId("c2".into()));
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_SUPERSEDED));
 }
 
@@ -169,10 +169,26 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
     assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
-    m.set(dest.name.clone(), IncarnationId("d2".into()));
+    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId("d2".into()));
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, membership holds d2");
     assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no carrier edge names the current destination");
     assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
+}
+
+/// CONTRACT: a destination that departed (retired) is no current birth: the Direct fact toward it
+/// is not the current edge and a Proxy to it is fenced by name.
+#[test]
+fn a_direct_fact_and_a_proxy_naming_a_departed_destination_are_not_current() {
+    let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
+    let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
+    held.apply(p.clone()).unwrap();
+    assert_eq!(held.active_len(), 2);
+    m.depart(dest.node_id.clone(), dest.name.clone());
+    assert_eq!(held.active_len(), 0, "no Direct fact names a current destination");
+    assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false });
 }
 
 #[test]

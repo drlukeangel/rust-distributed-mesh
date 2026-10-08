@@ -275,6 +275,25 @@ mod tests {
     }
 
     #[test]
+    fn membership_names_the_birth_a_connection_fact_may_be_judged_against() {
+        use rafka_mesh_entity::connections::{Birth, CurrentIncarnations};
+        let r = LiveNodeResolver::default();
+        let a = birth("mesh1.rpc.1", 7000);
+        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Unknown, "never heard of: nothing is judged");
+        r.apply(a.clone(), None);
+        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Current(a.incarnation.clone()));
+        let b = restart(&a, 7001);
+        r.apply(b.clone(), Some(&a.incarnation));
+        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Current(b.incarnation.clone()), "a restart is the next birth of the same node");
+        r.depart(&a.node_id, &b.incarnation, &a.name);
+        assert_eq!(r.birth(&a.node_id, &a.name), Birth::Departed);
+        let other = birth("mesh1.rpc.2", 7002);
+        let replacement = birth("mesh1.rpc.2", 7003);
+        r.apply(replacement.clone(), None);
+        assert_eq!(r.birth(&other.node_id, &other.name), Birth::Departed, "another node holds the path");
+    }
+
+    #[test]
     fn a_replacement_takes_the_path_once_the_old_node_departs() {
         let r = LiveNodeResolver::default();
         let old = birth("mesh1.rpc.1", 7000);
@@ -328,10 +347,19 @@ mod tests {
     }
 }
 
-/// Membership as the connections holder reads it: the process birth each path holds now. A path
-/// this process does not hold (or whose node departed) answers `None`, and nothing is fenced.
+/// Membership as the connections holder reads it: the birth each node holds now. A node this
+/// process has not heard of is `Unknown` and nothing is judged; a node that departed, or whose path
+/// another node holds, is `Departed`.
 impl rafka_mesh_entity::connections::CurrentIncarnations for LiveNodeResolver {
-    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
-        self.resolve(&NodeTarget::CurrentPath(path.clone())).ok().map(|n| n.incarnation)
+    fn birth(&self, node_id: &NodeId, path: &PathName) -> rafka_mesh_entity::connections::Birth {
+        use rafka_mesh_entity::connections::Birth;
+        match self.resolve(&NodeTarget::ExactNode(node_id.clone())) {
+            Ok(n) => Birth::Current(n.incarnation),
+            Err(ResolveFailure::Gone) => Birth::Departed,
+            Err(_) => match self.resolve(&NodeTarget::CurrentPath(path.clone())) {
+                Ok(holder) if &holder.node_id != node_id => Birth::Departed,
+                _ => Birth::Unknown,
+            },
+        }
     }
 }

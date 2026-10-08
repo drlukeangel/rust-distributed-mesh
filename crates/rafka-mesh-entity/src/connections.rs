@@ -27,25 +27,45 @@ use crate::path::{NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Which process birth each path holds now, as the holder's membership knows it. Facts, never
-/// policy: `None` means membership does not hold the path, and then nothing is fenced.
-pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
-    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId>;
+/// What membership holds of one node a connection fact names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Birth {
+    /// The node's current process birth.
+    Current(IncarnationId),
+    /// The node left, or another node holds its path now: no birth of it is current.
+    Departed,
+    /// Membership does not hold the node: nothing is judged.
+    Unknown,
 }
 
-/// A fixed table of current process births per path: membership for a holder fed by hand.
+/// The births membership holds now, as the holder's membership knows them. Facts, never policy.
+pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
+    fn birth(&self, node_id: &NodeId, path: &PathName) -> Birth;
+}
+
+/// A fixed table of current births per node: membership for a holder fed by hand.
 #[derive(Debug, Default)]
-pub struct StaticIncarnations(std::sync::RwLock<HashMap<PathName, IncarnationId>>);
+pub struct StaticIncarnations(std::sync::RwLock<HashMap<NodeId, (PathName, Option<IncarnationId>)>>);
 
 impl StaticIncarnations {
-    pub fn set(&self, path: PathName, incarnation: IncarnationId) {
-        self.0.write().unwrap().insert(path, incarnation);
+    /// `node_id` at `path` holds `incarnation` now.
+    pub fn set(&self, node_id: NodeId, path: PathName, incarnation: IncarnationId) {
+        self.0.write().unwrap().insert(node_id, (path, Some(incarnation)));
+    }
+
+    /// `node_id` departed.
+    pub fn depart(&self, node_id: NodeId, path: PathName) {
+        self.0.write().unwrap().insert(node_id, (path, None));
     }
 }
 
 impl CurrentIncarnations for StaticIncarnations {
-    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
-        self.0.read().unwrap().get(path).cloned()
+    fn birth(&self, node_id: &NodeId, _path: &PathName) -> Birth {
+        match self.0.read().unwrap().get(node_id) {
+            Some((_, Some(i))) => Birth::Current(i.clone()),
+            Some((_, None)) => Birth::Departed,
+            None => Birth::Unknown,
+        }
     }
 }
 
@@ -224,18 +244,22 @@ impl ConnectionsHeld {
         self.membership = Some(membership);
     }
 
-    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
-        self.membership.as_ref().and_then(|m| m.current_incarnation(path))
+    /// Whether `end` names a process membership does not hold now: its node departed, another
+    /// node holds its path, or the node is here under another birth. An end naming no process is
+    /// judged only on departure; a node membership does not hold is not judged.
+    fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
+        let m = self.membership.as_ref()?;
+        match m.birth(&end.node_id, &end.name) {
+            Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),
+            Birth::Departed => Some(true),
+            Birth::Unknown => None,
+        }
     }
 
-    /// Whether `edge` names a destination process membership no longer holds at the
-    /// destination's path: such a fact is evidence about a birth that is gone, never about the
-    /// current one. An edge naming no process, or a path membership does not hold, is not judged.
+    /// Whether `edge` names a destination process membership no longer holds: such a fact is
+    /// evidence about a birth that is gone, never about the current one.
     pub fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
-        match (edge.destination.incarnation.as_ref(), self.current_incarnation(&edge.destination.name)) {
-            (Some(named), Some(current)) => *named != current,
-            _ => false,
-        }
+        self.end_superseded(&edge.destination).unwrap_or(false)
     }
 
     /// The holder now has every route.
@@ -302,9 +326,9 @@ impl ConnectionsHeld {
         Some(out)
     }
 
-    /// How many active Direct facts are held.
+    /// How many active Direct facts are held that name a destination process still current.
     pub fn active_len(&self) -> usize {
-        self.cells.values().filter(|c| c.active.is_some()).count()
+        self.cells.values().filter_map(|c| c.active.as_ref()).filter(|e| !self.names_superseded_destination(e)).count()
     }
 
     /// How many keys stand at a stamp, resident or not.
@@ -369,15 +393,11 @@ pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&
     let Some(carrier) = proxy.carrier.as_ref() else {
         return Some(INVALID_CARRIER_EDGE_LOST);
     };
-    if let (Some(recorded), Some(current)) = (proxy.destination.incarnation.as_ref(), held.current_incarnation(&proxy.destination.name)) {
-        if *recorded != current {
-            return Some(INVALID_DESTINATION_SUPERSEDED);
-        }
+    if held.end_superseded(&proxy.destination) == Some(true) {
+        return Some(INVALID_DESTINATION_SUPERSEDED);
     }
-    if let (Some(recorded), Some(current)) = (carrier.incarnation.as_ref(), held.current_incarnation(&carrier.name)) {
-        if *recorded != current {
-            return Some(INVALID_CARRIER_SUPERSEDED);
-        }
+    if held.end_superseded(carrier) == Some(true) {
+        return Some(INVALID_CARRIER_SUPERSEDED);
     }
     None
 }

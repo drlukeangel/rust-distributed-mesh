@@ -47,6 +47,9 @@ struct Args {
     refuse_index: u32,
     refuse_history: u32,
     release: bool,
+    /// `record-proxy`: the carrier path, and how many Direct Failed observations precede the Proxy.
+    carrier: Option<String>,
+    failed_attempts: u32,
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -54,6 +57,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut no_route = false;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
+    let (mut carrier, mut failed_attempts) = (None, 0u32);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -73,7 +77,9 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--refuse-index" => refuse_index = take("--refuse-index")?.parse().map_err(|e| format!("--refuse-index: {e}"))?,
             "--refuse-history" => refuse_history = take("--refuse-history")?.parse().map_err(|e| format!("--refuse-history: {e}"))?,
             "--release" => release = true,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" if op.is_none() => op = Some(a),
+            "--carrier" => carrier = Some(take("--carrier")?),
+            "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -95,6 +101,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         refuse_index,
         refuse_history,
         release,
+        carrier,
+        failed_attempts,
     })
 }
 
@@ -223,7 +231,7 @@ async fn run(a: Args) -> Result<Value, String> {
     if a.op == "declare" {
         return run_declare(&a, &target).await;
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial") {
         return run_originate(&a, &target).await;
     }
     let req = request(&a)?;
@@ -362,6 +370,13 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             };
             OriginateRequest::Call { destination, op }
         }
+        "dial" => OriginateRequest::Dial { destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("dial needs --destination path:<path.name>")? },
+        "record-proxy" => {
+            let path = |what: &str, v: &Option<String>| -> Result<String, String> {
+                v.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or(format!("record-proxy needs {what} path:<path.name>"))
+            };
+            OriginateRequest::RecordProxy { destination: path("--destination", &a.destination)?, carrier: path("--carrier", &a.carrier)?, failed_attempts: a.failed_attempts }
+        }
         "fault" if a.release => OriginateRequest::ReleaseFault,
         "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history },
         _ => OriginateRequest::Snapshot,
@@ -392,6 +407,11 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             OriginateReply::Snapshot { by, own_active_proxies, own_latest_directs, active_len, owed, fault_refused } => json!({
                 "outcome": "Reply", "by": by.node, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
                 "active_len": active_len, "owed": owed, "fault_refused": fault_refused,
+            }),
+            OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "dialed": outcome, "destination_node_id": destination_node_id}),
+            OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
+                "outcome": "Reply", "by": by.node, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
+                "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,
             }),
             other => json!({"outcome": "Reply", "refused": format!("{other:?}")}),
         },
