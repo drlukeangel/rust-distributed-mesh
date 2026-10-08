@@ -240,6 +240,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membershi
                         let members = i.full.digests();
                         tracing::info_span!(
                             "rdm.mesh.topology.update.via-read-install",
+                            node = membership.node(),
                             mesh = %i.mesh,
                             publisher = %i.publisher,
                             topology_version = i.topology_version,

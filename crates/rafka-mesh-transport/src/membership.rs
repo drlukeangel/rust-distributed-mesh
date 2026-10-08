@@ -1351,6 +1351,11 @@ impl Membership {
         }
     }
 
+    /// This node's path name, as it publishes itself.
+    pub fn node(&self) -> &str {
+        &self.view.node
+    }
+
     /// Cut off: this node heard other members and now hears none. What it
     /// holds then authorizes nothing (an admin executes no Build, publishes
     /// nothing as a primary).

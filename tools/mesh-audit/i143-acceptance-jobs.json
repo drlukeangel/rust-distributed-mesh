@@ -749,6 +749,24 @@
           "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently"
         }
       ]
+    },
+    "i143-rt6-process": {
+      "issue": "rt6",
+      "layer": "process",
+      "cells": [
+        {
+          "name": "ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_rt6.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds/estate cargo test -p rafka-test-scenario --test i143_acceptance_rt6 ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds -- --exact",
+          "dir": "target/i143-acceptance/rt6/process/ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds"
+        },
+        {
+          "name": "born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_rt6.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it/estate cargo test -p rafka-test-scenario --test i143_acceptance_rt6 born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it -- --exact",
+          "dir": "target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it"
+        }
+      ]
     }
   },
   "rshape_jobs": {
