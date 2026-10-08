@@ -64,6 +64,9 @@ struct Live {
     by_path: HashMap<PathName, NodeId>,
     retired: HashMap<NodeId, HashSet<IncarnationId>>,
     departed: HashMap<NodeId, Instant>,
+    /// Births known to have exited (an executor's proof): the node resolves nothing until a
+    /// successor birth is applied, so nothing dials or installs the dead birth's address.
+    exited: HashSet<(NodeId, IncarnationId)>,
 }
 
 impl Live {
@@ -137,6 +140,7 @@ impl LiveNodeResolver {
         };
         if let Applied::Restarted { old } = &applied {
             live.retired.entry(id.clone()).or_default().insert(old.clone());
+            live.exited.remove(&(id.clone(), old.clone()));
         }
         let path = birth.name.clone();
         live.nodes.insert(id.clone(), birth);
@@ -178,8 +182,17 @@ impl LiveNodeResolver {
 }
 
 impl LiveNodeResolver {
-    /// The exact birth `incarnation` of `node_id` is known to have exited.
-    pub fn retire_birth(&self, _node_id: &NodeId, _incarnation: &IncarnationId) {}
+    /// The exact birth `incarnation` of `node_id` is known to have exited (the provider proved
+    /// it): until a successor birth is applied the node resolves `Unavailable`, a dial in flight
+    /// to the dead birth is cancelled, and nothing dials or installs its address again.
+    pub fn retire_birth(&self, node_id: &NodeId, incarnation: &IncarnationId) {
+        let held = self.live.read().unwrap().nodes.get(node_id).map(|n| n.incarnation.clone());
+        if held.as_ref() != Some(incarnation) {
+            return;
+        }
+        self.live.write().unwrap().exited.insert((node_id.clone(), incarnation.clone()));
+        self.tick();
+    }
 
     /// [`NodeResolver::resolve`] as of `now`.
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
@@ -190,14 +203,19 @@ impl LiveNodeResolver {
 
     pub fn resolve_at(&self, target: &NodeTarget, now: Instant) -> Result<ResolvedNode, ResolveFailure> {
         let live = self.live.read().unwrap();
+        let current = |n: &ResolvedNode| if live.exited.contains(&(n.node_id.clone(), n.incarnation.clone())) { Err(ResolveFailure::Unavailable) } else { Ok(n.clone()) };
         match target {
-            NodeTarget::ExactNode(id) => live.nodes.get(id).cloned().ok_or_else(|| {
-                match live.departed.get(id) {
+            NodeTarget::ExactNode(id) => match live.nodes.get(id) {
+                Some(n) => current(n),
+                None => Err(match live.departed.get(id) {
                     Some(at) if now.saturating_duration_since(*at) < self.retention => ResolveFailure::Gone,
                     _ => ResolveFailure::Unknown,
-                }
-            }),
-            NodeTarget::CurrentPath(p) => live.by_path.get(p).and_then(|id| live.nodes.get(id)).cloned().ok_or(ResolveFailure::Unknown),
+                }),
+            },
+            NodeTarget::CurrentPath(p) => match live.by_path.get(p).and_then(|id| live.nodes.get(id)) {
+                Some(n) => current(n),
+                None => Err(ResolveFailure::Unknown),
+            },
         }
     }
 }

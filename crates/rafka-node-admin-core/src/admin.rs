@@ -1071,6 +1071,11 @@ impl AdminRunner {
         // The provider proved the birth exited. A restart's next birth keeps the key and binds a
         // port the operating system assigns, so this endpoint holds no path to the key until that
         // birth reports one (R-I1's replacement, with no address left).
+        if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
+            // The exit is proven: the resolver names no current birth for the node until its
+            // successor is applied, so no dial, probe or install aims at the dead birth's socket.
+            rpc.resolver.retire_birth(&record.node_id, incarnation);
+        }
         if kind == RetireKind::Restart {
             if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
                 ep.replace_direct_addrs(key, []).await;

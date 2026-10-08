@@ -688,11 +688,39 @@ impl RepairSchedule {
 /// terminal `Leaving` is a graceful departure, never a repair target.
 pub fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
+    // A member under an open restart or removal is held through it, but its address is a birth's
+    // that is going or gone: it is never handed to a channel again.
+    let overlaid = overlaid_nodes(book);
     book.silent_held(now)
         .into_iter()
-        .filter(|(d, _)| pick(d) && d.status != rafka_mesh_entity::MemberStatus::Leaving)
+        .filter(|(d, _)| pick(d) && d.status != rafka_mesh_entity::MemberStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|(d, silent_for)| gossip_addr(&d).map(|addr| RepairTarget { addr, node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), silent_for }))
         .collect()
+}
+
+/// The nodes `book` holds under an open lifecycle overlay (a restart or a removal in flight).
+fn overlaid_nodes(book: &DigestBook) -> BTreeSet<String> {
+    book.in_flight().into_iter().map(|op| op.node_id.to_string()).collect()
+}
+
+/// What a channel reads from its book each repair tick: the held members due a repair attempt,
+/// and the keys whose birth is under an open restart or removal, whose addresses the channel
+/// forgets.
+pub struct Held {
+    pub targets: Vec<RepairTarget>,
+    pub retired: Vec<iroh::EndpointId>,
+}
+
+/// [`Held`] from `book` for the members `pick` selects.
+pub fn held_view(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool + Copy) -> Held {
+    let overlaid = overlaid_nodes(book);
+    let retired = book
+        .all()
+        .into_iter()
+        .filter(|d| pick(d) && overlaid.contains(d.node.node_id.as_str()))
+        .filter_map(|d| d.node.endpoint_id.0.parse::<iroh::PublicKey>().ok())
+        .collect();
+    Held { targets: held_targets(book, pick), retired }
 }
 
 pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::EndpointId]) -> Vec<iroh::EndpointId> {
@@ -738,7 +766,7 @@ impl Channel {
         channel: &str,
         seeds: Vec<EndpointAddr>,
         on_frame: Arc<dyn Fn(Frame) + Send + Sync>,
-        targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync>,
+        targets: Arc<dyn Fn() -> Held + Send + Sync>,
         replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync>,
     ) -> Result<Self> {
         let lookup = MemoryLookup::new();
@@ -870,18 +898,35 @@ impl Channel {
     /// most one staleness floor apart) while that holds (PRD §6.2). A neighbour coming up resets
     /// it. A node whose connections all timed out (a wedge, a network gap longer than the idle
     /// timeout) is otherwise heard again only a whole floor later.
-    fn refeed(&self, node: String, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>, targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync>) {
+    fn refeed(&self, node: String, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>, targets: Arc<dyn Fn() -> Held + Send + Sync>) {
         let me = self.clone();
         tokio::spawn(async move {
             let mut alone_since: Option<Instant> = None;
             let mut backoff = backbone_gossip_interval();
             let mut schedule = RepairSchedule::new(staleness_floor());
+            let mut retired: BTreeSet<iroh::EndpointId> = BTreeSet::new();
             loop {
                 tokio::time::sleep(backbone_gossip_interval()).await;
                 // Held-member repair (gossip.md §6): every held member whose coverage has gone stale
                 // for the repair window gets a bounded join attempt, whatever this channel's
                 // neighbours; a failed attempt decides nothing about the member.
-                for t in schedule.due(targets(), Instant::now()) {
+                let held = targets();
+                // A birth under an open restart or removal: this channel keeps no address for
+                // its key and no path to it, so nothing it does re-pins the retired socket.
+                for key in &held.retired {
+                    if retired.insert(*key) {
+                        me.lookup.remove_endpoint_info(*key);
+                        me.peers.lock().unwrap().remove(key);
+                        me.joined.lock().unwrap().remove(key);
+                        let endpoint = me.endpoint.clone();
+                        let key = *key;
+                        tokio::spawn(async move { endpoint.replace_direct_addrs(key, []).await });
+                        tracing::info_span!("rdm.mesh.connection.update.via-restart-address-retired", node = %node, channel = %channel, peer = %key.fmt_short())
+                            .in_scope(|| tracing::info!("a birth under an open restart or removal: its address and paths are dropped from this channel"));
+                    }
+                }
+                retired.retain(|k| held.retired.contains(k));
+                for t in schedule.due(held.targets, Instant::now()) {
                     me.lookup.add_endpoint_info(t.addr.clone());
                     me.peers.lock().unwrap().insert(t.addr.id);
                     let sender = me.sender.read().await.clone();
@@ -1269,8 +1314,8 @@ impl Membership {
             }
         });
         let (book, own_mesh, me_name) = (view.book.clone(), mesh.to_string(), node.to_string());
-        let targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync> =
-            Arc::new(move || held_targets(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
+        let targets: Arc<dyn Fn() -> Held + Send + Sync> =
+            Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
         *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default() };
@@ -1622,8 +1667,8 @@ impl Backbone {
             }
         });
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
-        let targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync> =
-            Arc::new(move || held_targets(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
+        let targets: Arc<dyn Fn() -> Held + Send + Sync> =
+            Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
         let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame, targets, replay).await?;
         let me = Self {
             channel,
