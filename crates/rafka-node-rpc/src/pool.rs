@@ -261,14 +261,15 @@ impl Pool {
         self.inner.strikes.lock().unwrap().remove(key);
     }
 
-    /// A structural failure (open, write or read on the connection): evict now.
-    pub fn broken(&self, key: &PoolKey, conn: &Connection) {
+    /// A structural failure (open, write or read on the connection): evict now. `true` when this
+    /// call removed the pooled connection.
+    pub fn broken(&self, key: &PoolKey, conn: &Connection) -> bool {
         self.inner.strikes.lock().unwrap().remove(key);
-        self.remove_if_same(key, conn);
+        self.remove_if_same(key, conn)
     }
 
-    /// A reply deadline expired on `conn`. The second in a row evicts it.
-    pub fn timed_out(&self, key: &PoolKey, conn: &Connection) {
+    /// A reply deadline expired on `conn`. The second in a row evicts it; `true` when it did.
+    pub fn timed_out(&self, key: &PoolKey, conn: &Connection) -> bool {
         let strikes = {
             let mut s = self.inner.strikes.lock().unwrap();
             let n = s.entry(key.clone()).or_insert(0);
@@ -283,8 +284,10 @@ impl Pool {
                     peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, strikes
                 )
                 .in_scope(|| tracing::info!("poisoned connection evicted; the node is not marked unreachable"));
+                return true;
             }
         }
+        false
     }
 
     fn remove_if_same(&self, key: &PoolKey, conn: &Connection) -> bool {

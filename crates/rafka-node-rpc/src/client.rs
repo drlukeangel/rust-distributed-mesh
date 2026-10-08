@@ -121,6 +121,7 @@ pub(crate) struct Opened {
     pub(crate) evidence: CallEvidence,
     pub(crate) key: PoolKey,
     pub(crate) conn: iroh::endpoint::Connection,
+    pub(crate) node: ResolvedNode,
     pub(crate) reply_deadline: Instant,
     /// The fence the request named.
     pub(crate) target: Fence,
@@ -351,7 +352,7 @@ impl NodeRpcClient {
             (Budget::Split { reply, .. }, None) => Instant::now() + reply,
             (Budget::Overall(_), None) => unreachable!(),
         };
-        Phase::Committed(Opened { committed, recv, evidence, key, conn, reply_deadline, target: request_target })
+        Phase::Committed(Opened { committed, recv, evidence, key, conn, node, reply_deadline, target: request_target })
     }
 
     /// Invoke a raw op (any op, served or not) — the unknown-op cell uses it.
@@ -413,7 +414,7 @@ impl NodeRpcClient {
     {
         let decode = std::sync::Mutex::new(Some(decode));
         let take = || decode.lock().unwrap().take().expect("decode runs once");
-        let Opened { committed, mut recv, evidence, key, conn, reply_deadline, target: request_target } =
+        let Opened { committed, mut recv, evidence, key, conn, node, reply_deadline, target: request_target } =
             match self.open(target, op, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
                 Phase::Done(out, evidence) => return (out, evidence),
                 Phase::Committed(o) => o,
@@ -432,8 +433,22 @@ impl NodeRpcClient {
         // Pool health from what came back (never reachability).
         match &got {
             Committed::Reply(_) | Committed::Reset(_) => self.pool.healthy(&key),
-            Committed::Lost(IndeterminateReason::ReplyDeadline) => self.pool.timed_out(&key, &conn),
-            Committed::Lost(IndeterminateReason::ReplyLost(_)) => self.pool.broken(&key, &conn),
+            // The pooled connection leaving the pool after a post-commit loss is a Direct edge that broke: told
+            // through the observer's one door for it.
+            Committed::Lost(IndeterminateReason::ReplyDeadline) => {
+                if self.pool.timed_out(&key, &conn) {
+                    if let Some(o) = &self.observer {
+                        o.direct_broken(&node, "two reply deadlines in a row evicted the connection");
+                    }
+                }
+            }
+            Committed::Lost(IndeterminateReason::ReplyLost(why)) => {
+                if self.pool.broken(&key, &conn) {
+                    if let Some(o) = &self.observer {
+                        o.direct_broken(&node, why);
+                    }
+                }
+            }
             Committed::Lost(_) => {}
         }
         let out = match got {
