@@ -3826,6 +3826,7 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-node-rpc-contract",
+ "rafka-node-rpc-testkit",
  "rafka-test-scenario",
  "serde",
  "serde_json",
