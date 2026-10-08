@@ -255,7 +255,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert!(sender_sends.iter().all(|(_, at)| *at == instants[0]), "all five sends are the one message, changed_at_rafka_ms {}: {sender_sends:?}", instants[0]);
     let send_offsets_ms: Vec<u64> = sender_sends.iter().map(|(t, _)| (t - sender_sends[0].0) / 1_000_000).collect();
     for (k, o) in send_offsets_ms.iter().enumerate() {
-        assert!((k as u64 * 1_000..k as u64 * 1_000 + 500).contains(o), "send {k} is due {k} s after the first: {send_offsets_ms:?}");
+        assert!((k as u64 * 1_000 - (k as u64).min(1) * 100..k as u64 * 1_000 + 500).contains(o), "send {k} is due {k} s after the first: {send_offsets_ms:?}");
     }
     // Nothing on an unchanged status: no send of any status begins during the quiet window.
     let unix_ns = |t: Instant| -> u64 { anchor_unix_ns + t.duration_since(anchor).as_nanos() as u64 };

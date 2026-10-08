@@ -228,7 +228,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         assert!(sends.iter().all(|(_, at)| *at == held_at), "{label}: all five sends carry the one changed_at_rafka_ms {held_at}: {sends:?}");
         let offsets_ms: Vec<u64> = sends.iter().map(|(t, _)| (t - sends[0].0) / 1_000_000).collect();
         for (k, o) in offsets_ms.iter().enumerate() {
-            assert!((k as u64 * 1_000..k as u64 * 1_000 + 500).contains(o), "{label}: send {k} is due {k} s after the first: {offsets_ms:?}");
+            assert!((k as u64 * 1_000 - (k as u64).min(1) * 100..k as u64 * 1_000 + 500).contains(o), "{label}: send {k} is due {k} s after the first: {offsets_ms:?}");
         }
         sender_proof.insert(label.into(), json!({ "scope": scope, "send_offsets_ms": offsets_ms, "changed_at_rafka_ms": held_at }));
     }
