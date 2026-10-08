@@ -250,8 +250,8 @@ async fn source_accepts_inbound_direct_retires_proxy_before_cutback() {
     let (healthy, ..) = originate(&estate, SOURCE, DEST, "before-inbound");
     assert_eq!((healthy["call_outcome"].as_str(), healthy["route"].as_str(), healthy["carrier"].as_str()), (Some("reply"), Some("via-peer"), Some(CARRIER)), "{healthy}");
 
-    // 2. The source's retirement write is refused (history appends, until released).
-    let (armed, ..) = probe(&estate, &["fault", "--target", &format!("path:{SOURCE}"), "--refuse-history", "100000", "--key", "x"]);
+    // 2. The source's retirement write is refused: the accepted Direct's own history append passes (a fact is held only once its write lands), every later one is refused until released.
+    let (armed, ..) = probe(&estate, &["fault", "--target", &format!("path:{SOURCE}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
     assert_eq!(armed["fault"], "armed", "{armed}");
 
     // 3. The destination dials the source (one core Ping of its own, as its background traffic

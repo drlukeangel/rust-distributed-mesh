@@ -16,11 +16,14 @@ use std::sync::Arc;
 pub struct StorageFault {
     refuse_index: AtomicU32,
     refuse_history: AtomicU32,
+    /// History appends let through before `refuse_history` starts refusing.
+    pass_history: AtomicU32,
     refused: AtomicU32,
 }
 
 impl StorageFault {
-    pub fn arm(&self, refuse_index: u32, refuse_history: u32) {
+    pub fn arm(&self, refuse_index: u32, refuse_history: u32, pass_history: u32) {
+        self.pass_history.store(pass_history, Ordering::SeqCst);
         self.refuse_index.store(refuse_index, Ordering::SeqCst);
         self.refuse_history.store(refuse_history, Ordering::SeqCst);
         self.refused.store(0, Ordering::SeqCst);
@@ -30,6 +33,7 @@ impl StorageFault {
     pub fn release(&self) -> u32 {
         self.refuse_index.store(0, Ordering::SeqCst);
         self.refuse_history.store(0, Ordering::SeqCst);
+        self.pass_history.store(0, Ordering::SeqCst);
         self.refused.load(Ordering::SeqCst)
     }
 
@@ -79,6 +83,9 @@ impl ConnectionsStorage for FaultedConnectionsStorage {
         self.inner.remove_connection(index).await
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+        if self.fault.pass_history.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+            return self.inner.append_history(fact).await;
+        }
         if self.fault.take(&self.fault.refuse_history) {
             return Err(StorageError::Io { file: "connections history".into(), reason: format!("testkit fault armed: history append refused ({} refused so far)", self.fault.refused()) });
         }

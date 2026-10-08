@@ -37,8 +37,9 @@ pub enum ProofOp {
 pub enum OriginateRequest {
     /// Call `destination` (a path) with `op`, over this node's held projection.
     Call { destination: String, op: ProofOp },
-    /// Refuse the next `refuse_index` index writes and `refuse_history` history appends.
-    ArmFault { refuse_index: u32, refuse_history: u32 },
+    /// Refuse the next `refuse_index` index writes and `refuse_history` history appends, after
+    /// letting `pass_history` history appends through.
+    ArmFault { refuse_index: u32, refuse_history: u32, pass_history: u32 },
     ReleaseFault,
     Snapshot,
     /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
@@ -174,8 +175,8 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
         async move {
             Ok(match req {
                 OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op, policy).await,
-                OriginateRequest::ArmFault { refuse_index, refuse_history } => {
-                    seams.fault.arm(refuse_index, refuse_history);
+                OriginateRequest::ArmFault { refuse_index, refuse_history, pass_history } => {
+                    seams.fault.arm(refuse_index, refuse_history, pass_history);
                     OriginateReply::FaultArmed { by, refuse_index, refuse_history }
                 }
                 OriginateRequest::ReleaseFault => OriginateReply::FaultReleased { by, refused: seams.fault.release() },

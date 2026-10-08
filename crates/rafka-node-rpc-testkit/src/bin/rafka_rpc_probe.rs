@@ -46,6 +46,7 @@ struct Args {
     /// `--release`.
     refuse_index: u32,
     refuse_history: u32,
+    pass_history: u32,
     release: bool,
     /// `record-proxy`: the carrier path, and how many Direct Failed observations precede the Proxy.
     carrier: Option<String>,
@@ -57,6 +58,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut no_route = false;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
+    let mut pass_history = 0u32;
     let (mut carrier, mut failed_attempts) = (None, 0u32);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
@@ -76,6 +78,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--destination" => destination = Some(take("--destination")?),
             "--refuse-index" => refuse_index = take("--refuse-index")?.parse().map_err(|e| format!("--refuse-index: {e}"))?,
             "--refuse-history" => refuse_history = take("--refuse-history")?.parse().map_err(|e| format!("--refuse-history: {e}"))?,
+            "--pass-history" => pass_history = take("--pass-history")?.parse().map_err(|e| format!("--pass-history: {e}"))?,
             "--release" => release = true,
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
@@ -100,6 +103,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         destination,
         refuse_index,
         refuse_history,
+        pass_history,
         release,
         carrier,
         failed_attempts,
@@ -379,7 +383,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         }
         "stop-transport" => OriginateRequest::StopTransport { reason: "testkit stop-transport".to_string() },
         "fault" if a.release => OriginateRequest::ReleaseFault,
-        "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history },
+        "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history, pass_history: a.pass_history },
         _ => OriginateRequest::Snapshot,
     };
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
