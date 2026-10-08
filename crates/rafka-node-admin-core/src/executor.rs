@@ -43,6 +43,12 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
+        // A mesh's missing node-admin is created by that mesh's primary node-admin, its claim
+        // fenced at the fabric primary (node-admin-lifecycle.md §4.3); the fabric primary creates
+        // only the first admin of a mesh that has none.
+        BuildOperation::CreateNode { node, .. } if node.kind == NodeKind::NodeAdmin => {
+            t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
+        }
         // A whole-mesh retire runs outside the mesh it removes: an executor inside M cannot see a
         // member's departure leave M, and would retire itself mid-plan. The fabric primary keeps
         // authority; when it sits in M, execution goes to the lowest-NodeId ready mesh-primary
@@ -318,7 +324,9 @@ mod tests {
         assert_eq!(who(&create("mesh2.broker.1"), &t), "mesh2.admin.1");
         assert_eq!(who(&BuildOperation::RestartNode { node: "mesh2.gateway.1".parse().unwrap() }, &t), "mesh2.admin.1");
         assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.compute.1".parse().unwrap() }, &t), "mesh2.admin.1");
-        assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
+        assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh2.admin.1", "a mesh's missing admin is created by that mesh's primary");
+        assert_eq!(who(&create("mesh1.admin.2"), &t), "mesh1.admin.1", "its own mesh's primary, which is the fabric primary here");
+        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap() }, &t), "mesh1.admin.1", "an admin's retire stays the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
     }
@@ -366,6 +374,7 @@ mod tests {
     fn a_mesh_without_an_admin_primary_has_its_members_run_by_the_fabric_primary() {
         let t = mm(false);
         assert_eq!(who(&create("mesh2.rpc.1"), &t), "mesh1.admin.1");
+        assert_eq!(who(&create("mesh2.admin.1"), &t), "mesh1.admin.1", "the first admin of a mesh that has none is the fabric primary's");
         assert_eq!(lead_for(&[], &t).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "an empty plan is closed by the fabric primary");
         assert_eq!(lead_for(&[create("mesh2.rpc.1")], &mm(true)).map(|p| p.to_string()).as_deref(), Some("mesh2.admin.1"));
     }
