@@ -234,7 +234,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
             joins: joins.clone(),
             answer: Arc::new(move || {
                 Box::pin(async move {
-                    Some(rafka_node_admin_core::wire::JoinAnswer {
+                    Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
                         control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None },
                         statuses: vec![],

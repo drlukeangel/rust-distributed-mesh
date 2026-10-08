@@ -136,7 +136,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             joins: joins.clone(),
             answer: Arc::new(|| {
                 Box::pin(async {
-                    Some(rafka_node_admin_core::wire::JoinAnswer {
+                    Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
                         control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None },
                         statuses: vec![],

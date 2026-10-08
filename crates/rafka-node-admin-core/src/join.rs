@@ -132,7 +132,7 @@ pub struct JoinDoor {
     pub me: PathName,
     pub joins: Arc<Joins>,
     /// What the admin answers a joiner with.
-    pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<JoinAnswer>> + Send>> + Send + Sync>,
+    pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<JoinAnswer, String>> + Send>> + Send + Sync>,
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
@@ -188,8 +188,9 @@ impl JoinDoor {
     }
 
     async fn joined(&self, node: &PathName) -> JoinReply {
-        let Some(answer) = (self.answer)().await else {
-            return JoinReply::NotReady { reason: format!("{}: this admin is not ready to answer yet", self.me) };
+        let answer = match (self.answer)().await {
+            Ok(a) => a,
+            Err(why) => return JoinReply::NotReady { reason: format!("{}: not ready to answer a join: {why}", self.me) },
         };
         tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, statuses = answer.statuses.len())
             .in_scope(|| tracing::info!("entry answered"));
