@@ -57,7 +57,7 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     // 2. The broker restarts: same NodeId, new incarnation, fresh ports.
     let (status, restart) = estate.post("/api/nodes/mesh1.broker.1/restart", &json!({})).await;
     assert_eq!(status, 202, "{restart}");
-    estate.await_build(restart["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(restart["build_id"].as_str().unwrap(), Estate::attempt_of(&restart), Duration::from_secs(120)).await;
     let reborn = estate.settled(&want, Duration::from_secs(30)).await.into_iter().find(|n| n["name"] == "mesh1.broker.1").unwrap();
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
     assert_ne!(s(&reborn["incarnation_id"]), old_birth, "a restart is a new birth: {reborn}");

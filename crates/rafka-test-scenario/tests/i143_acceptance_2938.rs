@@ -140,7 +140,7 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let (status, restart) = estate.post(&format!("/api/nodes/{SOURCE}/restart"), &json!({})).await;
     assert_eq!(status, 202, "restart route: {restart}");
     let build = s(&restart["build_id"]);
-    estate.await_build(&build, SETTLE).await;
+    estate.await_attempt(&build, Estate::attempt_of(&restart), SETTLE).await;
     let old_inc = s(&source["incarnation_id"]);
     let after = wait_for("the source is ready under a new incarnation", SETTLE, || async {
         let n = estate.node_opt(SOURCE).await?;

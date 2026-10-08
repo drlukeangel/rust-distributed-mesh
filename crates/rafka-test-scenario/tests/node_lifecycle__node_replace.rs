@@ -185,7 +185,7 @@ async fn a_planned_replace_retires_the_live_birth_and_creates_a_new_node() {
     .await;
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("replace", NODE), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
-    estate.await_build(&birth_build, SETTLE).await;
+    estate.await_attempt(&birth_build, Estate::attempt_of(&r), SETTLE).await;
     let after = wait_for(&format!("{NODE} ready under a new NodeId"), SETTLE, || async {
         let n = estate.node_opt(NODE).await?;
         (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)

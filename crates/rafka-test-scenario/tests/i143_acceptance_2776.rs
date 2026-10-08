@@ -284,7 +284,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let before = estate.node(node).await;
         let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
         assert_eq!(status, 202, "{node}: {r}");
-        estate.await_build(r["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+        estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
         let after = rafka_test_scenario::estate::wait_for(&format!("{node} reborn ready under a new incarnation"), Duration::from_secs(60), || async {
             let n = estate.node_opt(node).await?;
             (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)

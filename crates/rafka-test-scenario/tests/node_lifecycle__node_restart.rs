@@ -83,7 +83,7 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(submitted["build_id"], restart_build.as_str(), "the Build is visible by id: {submitted}");
     assert_eq!(submitted["reason"], "restart", "{submitted}");
     assert_eq!(submitted["action"]["path"], NODE, "{submitted}");
-    let status_after = estate.await_build(&restart_build, SETTLE).await;
+    let status_after = estate.await_attempt(&restart_build, Estate::attempt_of(&restart), SETTLE).await;
     estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": status_after}));
 
     // The node comes back ready under a new process incarnation (observed, not slept on).

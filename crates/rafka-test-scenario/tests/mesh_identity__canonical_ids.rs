@@ -105,7 +105,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(120)).await;
     let after = wait_for("mesh2.rpc.2 ready under a new incarnation", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh2.rpc.2").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
@@ -125,7 +125,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let (status, again) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
     assert_eq!(status, 202, "{again}");
     assert_eq!(again["build_id"], a["build_id"], "a restart is an attempt of the accepted Build: {again}");
-    estate.await_build(again["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(again["build_id"].as_str().unwrap(), Estate::attempt_of(&again), Duration::from_secs(120)).await;
     let third = wait_for("mesh2.rpc.2 ready under a third incarnation", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh2.rpc.2").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != after["incarnation_id"] && n["incarnation_id"] != before["incarnation_id"]).then_some(n)

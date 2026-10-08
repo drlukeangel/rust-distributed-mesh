@@ -59,7 +59,7 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let restart_at = now_nano();
     let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "{r}");
-    estate.await_build(r["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
     let after = wait_for("the restarted birth is ready under a new incarnation", Duration::from_secs(30), || async {
         let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)

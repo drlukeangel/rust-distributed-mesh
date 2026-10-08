@@ -192,7 +192,7 @@ pub async fn run_replayable(
                 outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({status})"), result: Value::Null });
                 continue;
             }
-            estate.await_build(r["build_id"].as_str().expect("build_id"), SETTLE).await;
+            estate.await_attempt(r["build_id"].as_str().expect("build_id"), Estate::attempt_of(&r), SETTLE).await;
             let after = wait_for(&format!("{node} reborn ready under a new incarnation"), SETTLE, || async {
                 let n = estate.node_opt(node).await?;
                 (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)

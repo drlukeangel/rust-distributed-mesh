@@ -94,7 +94,7 @@ async fn a_successor_manages_births_it_never_launched() {
     // Restart one of A's births and retire another, through the successor.
     let (status, a) = estate.post("/api/nodes/mesh1.rpc.2/restart", &json!({})).await;
     assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(120)).await;
     let after = wait_for("mesh1.rpc.2 ready under a new incarnation", Duration::from_secs(30), || async {
         let n = estate.node_opt("mesh1.rpc.2").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted["incarnation_id"]).then_some(n)

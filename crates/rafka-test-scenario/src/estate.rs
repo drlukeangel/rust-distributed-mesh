@@ -687,6 +687,11 @@ impl Estate {
         .await
     }
 
+    /// The attempt a 202 named: the one its request opened (attempt 1 for an accepted Build).
+    pub fn attempt_of(accepted: &Value) -> u64 {
+        accepted["attempt"].as_u64().unwrap_or_else(|| panic!("the 202 names the attempt it opened: {accepted}"))
+    }
+
     /// Wait until attempt `attempt` of Build `id` is complete, where `attempt` is the one the
     /// request that opened it answered 202 with. The Build's reported attempt must have reached
     /// `attempt` and that attempt must have converged; a Build still reporting an earlier

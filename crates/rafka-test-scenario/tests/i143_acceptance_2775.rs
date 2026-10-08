@@ -90,7 +90,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
     assert_eq!(status, 202, "{r}");
     let restart_build = s(&r["build_id"]);
-    estate.await_build(&restart_build, Duration::from_secs(120)).await;
+    estate.await_attempt(&restart_build, Estate::attempt_of(&r), Duration::from_secs(120)).await;
     let restarted = wait_for("the restarted birth is ready", Duration::from_secs(60), || async {
         let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != first["incarnation_id"]).then_some(n)

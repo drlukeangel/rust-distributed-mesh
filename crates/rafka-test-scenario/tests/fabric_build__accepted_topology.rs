@@ -136,7 +136,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     })
     .await;
     assert_eq!(pointer(&estate).await, r4, "recovery moves no pointer");
-    estate.await_build(&r4, Duration::from_secs(120)).await;
+    estate.await_attempt(&r4, attempts_before + 1, Duration::from_secs(120)).await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
     let (_, after) = estate.get(&format!("/api/builds?id={r4}")).await;
     assert_eq!((after["state"].as_str(), after["attempt"].as_u64()), (Some("complete"), Some(attempts_before + 1)), "one more attempt of the same Build: {after}");
@@ -146,7 +146,8 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let restarted_from = estate.node("mesh1.rpc.1").await;
     let (status, r) = estate.post("/api/nodes/mesh1.rpc.1/restart", &json!({})).await;
     assert_eq!((status, r["build_id"].as_str()), (202, Some(r4.as_str())), "{r}");
-    estate.await_build(&r4, Duration::from_secs(120)).await;
+    assert_eq!(r["attempt"].as_u64(), Some(attempts_before + 2), "the restart opens the attempt after the repair's: {r}");
+    estate.await_attempt(&r4, Estate::attempt_of(&r), Duration::from_secs(120)).await;
     wait_for("mesh1.rpc.1 runs a new incarnation", Duration::from_secs(60), || async {
         let n = estate.node_opt("mesh1.rpc.1").await?;
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())

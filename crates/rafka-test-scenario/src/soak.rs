@@ -427,6 +427,11 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, (u32,
 /// `Ok(None)` while the Build has not completed it; `Err` names a failed Build.
 async fn born_at(estate: &Estate, build_id: &str, path: &str, after_attempt: u64) -> Result<Option<(String, String)>, String> {
     let (_, b) = estate.get(&format!("/api/builds?id={build_id}")).await;
+    // A Build still reporting an attempt up to `after_attempt` is reporting an earlier attempt's
+    // state: this operation's attempt has not been claimed here yet.
+    if num(&b["attempt"]) <= after_attempt && after_attempt > 0 {
+        return Ok(None);
+    }
     match b["state"].as_str() {
         Some("failed") => return Err(format!("Build {build_id} failed: {}", b["last_failure"])),
         Some("complete") => {}
@@ -831,7 +836,8 @@ impl Driver {
                     return Err(broken("topology-action-accepted", format!("restart {node}: {st} {b}")));
                 }
                 removed = Some((node.clone(), s(&n["incarnation_id"])));
-                watch = Some((s(&b["build_id"]), 0));
+                // The birth is read from the attempt this restart opened, never an earlier one's.
+                watch = Some((s(&b["build_id"]), Estate::attempt_of(&b) - 1));
             }
             Action::Replace { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;

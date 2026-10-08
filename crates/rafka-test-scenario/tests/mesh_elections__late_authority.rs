@@ -44,7 +44,7 @@ async fn build(estate: &Estate, method: &str, path: &str, body: Value) -> String
     assert_eq!(status, 202, "{method} {path}: {a}");
     let id = s(&a["build_id"]);
     // Every admin holds the fabric's Build facts: any of them can be asked.
-    estate.await_build(&id, Duration::from_secs(120)).await;
+    estate.await_attempt(&id, Estate::attempt_of(&a), Duration::from_secs(120)).await;
     id
 }
 

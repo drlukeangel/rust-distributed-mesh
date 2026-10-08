@@ -78,7 +78,7 @@ async fn build(estate: &Estate, meshes: &[(&str, u32, u32)]) {
 
 async fn accepted_build(estate: &Estate, (status, v): (u16, Value)) {
     assert_eq!(status, 202, "{v}");
-    estate.await_build(v["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.await_attempt(v["build_id"].as_str().unwrap(), Estate::attempt_of(&v), Duration::from_secs(120)).await;
 }
 
 /// The view without the rows of births proven dead: drift recovery restores a killed birth's
