@@ -56,7 +56,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,7 +629,7 @@ impl Default for Timeouts {
 
 pub struct DeploymentPipeline<'a> {
     pub provider: &'a dyn DeploymentProvider,
-    pub allocator: &'a Mutex<EndpointAllocator>,
+    pub allocator: &'a tokio::sync::Mutex<EndpointAllocator>,
     pub observer: &'a dyn NodeObserver,
     pub sink: &'a dyn TopologySink,
     pub lifecycle: &'a dyn LifecycleEvents,
@@ -853,8 +852,12 @@ impl DeploymentPipeline<'_> {
             // whatever that attempt launched may still bind it after its executor died, so the
             // endpoints are allocated afresh by the claim and the bind probe; the identity (never
             // born) is kept.
+            let recorded: Option<Assignment> = serde_json::from_value(v.clone()).ok();
             let ours = !recorded_by_another(&run, CreateStep::AllocateEndpoints)
-                && serde_json::from_value::<Assignment>(v.clone()).ok().is_some_and(|a| self.allocator.lock().unwrap().held(&req.node) == Some(&a));
+                && match recorded {
+                    Some(a) => self.allocator.lock().await.held(&req.node) == Some(&a),
+                    None => false,
+                };
             if !ours {
                 tracing::info!(node = %req.node, "the earlier attempt's endpoints are not this executor's reservation: allocated afresh");
                 run.done.remove(CreateStep::AllocateEndpoints.name());
@@ -876,12 +879,16 @@ impl DeploymentPipeline<'_> {
             .step(&mut run, CreateStep::AllocateEndpoints.name(), async {
                 // A restart reuses identity and data dir and binds fresh ports
                 // (fabric-node-lifecycle.md), never its recorded ones.
-                self.allocator.lock().unwrap().assign(&req.node, req.spec).map_err(|e| e.to_string())
+                // The assignment probes ports through the host-wide claims (a file lock, claim
+                // files, bind probes): the allocator's lock is async, so a pipeline waiting on it
+                // yields its worker, and the probing itself leaves the runtime's core.
+                let mut allocator = self.allocator.lock().await;
+                crate::deployment::endpoint::off_the_core(|| allocator.assign(&req.node, req.spec)).map_err(|e| e.to_string())
             })
             .await?;
         if reused_endpoints {
             // The decision stands: hold exactly these, take nothing new.
-            self.allocator.lock().unwrap().adopt(&req.node, assigned.clone());
+            self.allocator.lock().await.adopt(&req.node, assigned.clone());
         }
         let data_dir = match prior.as_ref().and_then(|p| p.data_dir.clone()) {
             Some(d) => PathBuf::from(d),
@@ -1266,7 +1273,7 @@ impl DeploymentPipeline<'_> {
             if req.keep_endpoints {
                 tracing::info!(node = %name, "a restart keeps its addresses: held for the next birth, never released");
             } else {
-                self.allocator.lock().unwrap().release(name);
+                self.allocator.lock().await.release(name);
             }
             Ok(())
         })

@@ -119,7 +119,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
@@ -149,7 +149,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
         _ = reached.notified() => {}
     }
     let first_pid = *first.spawned.lock().unwrap().first().expect("attempt 1 spawned the runtime");
-    let held_after_kill = allocator.lock().unwrap().held(&"mesh1.rpc.1".parse().unwrap()).cloned().unwrap();
+    let held_after_kill = allocator.lock().await.held(&"mesh1.rpc.1".parse().unwrap()).cloned().unwrap();
 
     // Attempt 2: the real provider and observer, the same Build.
     let second = Killable { inner: process.clone(), kill_at: None, reached, spawned: Mutex::new(vec![]) };
@@ -172,7 +172,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     assert_eq!(created.handle.pid, Some(first_pid));
     assert_eq!(runtimes_of(&created.node.node_id), vec![first_pid], "exactly one runtime runs for the node");
     assert_eq!(created.node.transport_addr, Some(held_after_kill.transport));
-    assert_eq!(allocator.lock().unwrap().in_use_count(), 1, "one socket, no port taken twice");
+    assert_eq!(allocator.lock().await.in_use_count(), 1, "one socket, no port taken twice");
 
     // Every step Complete exactly once across both attempts; the steps
     // before the kill point keep attempt 1's receipt.

@@ -343,7 +343,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
     let node_name = "mesh1.rpc.1".parse().unwrap();
-    let allocator = Mutex::new(prepared.allocator);
+    let allocator = tokio::sync::Mutex::new(prepared.allocator);
     let sink = Published::default();
     let pipeline = DeploymentPipeline {
         provider: &*provider,
@@ -368,7 +368,7 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
     let published = sink.nodes.lock().unwrap().clone();
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
-    let held = allocator.lock().unwrap().held(&created.node.name).cloned().expect("the allocator holds the node");
+    let held = allocator.lock().await.held(&created.node.name).cloned().expect("the allocator holds the node");
     assert_eq!(created.node.transport_addr, Some(held.transport));
 
     // A container node lives in its own network namespace, at its own

@@ -218,7 +218,7 @@ impl TopologySink for Discard {
 /// An executor: one admin birth, named by its own endpoint (the seed every launch it makes carries).
 struct Executor {
     template: LaunchTemplate,
-    allocator: Mutex<EndpointAllocator>,
+    allocator: tokio::sync::Mutex<EndpointAllocator>,
 }
 
 fn executor(data_root: &std::path::Path, key: &str) -> Executor {
@@ -236,7 +236,7 @@ fn executor(data_root: &std::path::Path, key: &str) -> Executor {
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
         },
-        allocator: Mutex::new(allocator),
+        allocator: tokio::sync::Mutex::new(allocator),
     }
 }
 

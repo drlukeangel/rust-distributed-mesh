@@ -922,3 +922,13 @@ mod tests {
         assert!(!path.exists(), "release removes the reservation");
     }
 }
+
+/// Run `f`, a short synchronous section that touches the file system or binds probe sockets, off
+/// the runtime's core: on a multi-thread runtime the worker hands its queued tasks to the rest of
+/// the runtime first (`block_in_place`); elsewhere `f` runs as is.
+pub fn off_the_core<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
+    }
+}

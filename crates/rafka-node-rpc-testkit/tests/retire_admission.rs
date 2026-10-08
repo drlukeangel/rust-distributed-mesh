@@ -24,7 +24,6 @@ use rafka_node_admin_core::deployment::provider::{
 };
 use rafka_node_admin_core::model::{Node, ProviderKind};
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 
 /// The live observer, except every departure the node announces is lost.
@@ -113,7 +112,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn {
@@ -176,7 +175,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn {
@@ -268,7 +267,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn { inner: &process, ignore_stop: false };
@@ -298,7 +297,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline { provider: &process, allocator: &allocator, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };

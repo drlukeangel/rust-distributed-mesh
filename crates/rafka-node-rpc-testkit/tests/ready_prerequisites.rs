@@ -24,7 +24,6 @@ use rafka_node_admin_core::deployment::provider::{DeploymentProvider, Terminatio
 use rafka_node_admin_core::model::Node;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 /// The in-memory Build state, except one step's receipts are never kept.
@@ -100,7 +99,7 @@ async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
     let inner = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
     let provider = ProcessDeploymentProvider::new();
     let observer = Counting { live: &admin.observer, asked_ready: AtomicUsize::new(0) };
     let sink = Published::default();

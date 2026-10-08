@@ -665,7 +665,7 @@ use crate::fence::FenceOutcome;
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
     pub provider: Arc<dyn DeploymentProvider>,
-    pub allocator: Mutex<EndpointAllocator>,
+    pub allocator: tokio::sync::Mutex<EndpointAllocator>,
     pub observer: Arc<MembershipObserver>,
     pub records: Arc<Records>,
     pub builds: Arc<dyn BuildStateAdapter>,
@@ -991,7 +991,7 @@ impl AdminRunner {
         };
         if keep_endpoints {
             if let Some(held) = crate::deployment::endpoint::Assignment::of_node(&record) {
-                self.allocator.lock().unwrap().adopt(node, held);
+                self.allocator.lock().await.adopt(node, held);
             }
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
@@ -1733,7 +1733,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         // spawn-record table), not through the view: a launched birth runs, and binds, before it
         // joins the mesh, and while another birth of its name is still heard (a restart's, a
         // replacement's) the view shows that one, not the launch.
-        allocator: Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
+        allocator: tokio::sync::Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
             let topology = control.topology.clone();
             let launched = records.clone();
             // The view is read without waiting (the allocator is used under its own mutex, inside

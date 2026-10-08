@@ -17,7 +17,6 @@ use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 
 struct Discard;
@@ -70,7 +69,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         .await
         .unwrap();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
         provider: &provider,

@@ -434,7 +434,7 @@ async fn deadline_arm() -> DrainOutcome {
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
     };
-    let allocator = Mutex::new(EndpointAllocator::new("127.0.0.1".parse().unwrap(), 1, 1));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new("127.0.0.1".parse().unwrap(), 1, 1));
     let pipeline = DeploymentPipeline {
         provider: &Running,
         allocator: &allocator,

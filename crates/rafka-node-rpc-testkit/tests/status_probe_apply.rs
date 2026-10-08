@@ -13,7 +13,6 @@ use rafka_node_admin_core::deployment::provider::{DeployError, FabricPolicy, Ter
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
-use std::sync::Mutex;
 
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `ApplyNodeState(Draining)` answers
@@ -41,7 +40,7 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     let template = common::template(&fabric_id, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = common::publish_build(&builds, common::add_node()).await;
-    let allocator = Mutex::new(prepared.allocator);
+    let allocator = tokio::sync::Mutex::new(prepared.allocator);
     let sink = common::Published::default();
     let pipeline = DeploymentPipeline {
         provider: &*provider,

@@ -15,7 +15,6 @@ use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::time::Duration;
 
 struct Discard;
@@ -90,7 +89,7 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
     let squatter = std::net::UdpSocket::bind(dead_port).unwrap();
     dead_attempt_allocator.release(&"mesh1.rpc.9".parse().unwrap());
     let other: rafka_node_admin_core::model::PathName = "mesh1.admin.2".parse().unwrap();
-    let allocator = Mutex::new(
+    let allocator = tokio::sync::Mutex::new(
         EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last).with_held_sockets(HeldSockets::new(move || vec![(other.clone(), dead_port)])),
     );
     let provider = ProcessDeploymentProvider::new();

@@ -19,7 +19,6 @@ use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
 use rafka_node_admin_core::model::NodeStatus;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::Mutex;
 use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -32,7 +31,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
@@ -76,8 +75,8 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     assert_eq!(digest.status, MemberStatus::Leaving, "the node said Leaving on the fabric before it went");
     assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
     assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
-    assert_eq!(allocator.lock().unwrap().held(&node), None);
-    assert_eq!(allocator.lock().unwrap().in_use_count(), 0, "no port leaked");
+    assert_eq!(allocator.lock().await.held(&node), None);
+    assert_eq!(allocator.lock().await.in_use_count(), 0, "no port leaked");
     assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
     assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
 
@@ -128,6 +127,6 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     )
     .unwrap();
     assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
-    assert_eq!(allocator.lock().unwrap().in_use_count(), 0);
+    assert_eq!(allocator.lock().await.in_use_count(), 0);
     let _ = std::fs::remove_dir_all(&template.data_root);
 }
