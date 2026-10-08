@@ -45,7 +45,7 @@ fn at(sp: &Value) -> u64 {
 }
 
 async fn estate(cell: &str) -> (Estate, Vec<Value>) {
-    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let (status, a) = estate
         .post("/api/build", &json!({"fabric": "fabric1", "meshes": [
             {"name": "mesh1", "node_admin": 1, "rpc_node": 1},
