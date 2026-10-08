@@ -193,6 +193,10 @@ pub struct Control {
     /// The seats' detail when one diverges.
     pub seats_detail: String,
     pub fabric_primary: [String; 3],
+    /// The cut is a membership change (a join, a mesh birth): the fabric primary may legitimately
+    /// move, and only the public candidates' computation judges it. For a stall of a live admin it
+    /// may not move at all.
+    pub authority_may_move: bool,
     pub incarnation: [String; 3],
     /// The Build attempt (or the runtime's birth count) the work held, before and during.
     pub attempts: [u64; 2],
@@ -419,7 +423,7 @@ pub fn judge(e: &Evidence) -> Result<Verdict, Refusal> {
                     out.push(rej(NO_CONTROL_CONSEQUENCE, format!("{} the hold the advertised seats diverge from the ones the public candidates compute: {}", phases[i], c.seats_detail)));
                 }
             }
-            if c.fabric_primary[0] != c.fabric_primary[1] || c.fabric_primary[1] != c.fabric_primary[2] {
+            if !c.authority_may_move && (c.fabric_primary[0] != c.fabric_primary[1] || c.fabric_primary[1] != c.fabric_primary[2]) {
                 out.push(rej(NO_CONTROL_CONSEQUENCE, format!("the fabric primary moved across a stall of a live admin: {:?}", c.fabric_primary)));
             }
             if out.len() == before {
