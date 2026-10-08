@@ -95,7 +95,8 @@ impl Classification {
     /// success when the proof store applied or answered the request; a compare-and-swap mismatch
     /// is a protocol success that applied nothing, so it is a `Reply` with `reply_success` false
     /// (the state algebra reads `reply_success` as "the mutation took effect"). A line that names
-    /// no outcome is refused by name, never guessed into a bucket.
+    /// no outcome is refused by name, never guessed into a bucket. A `Refused` line is the probe
+    /// declining before any dispatch: `NotSent`, with its reason.
     pub fn of_probe(out: &Value) -> Result<Self, String> {
         let text = |v: &Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
         match out["outcome"].as_str() {
@@ -121,6 +122,9 @@ impl Classification {
             Some("Unserved") => Ok(Self { bucket: Bucket::Unserved, detail: text(&out["reason"]), reply_success: false }),
             Some("RejectedStale") => Ok(Self { bucket: Bucket::RejectedStale, detail: format!("stale target {}", text(&out["target_node_id"])), reply_success: false }),
             Some("Indeterminate") => Ok(Self { bucket: Bucket::Indeterminate, detail: text(&out["reason"]), reply_success: false }),
+            // The probe refuses before it dispatches anything (a bad argument, the admin's node view
+            // unreadable, no endpoint): the request never left, which is what NotSent says.
+            Some("Refused") => Ok(Self { bucket: Bucket::NotSent, detail: format!("ProbeRefused({})", text(&out["reason"])), reply_success: false }),
             other => Err(format!("the probe printed no typed RpcOutcome ({other:?}): {out}")),
         }
     }
@@ -433,7 +437,9 @@ mod tests {
         assert_eq!(c(json!({"outcome": "Unserved", "reason": "x"})).bucket, Bucket::Unserved);
         assert_eq!(c(json!({"outcome": "RejectedStale", "target_node_id": "n"})).bucket, Bucket::RejectedStale);
         assert_eq!(c(json!({"outcome": "Indeterminate", "reason": "ReplyDeadline"})).detail, "ReplyDeadline");
-        assert!(Classification::of_probe(&json!({"outcome": "Refused", "reason": "x"})).is_err());
+        let refused = c(json!({"outcome": "Refused", "reason": "GET http://x/api/nodes: error"}));
+        assert_eq!((refused.bucket, refused.detail.as_str()), (Bucket::NotSent, "ProbeRefused(GET http://x/api/nodes: error)"));
+        assert!(Classification::of_probe(&json!({"outcome": "Mystery"})).is_err());
     }
 
     #[test]
@@ -442,7 +448,7 @@ mod tests {
         let a = l.issue(0x70, "n1", Some(MutationIntent { key: "1".into(), value: b"v".to_vec() }));
         let b = l.issue(0x70, "n2", None);
         l.classify_probe(a, &json!({"outcome": "Reply", "reply": {"result": {"stored": true}}})).unwrap();
-        assert!(l.classify_probe(b, &json!({"outcome": "Refused"})).is_err());
+        assert!(l.classify_probe(b, &json!({"nothing": "typed"})).is_err());
         let refusal = l.reconcile().unwrap_err();
         assert!(refusal.0.iter().any(|v| matches!(v, Violation::Unclassified { id, .. } if *id == b)), "{refusal}");
         // One store's state algebra: its own operations against its own final state.
