@@ -3769,6 +3769,8 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
@@ -3781,6 +3783,7 @@ dependencies = [
  "tokio",
  "tower 0.5.3",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 

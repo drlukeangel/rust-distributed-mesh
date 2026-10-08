@@ -34,20 +34,64 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
-fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
-            for line in std::fs::read_to_string(&p).unwrap().lines() {
-                if let Ok(v) = serde_json::from_str::<Value>(line) {
-                    spans.push(v);
-                }
-            }
-        }
+/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on
+/// every thread of the cell's own runtime, so two cells in one test process never share spans.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: opentelemetry_sdk::trace::TracerProvider,
+    dispatch: tracing::Dispatch,
+    /// The resource's `service.name` this capture exports under.
+    service: String,
+}
+
+fn capture(cell: &str) -> Capture {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let service = format!("i143-2805-{cell}");
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
+        .build();
+    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2805"));
+    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+}
+
+impl Capture {
+    /// The cell's runtime: every worker thread (and the caller's, while it runs) emits into this
+    /// capture only.
+    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .build()
+            .unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(f)
     }
-    spans
+
+    /// Every finished span, as exported: name, TraceId, SpanId, ParentSpanId, resource, attributes.
+    fn spans(&self) -> Vec<Value> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                let attributes: serde_json::Map<String, Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), Value::String(kv.value.to_string()))).collect();
+                json!({
+                    "name": s.name,
+                    "trace_id": s.span_context.trace_id().to_string(),
+                    "span_id": s.span_context.span_id().to_string(),
+                    "parent_span_id": s.parent_span_id.to_string(),
+                    "resource": {"service.name": self.service},
+                    "attributes": attributes,
+                })
+            })
+            .collect()
+    }
 }
 
 /// A birth in the fixture: its record and the key it speaks with.
@@ -153,13 +197,16 @@ fn reply(out: &RpcOutcome<StatusReply>) -> StatusReply {
 /// AlreadyApplied with no second write; the wire carries no transition id. Refused by name: a stale
 /// MeshId, a sender that is not the fabric-primary, a backward transition, and a DeclareNodeState
 /// for anyone but the sender itself (upward self-report only).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn status_authority_retries_pending_by_natural_key_returns_already_applied() {
+#[test]
+fn status_authority_retries_pending_by_natural_key_returns_already_applied() {
     let cell = "status_authority_retries_pending_by_natural_key_returns_already_applied";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RAFKA_EVIDENCE_DIR", &dir);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-acceptance");
+    let capture = capture(cell);
+    capture.run(pending_by_natural_key(&capture, cell, &dir));
+}
+
+async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::Path) {
 
     let fabric_primary = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let not_primary = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
@@ -199,8 +246,7 @@ async fn status_authority_retries_pending_by_natural_key_returns_already_applied
     let meshes_final = rig.authority.declared.lock().unwrap().meshes.clone();
     assert_eq!(meshes_final.len(), 1, "one mesh held, by its own id");
 
-    drop(telemetry);
-    let spans = collect_spans(&dir);
+    let spans = capture.spans();
     let decisions: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-declaration").collect();
     assert!(decisions.iter().any(|s| s["attributes"]["op"] == "apply-mesh-state" && s["attributes"]["outcome"] == "already-applied"), "the retry is spanned as already-applied");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
@@ -227,13 +273,16 @@ async fn status_authority_retries_pending_by_natural_key_returns_already_applied
 /// (NodeDrainingApplied), Refused (a stale incarnation), NotSent (cut before the send),
 /// Indeterminate (the reply lost); Deadline is the retire pipeline's WaitForDrain arm when an
 /// established drain never finishes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn draining_authority_serves_status_checks_exact_birth() {
+#[test]
+fn draining_authority_serves_status_checks_exact_birth() {
     let cell = "draining_authority_serves_status_checks_exact_birth";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RAFKA_EVIDENCE_DIR", &dir);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-acceptance");
+    let capture = capture(cell);
+    capture.run(draining_status_door(&capture, cell, &dir));
+}
+
+async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
 
     // The subject: mesh1.admin.2, drained by its executor mesh1.admin.1.
     let executor = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
@@ -279,8 +328,7 @@ async fn draining_authority_serves_status_checks_exact_birth() {
     let deadline = deadline_arm().await;
     assert_eq!(deadline, DrainOutcome::Deadline { last_in_flight: Some(3) });
 
-    drop(telemetry);
-    let spans = collect_spans(&dir);
+    let spans = capture.spans();
     let applies = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-apply-draining").count();
     assert!(applies >= 2, "every applied drain is spanned: {applies}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();

@@ -34,6 +34,11 @@ name = "rafka-node-admin"
 path = "src/bin/rafka_node_admin.rs"
 
 [dev-dependencies]
+# i143_acceptance_2805: each acceptance cell captures its own spans (one in-memory OTel exporter per
+# cell, installed on that cell's runtime threads), so cells sharing a test process never share one.
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-opentelemetry = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true }
 http-body-util = "0.1"
