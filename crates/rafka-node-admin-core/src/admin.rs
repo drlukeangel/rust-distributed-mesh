@@ -1078,7 +1078,10 @@ impl AdminRunner {
         }
         if kind == RetireKind::Restart {
             if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
-                ep.replace_direct_addrs(key, []).await;
+                // Not awaited: the endpoint's actor for this key answers when it is free, and the
+                // retire does not wait for a dead peer's actor (the same call membership spawns).
+                let ep = ep.clone();
+                tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
                 tracing::info_span!("rdm.node_admin.node.update.via-restart-paths-retired", node = %node, endpoint = %key.fmt_short())
                     .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
             }
