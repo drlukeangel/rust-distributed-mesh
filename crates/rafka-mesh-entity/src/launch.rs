@@ -19,6 +19,10 @@ pub const ENV_SEEDS: &str = "RDM_SEEDS";
 pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
+/// This node-admin starts as its mesh's primary node-admin: a recovering mesh's first admin.
+pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
+/// This node-admin starts as the fabric primary: total-loss recovery.
+pub const ENV_FABRIC_PRIMARY: &str = "RDM_FABRIC_PRIMARY";
 
 /// The node-admin that deployed a birth: the target of its `JoinNode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,21 @@ pub struct Launch {
     pub data_dir: PathBuf,
     /// The id of the node's mesh: it names the mesh's membership channel.
     pub mesh_id: Option<MeshId>,
+    /// This node-admin must recover its mesh (`RDM_MESH_PRIMARY`): it holds Ready until it holds
+    /// the current topology, `Fabric.build_id` and its Build. Not a seat: the election decides.
+    pub mesh_primary: bool,
+    /// This node-admin must recover the fabric (`RDM_FABRIC_PRIMARY`). Implies `mesh_primary`.
+    pub fabric_primary: bool,
+}
+
+/// `1`/`true` set a primary flag; absent, empty, `0` and `false` leave it off; anything else is
+/// refused by name.
+pub fn decode_flag(name: &str, v: Option<String>) -> Result<bool> {
+    match v.as_deref().map(str::trim) {
+        None | Some("") | Some("0") | Some("false") => Ok(false),
+        Some("1") | Some("true") => Ok(true),
+        Some(other) => Err(format!("{name} `{other}` is not 1, true, 0 or false")),
+    }
 }
 
 
@@ -115,6 +134,12 @@ impl Launch {
         if let Some(id) = &self.mesh_id {
             m.insert(ENV_MESH_ID.into(), id.to_string());
         }
+        if self.mesh_primary {
+            m.insert(ENV_MESH_PRIMARY.into(), "1".into());
+        }
+        if self.fabric_primary {
+            m.insert(ENV_FABRIC_PRIMARY.into(), "1".into());
+        }
         m
     }
 
@@ -133,6 +158,8 @@ impl Launch {
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
+            mesh_primary: decode_flag(ENV_MESH_PRIMARY, get(ENV_MESH_PRIMARY))?,
+            fabric_primary: decode_flag(ENV_FABRIC_PRIMARY, get(ENV_FABRIC_PRIMARY))?,
         })
     }
 }
@@ -156,6 +183,8 @@ mod tests {
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             mesh_id: Some(MeshId::mint()),
+            mesh_primary: false,
+            fabric_primary: false,
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
@@ -170,5 +199,30 @@ mod tests {
             let e = Launch::from_env(|x| bad.get(x).cloned()).unwrap_err();
             assert!(e.starts_with(k) && e.contains(says), "{e}");
         }
+    }
+
+    #[test]
+    fn primary_flags_round_trip_and_an_unreadable_flag_is_refused_by_name() {
+        let mut l = Launch::from_env(|k| {
+            Some(match k {
+                ENV_FABRIC => "fabric1".into(),
+                ENV_FABRIC_ID => FabricId::mint().to_string(),
+                ENV_NODE_NAME => "mesh1.admin.1".into(),
+                ENV_NODE_ID => NodeId::mint().to_string(),
+                ENV_INCARNATION => IncarnationId::mint().0,
+                ENV_TRANSPORT_ADDR => "127.0.0.1:0".into(),
+                ENV_DATA_DIR => "/tmp/x".into(),
+                _ => return None,
+            })
+        })
+        .unwrap();
+        assert!(!l.mesh_primary && !l.fabric_primary && !l.to_env().contains_key(ENV_MESH_PRIMARY));
+        l.mesh_primary = true;
+        l.fabric_primary = true;
+        let env = l.to_env();
+        assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
+        let mut bad = env.clone();
+        bad.insert(ENV_MESH_PRIMARY.into(), "yes".into());
+        assert!(Launch::from_env(|k| bad.get(k).cloned()).unwrap_err().starts_with(ENV_MESH_PRIMARY));
     }
 }

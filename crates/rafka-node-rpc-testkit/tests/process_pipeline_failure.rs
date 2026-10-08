@@ -80,7 +80,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },
     };
     let err = pipeline
-        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
+        .create(&CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false })
         .await
         .unwrap_err();
     assert_eq!(err.step, "WaitForBind");

@@ -41,7 +41,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         timeouts: Timeouts::default(),
     };
     let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
-    let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None };
+    let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false };
 
     let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
     let port: SocketAddr = first.node.transport_addr.expect("a created node carries its transport address");

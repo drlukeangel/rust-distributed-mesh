@@ -58,6 +58,10 @@ pub struct AdminConfig {
     pub fabric_id: FabricId,
     pub mesh: String,
     pub mesh_id: Option<MeshId>,
+    /// `RDM_MESH_PRIMARY`: this admin must recover its mesh (node-admin-lifecycle.md §2).
+    pub mesh_primary: bool,
+    /// `RDM_FABRIC_PRIMARY`: this admin must recover the fabric. Implies `mesh_primary`.
+    pub fabric_primary: bool,
     pub data_dir: PathBuf,
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
@@ -124,9 +128,25 @@ impl AdminConfig {
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
+        let (mesh_primary, fabric_primary) = match &launch {
+            Some(l) => (l.mesh_primary, l.fabric_primary),
+            None => (
+                rafka_mesh_entity::launch::decode_flag(rafka_mesh_entity::launch::ENV_MESH_PRIMARY, get(rafka_mesh_entity::launch::ENV_MESH_PRIMARY))?,
+                rafka_mesh_entity::launch::decode_flag(rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY, get(rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY))?,
+            ),
+        };
+        if fabric_primary && !mesh_primary {
+            return Err(format!(
+                "{} is set without {}: a fabric recovery starts the primary node-admin of its own mesh as well (node-admin-lifecycle.md §3)",
+                rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY,
+                rafka_mesh_entity::launch::ENV_MESH_PRIMARY
+            ));
+        }
         Ok(Self {
             fabric,
             fabric_id,
+            mesh_primary,
+            fabric_primary,
             mesh,
             mesh_id: launch
                 .as_ref()
@@ -586,6 +606,9 @@ pub fn retire_mesh_order(members: Vec<PathName>, last_admin: Option<&PathName>) 
     ordinary
 }
 
+/// The most members of its own mesh a node-admin launch seeds beside its launcher.
+const RECOVERY_SEEDS: usize = 4;
+
 /// How a node-admin's own mesh's Pending holds its Ready (e4.s11; i143 export gate: normal
 /// joining admins never self-Ready; only the Day-0 root, which has no upstream authority, applies
 /// its own mesh's Pending).
@@ -1003,6 +1026,38 @@ impl AdminRunner {
         }
     }
 
+    /// What a node-admin's launch seeds beside the launcher: the live members of its own mesh
+    /// first, then the members this admin holds as not yet reached (a mesh's silent members are
+    /// still on the map, fabric lifecycle rule 5), then the births nodes.storage heard in that
+    /// mesh; at most [`RECOVERY_SEEDS`]. And whether the node is a recovering mesh's first
+    /// node-admin: its mesh existed (this admin holds nodes of it) and no node-admin of it is live.
+    async fn recovery_seeds(&self, node: &PathName) -> (Vec<(String, SocketAddr)>, bool) {
+        let view = self.topology.read().await.clone();
+        let of_mesh: Vec<&Node> = view.nodes.iter().filter(|n| n.mesh == node.mesh && n.name != *node).collect();
+        let recovering = !of_mesh.is_empty() && !of_mesh.iter().any(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live());
+        let mut ordered: Vec<(bool, &Node)> = of_mesh.iter().filter(|n| n.kind != NodeKind::NodeAdmin || n.status.is_live()).map(|n| (!n.status.is_live(), *n)).collect();
+        ordered.sort_by_key(|(silent, n)| (*silent, n.name.to_string()));
+        let mut seeds: Vec<(String, SocketAddr)> = Vec::new();
+        for (_, n) in ordered {
+            if let (Some(e), Some(a)) = (&n.endpoint_id, n.transport_addr) {
+                if !seeds.iter().any(|(k, _)| *k == e.0) {
+                    seeds.push((e.0.clone(), a));
+                }
+            }
+        }
+        if seeds.len() < RECOVERY_SEEDS {
+            if let Some(store) = self.records.contacts.get() {
+                for c in store.contacts().await.unwrap_or_default().into_iter().filter(|c| c.name.mesh == node.mesh && c.name != *node && c.name.kind != NodeKind::NodeAdmin) {
+                    if !seeds.iter().any(|(k, _)| *k == c.endpoint_id.0) {
+                        seeds.push((c.endpoint_id.0.clone(), c.transport_addr));
+                    }
+                }
+            }
+        }
+        seeds.truncate(RECOVERY_SEEDS);
+        (seeds, recovering)
+    }
+
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, replaces: Option<&IncarnationId>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
         if restart_of.is_none() {
             match self.fence_predecessor(node).await {
@@ -1020,7 +1075,8 @@ impl AdminRunner {
             }
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of };
+        let (mesh_seeds, mesh_primary) = if node.kind == NodeKind::NodeAdmin && restart_of.is_none() { self.recovery_seeds(node).await } else { (Vec::new(), false) };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, mesh_seeds, mesh_primary };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -1579,6 +1635,17 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
+    if cfg.mesh_primary || cfg.fabric_primary {
+        tracing::info_span!(
+            "rdm.node_admin.node.update.via-recovery-start",
+            node = %name,
+            mesh = %cfg.mesh,
+            mesh_primary = cfg.mesh_primary,
+            fabric_primary = cfg.fabric_primary,
+            seeds = seed_addrs.len(),
+        )
+        .in_scope(|| tracing::info!("started to recover: Ready is held until the topology, Fabric.build_id and its Build are held"));
+    }
     // The control API listens now: the operating system assigns its port (a launched admin is
     // handed `<ip>:0`), and the admin reports the address it really holds in its join digest.
     let listener = match tokio::net::TcpListener::bind(control_addr).await {

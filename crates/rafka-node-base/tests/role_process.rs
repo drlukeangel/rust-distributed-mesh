@@ -42,6 +42,8 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         launcher: None,
         data_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::mint()),
+        mesh_primary: false,
+        fabric_primary: false,
     };
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();
     let running = node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver)).await.unwrap();

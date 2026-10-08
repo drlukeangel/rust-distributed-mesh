@@ -7,7 +7,7 @@
 //! the lost mesh: the cohort lost is the one whose admins do not hold it (a fabric-primary's mesh is
 //! only ever lost after its authority was handed off; that is a separate cell).
 
-use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -167,8 +167,20 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     // Every reconcile of the accepted Build descends from its REST request.
     let rest = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == accepted.as_str()).cloned().expect("the accepted Build's request");
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == accepted.as_str()).collect();
+    // The attempt context lives with the fabric primary that accepted the Build (R-X1): an attempt
+    // that primary decided descends from the request; one decided after the seat moved starts its
+    // own trace.
+    let accepting = claim_decider(&spans, accepted.as_str(), "1").expect("attempt 1 of the accepted Build was claimed");
     for r in &reconciles {
-        assert!(descends_from(&spans, r, &rest), "every attempt of the accepted Build descends from its request: {r}");
+        let attempt = s(&r["attributes"]["attempt"]);
+        if r["attributes"]["reason"] != "requested" {
+            continue; // a proven-drift attempt is rooted at the drift span that opened it
+        }
+        if claim_decider(&spans, accepted.as_str(), &attempt).is_none_or(|d| d == accepting) {
+            assert!(descends_from(&spans, r, &rest), "an attempt the accepting fabric primary decided descends from the request: {r}");
+        } else {
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the seat moved starts its own trace: {r}");
+        }
     }
     // Accepting Pending is not an election.
     let decided: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declaration")
