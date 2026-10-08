@@ -3,7 +3,9 @@
 # worktree already built; workspace crates go to plain rustc (scripts/rustc-wrapper.sh). sccache
 # cannot cache incremental units, so incremental is off. Requires sccache in PATH.
 [build]
-jobs = 6
+# Per cargo invocation, so a memory budget across concurrent lanes: 10 keeps four agent lanes
+# and a gate inside the box (measured peak, 2026-10-08).
+jobs = 10
 rustc-wrapper = "scripts/rustc-wrapper.sh"
 incremental = false
 
