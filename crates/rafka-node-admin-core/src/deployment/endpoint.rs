@@ -406,7 +406,17 @@ fn with_claims_locked<T>(f: impl FnOnce(&std::path::Path) -> T) -> Option<T> {
 }
 
 fn claim_owner(path: &std::path::Path) -> Option<u32> {
-    std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok())
+    std::fs::read_to_string(path).ok().and_then(|s| s.split_whitespace().next().and_then(|p| p.parse().ok()))
+}
+
+/// The claim text of a port this process leased for its own cells ([`lease_block_for`]) and
+/// has not yet handed out: its own allocators may take it, every other process's skips it.
+fn own_lease_text() -> String {
+    format!("{} lease", std::process::id())
+}
+
+fn is_own_lease(path: &std::path::Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|s| s.trim() == own_lease_text())
 }
 
 /// Claim `addr` host-wide. `false` when a live process holds the claim or it
@@ -457,9 +467,21 @@ pub fn lease_block_for(name: &str, count: u16) -> (u16, u16) {
     // overlapping blocks, whether or not either has bound a port yet.
     static LEASED: std::sync::Mutex<std::collections::BTreeSet<u16>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
     let mut leased = LEASED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let base = lease_port_block(hint, count, last, &leased, port_bindable)
-        .or_else(|_| lease_port_block(first, count, last, &leased, port_bindable))
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    // The lease is written into the host-wide claims every allocator reads, under their lock: a
+    // port another live process claims is not leased, and a leased port is never another
+    // process's to hand out (its allocators read a live owner), while this process's own
+    // allocators take it like a free one.
+    let base = with_claims_locked(|_| {
+        let unclaimed = |p: u16| !claim_owner(&reservation_path(SocketAddr::from(([127, 0, 0, 1], p)))).is_some_and(process_is_alive);
+        let free = |p: u16| unclaimed(p) && port_bindable(p);
+        let base = lease_port_block(hint, count, last, &leased, free).or_else(|_| lease_port_block(first, count, last, &leased, free))?;
+        for p in base..base + count {
+            let _ = std::fs::write(reservation_path(SocketAddr::from(([127, 0, 0, 1], p))), own_lease_text());
+        }
+        Ok::<u16, String>(base)
+    })
+    .unwrap_or_else(|| Err("the host-wide endpoint claims cannot be locked".to_string()))
+    .unwrap_or_else(|e| panic!("{name}: {e}"));
     leased.extend(base..base + count);
     (base, base + count - 1)
 }
@@ -474,7 +496,7 @@ pub fn port_bindable(port: u16) -> bool {
 fn reserve_on_host(addr: SocketAddr) -> bool {
     let path = reservation_path(addr);
     with_claims_locked(|_| {
-        if claim_owner(&path).is_some_and(process_is_alive) {
+        if claim_owner(&path).is_some_and(process_is_alive) && !is_own_lease(&path) {
             return false;
         }
         match std::fs::write(&path, std::process::id().to_string()) {
