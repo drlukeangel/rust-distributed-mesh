@@ -20,7 +20,7 @@ use crate::build::BuildId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -472,24 +472,28 @@ impl MemoryBuildStateAdapter {
 
 /// The local fact log a Build-topic adapter holds and absorbs the fabric's facts into: in memory
 /// for runs that need no restart survival, or the admin's own journal (`builds.storage`).
+#[async_trait]
 pub trait LocalBuildLog: BuildStateAdapter {
     /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
     /// insert-and-fail, receipts deduplicate).
-    fn absorb_facts(&self, facts: &[BuildFact]);
+    async fn absorb_facts(&self, facts: &[BuildFact]);
 }
 
+#[async_trait]
 impl LocalBuildLog for MemoryBuildStateAdapter {
-    fn absorb_facts(&self, facts: &[BuildFact]) {
+    async fn absorb_facts(&self, facts: &[BuildFact]) {
         self.absorb(facts)
     }
 }
 
+#[async_trait]
 impl LocalBuildLog for FileJournal {
-    fn absorb_facts(&self, facts: &[BuildFact]) {
-        let mut log = self.log.lock().unwrap();
+    async fn absorb_facts(&self, facts: &[BuildFact]) {
+        let _w = self.writer.lock().await;
         for f in facts {
-            if log.is_new(f) {
-                if let Err(e) = self.append(&mut log, f.clone()) {
+            let new = self.log.lock().unwrap().is_new(f);
+            if new {
+                if let Err(e) = self.append(f.clone()).await {
                     tracing::info_span!("rdm.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
                         .in_scope(|| tracing::info!("a Build fact heard from the fabric could not be journaled"));
                 }
@@ -571,7 +575,11 @@ pub const JOURNAL_FILE: &str = "build-journal.jsonl";
 #[derive(Debug)]
 pub struct FileJournal {
     path: PathBuf,
+    /// The replayed facts. Held only for in-memory reads and pushes, never across the disk.
     log: Mutex<FactLog>,
+    /// Serializes writers: decide on the log, append + fsync on the blocking pool, then push. An
+    /// async lock, so a writer waiting on another's fsync yields its worker and readers never wait.
+    writer: tokio::sync::Mutex<()>,
 }
 
 impl FileJournal {
@@ -592,26 +600,24 @@ impl FileJournal {
                 log.facts.push(fact);
             }
         }
-        Ok(Self { path, log: Mutex::new(log) })
+        Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(()) })
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    fn append(&self, log: &mut FactLog, fact: BuildFact) -> Result<(), BuildStateError> {
-        crate::record_store::off_the_runtime(|| self.append_now(log, fact))
-    }
-
-    fn append_now(&self, log: &mut FactLog, fact: BuildFact) -> Result<(), BuildStateError> {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|e| BuildStateError::Io(e.to_string()))?;
+    /// Append `fact` as one fsynced line, then count it. The caller holds `writer`.
+    async fn append(&self, fact: BuildFact) -> Result<(), BuildStateError> {
+        use std::io::Write as _;
         let line = serde_json::to_string(&fact).map_err(|e| BuildStateError::Io(e.to_string()))?;
-        writeln!(f, "{line}").and_then(|_| f.sync_data()).map_err(|e| BuildStateError::Io(e.to_string()))?;
-        log.facts.push(fact);
+        let path = self.path.clone();
+        crate::record_store::blocking_io(move || {
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| BuildStateError::Io(e.to_string()))?;
+            writeln!(f, "{line}").and_then(|_| f.sync_data()).map_err(|e| BuildStateError::Io(e.to_string()))
+        })
+        .await?;
+        self.log.lock().unwrap().facts.push(fact);
         Ok(())
     }
 }
@@ -619,20 +625,25 @@ impl FileJournal {
 #[async_trait]
 impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.accepted_conflict(accepted)? {
-            self.append(&mut log, BuildFact::Accepted(accepted.clone()))?;
+        let _w = self.writer.lock().await;
+        let conflict = self.log.lock().unwrap().accepted_conflict(accepted)?;
+        if !conflict {
+            self.append(BuildFact::Accepted(accepted.clone())).await?;
         }
         Ok(())
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.known(&opened.build_id) {
-            return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
-        }
-        if !log.is_opened(&opened.build_id, opened.attempt) {
-            self.append(&mut log, BuildFact::Opened(opened.clone()))?;
+        let _w = self.writer.lock().await;
+        let opened_already = {
+            let log = self.log.lock().unwrap();
+            if !log.known(&opened.build_id) {
+                return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
+            }
+            log.is_opened(&opened.build_id, opened.attempt)
+        };
+        if !opened_already {
+            self.append(BuildFact::Opened(opened.clone())).await?;
         }
         Ok(())
     }
@@ -646,28 +657,31 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        if !log.known(&claim.build_id) {
-            return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
+        let _w = self.writer.lock().await;
+        {
+            let log = self.log.lock().unwrap();
+            if !log.known(&claim.build_id) {
+                return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
+            }
+            if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
+                return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
+            }
+            if let Some(not_open) = log.not_open(claim) {
+                return Ok(not_open);
+            }
         }
-        if let Some(holder) = log.claim_holder(&claim.build_id, claim.attempt) {
-            return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
-        }
-        if let Some(not_open) = log.not_open(&claim) {
-            return Ok(not_open);
-        }
-        self.append(&mut log, BuildFact::Claim(claim.clone()))?;
+        self.append(BuildFact::Claim(claim.clone())).await?;
         Ok(ClaimOutcome::Won)
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        self.append(&mut log, BuildFact::Step(receipt.clone()))
+        let _w = self.writer.lock().await;
+        self.append(BuildFact::Step(receipt.clone())).await
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        self.append(&mut log, BuildFact::Attempt(receipt.clone()))
+        let _w = self.writer.lock().await;
+        self.append(BuildFact::Attempt(receipt.clone())).await
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
@@ -675,8 +689,8 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        let mut log = self.log.lock().unwrap();
-        self.append(&mut log, BuildFact::Forget { build_id: build_id.clone() })
+        let _w = self.writer.lock().await;
+        self.append(BuildFact::Forget { build_id: build_id.clone() }).await
     }
 }
 

@@ -76,7 +76,7 @@ impl MeshStorage for FileMeshStorage {
         self.0.read(name, MESH_FORMAT)
     }
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.0.write(&record.name, MESH_FORMAT, record)
+        self.0.write(&record.name, MESH_FORMAT, record).await
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         self.0.list(MESH_FORMAT)
@@ -177,16 +177,16 @@ impl NodesStorage for FileNodesStorage {
         self.own.read("self", NODE_FORMAT)
     }
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.own.write("self", NODE_FORMAT, record)
+        self.own.write("self", NODE_FORMAT, record).await
     }
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {
         self.contacts.list(NODE_FORMAT)
     }
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        self.contacts.write(record.node_id.as_str(), NODE_FORMAT, record)
+        self.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
     }
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError> {
-        self.contacts.remove(node_id.as_str())
+        self.contacts.remove(node_id.as_str()).await
     }
 }
 
@@ -242,39 +242,44 @@ fn connection_key(i: &ConnectionIndex) -> String {
 
 /// `<data dir>/connections/<source>--<destination>--<kind>.json`.
 #[derive(Debug)]
-pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, Mutex<()>);
+pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, tokio::sync::Mutex<()>);
 
 impl FileConnectionsStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         let records = FileRecords::open(own_data_dir, "connections")?;
-        Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), Mutex::new(())))
+        Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), tokio::sync::Mutex::new(())))
     }
 
-    fn append_history_now(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+    /// Append `fact` to the raw log and fsync it, on the blocking pool, one appender at a time.
+    async fn append_history_line(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         use std::io::Write as _;
-        let _g = self.2.lock().unwrap();
-        let io = |e: std::io::Error| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() };
-        let mut line = serde_json::to_vec(fact).map_err(|e| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() })?;
+        let path = self.1.clone();
+        let mut line = serde_json::to_vec(fact).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
         line.push(b'\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.1).map_err(io)?;
-        f.write_all(&line).map_err(io)?;
-        f.sync_all().map_err(io)
+        let _g = self.2.lock().await;
+        crate::record_store::blocking_io(move || {
+            let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(io)?;
+            f.write_all(&line).map_err(io)?;
+            f.sync_all().map_err(io)
+        })
+        .await
     }
 }
 
 #[async_trait]
 impl ConnectionsStorage for FileConnectionsStorage {
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {
-        self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact)
+        self.0.write(&connection_key(&fact.index()), CONNECTION_FORMAT, fact).await
     }
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError> {
         self.0.list(CONNECTION_FORMAT)
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
-        self.0.remove(&connection_key(index))
+        self.0.remove(&connection_key(index)).await
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
-        crate::record_store::off_the_runtime(|| self.append_history_now(fact))
+        self.append_history_line(fact).await
     }
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
         match std::fs::read_to_string(&self.1) {

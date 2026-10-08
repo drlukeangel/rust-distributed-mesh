@@ -41,11 +41,72 @@ pub fn thread_states() -> String {
         let comm = std::fs::read_to_string(p.join("comm")).map(|c| c.trim().to_string()).unwrap_or_default();
         let state = std::fs::read_to_string(p.join("stat")).ok().and_then(|s| s.rsplit(')').next().and_then(|r| r.split_whitespace().next()).map(str::to_string)).unwrap_or_default();
         let wchan = std::fs::read_to_string(p.join("wchan")).map(|w| w.trim().to_string()).unwrap_or_default();
-        *counts.entry(format!("{comm}:{state}:{}", if wchan.is_empty() || wchan == "0" { "-" } else { &wchan })).or_default() += 1;
+        // A thread in uninterruptible sleep is named by what it is doing: its syscall and the file
+        // behind the descriptor it passed (readable for this process's own threads).
+        let doing = if state == "D" { blocked_call(&p) } else { String::new() };
+        *counts.entry(format!("{comm}:{state}:{}{doing}", if wchan.is_empty() || wchan == "0" { "-" } else { &wchan })).or_default() += 1;
     }
     let mut v: Vec<(String, u32)> = counts.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1));
     v.into_iter().map(|(k, n)| format!("{k}x{n}")).collect::<Vec<_>>().join(" ")
+}
+
+/// `[<syscall> fd=<n> <file>]` for a thread blocked in a syscall that names a descriptor;
+/// `[syscall <nr>]` for any other. The numbering is the build target's.
+fn blocked_call(task: &std::path::Path) -> String {
+    let s = match std::fs::read_to_string(task.join("syscall")) {
+        Ok(s) => s,
+        Err(e) => return format!("[syscall unreadable: {e}]"),
+    };
+    let mut f = s.split_whitespace();
+    let Some(nr) = f.next().and_then(|n| n.parse::<i64>().ok()) else { return format!("[{}]", s.trim()) };
+    // (name, takes a descriptor first)
+    #[cfg(target_arch = "aarch64")]
+    let call: Option<(&str, bool)> = match nr {
+        56 => Some(("openat", false)),
+        57 => Some(("close", true)),
+        63 => Some(("read", true)),
+        64 => Some(("write", true)),
+        65 => Some(("readv", true)),
+        66 => Some(("writev", true)),
+        67 => Some(("pread64", true)),
+        68 => Some(("pwrite64", true)),
+        82 => Some(("fsync", true)),
+        83 => Some(("fdatasync", true)),
+        46 => Some(("ftruncate", true)),
+        38 => Some(("renameat", false)),
+        276 => Some(("renameat2", false)),
+        35 => Some(("unlinkat", false)),
+        _ => None,
+    };
+    #[cfg(not(target_arch = "aarch64"))]
+    let call: Option<(&str, bool)> = match nr {
+        0 => Some(("read", true)),
+        1 => Some(("write", true)),
+        3 => Some(("close", true)),
+        17 => Some(("pread64", true)),
+        18 => Some(("pwrite64", true)),
+        19 => Some(("readv", true)),
+        20 => Some(("writev", true)),
+        74 => Some(("fsync", true)),
+        75 => Some(("fdatasync", true)),
+        77 => Some(("ftruncate", true)),
+        82 => Some(("rename", false)),
+        87 => Some(("unlink", false)),
+        257 => Some(("openat", false)),
+        264 => Some(("renameat", false)),
+        316 => Some(("renameat2", false)),
+        _ => None,
+    };
+    let fd = f.next().and_then(|a| i64::from_str_radix(a.trim_start_matches("0x"), 16).ok());
+    match (call, fd) {
+        (None, _) => format!("[syscall {nr}]"),
+        (Some((n, true)), Some(fd)) => {
+            let file = std::fs::read_link(format!("/proc/self/fd/{fd}")).map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into());
+            format!("[{n} fd={fd} {file}]")
+        }
+        (Some((n, _)), _) => format!("[{n}]"),
+    }
 }
 
 /// Start the watchdog on the current tokio runtime; `None` outside one.

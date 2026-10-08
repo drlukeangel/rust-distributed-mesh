@@ -238,7 +238,7 @@ impl FabricBuildStateAdapter {
                                             .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
                                     }
                                 }
-                                absorb.absorb_facts(&w.facts);
+                                absorb.absorb_facts(&w.facts).await;
                                 if let Some(r) = heard_fabric {
                                     store.learn(r, &*absorb, &m.delivered_from.to_string()).await;
                                 } else if !w.facts.is_empty() {

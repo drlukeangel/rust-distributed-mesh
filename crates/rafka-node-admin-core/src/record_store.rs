@@ -8,7 +8,6 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Why a storage read or write failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,14 +36,16 @@ struct Stored<T> {
 #[derive(Debug)]
 pub struct FileRecords {
     dir: PathBuf,
-    write: Mutex<()>,
+    /// Serializes this store's writers. An async lock: a writer waiting on another's fsync yields
+    /// its worker instead of blocking it.
+    write: tokio::sync::Mutex<()>,
 }
 
 impl FileRecords {
     pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
         let dir = own_data_dir.join(dir);
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self { dir, write: Mutex::new(()) })
+        Ok(Self { dir, write: tokio::sync::Mutex::new(()) })
     }
 
     fn path(&self, key: &str) -> PathBuf {
@@ -88,37 +89,50 @@ impl FileRecords {
             .collect()
     }
 
-    /// Store `record` under `key`, replacing what was there.
-    pub fn write<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
-        off_the_runtime(|| self.write_now(key, format, record))
-    }
-
-    fn write_now<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
-        use std::io::Write as _;
-        let _g = self.write.lock().unwrap();
+    /// Store `record` under `key`, replacing what was there: temp file, fsync, rename, directory
+    /// fsync, on the blocking pool.
+    pub async fn write<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
         let path = self.path(key);
-        let tmp = self.dir.join(format!(".{key}.json.tmp"));
-        let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
         let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
-        let mut f = std::fs::File::create(&tmp).map_err(io)?;
-        f.write_all(&bytes).map_err(io)?;
-        f.sync_all().map_err(io)?;
-        std::fs::rename(&tmp, &path).map_err(io)?;
-        if let Ok(d) = std::fs::File::open(&self.dir) {
-            let _ = d.sync_all();
-        }
-        Ok(())
+        let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
+        let _g = self.write.lock().await;
+        blocking_io(move || write_file(&dir, &tmp, &path, &bytes)).await
     }
 
     /// Remove the record under `key`, if any.
-    pub fn remove(&self, key: &str) -> Result<(), StorageError> {
-        let _g = self.write.lock().unwrap();
+    pub async fn remove(&self, key: &str) -> Result<(), StorageError> {
         let path = self.path(key);
-        match std::fs::remove_file(&path) {
+        let _g = self.write.lock().await;
+        blocking_io(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
-        }
+        })
+        .await
+    }
+}
+
+fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
+    let mut f = std::fs::File::create(tmp).map_err(io)?;
+    f.write_all(bytes).map_err(io)?;
+    f.sync_all().map_err(io)?;
+    std::fs::rename(tmp, path).map_err(io)?;
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Run `f`, a blocking disk call (a write that ends in an fsync), on tokio's blocking pool. No
+/// worker thread waits on the disk, and no lock a worker could block on is held across it: a
+/// journal commit that takes seconds delays only the caller awaiting it.
+pub(crate) async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(v) => v,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(e) => panic!("a blocking disk call was cancelled: {e}"),
     }
 }
 
@@ -133,32 +147,21 @@ pub(crate) fn tempdir(tag: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
+    #[tokio::test]
+    async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
         let r = FileRecords::open(&d, "things").unwrap();
         assert_eq!(r.read::<String>("a", "thing/1").unwrap(), None);
-        r.write("a", "thing/1", &"one".to_string()).unwrap();
-        r.write("b", "thing/1", &"two".to_string()).unwrap();
+        r.write("a", "thing/1", &"one".to_string()).await.unwrap();
+        r.write("b", "thing/1", &"two".to_string()).await.unwrap();
         let again = FileRecords::open(&d, "things").unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2"), Err(StorageError::Unrecognised { .. })));
         std::fs::write(d.join("things").join("c.json"), b"not json").unwrap();
         assert!(matches!(again.list::<String>("thing/1"), Err(StorageError::Unrecognised { file, .. }) if file.ends_with("c.json")));
-        again.remove("c").unwrap();
-        again.remove("a").unwrap();
+        again.remove("c").await.unwrap();
+        again.remove("a").await.unwrap();
         assert_eq!(again.list::<String>("thing/1").unwrap(), ["two"]);
-    }
-}
-
-/// Run `f`, a blocking file write that ends in an fsync, without stalling the async runtime: on a
-/// multi-thread runtime the worker hands its other tasks to the rest of the runtime first
-/// (`block_in_place`), so a journal commit stalls only this caller, never the tasks queued behind
-/// it. Outside a runtime, or on a current-thread one, `f` runs as is.
-pub(crate) fn off_the_runtime<T>(f: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
-        _ => f(),
     }
 }

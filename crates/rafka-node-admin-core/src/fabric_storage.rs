@@ -104,12 +104,13 @@ const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 #[derive(Debug)]
 pub struct FileFabricStorage {
     records: crate::record_store::FileRecords,
-    shutdown: Mutex<()>,
+    /// Serializes shutdown writers (decide, then write); async, so a waiter yields its worker.
+    shutdown: tokio::sync::Mutex<()>,
 }
 
 impl FileFabricStorage {
     pub fn open(own_data_dir: &Path) -> Result<Self, FabricStorageError> {
-        Ok(Self { records: crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR)?, shutdown: Mutex::new(()) })
+        Ok(Self { records: crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR)?, shutdown: tokio::sync::Mutex::new(()) })
     }
 }
 
@@ -119,17 +120,16 @@ impl FabricStorage for FileFabricStorage {
         self.records.read(FABRIC_KEY, FABRIC_FORMAT)
     }
     async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
-        self.records.write(FABRIC_KEY, FABRIC_FORMAT, record)
+        self.records.write(FABRIC_KEY, FABRIC_FORMAT, record).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)
     }
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        let _g = self.shutdown.lock().unwrap();
-        // The held record is read through the file directly: the guard is held across no await.
+        let _g = self.shutdown.lock().await;
         let (now, changed) = decide(self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)?, shutdown);
         if changed {
-            self.records.write(SHUTDOWN_KEY, SHUTDOWN_FORMAT, &now)?;
+            self.records.write(SHUTDOWN_KEY, SHUTDOWN_FORMAT, &now).await?;
         }
         Ok(now)
     }
