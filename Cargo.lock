@@ -1718,7 +1718,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -1938,7 +1938,7 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 [[package]]
 name = "iroh"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
+source = "git+https://github.com/drlukeangel/iroh?rev=1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5#1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5"
 dependencies = [
  "backon",
  "blake3",
@@ -1987,7 +1987,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
+source = "git+https://github.com/drlukeangel/iroh?rev=1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5#1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -2005,7 +2005,7 @@ dependencies = [
 [[package]]
 name = "iroh-dns"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
+source = "git+https://github.com/drlukeangel/iroh?rev=1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5#1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -2027,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=80fede4c7f5e7a0528f45c518c87fbe9280e96f3#80fede4c7f5e7a0528f45c518c87fbe9280e96f3"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=d0928e92b67e0b989b6a57b8e054ac891fac3b63#d0928e92b67e0b989b6a57b8e054ac891fac3b63"
 dependencies = [
  "blake3",
  "bytes",
@@ -2080,7 +2080,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
+source = "git+https://github.com/drlukeangel/iroh?rev=1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5#1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5"
 dependencies = [
  "blake3",
  "bytes",
@@ -2712,7 +2712,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2753,7 +2753,7 @@ source = "git+https://github.com/drlukeangel/noq?rev=d878a5ea83a7997c991967e1fe7
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -3358,7 +3358,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3396,7 +3396,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
  "windows-sys 0.60.2",
 ]

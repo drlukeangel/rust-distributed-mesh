@@ -50,9 +50,9 @@ opentelemetry-semantic-conventions = "0.27"
 # netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
 # per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Vendor divergence
 # and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
-iroh = { git = "https://github.com/drlukeangel/iroh", rev = "5d248d3d473a42e30f37d20dc4c90c815c6eb436" }
-iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "5d248d3d473a42e30f37d20dc4c90c815c6eb436" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "80fede4c7f5e7a0528f45c518c87fbe9280e96f3" }
+iroh = { git = "https://github.com/drlukeangel/iroh", rev = "1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5" }
+iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "d0928e92b67e0b989b6a57b8e054ac891fac3b63" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }
