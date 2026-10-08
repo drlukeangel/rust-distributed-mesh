@@ -129,9 +129,11 @@ impl Config {
     /// the mark at the floor, round 1 half a floor later, round 2 at least one floor after round 1
     /// found no path, each round at most `tickle_round`, then the mesh primary's write reaches the
     /// view (offline.rs, fabric-node-lifecycle.md section 7.3).
-    pub fn unheard_within(&self, true_offline: bool) -> Duration {
+    /// The mesh primary tickles the silent nodes it watches one after another, so each of the
+    /// `silent` nodes (the held node and every member of a silenced mesh) costs two rounds.
+    pub fn unheard_within(&self, true_offline: bool, silent: usize) -> Duration {
         if true_offline {
-            self.floor * 5 / 2 + self.tickle_round * 2 + self.backbone * 4 + Duration::from_secs(10)
+            self.floor * 5 / 2 + self.tickle_round * 2 * silent.max(1) as u32 + self.backbone * 4 + Duration::from_secs(10)
         } else {
             self.floor * 3 + self.backbone * 2 + Duration::from_secs(30)
         }
@@ -1069,7 +1071,7 @@ impl Driver {
         }
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
         let known = self.known.clone();
-        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, self.cfg.unheard_within(true_offline)).await;
+        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members.len()).sum::<usize>())).await;
         if let Ok(after) = &marked {
             entry["unheard_after_ms"] = json!(after.as_millis() as u64);
         }
