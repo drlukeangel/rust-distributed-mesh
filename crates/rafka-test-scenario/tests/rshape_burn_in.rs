@@ -3676,7 +3676,8 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
         Rt::Process(r) => json!({"check": format!("{:?}", r.check()), "state": proc_state_of(r.pid)}),
         Rt::Container(c) => json!(container_faults::inspect(&c.id).map(|i| json!({"status": i.status, "running": i.running})).unwrap_or_else(|e| json!({"gone": e}))),
     };
-    let release_ack = if rt_alive(&rt) { held.release() } else { held.released = true; json!({"not_needed": "the held runtime was terminated by the provider during the restart", "runtime": runtime_at_end}) };
+    let alive_at_end = rt_alive(&rt);
+    let release_ack = if alive_at_end { held.release() } else { held.released = true; json!({"not_needed": "the held runtime was terminated by the provider during the restart", "runtime": runtime_at_end}) };
     let release_ns = now_ns();
     let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: inc.clone() }, "after-hold-release").await;
     let after = f.estate.node(node).await;
@@ -3687,7 +3688,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     let terminal = terminal_proof(node, &rt);
     let rec = json!({
         "node": node, "node_id": node_id, "old_incarnation_id": inc, "new_incarnation_id": after["incarnation_id"], "build_id": build_id, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"],
-        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held, "held_runtime_terminated_by_the_provider_during_the_hold": !rt_alive(&rt),
+        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held, "held_runtime_terminated_by_the_provider_during_the_hold": !alive_at_end,
         "runtime_at_end_of_observation": runtime_at_end, "release_ack": release_ack, "release_ns": release_ns, "wall_after_release_ms": fin["wall_ms"], "runtimes": runtimes, "old_birth_terminal": terminal,
     });
     inv.holds(
