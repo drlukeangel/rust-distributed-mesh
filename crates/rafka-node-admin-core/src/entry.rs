@@ -2,13 +2,21 @@
 //! `rafka-node-admin` and a consumer's own node-admin executable are this call under their own
 //! service name.
 
-use crate::admin::{start, AdminConfig};
+use crate::admin::{start_with, AdminConfig};
+use crate::wiring::Wiring;
 use tracing::Instrument;
 
 /// Run a node-admin to completion: configured from the environment, serving its control API,
 /// leaving on a fabric shutdown or a signal. `service` is the telemetry service name and the
 /// prefix of its console lines.
 pub async fn run(service: &str) {
+    run_with(service, |_| Wiring::default()).await
+}
+
+/// [`run`], for an executable that decorates the parts its node-admin is built from: `wiring` is
+/// called once with the configuration the environment produced, inside the runtime, before the
+/// admin starts.
+pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(service);
     let cfg = match AdminConfig::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
@@ -17,6 +25,7 @@ pub async fn run(service: &str) {
             std::process::exit(2);
         }
     };
+    let wiring = wiring(&cfg);
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = tracing::field::Empty,
@@ -35,7 +44,7 @@ pub async fn run(service: &str) {
     // hold the boot span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        match start(cfg).instrument(tracing::Span::none()).await {
+        match start_with(cfg, wiring).instrument(tracing::Span::none()).await {
             Ok(r) => r,
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));

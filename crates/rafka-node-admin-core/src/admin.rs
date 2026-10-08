@@ -1334,14 +1334,21 @@ fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<
 
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
-pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
+pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
+    start_with(cfg, crate::wiring::Wiring::default()).await
+}
+
+/// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built from.
+pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring) -> Result<Running, String> {
     let key = load_or_mint_key(&cfg.data_dir)?;
     // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
     // nodes.storage was here before: it restarts as the same logical node, in the same Mesh and
     // Fabric, holding the same Builds.
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
-    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> =
-        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(
+        wiring.fabric_storage.take(),
+        Arc::new(crate::fabric_storage::FileFabricStorage::open(&cfg.data_dir).map_err(storage_err)?),
+    );
     let mesh_storage: Arc<dyn crate::storage::MeshStorage> = Arc::new(crate::storage::FileMeshStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let nodes_storage: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
@@ -1568,6 +1575,9 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
             .await
             .map_err(|e| e.to_string())?,
     );
+    // The Build state every consumer after hydration shares: the control routes, the executor, the
+    // pipelines and the drift check.
+    let builds_dyn: Arc<dyn BuildStateAdapter> = crate::wiring::apply(wiring.builds.take(), builds.clone());
     {
         let b = builds.clone();
         shutdown_control.set_publish(Arc::new(move |sd| {
@@ -1673,7 +1683,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(node_rpc_resolver.clone(), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
-    let control = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
+    let control = Arc::new(ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
     {
         let (book, records) = (book.clone(), records.clone());
         let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
@@ -1724,9 +1734,14 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         env: cfg.passthrough.clone(),
         data_root,
     };
-    let hooks = HookRegistry::new().seal().map_err(|e| format!("{e:?}"))?;
+    let mut registry = HookRegistry::new();
+    for (spec, hook) in wiring.hooks.drain(..) {
+        registry = registry.register(spec, hook);
+    }
+    let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
+    let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
     let runner = Arc::new(AdminRunner {
-        provider: prepared.provider.clone(),
+        provider: provider_dyn.clone(),
         // The record check (rafka-v2 node-admin's ports_held): every socket the topology names is
         // taken, whichever process reserved it and however that reservation ended; and every
         // socket a birth this admin launched names, read from its launch records directly (the
@@ -1757,7 +1772,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }))),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
         records: records.clone(),
-        builds: builds.clone(),
+        builds: builds_dyn.clone(),
         template,
         admin_env,
         bin_dir: cfg.bin_dir.clone(),
@@ -1773,7 +1788,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
         node_rpc: Some(node_rpc.clone()),
-        lifecycle_events: Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() }),
+        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() })),
     });
 
     // This birth's exact runtime. A launched admin takes the record its
@@ -1915,7 +1930,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // receipt for every step of its own adoption. Until then it publishes
     // Pending.
     {
-        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), prepared.provider.clone(), name.clone(), membership.clone());
+        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
         let hydrated = accepted.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
@@ -2228,13 +2243,13 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     {
         let exec = BuildExecutor {
             executor: name.to_string(),
-            builds: builds.clone(),
+            builds: builds_dyn.clone(),
             topology: control.topology.clone(),
             runner: runner.clone(),
         };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
-        let (me, deployer, accepted, drift_builds) = (name.clone(), runner.provider.clone(), accepted.clone(), builds.clone());
+        let (me, deployer, accepted, drift_builds) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone());
         let frozen = shutdown_control.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
