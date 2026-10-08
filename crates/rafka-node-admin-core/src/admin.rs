@@ -1608,6 +1608,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         let (book, records) = (book.clone(), records.clone());
         let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
     }
+    {
+        let (book, records, fabric, fabric_id, provider) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
+        let _ = control.view_now.set(Arc::new(move || project(&fabric, &fabric_id, provider, &book, &records)));
+    }
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());

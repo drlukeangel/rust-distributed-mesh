@@ -38,6 +38,10 @@ pub struct ControlPlane {
     /// records hold for it (set once by the admin that owns them). An unknown-node refusal from
     /// the live view carries it, so the refusal names the exclusion instead of hiding it.
     pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
+    /// This admin's view projected now, from the same inputs the periodic refresh projects
+    /// from: what a decision on one node reads, so it never acts on a snapshot up to one refresh
+    /// old (set once by the admin that owns the inputs).
+    pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> Topology + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
@@ -64,6 +68,7 @@ impl ControlPlane {
             shutdown: Arc::new(Notify::new()),
             fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
+            view_now: std::sync::OnceLock::new(),
         }
     }
 
@@ -144,7 +149,10 @@ impl ControlPlane {
             return Err(Refusal::Reject(reject));
         }
         let from_incarnation = {
-            let t = self.topology.read().await;
+            let t = match self.view_now.get() {
+                Some(project) => project(),
+                None => self.topology.read().await.clone(),
+            };
             let Some(n) = t.node(&path) else {
                 let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
