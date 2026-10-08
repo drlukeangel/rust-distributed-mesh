@@ -1938,7 +1938,7 @@ checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 [[package]]
 name = "iroh"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=b94cb9183cf45f92e10556587a463d826cdb1c20#b94cb9183cf45f92e10556587a463d826cdb1c20"
+source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
 dependencies = [
  "backon",
  "blake3",
@@ -1987,7 +1987,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=b94cb9183cf45f92e10556587a463d826cdb1c20#b94cb9183cf45f92e10556587a463d826cdb1c20"
+source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -2005,7 +2005,7 @@ dependencies = [
 [[package]]
 name = "iroh-dns"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=b94cb9183cf45f92e10556587a463d826cdb1c20#b94cb9183cf45f92e10556587a463d826cdb1c20"
+source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -2027,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=fcf426396d8a7e2555cc07335e4cada9b0473511#fcf426396d8a7e2555cc07335e4cada9b0473511"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=80fede4c7f5e7a0528f45c518c87fbe9280e96f3#80fede4c7f5e7a0528f45c518c87fbe9280e96f3"
 dependencies = [
  "blake3",
  "bytes",
@@ -2080,7 +2080,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=b94cb9183cf45f92e10556587a463d826cdb1c20#b94cb9183cf45f92e10556587a463d826cdb1c20"
+source = "git+https://github.com/drlukeangel/iroh?rev=5d248d3d473a42e30f37d20dc4c90c815c6eb436#5d248d3d473a42e30f37d20dc4c90c815c6eb436"
 dependencies = [
  "blake3",
  "bytes",
@@ -2665,7 +2665,7 @@ dependencies = [
 [[package]]
 name = "netwatch"
 version = "0.19.3"
-source = "git+https://github.com/drlukeangel/netwatch?rev=ab1c3f05f136b14853485490bcea22341553f9ac#ab1c3f05f136b14853485490bcea22341553f9ac"
+source = "git+https://github.com/drlukeangel/netwatch?rev=3b29b5338d8d5cca09867537b58fc954353ec393#3b29b5338d8d5cca09867537b58fc954353ec393"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3186,8 +3186,7 @@ dependencies = [
 [[package]]
 name = "portmapper"
 version = "0.19.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca97242f016e090a25330613bc2382aab65eb22f9149dbe84d8f8e711d49a530"
+source = "git+https://github.com/drlukeangel/netwatch?rev=3b29b5338d8d5cca09867537b58fc954353ec393#3b29b5338d8d5cca09867537b58fc954353ec393"
 dependencies = [
  "base64 0.22.1",
  "bytes",

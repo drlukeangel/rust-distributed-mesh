@@ -42,15 +42,17 @@ opentelemetry_sdk = { version = "0.27", features = ["trace", "logs", "rt-tokio"]
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace", "logs"] }
 opentelemetry-semantic-conventions = "0.27"
 
-# iroh 1 + iroh-gossip from drlukeangel/iroh-gossip, pinned to the exact
-# carrying commit (never a branch). Upstream's net actor awaited a full
-# per-peer send queue, so a peer that stopped draining deafened every topic
-# and two actors flooding each other deadlocked; the fork's try_send drops
-# that one enqueue and Plumtree repairs it. Vendor divergence and its removal
-# condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
-iroh = { version = "1" }
-iroh-base = { version = "1" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "fcf426396d8a7e2555cc07335e4cada9b0473511" }
+# iroh, iroh-base and iroh-gossip come from drlukeangel's forks, each pinned to the exact carrying
+# commit (never a branch), as direct git dependencies: a git importer sees no root [patch], so the
+# forks themselves depend on each other by git (iroh -> netwatch, noq; iroh-gossip -> iroh, noq) and
+# the graph holds one iroh, netwatch and noq. The iroh fork carries path retirement
+# (Endpoint::replace_direct_addrs), the mapped-address and waker-loss fixes and the bind span fix;
+# netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
+# per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Vendor divergence
+# and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
+iroh = { git = "https://github.com/drlukeangel/iroh", rev = "5d248d3d473a42e30f37d20dc4c90c815c6eb436" }
+iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "5d248d3d473a42e30f37d20dc4c90c815c6eb436" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "80fede4c7f5e7a0528f45c518c87fbe9280e96f3" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }
@@ -72,17 +74,6 @@ dashmap = "6"
 # The Windows-host churn-memory-leak forks (E:/iroh, E:/iroh-gossip, E:/noq)
 # are opted into per host, never from this file: a path patch that does not
 # exist breaks cargo everywhere else. See deployment/dev/windows-iroh-patches.toml.
-
-# iroh, iroh-base, netwatch and noq come from drlukeangel's forks at one pinned rev each (never a
-# branch). iroh and iroh-base share one source, as do noq, noq-proto and noq-udp: two sources would
-# give cargo two PublicKey types.
-[patch.crates-io]
-iroh = { git = "https://github.com/drlukeangel/iroh", rev = "b94cb9183cf45f92e10556587a463d826cdb1c20" }
-iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "b94cb9183cf45f92e10556587a463d826cdb1c20" }
-netwatch = { git = "https://github.com/drlukeangel/netwatch", rev = "ab1c3f05f136b14853485490bcea22341553f9ac" }
-noq = { git = "https://github.com/drlukeangel/noq", rev = "d878a5ea83a7997c991967e1fe723bc4f059ead1" }
-noq-proto = { git = "https://github.com/drlukeangel/noq", rev = "d878a5ea83a7997c991967e1fe723bc4f059ead1" }
-noq-udp = { git = "https://github.com/drlukeangel/noq", rev = "d878a5ea83a7997c991967e1fe723bc4f059ead1" }
 
 # The executable-binding check hashes whole (debug-sized, hundreds of MB) executables at every
 # launch: the hash runs at release speed even in a debug build.

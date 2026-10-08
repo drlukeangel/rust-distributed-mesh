@@ -17,7 +17,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 const RDM_URL: &str = "https://github.com/drlukeangel/rust-distributed-mesh";
-const IROH_GOSSIP_URL: &str = "https://github.com/drlukeangel/iroh-gossip";
+/// The forks the substrate is built from, each a direct git dependency of the imported graph.
+const FORK_URLS: [&str; 4] = [
+    "https://github.com/drlukeangel/iroh-gossip",
+    "https://github.com/drlukeangel/iroh",
+    "https://github.com/drlukeangel/netwatch",
+    "https://github.com/drlukeangel/noq",
+];
 const CONSUMER: &str = "qualification/rshape-consumer";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
@@ -147,7 +153,7 @@ fn check_lock(lock: &str, rev: &str) -> Vec<String> {
                 if !APPROVED_RDM.contains(&name.as_str()) {
                     v.push(format!("rshape-consumer-business-dependency: `{name}` is locked but not an approved RDM import"));
                 }
-            } else if src.starts_with("git+") && !src.starts_with(&format!("git+{IROH_GOSSIP_URL}?rev=")) {
+            } else if src.starts_with("git+") && !FORK_URLS.iter().any(|u| src.starts_with(&format!("git+{u}?rev="))) {
                 v.push(format!("rshape-consumer-wrong-source: `{name}` locks {src}"));
             }
         }

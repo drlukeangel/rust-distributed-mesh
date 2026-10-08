@@ -18,7 +18,7 @@
 # executable map), metadata.json (`cargo metadata --locked`), gate.log (the whole build).
 # REFUSED, by name and nonzero: a candidate that is not 40-hex, a build that fails, any RDM package
 # that does not resolve to the candidate git rev, any path/[patch]/[replace] shortcut, any
-# non-RDM git source other than the pinned iroh-gossip fork, any package outside the approved
+# non-RDM git source other than the pinned drlukeangel forks (iroh, iroh-gossip, netwatch, noq), any package outside the approved
 # RDM list, a missing binary.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -89,7 +89,7 @@ for p in m["packages"]:
             if p["name"] not in APPROVED:
                 bad.append(f"{p['name']} is an RDM package outside the approved import list")
             rdm.append(p["name"])
-        elif base != "https://github.com/drlukeangel/iroh-gossip":
+        elif base not in ("https://github.com/drlukeangel/iroh-gossip", "https://github.com/drlukeangel/iroh", "https://github.com/drlukeangel/netwatch", "https://github.com/drlukeangel/noq"):
             bad.append(f"{p['name']} comes from the unapproved git source {src}")
 for need in ("rafka-node-base", "rafka-node-admin-core", "rafka-node-rpc-testkit"):
     if need not in rdm:
