@@ -108,6 +108,18 @@
           "dir": "target/i143-acceptance/2805/unit/draining_authority_serves_status_checks_exact_birth"
         }
       ]
+    },
+    "i143-2805-process": {
+      "issue": 2805,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "bootstrap_admin_receives_pending_before_own_mesh_attempt",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
+          "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
+        }
+      ]
     }
   },
   "rshape_jobs": {
