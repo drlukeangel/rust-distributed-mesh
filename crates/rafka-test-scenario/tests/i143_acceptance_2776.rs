@@ -338,3 +338,177 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         }),
     );
 }
+
+// ---- replay manifests ---------------------------------------------------------------------------
+
+use rafka_test_scenario::replay::{schedule_from_seed, Fault, ManifestError, ReplayManifest, ScheduledFault, Source, StepOutcome, SCHEMA_VERSION};
+use rafka_test_scenario::scenario::Scenario;
+
+const REPLAY_SCENARIO: &str = "
+version: 1
+product: mesh
+feature: i143-2776
+subfeature: replay
+rung: SN
+provider: process
+shape: SN
+fabric: fabric1
+meshes:
+  - name: mesh1
+    node_admin: 1
+    rpc_node: 2
+operations:
+  - put: { target: mesh1.rpc.1, key: 10, value: \"a\" }
+  - put: { target: mesh1.rpc.2, key: 11, value: \"b\" }
+  - cas: { target: mesh1.rpc.1, key: 10, expected: \"a\", value: \"a2\" }
+  - delete: { target: mesh1.rpc.2, key: 11 }
+assert:
+  - get: { target: mesh1.rpc.1, key: 10, equals: \"a2\" }
+  - get: { target: mesh1.rpc.2, key: 11, absent: true }
+";
+
+const SEED: u64 = 2776;
+
+fn source() -> Source {
+    Source { sha: candidate_sha(), build: "built-in".into(), pin: String::new() }
+}
+
+/// A manifest as the scenario runner writes it, with synthetic typed outcomes.
+fn synthetic_manifest() -> ReplayManifest {
+    let scenario = Scenario::parse(REPLAY_SCENARIO).unwrap();
+    let outcome = |step: &str, action: &str, target: &str, key: Option<u64>, result: Value| StepOutcome { step: step.into(), action: action.into(), target: target.into(), key, outcome: "Reply".into(), result };
+    ReplayManifest {
+        schema_version: SCHEMA_VERSION,
+        owner: rafka_test_scenario::replay::EvidenceOwner { product: "mesh".into(), feature: "i143-2776".into(), subfeature: "replay".into(), rung: "SN".into(), provider: "process".into(), test: "synthetic".into() },
+        seed: SEED,
+        source: source(),
+        shapes: scenario.meshes.clone(),
+        fault_schedule: schedule_from_seed(SEED, &scenario),
+        outcomes: vec![
+            outcome("operation[0]", "put", "mesh1.rpc.1", Some(10), json!({})),
+            outcome("operation[2]", "cas", "mesh1.rpc.1", Some(10), json!({"swapped": true})),
+            outcome("assert[0]", "get", "mesh1.rpc.1", Some(10), json!({"found": true, "value": "a2"})),
+        ],
+        final_state: [("mesh1.rpc.1/10".to_string(), json!({"outcome": "Reply", "found": true, "value": "a2"}))].into(),
+        scenario,
+    }
+}
+
+/// CONTRACT: a replay manifest keeps its owner (product, feature, subfeature, rung, provider,
+/// test), seed, source/build/pin, shapes, fault schedule and typed outcomes through a JSON round
+/// trip unchanged; the same seed derives the same fault schedule; and a lost manifest, another
+/// schema version, an unknown or disagreeing provider, a missing field, shapes that differ from
+/// the scenario, and a fault at a step or node the scenario lacks are each refused by their own
+/// named schema error. Role-like names in the synthetic scenario are labels, not authority rules.
+#[test]
+fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
+    let cell = "scenario_manifest_round_trips_owner_seed_and_fault_schedule";
+    let m = synthetic_manifest();
+    m.validate().expect("the synthetic manifest is valid");
+    assert_eq!(m.fault_schedule.len(), 1, "a seed derives one scheduled fault");
+    assert_eq!(m.fault_schedule, schedule_from_seed(SEED, &m.scenario), "the same seed derives the same schedule");
+    let schedules: BTreeSet<String> = (0..64u64).map(|s| format!("{:?}", schedule_from_seed(s, &m.scenario))).collect();
+    assert!(schedules.len() > 1, "different seeds derive different schedules");
+
+    let text = m.to_json();
+    let back = ReplayManifest::parse(&text).expect("a written manifest parses");
+    assert_eq!(back, m, "the round trip keeps every field");
+    assert_eq!((back.seed, &back.owner.provider, &back.source.sha), (SEED, &"process".to_string(), &candidate_sha()));
+
+    let v: Value = serde_json::from_str(&text).unwrap();
+    let mutate = |f: &dyn Fn(&mut Value)| {
+        let mut x = v.clone();
+        f(&mut x);
+        ReplayManifest::parse(&x.to_string())
+    };
+    let mut refusals = Vec::new();
+    let mut expect = |name: &str, got: Result<ReplayManifest, ManifestError>, want: fn(&ManifestError) -> bool| {
+        let e = got.expect_err(name);
+        assert!(want(&e), "{name}: refused by the wrong rule: {e:?}");
+        refusals.push(json!({ "planted": name, "refusal": e.to_string() }));
+    };
+    expect("lost", ReplayManifest::parse("  \n"), |e| matches!(e, ManifestError::Lost));
+    expect("truncated", ReplayManifest::parse(&text[..text.len() / 2]), |e| matches!(e, ManifestError::Schema(_)));
+    expect("missing_seed", mutate(&|x| { x.as_object_mut().unwrap().remove("seed"); }), |e| matches!(e, ManifestError::Schema(m) if m.contains("seed")));
+    expect("unknown_field", mutate(&|x| { x["invented"] = json!(1); }), |e| matches!(e, ManifestError::Schema(m) if m.contains("invented")));
+    expect("schema_version", mutate(&|x| { x["schema_version"] = json!(2); }), |e| matches!(e, ManifestError::UnsupportedSchemaVersion(2)));
+    expect("unknown_provider", mutate(&|x| { x["owner"]["provider"] = json!("vm"); }), |e| matches!(e, ManifestError::UnknownProvider(p) if p == "vm"));
+    expect("provider_disagrees", mutate(&|x| { x["owner"]["provider"] = json!("container"); }), |e| matches!(e, ManifestError::ProviderDisagrees { .. }));
+    expect("empty_owner_test", mutate(&|x| { x["owner"]["test"] = json!(""); }), |e| matches!(e, ManifestError::EmptyOwnerField("test")));
+    expect("empty_source_sha", mutate(&|x| { x["source"]["sha"] = json!(""); }), |e| matches!(e, ManifestError::EmptySourceField("sha")));
+    expect("shapes_disagree", mutate(&|x| { x["shapes"][0]["rpc_node"] = json!(9); }), |e| matches!(e, ManifestError::ShapesDisagree));
+    expect("fault_step", mutate(&|x| { x["fault_schedule"][0]["before_operation"] = json!(99); }), |e| matches!(e, ManifestError::FaultStepOutOfRange { before_operation: 99, .. }));
+    expect("fault_target", mutate(&|x| { x["fault_schedule"][0]["fault"]["restart_node"]["node"] = json!("mesh1.broker.1"); }), |e| matches!(e, ManifestError::FaultTargetUnknown(n) if n == "mesh1.broker.1"));
+
+    let dir = acceptance_dir("unit", cell);
+    write_result(
+        &dir,
+        &json!({
+            "cell": cell, "seed": SEED, "owner": back.owner, "source": back.source, "shapes": back.shapes,
+            "fault_schedule": back.fault_schedule, "outcomes": back.outcomes.len(),
+            "round_trip_equal": true, "distinct_schedules_over_64_seeds": schedules.len(), "refusals": refusals,
+        }),
+    );
+    // A unit cell runs no process, so there is no exported span to preserve.
+    std::fs::write(dir.join("spans.json"), "[]").unwrap();
+    let _ = Fault::RestartNode { node: String::new() };
+    let _ = ScheduledFault { before_operation: 0, fault: Fault::RestartNode { node: String::new() } };
+}
+
+/// CONTRACT: running one declarative scenario twice - the second time from the first run's
+/// written replay manifest alone, on a fresh estate - repeats the same ordered actions, the same
+/// typed semantic outcomes and the same final proof state, with the exact seed and fault schedule
+/// retained. The seeded fault is a restart through the node-admin Build rectifier: the restarted
+/// node keeps its NodeId under a new incarnation in both runs. Each run leaves its complete
+/// manifest, its per-host spans and its RPC ledger under its own estate directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
+    let cell = "scenario_runner_replays_manifest_preserves_semantic_outcomes";
+    let layer = provider();
+    let dir = acceptance_dir(&layer, cell);
+    let mut scenario = Scenario::parse(REPLAY_SCENARIO).unwrap();
+    scenario.provider = layer.clone();
+    let faults = schedule_from_seed(SEED, &scenario);
+
+    let first = rafka_test_scenario::runner::run_replayable(&scenario, None, cell, SEED, source(), faults.clone()).await.expect("the first run's manifest is valid");
+    assert!(first.failures.is_empty(), "the first run failed: {:?}", first.failures);
+
+    // The replay has only the manifest the first run wrote: parsed from its estate directory.
+    let written = std::fs::read_to_string(rafka_test_scenario::estate::artifacts_root().join("i143-2776").join(cell).join("replay-manifest.json")).expect("the first run left its manifest");
+    let loaded = ReplayManifest::parse(&written).expect("the first run's manifest parses");
+    assert_eq!(loaded, first.manifest, "the manifest on disk is the run's manifest");
+    let replay_test = format!("{cell}-replay");
+    let second = rafka_test_scenario::runner::run_replayable(&loaded.scenario, Some(&loaded.owner.provider), &replay_test, loaded.seed, loaded.source.clone(), loaded.fault_schedule.clone())
+        .await
+        .expect("the replay's manifest is valid");
+    assert!(second.failures.is_empty(), "the replay failed: {:?}", second.failures);
+
+    let (a, b) = (&first.manifest, &second.manifest);
+    assert_eq!(a.seed, b.seed, "the exact seed is retained");
+    assert_eq!(a.fault_schedule, b.fault_schedule, "the exact fault schedule is retained");
+    assert_eq!(a.shapes, b.shapes);
+    assert_eq!(a.actions(), b.actions(), "the same ordered actions");
+    assert_eq!(a.outcomes, b.outcomes, "the same typed semantic outcomes");
+    assert_eq!(a.final_state, b.final_state, "the same final proof state");
+    let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
+    assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
+    assert_eq!(restarts[0].result, json!({"same_node_id": true, "new_incarnation": true}), "a restart keeps the NodeId under a new incarnation");
+    assert_eq!(a.final_state["mesh1.rpc.1/10"]["value"], "a2");
+    assert_eq!(a.final_state["mesh1.rpc.2/11"]["found"], false);
+
+    let root = rafka_test_scenario::estate::artifacts_root().join("i143-2776");
+    let mut hosts = Vec::new();
+    for t in [cell.to_string(), replay_test.clone()] {
+        let d = root.join(&t);
+        let manifest: Value = serde_json::from_slice(&std::fs::read(d.join("manifest.json")).expect("the estate manifest")).unwrap();
+        assert_eq!(manifest["seed"], SEED, "{t}: the estate manifest carries the seed");
+        assert_eq!(manifest["provider"], layer.as_str());
+        assert_eq!(manifest["feature"], "i143-2776");
+        assert!(d.join("rpc-ledger.jsonl").metadata().map(|m| m.len() > 0).unwrap_or(false), "{t}: the RPC ledger is not empty");
+        let spans: Vec<_> = std::fs::read_dir(d.join("spans")).unwrap().flatten().filter(|e| e.path().to_string_lossy().ends_with(".spans.jsonl")).collect();
+        assert!(!spans.is_empty(), "{t}: per-host span files exist");
+        hosts.push(json!({ "test": t, "span_files": spans.len(), "manifest": manifest }));
+    }
+
+    write_result(&dir, &json!({ "cell": cell, "provider": layer, "seed": SEED, "fault_schedule": a.fault_schedule, "run": a, "replay_equal": true, "replay_actions": b.actions(), "hosts": hosts }));
+}

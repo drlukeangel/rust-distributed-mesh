@@ -271,6 +271,8 @@ pub struct Estate {
     bootstrap: Option<Child>,
     /// The explicit executable bindings this estate runs from, if it was born with any.
     pub external: Option<ExternalLaunch>,
+    /// The seed of the run, recorded in the estate manifest once the run has one.
+    seed: Option<u64>,
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
     http: reqwest::Client,
@@ -335,7 +337,7 @@ impl Estate {
         } else {
             spawn_admin(&admin_exe, &env, "bootstrap node-admin")
         };
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), external, restarted: Vec::new(), http: reqwest::Client::new() };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -355,10 +357,16 @@ impl Estate {
             &json!({
                 "product": o.product, "feature": o.feature, "subfeature": o.subfeature,
                 "rung": o.rung, "provider": o.provider, "test": o.test,
-                "seed": null, "control_api": self.admin,
+                "seed": self.seed, "control_api": self.admin,
                 "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "built-in" })),
             }),
         );
+    }
+
+    /// Record the run's seed in the estate manifest.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.seed = Some(seed);
+        self.write_manifest();
     }
 
     pub fn artifact(&self, name: &str, v: &Value) {

@@ -10,5 +10,6 @@ pub mod elections;
 pub mod estate;
 pub mod model;
 pub mod netfault;
+pub mod replay;
 pub mod runner;
 pub mod scenario;
