@@ -995,12 +995,18 @@ impl AdminRunner {
             }
         }
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
-        let digest = self
-            .book
-            .get(node.node_id.as_str())
-            .map(|(d, _)| d)
-            .filter(|d| d.node.incarnation == incarnation)
-            .ok_or_else(|| format!("{} (birth {}) is not held in this admin's membership; its runtime is unknown", node.name, incarnation.0))?;
+        // The birth says where its runtime is: its digest, or (a birth this admin never heard) the
+        // durable runtime row its maker handed over.
+        let held = self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
+        let row = match (&held, self.records.contacts.get()) {
+            (None, Some(store)) => store.runtimes().await.ok().and_then(|rows| rows.into_iter().find(|r| r.node_id == node.node_id && r.incarnation_id == incarnation)),
+            _ => None,
+        };
+        let (published, data_dir) = match (&held, &row) {
+            (Some(d), _) => (d.node.runtime.clone(), d.data_dir.clone()),
+            (None, Some(r)) => (Some(r.runtime.clone()), r.data_dir.clone()),
+            (None, None) => return Err(format!("{} (birth {}) is not held in this admin's membership or its durable runtime rows; its runtime is unknown", node.name, incarnation.0)),
+        };
         let refuse = |reason: &str, detail: String| {
             let span = match reason {
                 "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.0, adopter = %self.me, detail = %detail),
@@ -1011,12 +1017,12 @@ impl AdminRunner {
             span.in_scope(|| tracing::info!("runtime not adopted"));
             format!("{} (birth {}): {detail}", node.name, incarnation.0)
         };
-        let fact = digest.node.runtime.clone().ok_or_else(|| refuse("unpublished", "the birth publishes no runtime fact; it cannot be adopted".into()))?;
+        let fact = published.ok_or_else(|| refuse("unpublished", "the birth publishes no runtime fact; it cannot be adopted".into()))?;
         let handle = crate::deployment::provider::adopt(&*self.provider, &fact).map_err(|r| refuse(r.reason(), r.to_string()))?;
         let mut record = node.clone();
         record.deployment_id = Some(handle.deployment_id.clone());
         if record.data_dir.is_none() {
-            record.data_dir = digest.data_dir.clone();
+            record.data_dir = data_dir;
         }
         tracing::info_span!(
             "rdm.node_admin.runtime.update.via-adopt",
@@ -1028,7 +1034,7 @@ impl AdminRunner {
             provider_control_domain_fingerprint = %fact.domain_fingerprint(),
             runtime_locator_kind = fact.locator.kind(),
             runtime_locator_fingerprint = %fact.locator_fingerprint(),
-            source = "self-published-membership",
+            source = if held.is_some() { "self-published-membership" } else { "durable-runtime-row" },
             adopter = %self.me,
             adopter_node_id = %self.node_id,
             execution_node_id = %self.node_id,
@@ -1850,9 +1856,16 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // the policy. Without that answer it cannot know the policy, and it
     // refuses to start by name.
     let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
+    // The topology this admin enters its mesh from, and where it came from.
+    let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
     let policy = match &launched_anchor {
         Some(_) => {
             let answer = pulled.take().ok_or_else(|| format!("{name}: a launched admin joins its launcher before it takes its entry, and its launch names no launcher or runtime to join with"))?;
+            // Topology read from the maker: when the own mesh already has nodes, this admin is
+            // entering an existing mesh (recovery); a mesh's first birth finds none.
+            if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::Maker(&answer)).await {
+                entry_map = Some(("maker", map));
+            }
             let topology: Topology =
                 serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the entry answer from {} holds no topology: {e}", answer.served_by))?;
             let mut mesh_peers = Vec::new();
@@ -1918,6 +1931,16 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
     };
+
+    if restart.is_some() && cfg.launch.is_none() {
+        // A fabric primary reborn into its mesh has no maker: its durable map is the topology.
+        let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
+        rows.retain(|r| r.node_id != node_id);
+        if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
+            entry_map = Some(("durable-map", map));
+        }
+    }
+    let entering_existing_mesh = entry_map.as_ref().is_some_and(|(_, m)| m.iter().any(|n| n.name.mesh == cfg.mesh && n.node_id != node_id));
 
     if let Some(b) = &cfg.bindings {
         b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
@@ -2196,6 +2219,44 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let _ = join_slot.set(door);
     }
     let mut tasks = vec![contacts_task, node_rpc_feed];
+    // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
+    // primary reborn into its mesh from its durable map): connect to a local node, read its
+    // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
+    // did not answer then enters the standard decommission.
+    let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
+    if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
+        let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone() };
+        let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
+        let decommission = crate::reenter::Decommission {
+            me: name.clone(),
+            topology: control.topology.clone(),
+            accepted: accepted.clone(),
+            builds: builds_dyn.clone(),
+            control: control.clone(),
+        };
+        let digest = digest.clone();
+        tasks.push(tokio::spawn(async move {
+            let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
+            // The nodes that did not answer stay in the map as not yet reached.
+            for (n, _) in &report.not_reached {
+                let mut node = Node::allocated(n.name.clone());
+                node.node_id = n.node_id.clone();
+                node.endpoint_id = Some(n.endpoint_id.clone());
+                node.incarnation_id = Some(n.incarnation.clone());
+                node.transport_addr = Some(n.transport_addr);
+                node.provider = Some(provider_kind);
+                node.status = NodeStatus::PendingReconnect;
+                records.publish(node);
+            }
+            let unreached: Vec<crate::reenter::MapNode> = report.not_reached.iter().map(|(n, _)| n.clone()).collect();
+            let _ = slot.set(report);
+            // The decommission is the Build rectifier's: this admin takes part once it is Ready.
+            while digest.lock().unwrap().status != MemberStatus::ReadyForTraffic {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            crate::reenter::decommission_unreached(&decommission, unreached).await;
+        }));
+    }
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
     // becomes eligible for every seat) only once it can manage every birth it
     // holds: each live member publishes a runtime fact this admin's provider
@@ -2206,6 +2267,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
         let (hydrated, hydrated_builds, hydrated_floor) = (accepted.clone(), builds_dyn.clone(), entry_floor.clone());
+        let sweep_slot_gate = sweep_slot.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
         let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
@@ -2220,6 +2282,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 let mut blocked = authority_blockers(&held, &*provider);
                 if let Some(dir) = &day0 {
                     blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
+                }
+                if entering_existing_mesh && sweep_slot_gate.get().is_none() {
+                    blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
                 }
                 let floor = hydrated_floor.lock().unwrap().clone();
                 blocked.extend(hydration_blocker(&me, &hydrated, &*hydrated_builds, floor).await);

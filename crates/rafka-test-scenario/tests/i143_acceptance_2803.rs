@@ -11,7 +11,6 @@ use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -165,24 +164,34 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let sweeps: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-entry-sweep").into_iter().filter(|sp| attr(sp, "node") == recovery_admin).collect();
     assert_eq!(sweeps.len(), 1, "one sweep on entering the mesh: {sweeps:?}");
     let silent: Vec<String> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| attr(sp, "sweeper") == recovery_admin).map(|sp| attr(sp, "node")).collect();
-    assert!(silent.contains(&window_victim), "the member that died in the window did not answer: {silent:?}");
+    let sibling = format!("{lost}.admin.{}", if recovery_admin.ends_with(".1") { 2 } else { 1 });
+    for dead in [&window_victim, &sibling] {
+        assert!(silent.contains(dead), "{dead} died and did not answer the sweep: {silent:?}");
+    }
     for m in &survivors {
         assert!(!silent.contains(m), "{m} answered the sweep: {silent:?}");
     }
-    // Not reached is the standard decommission: the exact runtime inspected as exited and NodeDeleted
-    // published on that proof, then the node created again; all under the same Build.
-    let decommissions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").into_iter().filter(|sp| attr(sp, "node") == window_victim).collect();
-    assert_eq!(decommissions.len(), 1, "{window_victim} went through the standard decommission once: {decommissions:?}");
-    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted).collect();
-    let step_names: Vec<String> = steps.iter().map(|sp| attr(sp, "step")).collect();
+    // Not reached starts the standard decommission, one attempt per node in path order. The
+    // sibling admin is retired by the pipeline (drain, terminate and inspect, NodeDeleted on the
+    // proven exit) and created again; the member is replaced under the same Build, by this queue or
+    // by the drift check that proves the same exit, whichever opened its attempt first.
+    let decommissions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").into_iter().filter(|sp| attr(sp, "sweeper") == recovery_admin).collect();
+    for dead in [&window_victim, &sibling] {
+        assert!(decommissions.iter().any(|sp| attr(sp, "node") == *dead), "{dead} entered the decommission queue: {decommissions:?}");
+    }
+    let sibling_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == sibling && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
+        .map(|sp| attr(sp, "step"))
+        .collect();
     for step in ["MarkDraining", "TerminateRuntime", "NodeDeleted"] {
-        assert!(step_names.iter().any(|n| n == step), "the retire pipeline ran {step} for {window_victim}: {step_names:?}");
+        assert!(sibling_steps.iter().any(|n| n == step), "the standard retire ran {step} for {sibling}: {sibling_steps:?}");
     }
     // The members that answered are never retired or created again.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
         .chain(named(&spans, "rdm.node_admin.node.delete.via-build"))
-        .filter(|sp| attr(sp, "build_id") == accepted && survivors.contains(&attr(sp, "node")))
+        .filter(|sp| attr(sp, "build_id") == accepted && survivors.contains(&attr(sp, "node")) && at(sp) > at(first))
         .map(|sp| attr(sp, "node"))
         .collect();
     assert!(touched.is_empty(), "members that answered are neither retired nor created again: {touched:?}");
@@ -216,7 +225,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         "live_before": old.len(),
         "preserved_count": survivors.len(),
         "not_reached": silent,
-        "tombstoned_count": decommissions.len(),
+        "tombstoned_count": silent.len(),
         "created_count": creates.len(),
         "live_after": new.len(),
     });
