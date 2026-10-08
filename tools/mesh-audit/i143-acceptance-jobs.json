@@ -132,6 +132,30 @@
           "dir": "target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain"
         }
       ]
+    },
+    "i143-2892-unit": {
+      "issue": 2892,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "successor_executor_redecides_outputs_owned_by_lost_incarnation",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2892.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2892 successor_executor_redecides_outputs_owned_by_lost_incarnation -- --exact",
+          "dir": "target/i143-acceptance/2892/unit/successor_executor_redecides_outputs_owned_by_lost_incarnation"
+        }
+      ]
+    },
+    "i143-2892-chaos-process": {
+      "issue": 2892,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "surviving_admins_reproduce_primary_loss_with_complete_evidence",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2892.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rafka-test-scenario --test i143_acceptance_2892 surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
+          "dir": "target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
+        }
+      ]
     }
   },
   "rshape_jobs": {
