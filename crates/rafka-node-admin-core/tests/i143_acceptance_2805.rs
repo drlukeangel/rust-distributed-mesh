@@ -964,3 +964,45 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         assert_eq!(hand("applied", &mesh_id4) + hand("already-applied", &mesh_id4), 0);
     });
 }
+
+/// CONTRACT (#2805, acceptance 10 and the elected-primary legs of 4 and 5): the fabric primary is
+/// the admin with the lowest node id fabric-wide, so the seat moves to a newly born admin of
+/// another mesh. That new holder validates a Mesh declaration against the Mesh ids it hears in its
+/// view, not only against the ones its own Build created: the primary of a Mesh it never
+/// created is applied, a sender that is not that Mesh's primary is refused naming the sender, and a
+/// Mesh id that is not the sender's own Mesh is refused the same way. What must NOT happen: a
+/// perpetual `sender-not-subject` for a Mesh primary whose Mesh the new holder only heard of.
+#[test]
+fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
+    let cell = "new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, true);
+        let mesh1_primary = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", true, false);
+        let mesh1_other = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", false, false);
+        let (id1, id2) = (MeshId::mint(), MeshId::mint());
+        // Its own records hold only the Mesh it was born into.
+        let records: BTreeMap<String, MeshId> = [("mesh2".to_string(), id2.clone())].into_iter().collect();
+        let rig = rig(me, &[&mesh1_primary, &mesh1_other], records, None).await;
+        {
+            use rafka_node_admin_core::model::Mesh;
+            let mut t = rig.authority.topology.write().await;
+            t.meshes = vec![
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ];
+        }
+        let declare = |id: &MeshId| StatusRequest::DeclareMeshState { mesh_id: id.clone(), state: MeshState::ReadyForTraffic };
+        let applied = reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await);
+        assert_eq!(applied, StatusReply::Applied, "mesh1's primary, a Mesh this holder only heard of");
+        let not_primary = reply(&call(&rig, &mesh1_other, &declare(&id1), &CallOptions::default()).await);
+        assert!(matches!(&not_primary, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.3"), "{not_primary:?}");
+        let wrong_mesh = reply(&call(&rig, &mesh1_primary, &declare(&id2), &CallOptions::default()).await);
+        assert!(matches!(&wrong_mesh, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.2"), "a primary declares only its own Mesh: {wrong_mesh:?}");
+        assert_eq!(reply(&call(&rig, &mesh1_primary, &declare(&id1), &CallOptions::default()).await), StatusReply::AlreadyApplied);
+        let spans = finish(&capture, &dir, json!({"cell": cell, "applied": format!("{applied:?}"), "non_primary": format!("{not_primary:?}"), "wrong_mesh": format!("{wrong_mesh:?}")}));
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "applied")]).len(), 1);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-authority")]).len(), 2);
+    });
+}

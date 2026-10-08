@@ -148,6 +148,12 @@
           "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
           "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape -- --exact",
           "dir": "target/i143-acceptance/2805/unit/pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape"
+        },
+        {
+          "name": "new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of"
         }
       ]
     },
