@@ -274,6 +274,35 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membershi
     Ok(read)
 }
 
+/// [`get_topology`] for a birth: a maker that answers `NotReady` (it holds no version of its own
+/// mesh yet: its mesh primary has not put one into the mesh) is asked again, as the join is, up to
+/// `attempts` times; every other outcome ends it at once.
+pub async fn get_topology_when_ready(
+    client: &NodeRpcClient,
+    target: &NodeTarget,
+    membership: &Membership,
+    mesh: Option<&str>,
+    since: Option<SourceVersion>,
+    attempts: u32,
+) -> Result<TopologyRead, TopologyFailure> {
+    let attempts = attempts.max(1);
+    let mut last = TopologyFailure::Unreached("no attempt was made".into());
+    for attempt in 1..=attempts {
+        match get_topology(client, target, membership, mesh, since.clone()).await {
+            Err(TopologyFailure::NotReady(reason)) => {
+                tracing::info_span!("rdm.mesh.topology.reject.via-not-ready", node = membership.node(), target = ?target, attempt, attempts, reason = %reason)
+                    .in_scope(|| tracing::info!("the target holds no topology yet"));
+                last = TopologyFailure::NotReady(reason);
+                if attempt < attempts {
+                    tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+                }
+            }
+            other => return other,
+        }
+    }
+    Err(last)
+}
+
 fn refusal_of(r: TopologyReply) -> TopologyFailure {
     match r {
         TopologyReply::NotReady { reason } => TopologyFailure::NotReady(reason),

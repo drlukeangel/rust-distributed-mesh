@@ -1919,7 +1919,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             // The topology: read from the same admin that took the join, installed per mesh only
             // when its snapshot is complete (`GetTopology`, op `0x1E`).
             let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()).ok_or_else(|| format!("{name}: a launched admin joined without a launcher"))?;
-            let read = crate::topology_read::get_topology(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None)
+            let read = crate::topology_read::get_topology_when_ready(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None, 5)
                 .await
                 .map_err(|e| format!("the topology read from the launching admin {} failed: {e}", launcher.name))?;
             // When the own mesh already has nodes, this admin is entering an existing mesh

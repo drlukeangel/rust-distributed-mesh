@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rafka_mesh_transport::membership::Membership;
 use rafka_mesh_transport::snapshot::{Chunk, SourceSnapshot, Taken};
-use rafka_node_admin_core::topology_read::{get_topology, snapshot_replies, TopologyDoor, TopologyFailure, TopologySlot};
+use rafka_node_admin_core::topology_read::{get_topology, get_topology_when_ready, snapshot_replies, TopologyDoor, TopologyFailure, TopologySlot};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -265,4 +265,36 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     assert!(server.membership.held_source_version("mesh2").is_none());
     server.ep.close().await;
     lossy_ep.close().await;
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a birth whose maker has not yet put a version of its own mesh into the mesh (it
+/// serves calls the moment it is Ready, before it takes its mesh's seat) is answered NotReady,
+/// asks again, and installs once the maker holds one; a maker that never does is reported as
+/// NotReady after the attempts, installing nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_birth_asks_again_while_its_maker_answers_not_ready_then_installs() {
+    let fabric = FabricId::mint();
+    let (maker, born) = (node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await);
+    open(&maker, &fabric);
+    let t = target_of(&born, &maker);
+    let late = maker.membership.clone();
+    let seat = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        hold(&late, &snap("mesh1", &publisher("mesh1.admin.1"), 1, vec![]));
+    });
+    let read = get_topology_when_ready(&born.client, &t, &born.membership, None, None, 5).await.unwrap();
+    seat.await.unwrap();
+    assert_eq!(read.installed.len(), 1);
+    assert_eq!(born.membership.held_source_version("mesh1"), Some((publisher("mesh1.admin.1"), 1)));
+
+    let (silent, other) = (node(&fabric, "mesh1", "mesh1.admin.2", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+    open(&silent, &fabric);
+    let t = target_of(&other, &silent);
+    let err = get_topology_when_ready(&other.client, &t, &other.membership, None, None, 2).await.unwrap_err();
+    assert!(matches!(err, TopologyFailure::NotReady(_)), "{err}");
+    assert!(other.membership.held_source_version("mesh1").is_none());
+    for n in [&maker, &born, &silent, &other] {
+        n.ep.close().await;
+    }
 }

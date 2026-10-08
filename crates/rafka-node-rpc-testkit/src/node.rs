@@ -312,7 +312,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
     // its snapshot is complete.
     if let (Some(answer), Some(launcher)) = (joined, &launch.launcher) {
         membership.learn_statuses(&answer.statuses);
-        let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None)
+        let read = rafka_node_admin_core::topology_read::get_topology_when_ready(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None, 5)
             .await
             .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
         let mesh_peers: Vec<EndpointAddr> = read
