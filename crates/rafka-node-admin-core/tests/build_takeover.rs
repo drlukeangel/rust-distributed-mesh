@@ -123,7 +123,7 @@ struct Admin {
     router: Router,
     builds: Arc<FabricBuildStateAdapter>,
     /// `Fabric.build_id` as the admin holds it: what its Build topic feeds.
-    _accepted: Arc<AcceptedStore>,
+    accepted: Arc<AcceptedStore>,
 }
 
 async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
@@ -138,9 +138,12 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let accepted = Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test-admin"));
+    // As a started admin: its fabric.storage holds the Fabric record (no Build named yet).
+    let storage = Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new());
+    rafka_node_admin_core::fabric_storage::FabricStorage::put_fabric(&*storage, &rafka_node_admin_core::fabric_storage::FabricRecord { fabric_id: fabric1(), name: "fabric1".into(), build_id: None }).await.unwrap();
+    let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into()).await.unwrap());
-    Admin { endpoint, router, builds, _accepted: accepted }
+    Admin { endpoint, router, builds, accepted }
 }
 
 fn addr(a: &Admin) -> iroh::EndpointAddr {
@@ -185,7 +188,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // A executes: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());
     let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
-    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone() };
+    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), accepted: a.accepted.clone(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone() };
     let view = a.builds.read_build(&build_id).await.unwrap();
     let mut a_executing = Box::pin(a_exec.reconcile(&view));
     tokio::select! {
@@ -209,7 +212,10 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // B takes over: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone() };
+    // B holds the Fabric record the accepting admin broadcast (build_catch_up.rs proves that
+    // delivery): its pointer names the Build, so B may execute it.
+    b.accepted.point(&build_id, "takeover: the Fabric record the accepting admin broadcast").await.unwrap();
+    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), accepted: b.accepted.clone(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone() };
     let done = b_exec.reconcile_active().await;
     let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
     assert_eq!(

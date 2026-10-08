@@ -281,7 +281,7 @@ impl Estate {
         for _ in 0..8 {
             let admins: Vec<String> = self.view.read().await.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.name.to_string()).collect();
             for a in admins {
-                let exec = BuildExecutor { executor: a.clone(), builds: self.builds.clone(), topology: self.view.clone(), runner: self.runner.clone() };
+                let exec = BuildExecutor { executor: a.clone(), accepted: self.accepted.clone(), builds: self.builds.clone(), topology: self.view.clone(), runner: self.runner.clone() };
                 let done = exec.reconcile_active().await;
                 if std::env::var("CONVERGE_TRACE").is_ok() {
                     eprintln!("converge: {a} -> {done:?}");

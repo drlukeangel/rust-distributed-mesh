@@ -2244,6 +2244,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     {
         let exec = BuildExecutor {
             executor: name.to_string(),
+            accepted: accepted.clone(),
             builds: builds_dyn.clone(),
             topology: control.topology.clone(),
             runner: runner.clone(),

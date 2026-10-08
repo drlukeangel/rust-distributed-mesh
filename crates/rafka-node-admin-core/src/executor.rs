@@ -16,6 +16,7 @@
 //! executes ends `HandedOff`, and that admin claims the next attempt of the
 //! same Build.
 
+use crate::accepted::AcceptedStore;
 use crate::build::{BuildId, BuildOperation};
 use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, ClaimOutcome};
 use crate::model::{NodeKind, PathName};
@@ -92,14 +93,18 @@ pub enum Reconciled {
 pub struct BuildExecutor {
     /// This node-admin's path.name: the claimant on every attempt it takes.
     pub executor: String,
+    /// `Fabric.build_id` as this admin holds it. A Build is accepted when the pointer names it: a
+    /// Build persisted before the pointer moved, or never named by it (the accepting admin was lost
+    /// in between), is an orphan this admin does not execute.
+    pub accepted: Arc<AcceptedStore>,
     pub builds: Arc<dyn BuildStateAdapter>,
     pub topology: Arc<RwLock<Topology>>,
     pub runner: Arc<dyn OperationRunner>,
 }
 
 impl BuildExecutor {
-    /// Continue every active Build in this admin's projection whose next
-    /// operation this admin executes.
+    /// Continue the accepted Build (the one `Fabric.build_id` names) when it is active in this
+    /// admin's projection and this admin executes its next operation.
     pub async fn reconcile_active(&self) -> Vec<(BuildId, Reconciled)> {
         let active = match self.builds.list_active().await {
             Ok(a) => a,
@@ -108,8 +113,12 @@ impl BuildExecutor {
                 return Vec::new();
             }
         };
+        let accepted = self.accepted.build_id().await;
         let mut out = Vec::new();
         for b in active {
+            if accepted.as_ref() != Some(&b.build_id) {
+                continue;
+            }
             if !self.leads(&b).await {
                 continue;
             }
