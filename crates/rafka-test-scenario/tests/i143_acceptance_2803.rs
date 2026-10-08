@@ -72,7 +72,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let (status, a) = estate.post("/api/build", &shape).await;
     assert_eq!(status, 202, "{a}");
     let accepted = s(&a["build_id"]);
-    estate.await_build(&accepted, Duration::from_secs(120)).await;
+    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
     let want = names(&[("mesh1", 2, 2), ("mesh2", 2, 2)]);
     let before = estate.settled(&want, Duration::from_secs(30)).await;
 
