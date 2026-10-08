@@ -1994,17 +1994,26 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
     assert_eq!(accepted_creates.len(), got_creates.len(), "a Build was accepted twice: {accepted_creates:?}");
     assert_eq!(got_creates, want_creates, "the accepted topology Builds are the formation and the ones the cell sent, nothing else");
     let mut got_updates: Vec<(String, String)> = updates.iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| (s(&sp["attributes"]["build_id"]), s(&sp["attributes"]["node"]))).collect();
-    let mut want_updates: Vec<(String, String)> = a.writes.iter().filter(|w| s(&w["path"]).ends_with("/restart")).map(|w| (s(&w["build_id"]), s(&w["path"]).trim_start_matches("/api/nodes/").trim_end_matches("/restart").to_string())).collect();
+    let mut want_updates: Vec<(String, String)> = a
+        .writes
+        .iter()
+        .filter(|w| s(&w["path"]).ends_with("/restart") || s(&w["path"]).ends_with("/replace"))
+        .map(|w| (s(&w["build_id"]), s(&w["path"]).trim_start_matches("/api/nodes/").trim_end_matches("/restart").trim_end_matches("/replace").to_string()))
+        .collect();
     got_updates.sort();
     want_updates.sort();
-    assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts the cell sent");
+    assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts and replaces the cell sent");
     // The formation request may be refused once before the Day-0 admin holds the seat: the harness's
     // topology request waits that out (`Estate::topology_request`); those are recorded, not counted
     // against the probes. Every rejected DELETE is a probe answer or a refusal the cell asked for.
     let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
     let probe_answers: usize = a.probes.iter().map(|p| p["answers"].as_array().unwrap().len()).sum();
-    assert_eq!(rejected_creates, probe_answers + a.refused_writes.len(), "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
+    // A refused replace is refused on the attempt-opening door (`build.update.via-rest`), every other refused write on the create door.
+    let refused_replaces = a.refused_writes.iter().filter(|r| r["route"] == "replace").count();
+    let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
+    assert_eq!(rejected_updates, refused_replaces, "every rejected attempt-opening write is a replace the cell sent to a non-writer to see it refused");
+    assert_eq!(rejected_creates, probe_answers + a.refused_writes.len() - refused_replaces, "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
     let mut rounds = Vec::new();
     for p in &a.probes {
         let path = s(&p["path"]);
@@ -3074,20 +3083,33 @@ async fn admin_views_of(a: &mut Authority, f: &Formed, name: &str) -> Vec<Value>
 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
-async fn refused_by_a_non_writer(f: &Formed, a: &mut Authority, st: &Stable, path: &str) -> Value {
+async fn refused_by_a_non_writer(f: &Formed, a: &mut Authority, st: &Stable, path: &str, how: Removal) -> Value {
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
-    let (status, v) = f.estate.delete_at(&s(&non_writer["admin_api_base"]), &format!("/api/nodes/{path}")).await;
+    let base = s(&non_writer["admin_api_base"]);
+    let (status, v) = match how {
+        Removal::Delete => f.estate.delete_at(&base, &format!("/api/nodes/{path}")).await,
+        Removal::Replace => f.estate.http_post(&base, &format!("/api/nodes/{path}/replace"), &json!({})).await,
+    };
     assert_eq!((status, v["error"].as_str(), &v["fabric_primary"]), (409, Some("rejected-not-authority"), &st.fp["name"]), "a retire sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
-    let rec = json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"], "path": path, "t_ms": now_ms()});
+    let rec = json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"], "path": path, "route": match how { Removal::Delete => "delete", Removal::Replace => "replace" }, "t_ms": now_ms()});
     a.refused_writes.push(rec.clone());
     rec
+}
+
+/// How a node's birth is ended through the rectifier: `DELETE /api/nodes/<node>` (a retirement, the
+/// topology changes: a new accepted Build) or `POST /api/nodes/<node>/replace` (the next attempt of the
+/// accepted Build retires the live birth and creates a new node at the path: no Build is minted).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    Delete,
+    Replace,
 }
 
 /// Retire `node` through the Build rectifier as the fabric-primary authorizes it, under seeded
 /// traffic aimed at it. The old birth's runtime is terminal as the provider reports it, its NodeId is
 /// in no admin's view after the removal is held for a full staleness window, and a call to the exact
 /// NodeId sends nothing. Leaves `a.roles` as the shape without the node.
-async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, label: &str, inv: &mut Invariants) -> (Value, Stable) {
+async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let (kind, mesh, node_id, old_inc) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]));
     assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node}: only a role node is retired here");
@@ -3100,7 +3122,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
         carried_get(&f.estate, &n, &gw, &ckey);
         await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
-    let refusal = refused_by_a_non_writer(f, a, st, node).await;
+    let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
     let still = f.estate.node(node).await;
     assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready-for-traffic")), "{node}: the refused retire executed nothing: {still}");
     let mut roles: BTreeSet<String> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node_admin").collect());
@@ -3109,13 +3131,28 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
     let before_build = s(&st.fabric["build_id"]);
     let t0 = now_ns();
-    let build_id = a.write(f, st, &format!("{label}: authorized retire"), "DELETE", &format!("/api/nodes/{node}"), &Value::Null).await;
-    assert_ne!(build_id, before_build, "{node}: a retire changes the topology, so it is a new accepted Build");
-    let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-retire").await;
+    let (build_id, fin) = match how {
+        Removal::Delete => {
+            let build_id = a.write(f, st, &format!("{label}: authorized retire"), "DELETE", &format!("/api/nodes/{node}"), &Value::Null).await;
+            assert_ne!(build_id, before_build, "{node}: a retire changes the topology, so it is a new accepted Build");
+            let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-retire").await;
+            (build_id, fin)
+        }
+        Removal::Replace => {
+            let build_id = a.write(f, st, &format!("{label}: authorized replace"), "POST", &format!("/api/nodes/{node}/replace"), &json!({})).await;
+            assert_eq!(build_id, before_build, "{node}: a replace changes no topology, so it is the next attempt of the accepted Build and mints none");
+            let fin = a.finish(f, &build_id, Until::Joined { node: node.into(), not_node_id: node_id.clone() }, "during-replace").await;
+            (build_id, fin)
+        }
+    };
     a.traffic.aim = None;
+    if how == Removal::Replace {
+        // The node stands at its path again: the shape is whole.
+        a.roles = None;
+    }
     let st2 = a.stable(f, &format!("{label}: {node} retired"), &both(2), inv).await;
     assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the retired NodeId is in the settled view");
-    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: Fabric.build_id names the retiring Build");
+    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: Fabric.build_id names the retiring Build (a replace leaves it as it was)");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal retire + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
@@ -3136,6 +3173,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     let rec = json!({
         "label": label, "node": node, "kind": kind, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
+        "opened_by": match how { Removal::Delete => "rdm.node_admin.build.create.via-rest", Removal::Replace => "rdm.node_admin.build.update.via-rest" },
         "runtime_before": rt_before.record(), "old_birth_terminal": terminal, "non_writer_refusal": refusal, "canary_key": ckey, "canary_value": cval,
         "absence": {"window_ms": window, "looks": looks, "views_at_end": views}, "call_after_removal": {"outcome": g["outcome"], "reason": g["reason"]},
     });
@@ -3154,7 +3192,14 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
 fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
-    let create = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == bid.as_str()).cloned().unwrap_or_else(|| panic!("{node}: no build.create.via-rest accepted {bid}"));
+    // The request that opened the retiring reconcile: an accepted Build (a retirement), or the attempt
+    // a replace route opened on the accepted Build (it names the node it acts on).
+    let opener = s(&rec["opened_by"]);
+    let create = named(spans, &opener)
+        .into_iter()
+        .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["node"].as_str().is_none_or(|n| n == node.as_str()))
+        .cloned()
+        .unwrap_or_else(|| panic!("{node}: no {opener} opened {bid}"));
     let op = format!("retire-node:{node}");
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -3398,23 +3443,24 @@ async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, 
     rec
 }
 
-/// The spans of an add: REST (a new accepted Build) -> reconcile (`create-node:<node>`) ->
-/// node.create.via-build -> pipeline -> steps; the new NodeId's own ready span.
-fn check_add_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let create = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == build_id).cloned().unwrap_or_else(|| panic!("{node}: no build.create.via-rest accepted {build_id}"));
-    let op = format!("create-node:{node}");
+/// The creating half of a replace: the same reconcile that retired the old birth (its operations name
+/// `retire-node:<node>` and `create-node:<node>`) ran `node.create.via-build` through the deployment
+/// pipeline, and the new NodeId's own ready span follows.
+fn check_replace_create_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
+    let (retire, create) = (format!("retire-node:{node}"), format!("create-node:{node}"));
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op)))
+        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == retire) && o.split(',').any(|x| x == create)))
         .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
-    assert!(descends_from(spans, &reconcile, &create), "{node}: the adding reconcile descends from its REST request");
-    let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build under the reconcile"));
+        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {retire} and {create}"));
+    let action = s(&reconcile["attributes"]["action"]);
+    assert!(action.contains("\"replace\"") && action.contains(node), "{node}: the reconcile carries the Replace action: {action}");
+    let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == node && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build under the replacing reconcile"));
     let pipeline = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().find(|p| p["parent_span_id"] == make["span_id"]).cloned().unwrap_or_else(|| panic!("{node}: no deployment pipeline under its node.create.via-build"));
     let steps = named(spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipeline["span_id"]).count();
     assert!(steps > 0, "{node}: no deployment steps under its pipeline");
     let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == node_id && sp["attributes"]["incarnation_id"] == incarnation).cloned().unwrap_or_else(|| panic!("{node}: the new node {node_id} left no ready span"));
-    json!({"node": node, "op": op, "rest_span": create["span_id"], "reconcile_span": reconcile["span_id"], "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": steps, "ready_span": ready["span_id"], "new_node_id": node_id})
+    json!({"node": node, "reconcile_span": reconcile["span_id"], "action": action, "create_span": make["span_id"], "pipeline_span": pipeline["span_id"], "steps": steps, "ready_span": ready["span_id"], "new_node_id": node_id})
 }
 
 async fn replacement_run(cell: &str, shape: Shape) {
@@ -3429,22 +3475,19 @@ async fn replacement_run(cell: &str, shape: Shape) {
     a.traffic.burst(&f, 12, "steady-before").await;
     let formation_build = f.build_id.clone();
 
-    // 1. A planned logical replacement: the broker's authorized retirement, then a Build that adds a
-    //    broker in the same mesh. (No route opens `AttemptAction::Replace`: `http.rs` `open_attempt` is
-    //    called with `replace = false` by the one route that calls it, and the rectifier's drift answer
-    //    to a runtime death opens its attempt with `action: None`.)
+    // 1. A planned logical replacement: `POST /api/nodes/<broker>/replace` on the fabric-primary opens the
+    //    next attempt of the accepted Build; its executor retires the live birth and creates a new node at
+    //    the path. No Build is minted.
     let victim = format!("mesh2.broker.{}", f.shape.broker);
     let old = at(&st, &victim).clone();
     let old_id = s(&old["node_id"]);
-    let (retired, st_mid) = retire_via_build(&mut f, &mut a, &st, &victim, "C8 planned replacement", &mut inv).await;
+    let add_t0 = now_ns();
+    let (retired, st_new) = retire_via_build(&mut f, &mut a, &st, &victim, "C8 planned replacement", Removal::Replace, &mut inv).await;
+    assert_eq!(s(&retired["build_id"]), formation_build, "the replacement is an attempt of the formation's Build: none was minted");
     a.traffic.burst(&f, 4, "steady-gap").await;
     let gw = "mesh2.gateway.1".to_string();
-    let add_t0 = now_ns();
-    let add_build = a.write(&f, &st_mid, "C8 planned replacement: node.spawn broker", "POST", "/api/nodes/spawn", &json!({"mesh": "mesh2", "kind": "broker"})).await;
-    assert_ne!(add_build, s(&retired["build_id"]), "the add is a new accepted Build");
-    a.roles = None;
-    let add_fin = a.finish(&mut f, &add_build, Until::Joined { node: victim.clone(), not_node_id: old_id.clone() }, "during-spawn").await;
-    let st_new = a.stable(&mut f, "C8 planned replacement: successor ready", &both(2), &mut inv).await;
+    let add_build = formation_build.clone();
+    let add_fin = json!({"wall_ms": retired["wall_ms"]});
     let born = at(&st_new, &victim).clone();
     let (new_id, new_inc) = (s(&born["node_id"]), s(&born["incarnation_id"]));
     assert_ne!(born["node_id"], old["node_id"], "the successor is a new logical node: a new NodeId");
@@ -3538,7 +3581,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
     let retire_chain = check_retire_chain(&spans, &retired);
-    let add_chain = check_add_chain(&spans, &victim, &add_build, &new_id, &new_inc);
+    let add_chain = check_replace_create_chain(&spans, &victim, &add_build, &new_id, &new_inc);
     let t_deleted = start_ns(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| sp["attributes"]["node_id"] == old_id.as_str()).unwrap());
     let t_ready = start_ns(named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == new_id.as_str()).unwrap());
     assert!(t_ready > t_deleted, "the successor became ready after the retired node's departure was published");
@@ -3555,8 +3598,8 @@ async fn replacement_run(cell: &str, shape: Shape) {
         "node_deleted_for_the_dead_identity": drift_deleted.iter().map(|sp| json!({"span": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"]})).collect::<Vec<_>>(),
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
-    assert_eq!(all_creates, BTreeSet::from([formation_build.clone(), s(&retired["build_id"]), add_build.clone()]), "the Builds accepted are the formation, the retirement and the add; the death's recovery accepted none");
-    inv.holds("every topology change was a Build the rectifier executed: the retirement (retire-node), the add (create-node) and the death's recovery (a proven-drift attempt of the same Build re-creating the path); exactly three Builds were ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    assert_eq!(all_creates, BTreeSet::from([formation_build.clone()]), "the only Build accepted is the formation: the planned replacement and the death's recovery are attempts of it");
+    inv.holds("no topology changed after the formation: the planned replacement (a Replace attempt: retire-node then create-node) and the death's recovery (a proven-drift attempt re-creating the path) are attempts of the formation's Build, and exactly one Build was ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
@@ -3586,7 +3629,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
                 "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
                 "planned_replacement": {"retired": retired, "replacement": replacement, "retire_chain": retire_chain, "add_chain": add_chain},
                 "drift_replacement": {"drift": drift, "chain": drift_chain,
-                    "no_planned_replace_operation": "no REST route opens AttemptAction::Replace: rafka-node-admin-core http.rs open_attempt takes `replace` but its one caller (restart_node) passes false, and the rectifier's proven-drift attempt carries action None (admin.rs, via-proven-drift AttemptOpened)"},
+                    "planned_replace_operation": "POST /api/nodes/<node>/replace opens AttemptAction::Replace through http.rs open_attempt (replace = true) on the accepted Build; the planned replacement above is that attempt, and a runtime death is a proven-drift attempt whose action is Replace (any exit but code 4) or Restart (code 4)"},
                 "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported, "final_launches": launches_end, "scenarios": ["C8"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
                 "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)", "planned": victim, "drift": victim2},
@@ -3598,11 +3641,12 @@ async fn replacement_run(cell: &str, shape: Shape) {
 }
 
 /// CONTRACT: a logical replacement retires the old identity and creates a distinct one. In the formed
-/// estate the fabric-primary authorizes the retirement of a broker (a retire sent to an admin that is
-/// not the fabric-primary is refused naming it and executes nothing) under seeded traffic aimed at it:
-/// the Build runs the documented retire steps, the old birth's exact runtime is terminal as the
-/// provider reports it, its NodeId stays out of every admin's view for a full staleness window, and a
-/// call to it sends nothing. A Build then adds a broker at the freed path.name: a new NodeId, a new
+/// estate `POST /api/nodes/<broker>/replace` on the fabric-primary (a replace sent to an admin that is
+/// not the fabric-primary is refused naming it and executes nothing) opens the next attempt of the
+/// accepted Build, under seeded traffic aimed at the broker, and mints no Build: the attempt runs the
+/// documented retire steps, the old birth's exact runtime is terminal as the provider reports it, its
+/// NodeId stays out of every admin's view for a full staleness window, and a
+/// call to it sends nothing. The same attempt creates a broker at the path.name: a new NodeId, a new
 /// EndpointId, a fresh data dir and a new runtime; its proof store holds nothing of the old node's, the
 /// path resolves only to it, the mesh's gateway drops its edge to the retired node and holds one to
 /// the successor. Then the exact runtime of a gateway is killed (acknowledged by the provider) and the
@@ -3741,10 +3785,10 @@ async fn drain_run(cell: &str, shape: Shape) {
     // C15 + C16 on a broker, then on a gateway: the two routable work shapes. Traffic aimed at the node
     // runs through its drain; the retirement is the fabric-primary's Build.
     let broker = format!("mesh1.broker.{}", f.shape.broker);
-    let (rb, st1) = retire_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", &mut inv).await;
+    let (rb, st1) = retire_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", Removal::Delete, &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
     let gateway = format!("mesh2.gateway.{}", f.shape.gateway);
-    let (rg, st2) = retire_via_build(&mut f, &mut a, &st1, &gateway, "C15/C16 gateway", &mut inv).await;
+    let (rg, st2) = retire_via_build(&mut f, &mut a, &st1, &gateway, "C15/C16 gateway", Removal::Delete, &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
 
     // C17: a compute held by its exact runtime at a point the provider acknowledges: silence is not death.
