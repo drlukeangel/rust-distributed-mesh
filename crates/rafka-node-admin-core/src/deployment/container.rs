@@ -17,7 +17,7 @@ use super::provider::{tail, DeployError, DeploymentHandle, DeploymentProvider, D
 use crate::model::ProviderKind;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::process::Command;
 
@@ -395,8 +395,22 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             if let Some(dir) = spec.env.get("RAFKA_BIN_DIR").filter(|d| Path::new(d).is_dir()) {
                 args.extend(["-v".into(), format!("{dir}:{dir}:ro")]);
             }
-            if let Some(root) = spec.data_dir.parent().filter(|r| r.is_dir()) {
+            let data_root = spec.data_dir.parent().filter(|r| r.is_dir());
+            if let Some(root) = data_root {
                 args.extend(["-v".into(), format!("{}:{}", root.display(), root.display())]);
+            }
+            // Explicit executable bindings: the admin validates and re-hashes them at every launch, so it
+            // reads the binding file and every bound executable at their host paths. A directory the
+            // admin already has mounted is not mounted twice.
+            if let Some(file) = spec.env.get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS) {
+                let mut dirs: std::collections::BTreeSet<PathBuf> = Path::new(file).parent().map(Path::to_path_buf).into_iter().collect();
+                if let Ok(set) = rafka_mesh_entity::binding::BindingSet::load(Path::new(file)) {
+                    dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
+                }
+                let bin_dir = spec.env.get("RAFKA_BIN_DIR").map(PathBuf::from);
+                for d in dirs.into_iter().filter(|d| d.is_dir() && Some(d) != bin_dir.as_ref() && !data_root.is_some_and(|r| d.starts_with(r))) {
+                    args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
+                }
             }
         }
         // The span evidence directory the launch names, at the same path: a container's spans

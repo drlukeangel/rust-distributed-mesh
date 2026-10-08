@@ -11,4 +11,5 @@ hex = { workspace = true }
 rand = { workspace = true }
 serde_json = { workspace = true }
 blake3 = "1"
+sha2 = "0.11"
 

@@ -4,6 +4,8 @@
 //! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 
+use rafka_mesh_entity::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
+use rafka_mesh_entity::NodeKind;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -52,8 +54,8 @@ pub fn bin_dir() -> PathBuf {
 }
 
 /// Start a `rafka-node-admin` with `env` and wait for the control API base it advertises.
-fn spawn_admin(env: &[(&str, String)], what: &str) -> (Child, String) {
-    let mut cmd = Command::new(binary("rafka-node-admin"));
+fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String) {
+    let mut cmd = Command::new(exe);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -103,14 +105,14 @@ fn mint_fabric_id() -> String {
 }
 
 /// The empty runtime image every node container runs from (the provider's `RUNTIME_IMAGE`).
-const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
+pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 
 /// Start the Day-0 node-admin of a new container fabric in a container on that fabric's own
 /// network: the Fabric id is minted here so the network exists before the admin does, the admin
 /// is given an address on it, and it drives the host's Docker daemon through its socket. The
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
-fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str) -> (Child, String) {
+fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String) {
     let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
     if docker(&["image", "inspect", RUNTIME_IMAGE]).is_err() {
@@ -131,6 +133,7 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
         }
     }
     let bin = bin_dir().display().to_string();
+    let root_for_mounts = root.to_path_buf();
     let (root, evidence) = (root.display().to_string(), evidence.display().to_string());
     let mut args: Vec<String> = vec![
         "run".into(), "--name".into(), format!("rafka-{node}-{fabric_id}"),
@@ -147,11 +150,15 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
     for m in ["/lib", "/lib64", "/usr"].iter().filter(|m| Path::new(m).exists()) {
         args.extend(["-v".into(), format!("{m}:{m}:ro")]);
     }
+    // Explicit bindings: the directories the admin reads the binding file and executables from.
+    for d in read_dirs.iter().filter(|d| **d != bin_dir() && !d.starts_with(&root_for_mounts)) {
+        args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
+    }
     for (k, v) in &env {
         args.extend(["-e".into(), format!("{k}={v}")]);
     }
     args.push(RUNTIME_IMAGE.into());
-    args.push(binary("rafka-node-admin").display().to_string());
+    args.push(exe.display().to_string());
     let mut child = Command::new("docker").args(&args).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker run the Day-0 node-admin");
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -194,6 +201,36 @@ where
     }
 }
 
+/// The explicit executable bindings an estate launches from (the external-consumer seam): the
+/// validated set, the file node-admin reads it from, and the candidate it was validated against.
+#[derive(Debug, Clone)]
+pub struct ExternalLaunch {
+    pub validated: Validated,
+    pub file: PathBuf,
+    pub candidate: String,
+}
+
+impl ExternalLaunch {
+    /// The environment every node-admin of the estate gets.
+    fn env(&self) -> Vec<(&'static str, String)> {
+        vec![
+            (ENV_EXECUTABLE_BINDINGS, self.file.display().to_string()),
+            (ENV_EXECUTABLE_CANDIDATE, self.candidate.clone()),
+            // Nothing is launched from a built-in directory in this mode: an empty one makes any
+            // fallback fail rather than quietly run a built-in.
+            ("RAFKA_BIN_DIR", self.file.parent().expect("a file in the estate root").join("no-built-ins").display().to_string()),
+        ]
+    }
+
+    fn admin_exe(&self) -> PathBuf {
+        self.validated.resolve(NodeKind::NodeAdmin).expect("node_admin is bound (validated)").executable
+    }
+
+    fn read_dirs(&self) -> Vec<PathBuf> {
+        self.validated.executable_dirs().into_iter().chain(self.file.parent().map(Path::to_path_buf)).collect()
+    }
+}
+
 pub struct Estate {
     pub owner: Owner,
     pub root: PathBuf,
@@ -205,6 +242,8 @@ pub struct Estate {
     /// this id ([`Self::fabric_at`]).
     pub fabric_id: String,
     bootstrap: Option<Child>,
+    /// The explicit executable bindings this estate runs from, if it was born with any.
+    pub external: Option<ExternalLaunch>,
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
     http: reqwest::Client,
@@ -214,6 +253,22 @@ impl Estate {
     /// Start the first node-admin of `fabric` (bootstrap selects the provider)
     /// and wait for its advertised control API base.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
+        Self::born(owner, fabric, mesh, None).await
+    }
+
+    /// Start the first node-admin of `fabric` from an explicit executable binding set: every
+    /// launch of the estate (this admin, every node, every restart) runs the executable its
+    /// launch id is bound to and nothing falls back to a built-in. The set is validated against
+    /// `candidate_sha`, the launch ids the run `required` and the provider's image BEFORE any
+    /// file is made or any process started; a refusal is returned by name with nothing launched.
+    pub async fn bootstrap_external(owner: Owner, fabric: &str, mesh: &str, set: &BindingSet, candidate_sha: &str, required: &[&str]) -> Result<Self, BindingError> {
+        let image = if owner.provider == "container" { ProviderImage::Container(RUNTIME_IMAGE) } else { ProviderImage::Process };
+        let validated = set.validate(&Expect { candidate_sha, required, provider_image: image })?;
+        // The file is written under the estate root once `born` makes it.
+        Ok(Self::born(owner, fabric, mesh, Some((validated, candidate_sha.to_string()))).await)
+    }
+
+    async fn born(owner: Owner, fabric: &str, mesh: &str, external: Option<(Validated, String)>) -> Self {
         let artifacts = artifacts_root().join(&owner.feature).join(&owner.test);
         let _ = std::fs::remove_dir_all(&artifacts);
         let evidence = artifacts.join("spans");
@@ -221,8 +276,14 @@ impl Estate {
         let root = std::env::temp_dir().join(format!("i143-{}-{}", owner.test, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        let external = external.map(|(validated, candidate)| {
+            let file = root.join("executable-bindings.json");
+            std::fs::write(&file, serde_json::to_vec_pretty(validated.set()).unwrap()).unwrap();
+            std::fs::create_dir_all(root.join("no-built-ins")).unwrap();
+            ExternalLaunch { validated, file, candidate }
+        });
 
-        let env = vec![
+        let mut env = vec![
             ("MESH_SPAWN_TYPE", owner.provider.clone()),
             ("RAFKA_FABRIC", fabric.into()),
             ("RAFKA_MESH", mesh.into()),
@@ -230,14 +291,23 @@ impl Estate {
             ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
             ("RAFKA_EVIDENCE_DIR", evidence.display().to_string()),
         ];
+        let admin_exe = match &external {
+            Some(x) => {
+                env.retain(|(k, _)| *k != "RAFKA_BIN_DIR");
+                env.extend(x.env());
+                x.admin_exe()
+            }
+            None => binary("rafka-node-admin"),
+        };
         // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
         // the fabric is a container a successor can control in the same Docker domain.
         let (child, admin) = if owner.provider == "container" {
-            spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"))
+            let read_dirs = external.as_ref().map(ExternalLaunch::read_dirs).unwrap_or_default();
+            spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"), &admin_exe, &read_dirs)
         } else {
-            spawn_admin(&env, "bootstrap node-admin")
+            spawn_admin(&admin_exe, &env, "bootstrap node-admin")
         };
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), restarted: Vec::new(), http: reqwest::Client::new() };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), external, restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -258,6 +328,7 @@ impl Estate {
                 "product": o.product, "feature": o.feature, "subfeature": o.subfeature,
                 "rung": o.rung, "provider": o.provider, "test": o.test,
                 "seed": null, "control_api": self.admin,
+                "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "built-in" })),
             }),
         );
     }
@@ -650,15 +721,21 @@ impl Estate {
     /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its control
     /// API base.
     pub fn restart_admin(&mut self, data_dir: &Path) -> String {
-        let (child, base) = spawn_admin(
-            &[
-                ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
-                ("RAFKA_DATA_DIR", data_dir.display().to_string()),
-                ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-                ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
-            ],
-            &format!("restarted node-admin on {}", data_dir.display()),
-        );
+        let mut env = vec![
+            ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
+            ("RAFKA_DATA_DIR", data_dir.display().to_string()),
+            ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
+            ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
+        ];
+        let exe = match &self.external {
+            Some(x) => {
+                env.retain(|(k, _)| *k != "RAFKA_BIN_DIR");
+                env.extend(x.env());
+                x.admin_exe()
+            }
+            None => binary("rafka-node-admin"),
+        };
+        let (child, base) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);
         base
     }

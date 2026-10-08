@@ -68,6 +68,12 @@ pub struct AdminConfig {
     pub launch: Option<Launch>,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
+    /// The explicit executable bindings this admin launches from (`RAFKA_EXECUTABLE_BINDINGS`),
+    /// validated before it opens a provider. `None` is the built-in mode: executables come from
+    /// `bin_dir`. With bindings, nothing is launched from `bin_dir`.
+    pub bindings: Option<rafka_mesh_entity::binding::Validated>,
+    /// The two variables that named them, handed on to every node-admin this admin launches.
+    pub bindings_env: BTreeMap<String, String>,
 }
 
 impl AdminConfig {
@@ -99,6 +105,21 @@ impl AdminConfig {
             .map(|b| b.parse().map_err(|e| format!("RAFKA_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+        let bindings_env: BTreeMap<String, String> = [rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE]
+            .iter()
+            .filter_map(|k| get(k).filter(|v| !v.trim().is_empty()).map(|v| (k.to_string(), v)))
+            .collect();
+        let bindings = match get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS).filter(|v| !v.trim().is_empty()) {
+            None => None,
+            Some(file) => {
+                let candidate = get(rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE)
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or_else(|| format!("{} names a binding file but {} (the candidate sha this run is of) is not set", rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE))?;
+                let set = rafka_mesh_entity::binding::BindingSet::load(Path::new(&file)).map_err(|e| e.to_string())?;
+                let expect = rafka_mesh_entity::binding::Expect { candidate_sha: &candidate, required: &[], provider_image: rafka_mesh_entity::binding::ProviderImage::Unchecked };
+                Some(set.validate(&expect).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
+            }
+        };
         let passthrough = ["RAFKA_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RAFKA_ENDPOINT_PORT_RANGE", "RAFKA_CONTAINER_SUBNET_POOL", "RAFKA_STALENESS_MS", "RAFKA_GOSSIP_INTERVAL_MS", "RAFKA_BACKBONE_INTERVAL_MS", "RAFKA_LEAVE_LINGER_MS"]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
@@ -119,6 +140,8 @@ impl AdminConfig {
             api_bind,
             launch,
             passthrough,
+            bindings,
+            bindings_env,
         })
     }
 }
@@ -649,6 +672,9 @@ pub struct AdminRunner {
     pub template: LaunchTemplate,
     pub admin_env: BTreeMap<String, String>,
     pub bin_dir: PathBuf,
+    /// Explicit executable bindings: when set, every launch runs its bound executable and
+    /// `bin_dir` is never consulted.
+    pub bindings: Option<rafka_mesh_entity::binding::Validated>,
     pub lifecycle: LifecycleTransitionPipeline,
     pub handles: Mutex<HashMap<PathName, (Node, DeploymentHandle)>>,
     pub topology: Arc<RwLock<Topology>>,
@@ -730,24 +756,36 @@ impl AdminRunner {
 
 
 
-    async fn template_for(&self, kind: NodeKind, mesh: &str) -> LaunchTemplate {
+    async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
         let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
         let mut t = self.template.clone();
-        match kind {
-            NodeKind::RpcNode => t.executable = self.bin_dir.join(format!("rafka-rpc-node{}", std::env::consts::EXE_SUFFIX)),
-            NodeKind::Broker => t.executable = self.bin_dir.join(format!("rafka-broker{}", std::env::consts::EXE_SUFFIX)),
-            NodeKind::Gateway => t.executable = self.bin_dir.join(format!("rafka-gateway{}", std::env::consts::EXE_SUFFIX)),
-            NodeKind::Compute => t.executable = self.bin_dir.join(format!("rafka-compute{}", std::env::consts::EXE_SUFFIX)),
-            NodeKind::NodeAdmin => {
-                t.executable = self.bin_dir.join(format!("rafka-node-admin{}", std::env::consts::EXE_SUFFIX));
-                t.env.extend(self.admin_env.clone());
+        t.executable = match &self.bindings {
+            // Explicit mode: the bound executable, re-hashed now; an unbound kind is refused, never
+            // launched from the built-in set.
+            Some(b) => {
+                let r = b.resolve(kind).map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
+                tracing::info!(launch_id = %r.launch_id, executable = %r.executable.display(), sha256 = %r.sha256, candidate = %r.candidate.sha, "launching from the explicit executable binding");
+                r.executable
             }
+            None => {
+                let name = match kind {
+                    NodeKind::RpcNode => "rafka-rpc-node",
+                    NodeKind::Broker => "rafka-broker",
+                    NodeKind::Gateway => "rafka-gateway",
+                    NodeKind::Compute => "rafka-compute",
+                    NodeKind::NodeAdmin => "rafka-node-admin",
+                };
+                self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+            }
+        };
+        if kind == NodeKind::NodeAdmin {
+            t.env.extend(self.admin_env.clone());
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
             t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
         }
-        t
+        Ok(t)
     }
 
     fn pipeline<'a>(&'a self, template: &'a LaunchTemplate) -> DeploymentPipeline<'a> {
@@ -903,7 +941,7 @@ impl AdminRunner {
                 FenceOutcome::Clear { gone: None } => {}
             }
         }
-        let template = self.template_for(node.kind, &node.mesh).await;
+        let template = self.template_for(node.kind, &node.mesh).await?;
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
@@ -956,7 +994,7 @@ impl AdminRunner {
                 self.allocator.lock().unwrap().adopt(node, held);
             }
         }
-        let template = self.template_for(node.kind, &node.mesh).await;
+        let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure, keep_endpoints };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
@@ -1286,6 +1324,14 @@ impl Running {
     }
 }
 
+/// What the provider runs a node in, for explicit executable bindings.
+fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<'static> {
+    match p {
+        ProviderKind::Process => rafka_mesh_entity::binding::ProviderImage::Process,
+        ProviderKind::Container => rafka_mesh_entity::binding::ProviderImage::Container(crate::deployment::container::RUNTIME_IMAGE),
+    }
+}
+
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
 pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
@@ -1369,6 +1415,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     // fabric network's gateway (a host address, reachable from host processes too): the provider is
     // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. A launched admin
     // learns the policy from its launcher's entry answer, after it binds.
+    // Explicit bindings are held to the provider's image before the provider does anything.
+    if let (Some(b), None, Ok(p)) = (&cfg.bindings, &cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
+        b.check_image(provider_image(p.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
+    }
     let early = match (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
         (None, Ok(p)) if p.provider == ProviderKind::Container => Some(crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?),
         _ => None,
@@ -1603,6 +1653,10 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         }
     };
 
+    if let Some(b) = &cfg.bindings {
+        b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
+    }
+
     // The control API.
     let listener = match tokio::net::TcpListener::bind(control_addr).await {
         Ok(l) => l,
@@ -1655,6 +1709,9 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     };
     let mut admin_env = BTreeMap::new();
     admin_env.insert("RAFKA_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
+    // A node-admin this admin launches honors the same explicit bindings: its own launches and
+    // restarts run the bound executables too.
+    admin_env.extend(cfg.bindings_env.clone());
     let data_root = cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone());
     let template = LaunchTemplate {
         fabric: cfg.fabric.clone(),
@@ -1704,6 +1761,7 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
         template,
         admin_env,
         bin_dir: cfg.bin_dir.clone(),
+        bindings: cfg.bindings.clone(),
         lifecycle: LifecycleTransitionPipeline::new(hooks, Arc::new(MemoryReceiptLog::default())),
         handles: Mutex::new(HashMap::new()),
         topology: control.topology.clone(),

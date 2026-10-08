@@ -71,3 +71,8 @@ dashmap = "6"
 # The Windows-host churn-memory-leak forks (E:/iroh, E:/iroh-gossip, E:/noq)
 # are opted into per host, never from this file: a path patch that does not
 # exist breaks cargo everywhere else. See deployment/dev/windows-iroh-patches.toml.
+
+# The executable-binding check hashes whole (debug-sized, hundreds of MB) executables at every
+# launch: the hash runs at release speed even in a debug build.
+[profile.dev.package.sha2]
+opt-level = 3

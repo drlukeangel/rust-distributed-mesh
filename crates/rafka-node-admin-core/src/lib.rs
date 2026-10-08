@@ -7,6 +7,7 @@
 //! and every other front end are clients of its control API
 //! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
 
+pub mod entry;
 pub mod admin;
 pub mod accepted;
 pub mod build;

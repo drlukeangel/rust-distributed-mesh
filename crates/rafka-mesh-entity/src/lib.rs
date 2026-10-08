@@ -5,6 +5,7 @@
 //! opaque and compared by equality/supersession, never ordered. No Application
 //! EF, no product state.
 
+pub mod binding;
 pub mod connections;
 pub mod digest;
 pub mod launch;
