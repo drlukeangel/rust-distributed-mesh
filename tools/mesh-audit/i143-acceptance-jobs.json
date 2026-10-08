@@ -635,6 +635,54 @@
           "dir": "target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin"
         }
       ]
+    },
+    "i143-2777-process": {
+      "issue": 2777,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "proof_canary_restarts_same_node_preserves_state",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/proof_canary_restarts_same_node_preserves_state/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 proof_canary_restarts_same_node_preserves_state -- --exact",
+          "dir": "target/i143-acceptance/2777/process/proof_canary_restarts_same_node_preserves_state"
+        },
+        {
+          "name": "seed_runner_completes_every_operation_on_process",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 seed_runner_completes_every_operation_on_process -- --exact",
+          "dir": "target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process"
+        },
+        {
+          "name": "restart_during_an_inflight_build_is_refused_and_opens_no_attempt",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 restart_during_an_inflight_build_is_refused_and_opens_no_attempt -- --exact",
+          "dir": "target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt"
+        },
+        {
+          "name": "restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt -- --exact",
+          "dir": "target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt"
+        }
+      ]
+    },
+    "i143-2777-container": {
+      "issue": 2777,
+      "layer": "container",
+      "cells": [
+        {
+          "name": "proof_canary_restarts_container_preserves_state",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/proof_canary_restarts_container_preserves_state/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 proof_canary_restarts_container_preserves_state -- --exact",
+          "dir": "target/i143-acceptance/2777/container/proof_canary_restarts_container_preserves_state"
+        },
+        {
+          "name": "seed_runner_completes_every_operation_on_container",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2777.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/seed_runner_completes_every_operation_on_container/estate cargo test -p rafka-test-scenario --test i143_acceptance_2777 seed_runner_completes_every_operation_on_container -- --exact",
+          "dir": "target/i143-acceptance/2777/container/seed_runner_completes_every_operation_on_container"
+        }
+      ]
     }
   },
   "rshape_jobs": {
