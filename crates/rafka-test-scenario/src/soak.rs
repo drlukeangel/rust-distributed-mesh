@@ -1083,7 +1083,11 @@ impl Driver {
         }
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
         let known = self.known.clone();
-        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members.len()).sum::<usize>())).await;
+        // On containers the view marked a held node unheard 29 s to 46 s after the hold (spans of
+        // the i143-2787-soak-container runs); the container cell for the silence (#2784) observes
+        // the same consequence within 90 s, and so does the soak there.
+        let within = if container { Duration::from_secs(90) } else { self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members.len()).sum::<usize>()) };
+        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, within).await;
         if let Ok(after) = &marked {
             entry["unheard_after_ms"] = json!(after.as_millis() as u64);
         }
