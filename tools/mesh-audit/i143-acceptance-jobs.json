@@ -476,6 +476,12 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_primary_mesh_retired_hands_off_authority_before_its_containers_end -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end"
+        },
+        {
+          "name": "container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth"
         }
       ]
     },

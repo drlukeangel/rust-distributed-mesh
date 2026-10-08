@@ -10,6 +10,11 @@
 //!   (it exits: `rdm.mesh.node.delete.via-transport-stopped`), so this is a loss of the runtime, not
 //!   a silence of it.
 //! - freeze: [`pause`] / [`unpause`] hold a container's processes in place.
+//! - exact-container faults: [`ExactContainer`] kills, pauses and unpauses ONE container named by
+//!   its Docker id, Fabric label, node label and start time; a container the daemon does not hold
+//!   as that exact one is refused by name with nothing sent ([`Refusal`]), and every applied fault
+//!   is acknowledged by the daemon's own state ([`Applied`]). Each application is one span,
+//!   `rdm.testkit.fault.update.via-container-command`.
 //! - provider observation: [`inspect`] reads one container's state straight from the Docker
 //!   daemon, so a scenario can show that a silenced runtime never stopped, restarted or changed.
 //!
@@ -245,4 +250,178 @@ pub fn inspect(id: &str) -> Result<Inspected, String> {
         oom_killed: st["OOMKilled"].as_bool().unwrap_or(false),
         networks,
     })
+}
+
+/// The `(rafka.fabric, rafka.node)` labels the provider put on container `id`.
+pub fn labels_of(id: &str) -> Result<(String, String), String> {
+    let out = docker(&["inspect", "--format", "{{index .Config.Labels \"rafka.fabric\"}} {{index .Config.Labels \"rafka.node\"}}", id])?;
+    let (fabric, node) = out.split_once(' ').unwrap_or((out.as_str(), ""));
+    Ok((fabric.to_string(), node.to_string()))
+}
+
+/// What an exact-container fault does to the container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fault {
+    /// `docker kill`: SIGKILL to the container's init; nothing is flushed.
+    Kill,
+    /// `docker pause`: the container's processes are frozen, alive and silent.
+    Pause,
+    /// `docker unpause`: the freeze is released.
+    Unpause,
+}
+
+impl Fault {
+    pub fn name(self) -> &'static str {
+        match self {
+            Fault::Kill => "kill",
+            Fault::Pause => "pause",
+            Fault::Unpause => "unpause",
+        }
+    }
+}
+
+/// Why a fault was not applied. Nothing was sent to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "refusal", rename_all = "snake_case")]
+pub enum Refusal {
+    /// The daemon holds no container with this id.
+    NoSuchContainer { id: String },
+    /// The daemon could not be read.
+    Unreadable { id: String, reason: String },
+    /// The container belongs to another Fabric.
+    WrongFabric { id: String, published: String, observed: String },
+    /// The container runs another node.
+    WrongNode { id: String, published: String, observed: String },
+    /// The container at this id started at another time: it is another run of the container now.
+    NotThisContainer { id: String, published_started_at: String, observed_started_at: String },
+    /// The container is not running.
+    AlreadyExited { id: String, status: String, exit_code: i64 },
+    /// The daemon refused the command.
+    CommandFailed { id: String, fault: Fault, reason: String },
+    /// The command was accepted and the daemon did not show its consequence within the bound.
+    NotAcknowledged { id: String, fault: Fault, status: String },
+}
+
+/// The daemon's observation that acknowledged an applied fault.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Applied {
+    pub fault: Fault,
+    pub container: ExactContainer,
+    /// The container's status after the command (`paused`, `running`, `exited`).
+    pub status_after: String,
+    /// The container is no longer running: the terminal observation of a kill.
+    pub exited: bool,
+    pub exit_code: i64,
+}
+
+/// ONE container of an estate: its Docker id, the Fabric and node labels it carried and the time
+/// it started. A fault acts on it only while the daemon still holds exactly that container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExactContainer {
+    pub id: String,
+    pub fabric_id: String,
+    pub node: String,
+    pub started_at: String,
+    pub pid: u64,
+}
+
+impl ExactContainer {
+    /// The container the daemon holds for `node` of the estate's Fabric right now.
+    pub fn of(estate: &Estate, node: &str) -> Result<Self, Refusal> {
+        let id = estate.container_of(node).ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id) })?;
+        let i = inspect(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
+        let (fabric_id, node) = labels_of(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
+        Ok(Self { id, fabric_id, node, started_at: i.started_at, pid: i.pid })
+    }
+
+    /// The same container under another start time: what a restarted container looks like.
+    pub fn with_started_at(&self, started_at: &str) -> Self {
+        Self { started_at: started_at.into(), ..self.clone() }
+    }
+
+    /// The same id under another node label.
+    pub fn with_node(&self, node: &str) -> Self {
+        Self { node: node.into(), ..self.clone() }
+    }
+
+    /// The same id under another Fabric label.
+    pub fn with_fabric(&self, fabric_id: &str) -> Self {
+        Self { fabric_id: fabric_id.into(), ..self.clone() }
+    }
+
+    /// Is the daemon holding exactly this container, running.
+    pub fn check(&self) -> Result<Inspected, Refusal> {
+        let i = match inspect(&self.id) {
+            Ok(i) => i,
+            Err(e) if e.to_lowercase().contains("no such") => return Err(Refusal::NoSuchContainer { id: self.id.clone() }),
+            Err(reason) => return Err(Refusal::Unreadable { id: self.id.clone(), reason }),
+        };
+        let (fabric, node) = labels_of(&self.id).map_err(|reason| Refusal::Unreadable { id: self.id.clone(), reason })?;
+        if fabric != self.fabric_id {
+            return Err(Refusal::WrongFabric { id: self.id.clone(), published: self.fabric_id.clone(), observed: fabric });
+        }
+        if node != self.node {
+            return Err(Refusal::WrongNode { id: self.id.clone(), published: self.node.clone(), observed: node });
+        }
+        if i.started_at != self.started_at {
+            return Err(Refusal::NotThisContainer { id: self.id.clone(), published_started_at: self.started_at.clone(), observed_started_at: i.started_at });
+        }
+        if !i.running {
+            return Err(Refusal::AlreadyExited { id: self.id.clone(), status: i.status, exit_code: i.exit_code });
+        }
+        Ok(i)
+    }
+
+    /// Apply `fault` to this exact container and wait for the daemon to acknowledge it.
+    pub fn apply(&self, fault: Fault) -> Result<Applied, Refusal> {
+        let span = tracing::info_span!(
+            "rdm.testkit.fault.update.via-container-command",
+            fault = fault.name(),
+            container = %self.id,
+            node = %self.node,
+            fabric = %self.fabric_id,
+            started_at = %self.started_at,
+            outcome = tracing::field::Empty,
+        );
+        let _g = span.enter();
+        let out = self.apply_inner(fault);
+        span.record(
+            "outcome",
+            tracing::field::display(match &out {
+                Ok(a) => serde_json::json!({"applied": a.fault.name(), "status_after": a.status_after, "exited": a.exited}),
+                Err(r) => serde_json::to_value(r).unwrap_or(serde_json::Value::Null),
+            }),
+        );
+        out
+    }
+
+    fn apply_inner(&self, fault: Fault) -> Result<Applied, Refusal> {
+        let before = self.check()?;
+        // A pause of a paused container and an unpause of a running one are the daemon's refusals,
+        // named as they come.
+        let verb = match fault {
+            Fault::Kill => "kill",
+            Fault::Pause => "pause",
+            Fault::Unpause => "unpause",
+        };
+        let _ = before;
+        docker(&[verb, &self.id]).map_err(|reason| Refusal::CommandFailed { id: self.id.clone(), fault, reason })?;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let now = inspect(&self.id).map_err(|reason| Refusal::Unreadable { id: self.id.clone(), reason })?;
+            let acked = match fault {
+                Fault::Kill => !now.running,
+                Fault::Pause => now.status == "paused",
+                Fault::Unpause => now.status == "running",
+            };
+            if acked {
+                return Ok(Applied { fault, container: self.clone(), status_after: now.status, exited: !now.running, exit_code: now.exit_code });
+            }
+            if std::time::Instant::now() >= until {
+                return Err(Refusal::NotAcknowledged { id: self.id.clone(), fault, status: now.status });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
 }
