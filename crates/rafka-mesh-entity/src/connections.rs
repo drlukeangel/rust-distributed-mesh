@@ -309,6 +309,13 @@ impl ConnectionsHeld {
         Some(self.cells.get(&key).and_then(|c| c.active.as_ref()))
     }
 
+    /// Whether any Direct fact (active or not) `source -> destination` is held at all: the key
+    /// stands at a stamp. `false` when none was ever observed.
+    pub fn holds_direct_fact(&self, source: &PathName, destination: &PathName) -> bool {
+        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), kind: ConnectionKind::Direct };
+        self.cells.contains_key(&key)
+    }
+
     /// Every active Direct fact whose destination is `destination`, sorted by source, leaving out
     /// a fact that names a superseded destination process; `None` when the holder is not
     /// complete.
@@ -357,8 +364,9 @@ pub const INVALID_DESTINATION_SUPERSEDED: &str = "destination-incarnation-supers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectiveRoute {
     /// Dial the destination directly. `known` is `false` when no current Direct fact is held: the
-    /// holder is not complete, or the Direct fact it holds names a destination process that is
-    /// gone. The direct dial is the only thing to try.
+    /// holder is not complete, no Direct fact toward the destination was ever observed, or the
+    /// Direct fact it holds names a destination process that is gone. The direct dial is the only
+    /// thing to try.
     Direct { known: bool },
     /// Forward through `carrier`: the valid own Proxy `proxy` names it.
     ViaPeer { carrier: PathName, proxy: NodeConnection },
@@ -403,7 +411,7 @@ pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&
 }
 
 /// The route from `own` to `destination` under `policy`, over `held`: a valid own Proxy, else an
-/// active Direct, else no route. Pure: the caller retires [`RouteResolution::retire`].
+/// active Direct, else a direct dial when no Direct fact was ever observed, else no route. Pure: the caller retires [`RouteResolution::retire`].
 pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, policy: CarrierPolicy) -> RouteResolution {
     let mut retire = None;
     if let CarrierPolicy::Forwardable { carrier_kind } = policy {
@@ -426,6 +434,11 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
         // current one: the dial is the only thing to try.
         Some(Some(edge)) if held.names_superseded_destination(edge) => EffectiveRoute::Direct { known: false },
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
+        // No Direct fact was ever observed toward this destination: nothing says it is
+        // unreachable, so the node calls it by its transport key and address (connections.md §7).
+        Some(None) if !held.holds_direct_fact(own, destination) => EffectiveRoute::Direct { known: false },
+        // A Direct fact that stands but is not active (Failed or Disconnected): its reconnect
+        // series owns the retry, and no new call dials over it.
         Some(None) => EffectiveRoute::NoActiveRoute,
         None => EffectiveRoute::Direct { known: false },
     };

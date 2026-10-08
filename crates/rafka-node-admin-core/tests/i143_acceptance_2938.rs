@@ -113,7 +113,9 @@ async fn source_reconnect_failures_grow_log_keep_two_current_members() {
         attempts.push(json!({ "ordinal": ordinal, "outcome": out.name(), "reason": reason, "indexed_row": indexed, "history_len": history_len }));
     }
 
-    // The current index: one Direct and one Proxy for the pair; the held projection the same.
+    // The current index: one Direct and one Proxy for the pair; the held projection the same
+    // (a fact is held once its write has landed, so the last attempt's write completes first).
+    writer.drain().await;
     let index = storage.connections().await.unwrap();
     let pair: Vec<&NodeConnection> = index.iter().filter(|r| r.source.name == me.name && r.destination.name == dest.name).collect();
     assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Direct).count(), 1, "{pair:?}");

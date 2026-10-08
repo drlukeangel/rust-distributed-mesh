@@ -44,6 +44,8 @@ struct Inner {
     /// waits for this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
+    /// Held across one observation's build, write and apply.
+    write_gate: tokio::sync::Mutex<()>,
 }
 
 fn now_ms() -> u64 {
@@ -72,7 +74,7 @@ fn state_name(s: ConnectionState) -> &'static str {
 impl ConnectionsWriter {
     /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
-        Self { inner: Arc::new(Inner { own, storage, held, runtime: tokio::runtime::Handle::current(), last_stamp: Mutex::new(0), in_flight: std::sync::atomic::AtomicUsize::new(0), idle: tokio::sync::Notify::new() }) }
+        Self { inner: Arc::new(Inner { own, storage, held, runtime: tokio::runtime::Handle::current(), last_stamp: Mutex::new(0), in_flight: std::sync::atomic::AtomicUsize::new(0), idle: tokio::sync::Notify::new(), write_gate: tokio::sync::Mutex::new(()) }) }
     }
 
     pub fn held(&self) -> Arc<Mutex<ConnectionsHeld>> {
@@ -85,8 +87,8 @@ impl ConnectionsWriter {
     }
 
     /// Observation writes spawned by [`ConnectionObserver`] calls that have not yet landed or
-    /// been refused. The held projection already carries each; the raw log, the index and the
-    /// observation's span follow when its write completes.
+    /// been refused. The raw log, the index, the held projection and the observation's span follow
+    /// when its write completes.
     pub fn in_flight(&self) -> usize {
         self.inner.in_flight.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -227,16 +229,21 @@ impl ConnectionsWriter {
         *last
     }
 
-    /// An observed fact: applied to the held projection at once (the next observation and the
-    /// next resolution read it), then written to the raw log and the index. A Direct Connected
-    /// settles the Proxy retirement it may owe once its own write has landed.
-    fn observed(&self, mut row: NodeConnection, origin: &'static str) {
-        row.logged_at_ms = self.stamp();
-        let _ = self.inner.held.lock().unwrap().apply(row.clone());
-        let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
+    /// An observed fact: `build` makes the row from the held projection, the row is written to the
+    /// raw log and the index, and it is applied to the held projection only once that write has
+    /// landed. A refused write leaves the fact unheld and names the refusal; the next observation
+    /// of the connection writes it afresh. Observations take the write gate one at a time, so a
+    /// row built from the held projection (a failing series' next ordinal) sees every earlier
+    /// observation already applied. A Direct Connected settles the Proxy retirement it may owe
+    /// once its own write has landed.
+    fn observed(&self, build: impl FnOnce(&Self) -> NodeConnection + Send + 'static, origin: &'static str) {
         let w = self.clone();
         self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.inner.runtime.spawn(async move {
+            let gate = w.inner.write_gate.lock().await;
+            let mut row = build(&w);
+            row.logged_at_ms = w.stamp();
+            let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.update.via-observed",
                 source = %row.source.name,
@@ -247,12 +254,34 @@ impl ConnectionsWriter {
                 origin,
                 outcome = tracing::field::Empty,
             );
-            match w.persist(&row).await {
-                Ok(()) => span.record("outcome", "landed"),
-                Err(e) => span.record("outcome", format!("refused: {e}").as_str()),
+            let landed = match w.persist(&row).await {
+                Ok(()) => {
+                    let _ = w.inner.held.lock().unwrap().apply(row.clone());
+                    span.record("outcome", "landed");
+                    true
+                }
+                Err(e) => {
+                    span.record("outcome", format!("refused: {e}").as_str());
+                    tracing::info_span!(
+                        "rdm.node_admin.connection.reject.via-refused-write",
+                        node = %w.inner.own.name,
+                        source = %row.source.name,
+                        destination = %row.destination.name,
+                        destination_node_id = %row.destination.node_id,
+                        kind = kind_name(row.kind),
+                        state = state_name(row.state),
+                        reason = %row.reason.clone().unwrap_or_default(),
+                        origin,
+                        logged_at_ms = row.logged_at_ms,
+                        refusal = %e,
+                    )
+                    .in_scope(|| tracing::info!("the observed connection fact was refused by storage; it is not held, and the next observation of this connection writes it afresh"));
+                    false
+                }
             };
             span.in_scope(|| tracing::info!("one connection fact this node observed"));
-            if settles {
+            drop(gate);
+            if settles && landed {
                 let _ = w.settle_owed().await;
             }
             drop(span);
@@ -264,35 +293,44 @@ impl ConnectionsWriter {
 
 impl ConnectionObserver for ConnectionsWriter {
     fn direct_connected(&self, node: &ResolvedNode) {
-        self.observed(self.direct(end_of(node), ConnectionState::Connected, None), "dial");
+        let destination = end_of(node);
+        self.observed(move |w| w.direct(destination, ConnectionState::Connected, None), "dial");
     }
 
     fn direct_accepted(&self, node: &ResolvedNode) {
-        self.observed(self.direct(end_of(node), ConnectionState::Connected, None), "accept");
+        let destination = end_of(node);
+        self.observed(move |w| w.direct(destination, ConnectionState::Connected, None), "accept");
     }
 
     fn direct_failed(&self, node: &ResolvedNode, reason: &str) {
         let destination = end_of(node);
-        let previous = self.latest_direct(&destination);
-        // A failing series continues in its epoch, one ordinal up; anything else (never tried,
-        // connected, dropped) is a new incident: a new epoch at ordinal one.
-        let row = match previous.as_ref() {
-            Some(p) if p.state == ConnectionState::Failed => match p.recovery {
-                Some(r) => NodeConnection {
-                    recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
-                    reason: Some(reason.to_string()),
-                    logged_at_ms: now_ms(),
-                    ..p.clone()
-                },
-                None => first_failure(self.inner.own.clone(), destination, previous.as_ref(), reason, now_ms()),
+        let reason = reason.to_string();
+        self.observed(
+            move |w| {
+                let previous = w.latest_direct(&destination);
+                // A failing series continues in its epoch, one ordinal up; anything else (never
+                // tried, connected, dropped) is a new incident: a new epoch at ordinal one.
+                match previous.as_ref() {
+                    Some(p) if p.state == ConnectionState::Failed => match p.recovery {
+                        Some(r) => NodeConnection {
+                            recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: r.recovery_epoch, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
+                            reason: Some(reason),
+                            logged_at_ms: now_ms(),
+                            ..p.clone()
+                        },
+                        None => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, now_ms()),
+                    },
+                    _ => first_failure(w.inner.own.clone(), destination, previous.as_ref(), &reason, now_ms()),
+                }
             },
-            _ => first_failure(self.inner.own.clone(), destination, previous.as_ref(), reason, now_ms()),
-        };
-        self.observed(row, "dial");
+            "dial",
+        );
     }
 
     fn direct_broken(&self, node: &ResolvedNode, reason: &str) {
-        self.observed(self.direct(end_of(node), ConnectionState::Disconnected, Some(reason.to_string())), "dial");
+        let destination = end_of(node);
+        let reason = reason.to_string();
+        self.observed(move |w| w.direct(destination, ConnectionState::Disconnected, Some(reason)), "dial");
     }
 }
 

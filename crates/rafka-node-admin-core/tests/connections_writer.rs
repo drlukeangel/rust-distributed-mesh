@@ -36,17 +36,6 @@ fn data_dir(tag: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("i143-e6s11-{tag}-{}", NodeId::mint()))
 }
 
-async fn wait_rows(storage: &dyn ConnectionsStorage, n: usize) -> Vec<NodeConnection> {
-    for _ in 0..200 {
-        let h = storage.history().await.unwrap();
-        if h.len() >= n {
-            return h;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the writer never reached {n} history rows");
-}
-
 /// §13 B: the latest rows this node wrote are hydrated at birth, and the first resolution after
 /// the restart is the Proxy, with no rediscovery.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -91,7 +80,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     let target = resolved(&dest);
     for i in 0..7 {
         writer.direct_failed(&target, &format!("refused {i}"));
-        wait_rows(storage.as_ref(), i + 1).await;
+        writer.drain().await;
     }
     let history = storage.history().await.unwrap();
     assert_eq!(history.len(), 7, "every failure joins the raw log");
@@ -110,7 +99,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1);
     // A Direct Connected ends the series and is the pair's one Direct member now.
     writer.direct_connected(&target);
-    wait_rows(storage.as_ref(), 8).await;
+    writer.drain().await;
     let mut index = storage.connections().await.unwrap();
     for _ in 0..200 {
         if index.first().is_some_and(|r| r.state == ConnectionState::Connected) {
@@ -126,7 +115,8 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
 }
 
 /// §10: a Direct Connected beside an active Proxy owes the Proxy's retirement, written durably
-/// as Disconnected(direct-restored); the route cuts back only once it lands.
+/// as Disconnected(direct-restored); the route cuts back once it lands (the refused-write cell
+/// below proves the Proxy stays effective until then).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts_back() {
     let dir = data_dir("retire");
@@ -138,9 +128,8 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11)).await.unwrap();
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)).await.unwrap();
     writer.direct_connected(&resolved(&dest));
-    wait_rows(storage.as_ref(), 3).await;
-    assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays effective until retired");
-    assert_eq!(writer.retire_owed().await.unwrap(), 1);
+    // The observation's own write has landed and settled the retirement it owed.
+    writer.drain().await;
     let retired = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((retired.kind, retired.state, retired.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
@@ -265,5 +254,69 @@ async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connect
     let why = writer.edge_not_active(&dest.node_id).expect("a Failed edge is not Active");
     assert_eq!(why, "mesh1.rpc.2 -> mesh1.rpc.3 Direct failed (dial failed)");
     assert_eq!(writer.edge_not_active(&NodeId::mint()), None, "another node's edge is not named");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONTRACT: a fact is held only after its durable write lands. A refused write leaves no fact
+/// in the held projection, the route still reads "never observed", and the next observation of
+/// the same connection writes it afresh: nothing resends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observation_lands_it() {
+    let dir = data_dir("refused-observation");
+    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&dir).unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+    writer.hydrate().await.unwrap();
+    storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
+    writer.direct_connected(&resolved(&dest));
+    writer.drain().await;
+    {
+        let h = held.lock().unwrap();
+        assert!(!h.holds_direct_fact(&me.name, &dest.name), "a refused fact is not held");
+        assert!(h.own_latest_directs().is_empty());
+        assert_eq!(resolve(&h, &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: false });
+    }
+    assert!(storage.connections().await.unwrap().is_empty(), "nothing durable in the index");
+    // Nothing resends it.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!held.lock().unwrap().holds_direct_fact(&me.name, &dest.name));
+    // The next observation of the connection lands it.
+    writer.direct_connected(&resolved(&dest));
+    writer.drain().await;
+    assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
+    let index = storage.connections().await.unwrap();
+    assert_eq!((index.len(), index[0].state), (1, ConnectionState::Connected));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONTRACT: a node that has never connected to a peer calls it directly; when the peer is dead
+/// the call ends `NotSent` and the failed dial is recorded as this node's Direct Failed fact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct_failed() {
+    use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, StaticResolver};
+    use rafka_node_rpc_contract::outcome::RpcOutcome;
+    use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+    let dir = data_dir("dead-cold");
+    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&dir).unwrap());
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
+    writer.hydrate().await.unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(resolved(&dest));
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
+    let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(300)), ..Default::default() };
+    let resolution = resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY);
+    let call = client.call_resolved::<Ping>(resolution, &me.name, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
+    assert_eq!(call.route, EffectiveRoute::Direct { known: false });
+    assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
+    writer.drain().await;
+    let index = storage.connections().await.unwrap();
+    assert_eq!(index.len(), 1, "{index:?}");
+    assert_eq!((index[0].kind, index[0].state), (ConnectionKind::Direct, ConnectionState::Failed));
+    assert_eq!(index[0].recovery.map(|r| r.attempt_ordinal), Some(1));
+    assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1, "the failure is held once it is durable");
     let _ = std::fs::remove_dir_all(&dir);
 }

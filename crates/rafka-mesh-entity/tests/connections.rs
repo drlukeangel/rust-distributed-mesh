@@ -81,7 +81,7 @@ fn at_one_instant_a_drop_wins_over_a_connect_whichever_arrives_first() {
 #[test]
 fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
     let (mut held, own, carrier, dest) = estate();
-    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false });
 
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
@@ -95,6 +95,19 @@ fn the_route_prefers_a_valid_proxy_then_an_active_direct_then_none() {
         EffectiveRoute::Direct { known: true },
         "a protocol that is not forwardable never takes the Proxy"
     );
+}
+
+/// CONTRACT: a complete holder that has never observed a Direct fact toward the destination
+/// dials it (connections.md section 7); once a Direct fact stands but is Failed or Disconnected,
+/// the reconnect series owns the retry and no route is offered.
+#[test]
+fn a_complete_holder_with_no_direct_fact_dials_and_a_standing_failed_fact_does_not() {
+    let (mut held, own, _carrier, dest) = estate();
+    assert!(!held.holds_direct_fact(&own.name, &dest.name));
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false });
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Failed, 20)).unwrap();
+    assert!(held.holds_direct_fact(&own.name, &dest.name));
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
 }
 
 #[test]
@@ -126,7 +139,7 @@ fn a_stale_destination_incarnation_is_fenced() {
     m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId("d2".into()));
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
-    assert_eq!(r.route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(r.route, EffectiveRoute::Direct { known: false });
     assert_eq!(r.retire, Some((p, INVALID_DESTINATION_SUPERSEDED)), "the superseded Proxy is handed back for retirement");
 }
 
@@ -201,7 +214,7 @@ fn a_valid_proxy_through_a_carrier_kind_the_protocol_forbids_is_skipped_not_reti
     held.apply(direct(admin.clone(), dest.clone(), ConnectionState::Connected, 10)).unwrap();
     held.apply(proxy(own.clone(), admin, dest.clone(), 20)).unwrap();
     let r = resolve(&held, &own.name, &dest.name, RPC);
-    assert_eq!(r.route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(r.route, EffectiveRoute::Direct { known: false });
     assert_eq!(r.retire, None);
 }
 
@@ -210,7 +223,7 @@ fn another_nodes_proxy_is_never_held() {
     let (mut held, _own, carrier, dest) = estate();
     let other = end(NodeKind::RpcNode, 4, Some("x1"));
     held.apply(proxy(other.clone(), carrier, dest.clone(), 30)).unwrap();
-    assert_eq!(resolve(&held, &other.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
+    assert_eq!(resolve(&held, &other.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false });
 }
 
 #[test]

@@ -123,3 +123,35 @@ async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_
     assert!(!pooled_to(&r, &r.b).is_empty(), "the direct connection to B is pooled now");
     assert_eq!(r.c.handled.load(Ordering::SeqCst), 0);
 }
+
+/// CONTRACT: a node calls a peer it has never connected to by its transport key and address
+/// (connections.md section 7): a complete holder with no Direct fact toward the destination
+/// resolves a direct dial and the call is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_complete_holder_with_no_fact_dials_the_destination_directly() {
+    let r = rig().await;
+    let own: PathName = "mesh1.admin.1".parse().unwrap();
+    let held = held_for(&own);
+    let call = connected(&r, &held, &own, &r.b, b"cold").await;
+    assert_eq!(call.route, EffectiveRoute::Direct { known: false });
+    assert_eq!(call.leg, RouteLeg::Direct);
+    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);
+    assert!(!pooled_to(&r, &r.b).is_empty(), "the destination was dialled directly");
+    assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst), r.p.handled.load(Ordering::SeqCst)), (1, 0, 0));
+}
+
+/// CONTRACT: a Direct fact naming a birth membership no longer holds at the destination's path is
+/// not the current edge: the call dials the current birth and is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
+    let r = rig().await;
+    let own: PathName = "mesh1.admin.1".parse().unwrap();
+    let mut held = held_for(&own);
+    held.apply(edge(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
+    let members = std::sync::Arc::new(rafka_mesh_entity::connections::StaticIncarnations::default());
+    members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rafka_mesh_entity::IncarnationId::mint());
+    held.set_membership(members);
+    let call = connected(&r, &held, &own, &r.b, b"reborn").await;
+    assert_eq!(call.route, EffectiveRoute::Direct { known: false });
+    assert_eq!(served_by(&call.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", call.outcome);
+}

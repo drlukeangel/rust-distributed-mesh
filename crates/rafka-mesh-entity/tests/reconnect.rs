@@ -135,7 +135,7 @@ fn route_resolution_never_creates_or_moves_a_reconnect() {
     let plan = reconnect_plan(&h, |_| None);
     for _ in 0..100 {
         assert_eq!(resolve(&h, &own.name, &dest.name, RPC).route, EffectiveRoute::NoActiveRoute);
-        assert_eq!(resolve(&h, &own.name, &end(7, "x").name, RPC).route, EffectiveRoute::NoActiveRoute);
+        assert_eq!(resolve(&h, &own.name, &end(7, "x").name, RPC).route, EffectiveRoute::Direct { known: false });
     }
     assert_eq!(reconnect_plan(&h, |_| None), plan, "traffic changes no reconnect obligation");
 }
