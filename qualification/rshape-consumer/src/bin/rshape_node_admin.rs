@@ -7,11 +7,12 @@ use tracing::Instrument;
 
 #[tokio::main]
 async fn main() {
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rshape-node-admin");
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rshape-node-admin");
     let cfg = match AdminConfig::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("rshape-node-admin: refusing to start: {e}");
+            drop(telemetry);
             std::process::exit(2);
         }
     };
@@ -38,6 +39,7 @@ async fn main() {
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
                 eprintln!("rshape-node-admin: {e}");
+                drop(telemetry);
                 std::process::exit(3);
             }
         }
@@ -60,6 +62,7 @@ async fn main() {
             tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
                 .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
             eprintln!("rshape-node-admin: the mesh transport stopped: {reason}");
+            drop(telemetry);
             std::process::exit(4);
         }
     };

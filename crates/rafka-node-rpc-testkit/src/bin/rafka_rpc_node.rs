@@ -7,11 +7,12 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("rafka-rpc-node: refusing to start: {e}");
+            drop(telemetry);
             std::process::exit(2);
         }
     };
@@ -32,6 +33,7 @@ async fn main() {
         Err(e) => {
             boot.in_scope(|| tracing::error!(error = %e, "the proof store refused to open"));
             eprintln!("rafka-rpc-node: proof store: {e}");
+            drop(telemetry);
             std::process::exit(3);
         }
     };
@@ -50,6 +52,7 @@ async fn main() {
             Err(e) => {
                 boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
                 eprintln!("rafka-rpc-node: {e:#}");
+                drop(telemetry);
                 std::process::exit(3);
             }
         }

@@ -285,26 +285,33 @@ async fn run(a: Args) -> Result<Value, String> {
     })
 }
 
+/// A refusal keeps its evidence: the process returns its exit status from `main`, so the telemetry
+/// guard drops (flushes) before the process ends, and the refusal is a span with its reason.
 #[tokio::main]
-async fn main() {
+async fn main() -> std::process::ExitCode {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-probe");
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
+            tracing::info_span!("rdm.node_rpc.proof_store.reject.via-probe-arguments", reason = %e).in_scope(|| tracing::info!("the probe refused its arguments"));
             println!("{}", json!({"outcome": "Refused", "reason": e}));
-            std::process::exit(2);
+            return std::process::ExitCode::from(2);
         }
     };
     let span = tracing::info_span!("rdm.node_rpc.proof_store.resolve.via-probe", op = %args.op, target = %args.target);
     let out = {
         use tracing::Instrument;
-        run(args).instrument(span).await
+        run(args).instrument(span.clone()).await
     };
     match out {
-        Ok(v) => println!("{v}"),
+        Ok(v) => {
+            println!("{v}");
+            std::process::ExitCode::SUCCESS
+        }
         Err(e) => {
+            span.in_scope(|| tracing::info!(refusal = %e, "the probe refused the call"));
             println!("{}", json!({"outcome": "Refused", "reason": e}));
-            std::process::exit(2);
+            std::process::ExitCode::from(2)
         }
     }
 }

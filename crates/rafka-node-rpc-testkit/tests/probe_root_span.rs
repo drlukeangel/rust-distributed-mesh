@@ -112,3 +112,22 @@ async fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
     let _ = std::fs::remove_dir_all(&data);
     assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root: {missing:?}");
 }
+
+/// CONTRACT: a probe that refuses its arguments exits with status 2, prints the typed `Refused` line with
+/// the reason, AND leaves a span file holding the refusal span with that reason. An error state keeps its
+/// evidence: the process ends by returning from `main`, so the telemetry guard flushes first.
+#[test]
+fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
+    let evidence = std::env::temp_dir().join(format!("rdm-probe-refusal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&evidence);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe")).args(["--admin", "http://127.0.0.1:9", "--no-such-flag", "x"]).env("RDM_EVIDENCE_DIR", &evidence).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{:?}", out.status);
+    let v: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
+    assert_eq!(v["outcome"], "Refused", "{v}");
+    let reason = v["reason"].as_str().unwrap().to_string();
+    assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}");
+    let spans: String = std::fs::read_dir(&evidence).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
+    assert!(spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments"), "the refusal left no span: {spans:?}");
+    assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}");
+    let _ = std::fs::remove_dir_all(&evidence);
+}
