@@ -245,7 +245,8 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let fresh = estate.probe(&["get", "--target", &format!("path:{kill}"), "--key", "83"]);
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
     let old = estate.probe(&["get", "--target", &kill_exact, "--key", "83"]);
-    assert_eq!(old, json!({"outcome": "NotSent", "reason": "Resolve(Unknown)", "route": "direct"}), "exact:<old> never follows a replacement: {old}");
+    // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
+    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     assert_eq!(estate.live_runtimes().iter().filter(|(d, _)| d.file_name().is_some_and(|f| f.to_string_lossy().starts_with(&format!("{kill}-")))).count(), 1, "one runtime serves the path");
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.

@@ -178,7 +178,8 @@ async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
     let old = estate.probe(&["get", "--target", &exact_old, "--key", "41"]);
-    assert_eq!(old, json!({"outcome": "NotSent", "reason": "Resolve(Unknown)", "route": "direct"}), "exact:<old> never follows a replacement: {old}");
+    // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
+    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     let other = format!("path:{OTHER}");
     let gone = wait_for("the other rpc node holds the old birth's departure", Duration::from_secs(30), || async {
         let r = estate.probe(&["resolve", "--target", &other, "--query", &exact_old]);
