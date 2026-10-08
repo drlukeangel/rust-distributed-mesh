@@ -4738,6 +4738,12 @@ struct Observer {
 }
 
 impl Observer {
+    /// The observer's own UDP port: it is a live gossip member of the backbone and mesh2, so a cut that leaves it
+    /// out leaves a path (victim -> observer -> everyone) the cut does not drop.
+    fn udp_port(&self) -> u16 {
+        self._endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the observer binds an IPv4 socket").port()
+    }
+
     async fn join(fabric: &rafka_mesh_entity::FabricId, mesh: &rafka_mesh_entity::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
         use futures_lite::StreamExt as _;
         use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
@@ -4808,7 +4814,11 @@ async fn control_run(cell: &str, shape: Shape) {
 
     // Control loss: the victim hears and is heard by no node. Held for two repair windows plus the re-feed.
     let others: Vec<String> = everyone.iter().filter(|n| **n != vname).cloned().collect();
-    let cut = Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &udp_ports(&st.nodes, &others)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}"));
+    // The observer is a gossip member too: the victim loses it as it loses every node, or gossip relays the
+    // victim's words around the cut through it and no coverage ever goes stale.
+    let mut others_ports = udp_ports(&st.nodes, &others);
+    others_ports.push(observer.udp_port());
+    let cut = Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &others_ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}"));
     let cut_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "node": vname, "acknowledged": true}));
     let stale = wait_for("the victim's coverage is stale and re-fed", window * 4 + Duration::from_secs(40), || async {
