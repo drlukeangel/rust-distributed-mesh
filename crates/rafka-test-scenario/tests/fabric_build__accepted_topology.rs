@@ -173,12 +173,25 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "proven-drift" && sp["attributes"]["outcome"] == "converged")
         .unwrap_or_else(|| panic!("the repair attempt of {r4} converged: {ran:?}"));
     assert_eq!(repaired["attributes"]["attempt"], (attempts_before + 1).to_string());
+    // The repair attempt's context is the fabric-primary's own drift span: its reconcile is that span's child.
+    assert_eq!(repaired["parent_span_id"], drift[0]["span_id"], "the repair's reconcile is the child of the span that proved the drift: {repaired}");
+    assert_eq!(repaired["trace_id"], drift[0]["trace_id"]);
     assert!(
         named(&spans, "rdm.node_admin.node.create.via-build").iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.2"),
         "the repair created mesh1.rpc.2 under the same Build"
     );
     // 8: the restart ran as an attempt of the same Build.
-    assert!(ran.iter().any(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "restart" && sp["attributes"]["outcome"] == "converged"), "{ran:?}");
+    let restart = ran
+        .iter()
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "restart" && sp["attributes"]["outcome"] == "converged")
+        .unwrap_or_else(|| panic!("the restart attempt of {r4} converged: {ran:?}"));
+    // The restart attempt's context is the restart call's request span, not the span that accepted the Build.
+    let rest = named(&spans, "rdm.node_admin.build.update.via-rest")
+        .into_iter()
+        .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["node"] == "mesh1.rpc.1")
+        .expect("the restart call's request span");
+    assert_eq!(restart["parent_span_id"], rest["span_id"], "the restart's reconcile is the child of the restart call's request span: {restart}");
+    assert_eq!(restart["trace_id"], rest["trace_id"]);
     // 4 and 6: the pointer moved on every admin by the fabric control topic.
     let moved = named(&spans, "rdm.node_admin.fabric.update.via-build-accepted");
     assert!(moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["build_id"] == c.as_str()), "the late admin took the pointer: {moved:?}");

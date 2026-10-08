@@ -1,8 +1,8 @@
 //! The Build executor (PRD §1.2, §1.4, §7; mesh-control-plane.md §1, §3).
 //!
 //! A Build is not owned by the admin that accepted it. Whichever node-admin
-//! executes takes the next attempt by an insert-and-fail claim, re-reads the
-//! Build's pinned intent and the observed topology, plans what is left and
+//! executes takes the next attempt by an insert-and-fail claim decided on the
+//! fabric-primary's Build log (`build_claim`), re-reads the Build's pinned intent and the observed topology, plans what is left and
 //! runs it; it never resumes from a saved instruction pointer and never
 //! mints a new build id. A successor after the executor's loss does exactly
 //! the same from its own fabric projection of the Build.
@@ -18,7 +18,8 @@
 
 use crate::accepted::AcceptedStore;
 use crate::build::{BuildId, BuildOperation};
-use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter, ClaimOutcome};
+use crate::build_claim::{AttemptClaimer, Claimed};
+use crate::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildProjection, BuildState, BuildStateAdapter};
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
 use std::sync::Arc;
@@ -120,6 +121,9 @@ pub struct BuildExecutor {
     pub builds: Arc<dyn BuildStateAdapter>,
     pub topology: Arc<RwLock<Topology>>,
     pub runner: Arc<dyn OperationRunner>,
+    /// Puts this admin's claim of an attempt to the fabric-primary. The attempt runs only on a
+    /// `Won` it returns; there is no claim from this admin's own log.
+    pub claimer: Arc<dyn AttemptClaimer>,
 }
 
 impl BuildExecutor {
@@ -172,10 +176,17 @@ impl BuildExecutor {
         lead_for(&ops, &t).is_some_and(|l| l.to_string() == self.executor)
     }
 
-    /// Claim the next attempt of `build`, plan what is left and run it.
+    /// Claim the next attempt of `build` from the fabric-primary, plan what is left and run it.
+    /// The reconcile span is parented to the attempt's context the claim returned, so a restart
+    /// reads under its REST request and a drift repair under the span that proved it.
     pub async fn reconcile(&self, build: &BuildProjection) -> Reconciled {
         use tracing::Instrument;
+        // A failed attempt does not end a Build: a later attempt continues it.
+        if build.state == BuildState::Complete {
+            return Reconciled::Finished;
+        }
         let attempt = build.attempt + 1;
+        let claimed = self.claimer.claim(&self.executor, &build.build_id, attempt).await;
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
             build_id = %build.build_id,
@@ -187,11 +198,17 @@ impl BuildExecutor {
             operations = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        // The accepting span, on whichever admin took the request, is the parent.
-        if let Some(tp) = &build.traceparent {
-            rafka_mesh_telemetry::set_parent(&span, tp);
-        }
-        let r = self.reconcile_attempt(build, attempt, &span).instrument(span.clone()).await;
+        let r = match claimed {
+            Claimed::Won { context } => {
+                if let Some(tp) = &context.traceparent {
+                    rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
+                }
+                self.reconcile_attempt(build, attempt, &span).instrument(span.clone()).await
+            }
+            Claimed::Lost { holder } => Reconciled::Lost { attempt, holder },
+            Claimed::NotOpen { .. } => Reconciled::NotOpen { attempt },
+            Claimed::Undecided { reason } => Reconciled::Failed { attempt, reason: format!("claiming attempt {attempt}: {reason}") },
+        };
         span.record(
             "outcome",
             match &r {
@@ -207,16 +224,10 @@ impl BuildExecutor {
     }
 
     async fn reconcile_attempt(&self, build: &BuildProjection, attempt: u32, span: &tracing::Span) -> Reconciled {
-        // A failed attempt does not end a Build: a later attempt continues it.
-        if build.state == BuildState::Complete {
-            return Reconciled::Finished;
-        }
+        // The fabric-primary decided the claim; this admin's own log takes the fact with it.
         let claim = BuildAttemptClaim { build_id: build.build_id.clone(), attempt, executor: self.executor.clone() };
-        match self.builds.claim_attempt(&claim).await {
-            Ok(ClaimOutcome::Won) => {}
-            Ok(ClaimOutcome::Lost { holder }) => return Reconciled::Lost { attempt, holder },
-            Ok(ClaimOutcome::NotOpen { .. }) => return Reconciled::NotOpen { attempt },
-            Err(e) => return Reconciled::Failed { attempt, reason: format!("claiming attempt {attempt}: {e}") },
+        if let Err(e) = self.builds.adopt_claim(&claim).await {
+            return Reconciled::Failed { attempt, reason: format!("recording the claim of attempt {attempt}: {e}") };
         }
         // The accepted topology is the Build's; observed is read now, never remembered.
         let observed = self.topology.read().await.clone();
@@ -368,7 +379,6 @@ mod tests {
                 build_id: id.clone(),
                 topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"),
                 submitted_change: None,
-                traceparent: None,
                 submitted_at_ms: 0,
             }),
             BuildFact::Claim(BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),

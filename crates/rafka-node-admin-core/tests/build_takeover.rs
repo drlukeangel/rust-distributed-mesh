@@ -118,6 +118,16 @@ impl OperationRunner for Runner {
     }
 }
 
+/// The claim of `me`, put to the door of the fabric-primary `me` is (its own Build log decides).
+fn door_of(me: &str, builds: &Arc<FabricBuildStateAdapter>, topology: &Arc<RwLock<Topology>>) -> Arc<dyn rafka_node_admin_core::build_claim::AttemptClaimer> {
+    Arc::new(rafka_node_admin_core::build_claim::DoorClaimer(Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
+        me: me.parse().unwrap(),
+        topology: topology.clone(),
+        builds: builds.clone(),
+        contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
+    })))
+}
+
 struct Admin {
     endpoint: Endpoint,
     router: Router,
@@ -181,7 +191,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // Build topic adapter serves to a neighbour and its control plane moves.
     let seed = rafka_node_admin_core::build::BuildId::mint();
     a.builds
-        .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, traceparent: None, submitted_at_ms: 0 })
+        .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     a.builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: seed.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
@@ -200,7 +210,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // A executes: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());
     let a_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: Some("mesh1.rpc.3".parse().unwrap()), died: died.clone() });
-    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), accepted: a.accepted.clone(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone() };
+    let a_exec = BuildExecutor { executor: "mesh1.admin.1".into(), accepted: a.accepted.clone(), builds: a.builds.clone(), topology: topology.clone(), runner: a_runner.clone(), claimer: door_of("mesh1.admin.1", &a.builds, &topology) };
     let view = a.builds.read_build(&build_id).await.unwrap();
     let mut a_executing = Box::pin(a_exec.reconcile(&view));
     tokio::select! {
@@ -231,7 +241,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         async move { accepted.build_id().await == Some(id) }
     })
     .await;
-    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), accepted: b.accepted.clone(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone() };
+    let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), accepted: b.accepted.clone(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone(), claimer: door_of("mesh1.admin.2", &b.builds, &topology) };
     let done = b_exec.reconcile_active().await;
     let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
     assert_eq!(

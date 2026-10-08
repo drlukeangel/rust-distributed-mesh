@@ -49,6 +49,9 @@ impl BuildStateAdapter for Losing {
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(claim).await
     }
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.inner.adopt_claim(claim).await
+    }
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         if self.lose == Some(receipt.step.as_str()) {
             return Ok(());

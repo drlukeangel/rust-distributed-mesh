@@ -440,6 +440,7 @@ pub async fn reconcile_drift(
     book: &DigestBook,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     builds: &dyn BuildStateAdapter,
+    contexts: &crate::build_claim::AttemptContexts,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
@@ -500,6 +501,11 @@ pub async fn reconcile_drift(
         opened_by: me.to_string(),
         opened_at_ms: now_ms(),
     };
+    // The attempt's context is this span, on this fabric-primary, before the attempt is open to be claimed.
+    if let Err(e) = contexts.put(&current.build_id, attempt, &span.in_scope(crate::build_claim::current_context)).await {
+        span.in_scope(|| tracing::info!(error = %e, "the attempt's context could not be recorded; the attempt is not opened"));
+        return None;
+    }
     match builds.open_attempt(&opened).await {
         Ok(()) => {
             span.in_scope(|| tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open"));
@@ -515,8 +521,31 @@ pub async fn reconcile_drift(
 /// Never Ready around missing control hydration: an admin that holds no `Fabric.build_id` names
 /// itself blocked. Only Day 0 accepts the first Build itself; every other admin hydrates the
 /// pointer from an existing authority (its entry pull, or the fabric control topic).
-pub async fn hydration_blocker(me: &PathName, accepted: &AcceptedStore) -> Option<String> {
-    accepted.build_id().await.is_none().then(|| format!("{me}: holds no Fabric.build_id (not hydrated from an existing authority)"))
+///
+/// Ready also needs the pointed Build's attempt facts: the Build must be readable from this admin's
+/// own log, and its folded attempt must reach the attempt the admin that served this admin's entry
+/// held of it (`floor`). An admin that was not served an entry (Day 0) owes no floor.
+pub async fn hydration_blocker(me: &PathName, accepted: &AcceptedStore, builds: &dyn BuildStateAdapter, floor: Option<(crate::build::BuildId, u32)>) -> Option<String> {
+    let Some(id) = accepted.build_id().await else {
+        return Some(format!("{me}: holds no Fabric.build_id (not hydrated from an existing authority)"));
+    };
+    let held = match builds.read_build(&id).await {
+        Ok(b) => b,
+        Err(e) => return Some(format!("{me}: Fabric.build_id names {id} and this admin's Build log cannot read it: {e}")),
+    };
+    match floor {
+        Some((fid, attempt)) if fid == id && held.attempt < attempt => {
+            Some(format!("{me}: holds attempt {} of Build {id}; the admin that served its entry held attempt {attempt} (its opens, claims and receipts are still arriving)", held.attempt))
+        }
+        _ => None,
+    }
+}
+
+/// The pointed Build's attempt, as an entry answer carries it.
+#[derive(serde::Deserialize)]
+struct EntryBuildFloor {
+    build_id: crate::build::BuildId,
+    attempt: u32,
 }
 
 /// The order a whole-mesh retire takes `members`: every ordinary member, then the admin cohort,
@@ -657,6 +686,7 @@ struct EntryState {
     book: DigestBook,
     digest: Arc<Mutex<MeshDigest>>,
     accepted: Arc<AcceptedStore>,
+    builds: Arc<dyn BuildStateAdapter>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
     membership: Membership,
 }
@@ -1359,6 +1389,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
         Arc::new(crate::storage::FileConnectionsStorage::open(&cfg.data_dir).map_err(storage_err)?);
     let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).map_err(|e| e.to_string())?);
+    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir).map_err(storage_err)?);
     let restart = match (&cfg.launch, nodes_storage.own().await.map_err(storage_err)?) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
@@ -1494,7 +1525,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     members.push(e.digest.lock().unwrap().clone());
                     let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
                     // The fabric control state a new admin hydrates before it may be Ready.
-                    let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held() });
+                    // The attempt the answering admin holds of the Build the pointer names: the floor
+                    // a joiner's own copy of that Build's attempt facts must reach before it is Ready.
+                    let build = e.accepted.current(&*e.builds).await.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt }));
+                    let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held(), "build": build });
                     EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()) }
                 }
             }
@@ -1521,11 +1555,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let node_rpc_resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
     connections.held().lock().unwrap().set_membership(node_rpc_resolver.clone());
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
+    let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(node_rpc_resolver.clone(), connections.clone()).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
         let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
         Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
     });
-    let rpc_server = crate::status_rpc::serve(core, authority.clone())
+    let rpc_server = crate::build_claim::serve(crate::status_rpc::serve(core, authority.clone()), claim_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let iroh_router = IrohRouter::builder(endpoint.clone())
@@ -1603,6 +1638,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // so this admin's first view is its launcher's; the fabric record carries
     // the policy. Without that answer it cannot know the policy, and it
     // refuses to start by name.
+    let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
     let policy = match &launched_anchor {
         Some(anchor) => {
             let answer = match pulled.take() {
@@ -1636,6 +1672,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's Fabric record does not decode"),
                 None => {}
             }
+            // The attempt facts of the pointed Build this admin must hold before it is Ready.
+            if let Some(Ok(floor)) = answer.control.get("build").filter(|v| !v.is_null()).cloned().map(serde_json::from_value::<EntryBuildFloor>) {
+                *entry_floor.lock().unwrap() = Some((floor.build_id, floor.attempt));
+            }
             // A fabric shutdown in force: this admin comes up frozen.
             if let Some(v) = answer.control.get("shutdown").filter(|v| !v.is_null()).cloned() {
                 match serde_json::from_value::<crate::fabric_storage::FabricShutdown>(v) {
@@ -1660,9 +1700,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     build_id: crate::build::BuildId::mint(),
                     topology: crate::accepted::FabricTopology::root(&cfg.fabric, &cfg.mesh),
                     submitted_change: None,
-                    traceparent: rafka_mesh_telemetry::current_traceparent(),
                     submitted_at_ms: now_ms(),
                 };
+                attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                 builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
                 accepted.point(&b0.build_id, "day-0").await.map_err(|e| e.to_string())?;
             }
@@ -1690,7 +1730,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(node_rpc_resolver.clone(), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
-    let control = Arc::new(ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)));
+    let control = Arc::new(
+        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)).with_contexts(attempt_contexts.clone()),
+    );
+    // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
+    let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
+    let _ = claim_slot.set(claim_door.clone());
     {
         let (book, records) = (book.clone(), records.clone());
         let _ = control.absence.set(Arc::new(move |name: &PathName| describe_absence(&book, &records, name)));
@@ -1927,6 +1972,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         book: book.clone(),
         digest: digest.clone(),
         accepted: accepted.clone(),
+        builds: builds_dyn.clone(),
         shutdown: shutdown_control.clone(),
         membership: membership.clone(),
     });
@@ -1940,7 +1986,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     {
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
-        let hydrated = accepted.clone();
+        let (hydrated, hydrated_builds, hydrated_floor) = (accepted.clone(), builds_dyn.clone(), entry_floor.clone());
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
         let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
@@ -1956,7 +2002,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 if let Some(dir) = &day0 {
                     blocked.extend(adoption_missing(dir).into_iter().map(|s| format!("{me}: no Complete receipt for its own {s}")));
                 }
-                blocked.extend(hydration_blocker(&me, &hydrated).await);
+                let floor = hydrated_floor.lock().unwrap().clone();
+                blocked.extend(hydration_blocker(&me, &hydrated, &*hydrated_builds, floor).await);
                 // A mesh is Pending until its authority says so (e4.s11): a mesh's first admin holds
                 // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
                 // root, with no upstream authority, applies its own. An admin joining a mesh whose
@@ -2258,10 +2305,18 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             builds: builds_dyn.clone(),
             topology: control.topology.clone(),
             runner: runner.clone(),
+            claimer: Arc::new(crate::build_claim::FabricPrimaryClaimer {
+                me: name.clone(),
+                node_id: node_id.clone(),
+                incarnation: incarnation.clone(),
+                topology: control.topology.clone(),
+                door: claim_door.clone(),
+                client: node_rpc.client.clone(),
+            }),
         };
         let (topology, submitted) = (control.topology.clone(), control.build_submitted.clone());
         let (book, records, fabric, fabric_id, provider, cut_off_view) = (book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, membership.clone());
-        let (me, deployer, accepted, drift_builds) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone());
+        let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
         let frozen = shutdown_control.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
@@ -2280,7 +2335,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // (its view then authorizes nothing). The fabric authority first
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &mut started).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &mut started).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
@@ -2542,15 +2597,31 @@ mod tests {
 
     #[tokio::test]
     async fn an_admin_without_a_hydrated_fabric_pointer_is_never_authority_capable() {
+        use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildStateAdapter as _, MemoryBuildStateAdapter};
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         use crate::fabric_storage::FabricStorage as _;
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         storage.put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: fabric1(), name: "fabric1".into(), build_id: None }).await.unwrap();
         let store = AcceptedStore::new(storage.clone(), "mesh1.admin.2");
-        let blocked = hydration_blocker(&me, &store).await.expect("blocked while unhydrated");
+        let builds = MemoryBuildStateAdapter::new();
+        let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while unhydrated");
         assert!(blocked.starts_with("mesh1.admin.2: holds no Fabric.build_id"), "{blocked}");
-        store.point(&crate::build::BuildId("bld-0".into()), "test").await.unwrap();
-        assert_eq!(hydration_blocker(&me, &store).await, None);
+        let id = crate::build::BuildId("bld-0".into());
+        store.point(&id, "test").await.unwrap();
+        let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while the pointed Build is not held");
+        assert!(blocked.contains("bld-0") && blocked.contains("cannot read it"), "{blocked}");
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        assert_eq!(hydration_blocker(&me, &store, &builds, None).await, None, "an admin served no entry owes no attempt floor");
+        let blocked = hydration_blocker(&me, &store, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt");
+        assert!(blocked.contains("holds attempt 0 of Build bld-0") && blocked.contains("held attempt 2"), "{blocked}");
+        for attempt in 1..=2 {
+            if attempt > 1 {
+                builds.open_attempt(&AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "x".into(), opened_at_ms: 0 }).await.unwrap();
+            }
+            builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+        }
+        assert_eq!(hydration_blocker(&me, &store, &builds, Some((id.clone(), 2))).await, None, "its attempt facts reached the entry's");
+        assert_eq!(hydration_blocker(&me, &store, &builds, Some((crate::build::BuildId("bld-other".into()), 9))).await, None, "a floor for another Build is not this pointer's");
     }
 
     #[test]

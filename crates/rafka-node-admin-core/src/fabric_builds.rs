@@ -369,12 +369,17 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.list_active().await
     }
 
+    /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let outcome = self.local.claim_attempt(claim).await?;
         if outcome == ClaimOutcome::Won {
             self.broadcast(BuildFact::Claim(claim.clone())).await?;
         }
         Ok(outcome)
+    }
+
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.local.adopt_claim(claim).await
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {

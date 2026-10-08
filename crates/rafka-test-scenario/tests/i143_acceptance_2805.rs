@@ -8,7 +8,7 @@
 //! receives MeshStatus::Pending from the fabric primary, and only then does any of mesh2's own
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -126,12 +126,18 @@ async fn pending_contract(cell: &str) {
     // The bootstrap admin's Ready follows its hydration; mesh2's primary is elected afterwards.
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|r| r["attributes"]["node"] == "mesh2.admin.1").cloned().expect("mesh2.admin.1 committed Ready");
     assert!(end(&joined) <= start(&ready), "Ready after hydration");
-    // Every attempt of the creation Build descends from its REST request (the rectifier).
+    // Every attempt the accepting fabric-primary decides descends from the REST request (the
+    // rectifier); an attempt decided after the seat moved starts its own trace.
     let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's REST span");
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()).collect();
     assert!(!reconciles.is_empty(), "the creation Build was reconciled");
+    let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
     for r in &reconciles {
-        assert!(descends_from(&spans, r, &accepted), "every attempt of the creation Build descends from its request: {r}");
+        if claim_decider(&spans, create.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
+            assert!(descends_from(&spans, r, &accepted), "every attempt the accepting fabric-primary decided descends from its request: {r}");
+        } else {
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the seat moved starts its own trace: {r}");
+        }
     }
 
     let result = json!({

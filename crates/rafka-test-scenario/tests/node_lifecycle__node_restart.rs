@@ -131,15 +131,31 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
         boot.then_some(spans)
     })
     .await;
+    // The restart's attempt is the REST call that opened it: its reconcile is a child of that
+    // call's request span (the claim returns the attempt's context), never of the span that
+    // accepted the Build.
     let created = named(&spans, "rdm.node_admin.build.create.via-rest")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str())
-        .expect("rdm.node_admin.build.create.via-rest for the restart Build");
+        .find(|s| s["attributes"]["build_id"] == birth_build.as_str())
+        .expect("rdm.node_admin.build.create.via-rest for the accepted Build");
+    let rest = named(&spans, "rdm.node_admin.build.update.via-rest")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
+        .expect("rdm.node_admin.build.update.via-rest for the restart call");
+    let restart_op = format!("restart-node:{NODE}");
+    let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)))
+        .expect("the reconcile that executed the restart");
+    assert_eq!(reconcile["parent_span_id"], rest["span_id"], "the restart's reconcile is the child of the restart call's request span: {reconcile}");
+    assert_eq!(reconcile["trace_id"], rest["trace_id"], "one trace: the restart call and its reconcile");
+    assert_ne!(reconcile["trace_id"], created["trace_id"], "the restart is not under the Build's original create span");
     let node_op = named(&spans, "rdm.node_admin.node.update.via-build")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
         .expect("rdm.node_admin.node.update.via-build for rpc.2");
-    assert!(descends_from(&spans, node_op, created), "node.update.via-build descends from build.create.via-rest");
+    assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-rest");
+    assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
     let deploy = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == "DeployRuntime")
@@ -150,7 +166,7 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
         .find(|s| s["attributes"]["incarnation_id"] == after["incarnation_id"])
         .unwrap();
     assert!(descends_from(&spans, boot, deploy), "the new process's boot span descends from DeployRuntime");
-    estate.record_trace_url(created["trace_id"].as_str().unwrap());
+    estate.record_trace_url(rest["trace_id"].as_str().unwrap());
 
     estate.shutdown().await;
 }

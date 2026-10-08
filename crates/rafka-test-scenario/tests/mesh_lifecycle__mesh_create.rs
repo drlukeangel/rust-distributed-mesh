@@ -13,7 +13,7 @@
 //! `node.delete.via-build` span sits under a `build.update.via-reconcile`
 //! whose `executor` is the expected admin, by parent span id.
 
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -159,8 +159,19 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert_eq!(decided.len(), 1, "{decided:?}");
     assert_eq!(decided[0]["attributes"]["receiver_is_primary"], "false", "accepting Pending is not an election: {}", decided[0]);
     let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).unwrap().clone();
+    // The accepting fabric-primary holds the request's context: every attempt it decides descends
+    // from the request. The seat moves to mesh2's lower NodeId during the creation; an attempt the
+    // new fabric-primary decides starts its own trace (the context is the old primary's local record).
+    let accepting = claim_decider(&spans, create.as_str(), "1").expect("attempt 1 of the creation Build was claimed");
+    let mut continued = 0;
     for r in named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == create.as_str()) {
-        assert!(descends_from(&spans, r, &accepted), "every attempt of the creation Build descends from its request");
+        if claim_decider(&spans, create.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
+            assert!(descends_from(&spans, r, &accepted), "an attempt the accepting fabric-primary decided descends from its request: {r}");
+            continued += 1;
+        } else {
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "an attempt decided after the seat moved starts its own trace: {r}");
+        }
     }
+    assert!(continued >= 1, "the first attempt continues the request's trace");
     estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
 }

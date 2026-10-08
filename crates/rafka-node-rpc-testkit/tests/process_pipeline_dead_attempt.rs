@@ -61,7 +61,6 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
             build_id: build_id.clone(),
             topology: common::add_node(),
             submitted_change: None,
-            traceparent: None,
             submitted_at_ms: 0,
         })
         .await

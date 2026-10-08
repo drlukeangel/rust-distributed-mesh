@@ -5,6 +5,7 @@
 //! local outcome algebra and the protocol trait. It depends on no transport;
 //! `rafka-node-rpc` executes this contract over Iroh.
 
+pub mod build_claim;
 pub mod catalog;
 pub mod codes;
 pub mod context;

@@ -38,7 +38,7 @@ fn addr(e: &Endpoint) -> EndpointAddr {
 }
 
 fn intent(id: &BuildId) -> BuildAccepted {
-    BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, traceparent: None, submitted_at_ms: 0 }
+    BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -146,7 +146,11 @@ async fn a_catch_up_at_the_wire_limit_arrives_and_keeps_the_connection() {
     use rafka_node_admin_core::build_state::BuildFact;
     let (a_ep, a_router, a) = admin(vec![]).await;
     let (one, two) = (BuildId::mint(), BuildId::mint());
-    let padded = |id: &BuildId, pad: usize| BuildAccepted { traceparent: Some("x".repeat(pad)), ..intent(id) };
+    let padded = |id: &BuildId, pad: usize| {
+        let mut a = intent(id);
+        a.topology.fabric = format!("{}{}", a.topology.fabric, "x".repeat(pad));
+        a
+    };
     // Two intents whose facts encode to 4053 bytes of JSON: with the wire
     // object and a nonce of 1 to 20 digits, 4073 to 4092 bytes of payload.
     let facts_len = |pad: usize| serde_json::to_vec(&vec![BuildFact::Accepted(padded(&one, pad)), BuildFact::Accepted(padded(&two, pad))]).unwrap().len();

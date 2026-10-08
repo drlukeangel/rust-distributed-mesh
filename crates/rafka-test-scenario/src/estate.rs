@@ -970,6 +970,17 @@ pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 }
 
 /// True when `child` descends from `ancestor` by `parent_span_id` links.
+/// The node-admin that decided the claim of `attempt` of `build_id` as won (the fabric-primary of that
+/// moment; `None` when no claim of it was won), read from its `via-claim-decision` span. An attempt's reconcile continues the trace of
+/// the request that created the attempt only while the fabric-primary that holds that request's
+/// context decides the claim; after the seat moved, the new fabric-primary starts the attempt's trace.
+pub fn claim_decider(spans: &[Value], build_id: &str, attempt: &str) -> Option<String> {
+    named(spans, "rdm.node_admin.build.update.via-claim-decision")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == build_id && s["attributes"]["attempt"] == attempt && s["attributes"]["outcome"] == "won")
+        .map(|s| s["attributes"]["node"].as_str().unwrap_or_default().to_string())
+}
+
 pub fn descends_from(spans: &[Value], child: &Value, ancestor: &Value) -> bool {
     let mut cur = child.clone();
     for _ in 0..64 {

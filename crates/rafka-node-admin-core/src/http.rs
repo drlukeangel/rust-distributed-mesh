@@ -49,6 +49,8 @@ pub struct ControlPlane {
     pub shutdown: Arc<Notify>,
     /// This admin's fabric shutdown seat, set once at start.
     pub fabric_shutdown: std::sync::OnceLock<Arc<ShutdownSeat>>,
+    /// Where each attempt this admin brings into being keeps its context, for the claim to return.
+    pub contexts: Arc<crate::build_claim::AttemptContexts>,
 }
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
@@ -70,7 +72,14 @@ impl ControlPlane {
             fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
             view_now: std::sync::OnceLock::new(),
+            contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
         }
+    }
+
+    /// This control plane keeping attempt contexts in `contexts` (the admin's own data dir).
+    pub fn with_contexts(mut self, contexts: Arc<crate::build_claim::AttemptContexts>) -> Self {
+        self.contexts = contexts;
+        self
     }
 
     /// Only the current fabric-primary changes topology or opens attempts.
@@ -127,9 +136,13 @@ impl ControlPlane {
                 build_id: build_id.clone(),
                 topology,
                 submitted_change: Some(change),
-                traceparent: rafka_mesh_telemetry::current_traceparent(),
                 submitted_at_ms: now_ms(),
             };
+            // The attempt's context is on this fabric-primary before the Build exists to be claimed.
+            self.contexts
+                .put(&build_id, 1, &crate::build_claim::current_context())
+                .await
+                .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is durable before the pointer names it (never the pointer first).
             self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
             let record = self.accepted.point(&build_id, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
@@ -186,6 +199,11 @@ impl ControlPlane {
             };
             span.record("build_id", current.build_id.0.as_str());
             span.record("attempt", opened.attempt);
+            // The context is on this fabric-primary before the attempt is open to be claimed.
+            self.contexts
+                .put(&opened.build_id, opened.attempt, &crate::build_claim::current_context())
+                .await
+                .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
             tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
             self.build_submitted.notify_waiters();

@@ -360,6 +360,9 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<rafka_node_admin_core::build_state::ClaimOutcome, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.claim_attempt(c).await
     }
+    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.adopt_claim(c).await
+    }
     async fn append_step_receipt(&self, r: &rafka_node_admin_core::build_state::BuildStepReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
         self.0.append_step_receipt(r).await
     }

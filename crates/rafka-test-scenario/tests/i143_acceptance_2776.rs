@@ -310,8 +310,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     assert!(!services.contains("rafka-node-admin"), "no built-in node-admin ran: {services:?}");
     // Every restart was an operation of the Build rectifier: the REST call that opened the attempt,
     // the executor's reconcile of that attempt, the node's update under the reconcile and the
-    // deployment steps under that. (The reconcile parents to the Build's accepting span, executor.rs:162,
-    // so it shares the accepting call's trace, not the restart call's: recorded as `reconcile_parent`.)
+    // deployment steps under that. The reconcile is the child of the restart call's request span: the
+    // fabric-primary's claim returns the context the call left on the attempt.
     let mut chains = Vec::new();
     for r in &restarts {
         let node = r["node"].as_str().unwrap();
@@ -322,6 +322,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();
         assert!(!steps.is_empty(), "{node}: deployment steps ran under its node update");
         assert_eq!(rest["attributes"]["build_id"], reconcile["attributes"]["build_id"], "{node}: the restart call and the reconcile are of one Build");
+        assert_eq!(reconcile["parent_span_id"], rest["span_id"], "{node}: the reconcile is the child of the restart call's request span");
         chains.push(json!({ "node": node, "rest": {"trace_id": rest["trace_id"], "span_id": rest["span_id"]}, "reconcile": {"trace_id": reconcile["trace_id"], "span_id": reconcile["span_id"], "parent_span_id": reconcile["parent_span_id"], "attempt": reconcile["attributes"]["attempt"]}, "update": update["span_id"], "steps": steps.len(), "reconcile_trace_is_restart_calls_trace": reconcile["trace_id"] == rest["trace_id"] }));
     }
     let leftover = provider_actions(&bound);

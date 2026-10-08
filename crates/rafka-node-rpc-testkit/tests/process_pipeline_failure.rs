@@ -63,7 +63,6 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
             build_id: build_id.clone(),
             topology: common::add_node(),
             submitted_change: None,
-            traceparent: None,
             submitted_at_ms: 0,
         })
         .await

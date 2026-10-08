@@ -442,7 +442,7 @@ impl AcceptedStore {
             .await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         let store = Arc::new(Self::new(storage, me));
         let build_id = BuildId::mint();
-        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, traceparent: None, submitted_at_ms: 0 }).await?;
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }).await?;
         builds.claim_attempt(&crate::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: me.into() }).await?;
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })

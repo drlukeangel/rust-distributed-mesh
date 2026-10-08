@@ -5,7 +5,9 @@
 //! taken by an insert-and-fail claim on `(build_id, attempt)`, step and attempt
 //! receipts are appended, and the current Build view is a fold over the facts.
 //! Nothing is read-modify-written: two executors claiming the same attempt
-//! cannot both win, and the current attempt is the folded maximum winning claim.
+//! cannot both win, and the current attempt is the folded maximum winning claim. The log that
+//! decides a claim is the fabric-primary's (`build_claim`); every other admin records the claim
+//! the fabric-primary decided (`adopt_claim`) and never decides one from its own log.
 //!
 //! RDM adapters:
 //! - [`MemoryBuildStateAdapter`]: the in-memory fact log that backs the live
@@ -32,8 +34,6 @@ pub struct BuildAccepted {
     pub topology: FabricTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_change: Option<TopologyChange>,
-    /// W3C traceparent of the accepting span, so execution parents to it.
-    pub traceparent: Option<String>,
     pub submitted_at_ms: u64,
 }
 
@@ -174,7 +174,6 @@ pub struct BuildProjection {
     pub topology: FabricTopology,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_change: Option<TopologyChange>,
-    pub traceparent: Option<String>,
     pub submitted_at_ms: u64,
     pub state: BuildState,
     /// The current attempt: the highest attempt claimed. An opened attempt is `attempt + 1`.
@@ -250,7 +249,6 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     build_id: i.build_id.clone(),
                     topology: i.topology.clone(),
                     submitted_change: i.submitted_change.clone(),
-                    traceparent: i.traceparent.clone(),
                     submitted_at_ms: i.submitted_at_ms,
                     state: BuildState::Pending,
                     attempt: 0,
@@ -373,8 +371,13 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
-    /// Insert-and-fail on `(build_id, attempt)`.
+    /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
+    /// log to decide a claim (`build_claim::ClaimDoor`); an executor never claims from its own.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError>;
+    /// Record, on this admin's own log, a claim the fabric-primary decided `Won`: the same fact
+    /// the primary broadcast, taken now so this admin's view of the Build moves with its own
+    /// attempt. Idempotent; decides nothing and broadcasts nothing.
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError>;
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError>;
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
     /// Every fact, in append order (what the fabric projection carries).
@@ -546,6 +549,11 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(ClaimOutcome::Won)
     }
 
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.absorb(&[BuildFact::Claim(claim.clone())]);
+        Ok(())
+    }
+
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         self.log.lock().unwrap().facts.push(BuildFact::Step(receipt.clone()));
         Ok(())
@@ -674,6 +682,15 @@ impl BuildStateAdapter for FileJournal {
         Ok(ClaimOutcome::Won)
     }
 
+    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        let _w = self.writer.lock().await;
+        let new = self.log.lock().unwrap().is_new(&BuildFact::Claim(claim.clone()));
+        if new {
+            self.append(BuildFact::Claim(claim.clone())).await?;
+        }
+        Ok(())
+    }
+
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         let _w = self.writer.lock().await;
         self.append(BuildFact::Step(receipt.clone())).await
@@ -713,7 +730,6 @@ mod tests {
             build_id: BuildId(id.into()),
             topology: FabricTopology::root("fabric1", "mesh1"),
             submitted_change: None,
-            traceparent: None,
             submitted_at_ms: 1,
         }
     }

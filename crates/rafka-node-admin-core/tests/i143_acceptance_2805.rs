@@ -419,7 +419,6 @@ async fn deadline_arm() -> DrainOutcome {
             build_id: build_id.clone(),
             topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1"),
             submitted_change: None,
-            traceparent: None,
             submitted_at_ms: 0,
         })
         .await

@@ -11,6 +11,7 @@ pub mod entry;
 pub mod admin;
 pub mod accepted;
 pub mod build;
+pub mod build_claim;
 pub mod build_state;
 pub mod deployment;
 pub mod drift;

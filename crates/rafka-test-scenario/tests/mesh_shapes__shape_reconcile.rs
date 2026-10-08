@@ -16,7 +16,7 @@
 //!
 //! The shapes run one after another in one test, each on its own fabric.
 
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -97,8 +97,15 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         .cloned()
         .collect();
     assert!(reconciles.iter().any(|r| r["attributes"]["outcome"] == "converged"), "{shape}: no converged reconcile of {build_id}");
+    // The accepting fabric-primary holds the request's context: every attempt it decides descends
+    // from the request; an attempt decided after the seat moved starts its own trace.
+    let accepting = claim_decider(&spans, build_id.as_str(), "1").expect("attempt 1 was claimed");
     for r in &reconciles {
-        assert!(descends_from(&spans, r, &accepted_span), "{shape}: every reconcile descends from the accepting request");
+        if claim_decider(&spans, build_id.as_str(), r["attributes"]["attempt"].as_str().unwrap_or_default()).is_none_or(|d| d == accepting) {
+            assert!(descends_from(&spans, r, &accepted_span), "{shape}: every reconcile the accepting fabric-primary decided descends from the accepting request: {r}");
+        } else {
+            assert_eq!(r["parent_span_id"].as_str().unwrap_or(""), "", "{shape}: an attempt decided after the seat moved starts its own trace: {r}");
+        }
     }
     let created: Vec<&String> = want.iter().filter(|n| *n != "mesh1.admin.1").collect();
     for node in created {
@@ -119,7 +126,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
             .find(|s| s["attributes"]["target"] == node.as_str())
             .unwrap_or_else(|| panic!("{shape}: no lifecycle transition for {node}"))
             .clone();
-        assert!(descends_from(&spans, &lifecycle, &accepted_span), "{shape}: {node}'s lifecycle transition descends from the Build");
+        assert!(reconciles.iter().any(|r| descends_from(&spans, &lifecycle, r)), "{shape}: {node}'s lifecycle transition descends from a reconcile of the Build");
     }
     estate.record_trace_url(accepted_span["trace_id"].as_str().unwrap_or(""));
 }

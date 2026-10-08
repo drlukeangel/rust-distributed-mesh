@@ -277,7 +277,7 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr)) -> LaunchTemplate
 pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTopology) -> BuildId {
     let build_id = BuildId::mint();
     builds
-        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, traceparent: None, submitted_at_ms: 0 })
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
     build_id

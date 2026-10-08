@@ -270,7 +270,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &mut started).await
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &mut started).await
     }
 
     /// Every live admin runs its executor until no Build is active: claims, hand-offs and
@@ -281,7 +281,22 @@ impl Estate {
         for _ in 0..8 {
             let admins: Vec<String> = self.view.read().await.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).map(|n| n.name.to_string()).collect();
             for a in admins {
-                let exec = BuildExecutor { executor: a.clone(), accepted: self.accepted.clone(), builds: self.builds.clone(), topology: self.view.clone(), runner: self.runner.clone() };
+                // The claim is put to the fabric-primary's door, as the product puts it over Node RPC.
+                let primary: PathName = self.fabric_primary().await.parse().expect("a fabric-primary");
+                let door = Arc::new(rafka_node_admin_core::build_claim::ClaimDoor {
+                    me: primary,
+                    topology: self.view.clone(),
+                    builds: self.builds.clone(),
+                    contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
+                });
+                let exec = BuildExecutor {
+                    executor: a.clone(),
+                    accepted: self.accepted.clone(),
+                    builds: self.builds.clone(),
+                    topology: self.view.clone(),
+                    runner: self.runner.clone(),
+                    claimer: Arc::new(rafka_node_admin_core::build_claim::DoorClaimer(door)),
+                };
                 let done = exec.reconcile_active().await;
                 if std::env::var("CONVERGE_TRACE").is_ok() {
                     eprintln!("converge: {a} -> {done:?}");

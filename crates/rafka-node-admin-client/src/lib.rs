@@ -166,7 +166,6 @@ pub struct BuildView {
     /// The change that produced it, tagged by `kind` (`add_node`, `remove_node`, ...): history.
     #[serde(default)]
     pub submitted_change: Option<serde_json::Value>,
-    pub traceparent: Option<String>,
     pub submitted_at_ms: u64,
     pub state: BuildState,
     pub attempt: u32,
