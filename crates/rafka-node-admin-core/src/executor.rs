@@ -50,8 +50,28 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
             Some(fp) if fp.mesh != *mesh => Some(fp.name.clone()),
             _ => retire_mesh_executor_outside(mesh, t),
         },
+        // The fabric primary is never the executor of its own retire or restart: the operation's
+        // terminate step would stop the executor mid-step. It is a hand-off: the admin the
+        // election seats once the target drains (a Draining birth is no candidate,
+        // fabric-node-lifecycle-elections.md section 2) executes it, and drains the target first.
+        BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node }
+            if t.fabric_primary().is_some_and(|fp| fp.name == *node) =>
+        {
+            successor_of(node, t)
+        }
         _ => fabric(),
     }
+}
+
+/// The fabric primary the election resolves in `t` once `target` drains; `None` when no other
+/// admin can hold the seat.
+fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
+    let mut nodes = t.nodes.clone();
+    for n in nodes.iter_mut().filter(|n| n.name == *target) {
+        n.status = crate::model::NodeStatus::Draining;
+    }
+    crate::election::resolve(&mut nodes);
+    nodes.into_iter().find(|n| n.is_fabric_primary && n.name != *target).map(|n| n.name)
 }
 
 /// The admin that executes `retire-mesh:mesh` when the fabric primary is inside `mesh`: the
@@ -290,6 +310,27 @@ mod tests {
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh1.admin.1", "admin cohorts are the fabric primary's");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
+    }
+
+    /// CONTRACT (Luke 2026-10-08, the fabric primary is handed off, never wiped out): a retire or
+    /// restart of the fabric primary is executed by the admin the election seats once the target
+    /// drains, never by the target itself; with no other admin, by none. Any other admin's retire
+    /// or restart stays the fabric primary's.
+    #[test]
+    fn the_fabric_primary_never_executes_its_own_retire_or_restart() {
+        let mut t = mm(true);
+        crate::election::resolve(&mut t.nodes);
+        let fp = t.fabric_primary().expect("a fabric primary").name.clone();
+        let other = t.nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.name != fp).unwrap().name.clone();
+        for op in [BuildOperation::RetireNode { node: fp.clone() }, BuildOperation::RestartNode { node: fp.clone() }] {
+            assert_eq!(executor_for(&op, &t), Some(other.clone()), "{op:?}: executed by the successor, never by {fp}");
+        }
+        assert_eq!(executor_for(&BuildOperation::RetireNode { node: other.clone() }, &t), Some(fp.clone()), "another admin's retire stays the fabric primary's");
+        // Alone, the fabric primary has no successor: nobody executes its retire.
+        let mut alone = mm(false);
+        crate::election::resolve(&mut alone.nodes);
+        let fp = alone.fabric_primary().unwrap().name.clone();
+        assert_eq!(executor_for(&BuildOperation::RetireNode { node: fp }, &alone), None);
     }
 
     /// CONTRACT (Luke 2026-10-05, mesh retire runs outside the mesh): `retire-mesh:M` runs on the
