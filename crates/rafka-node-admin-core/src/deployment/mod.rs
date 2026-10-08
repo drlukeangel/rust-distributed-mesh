@@ -16,7 +16,6 @@ use std::sync::Arc;
 /// The deployment hand of one fabric, as its policy selects it.
 pub struct Prepared {
     pub provider: Arc<dyn provider::DeploymentProvider>,
-    pub allocator: endpoint::EndpointAllocator,
     /// The address node-admin advertises to its runtimes (membership seed):
     /// loopback for processes, the fabric network's gateway for containers.
     pub admin_ip: IpAddr,
@@ -29,18 +28,15 @@ pub struct Prepared {
 /// `fabric` keys the provider's host-wide resources (a container fabric's Docker network and
 /// labels): the Fabric's id, never its name, which another Fabric on the host may share.
 pub async fn prepare(policy: provider::FabricPolicy, fabric: &str) -> Result<Prepared, provider::DeployError> {
-    let ports = endpoint::port_range_from_env();
     match policy.provider {
         ProviderKind::Process => Ok(Prepared {
             provider: Arc::new(process::ProcessDeploymentProvider::new()),
-            allocator: endpoint::EndpointAllocator::from_env(),
             admin_ip: IpAddr::from([127, 0, 0, 1]),
             container: None,
         }),
         ProviderKind::Container => {
             let c = Arc::new(container::ContainerDeploymentProvider::prepare(fabric).await?);
             Ok(Prepared {
-                allocator: c.allocator(ports),
                 admin_ip: IpAddr::V4(c.network().gateway),
                 provider: c.clone(),
                 container: Some(c),

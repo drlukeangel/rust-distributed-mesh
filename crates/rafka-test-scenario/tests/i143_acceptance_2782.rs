@@ -101,7 +101,7 @@ fn healthy(family: Family) -> Evidence {
     let mut e = Evidence::new(family, cut);
     e.primitive = Some(Primitive { armed: true, ack: json!({"armed": e.cut}) });
     e.fault = Some(FaultAck { held: true, names: Some(json!({"call": "the held call"})), held_at_last_read: true });
-    let marker = build_marker("running", 1, &["AllocateIdentity".to_string(), "AllocateEndpoints".to_string()]);
+    let marker = build_marker("running", 1, &["AllocateIdentity".to_string()]);
     e.progress = Some(Progress { reads: vec![marker.clone(), marker.clone(), marker], complete_while_held: false });
     e.routing = Some(Routing { expected_routable: false, observed_routable: false, observed: "absent from the view".into() });
     e.control = Some(Control {
@@ -115,7 +115,7 @@ fn healthy(family: Family) -> Evidence {
         replaced_during: false,
     });
     e.release = Some(Release { acked: true, hold_ended: true });
-    e.recovery = Some(Recovery { work_complete: true, marker_after: build_marker("complete", 1, &["AllocateIdentity".to_string(), "AllocateEndpoints".to_string(), "Complete".to_string()]) });
+    e.recovery = Some(Recovery { work_complete: true, marker_after: build_marker("complete", 1, &["AllocateIdentity".to_string(), "Complete".to_string()]) });
     let mut r = Reconciliation::default();
     r.check("each step receipt once", true, "one receipt per step");
     r.check("one runtime serves the node", true, "1");
@@ -148,7 +148,7 @@ fn plants() -> Vec<(&'static str, &'static str, Plant)> {
         // The planted false positive: the injector reports an active hold and the work advances anyway.
         ("false-positive fault: progress advances", NO_PROGRESS_CONSEQUENCE, |e| {
             let p = e.progress.as_mut().unwrap();
-            p.reads[2] = build_marker("running", 1, &["AllocateIdentity".to_string(), "AllocateEndpoints".to_string(), "PrepareStorage".to_string()]);
+            p.reads[2] = build_marker("running", 1, &["AllocateIdentity".to_string(), "PrepareStorage".to_string()]);
         }),
         ("false-positive fault: work completes while held", NO_PROGRESS_CONSEQUENCE, |e| e.progress.as_mut().unwrap().complete_while_held = true),
         ("no progress read", NO_PROGRESS_CONSEQUENCE, |e| e.progress = None),

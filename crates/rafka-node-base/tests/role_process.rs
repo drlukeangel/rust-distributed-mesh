@@ -36,9 +36,10 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
-        transport_addr: "127.0.0.1:0".parse().unwrap(),
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
         seeds: vec![],
+        launcher: None,
         data_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::mint()),
     };

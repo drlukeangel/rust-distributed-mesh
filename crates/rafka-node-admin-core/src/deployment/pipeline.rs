@@ -2,7 +2,7 @@
 //! mesh-control-plane.md §6).
 //!
 //! ```text
-//! create: AllocateIdentity -> AllocateEndpoints -> PrepareStorage -> PrepareNetwork
+//! create: AllocateIdentity -> PrepareStorage -> PrepareNetwork
 //!   -> DeployRuntime -> RegisterExactRuntimeHandle -> ResolveProviderControlDomain
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
@@ -10,7 +10,7 @@
 //! retire: MarkDraining (the typed Node RPC drain; its receipt carries the DrainOutcome)
 //!   -> WaitForDrain (bounded; a deadline is an arm, never a failure) -> PublishLeaving
 //!   -> CloseRpcAdmission (after an established drain)
-//!   -> TerminateRuntime -> ReleaseEndpoints -> ReleaseStorage (a removal: by the Build's StorageMeta)
+//!   -> TerminateRuntime -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
 //!
@@ -43,7 +43,8 @@
 //! under this executor's endpoint (`rdm.node_admin.deployment.reject.via-lost-executor`); a birth
 //! that joined, and an identity no runtime was made under, stand.
 
-use super::endpoint::{verify_bound_with, Assignment, EndpointAllocator, KindSpec};
+use super::endpoint::KindSpec;
+use crate::join::{Deployed, Joins};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStepReceipt, StepOutcome};
@@ -61,7 +62,6 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
     AllocateIdentity,
-    AllocateEndpoints,
     PrepareStorage,
     PrepareNetwork,
     DeployRuntime,
@@ -95,9 +95,8 @@ pub const READY_PREREQUISITES: [CreateStep; 4] = [
 ];
 
 impl CreateStep {
-    pub const ORDER: [CreateStep; 14] = [
+    pub const ORDER: [CreateStep; 13] = [
         Self::AllocateIdentity,
-        Self::AllocateEndpoints,
         Self::PrepareStorage,
         Self::PrepareNetwork,
         Self::DeployRuntime,
@@ -115,7 +114,6 @@ impl CreateStep {
     pub fn name(self) -> &'static str {
         match self {
             Self::AllocateIdentity => "AllocateIdentity",
-            Self::AllocateEndpoints => "AllocateEndpoints",
             Self::PrepareStorage => "PrepareStorage",
             Self::PrepareNetwork => "PrepareNetwork",
             Self::DeployRuntime => "DeployRuntime",
@@ -148,7 +146,6 @@ pub enum RetireStep {
     /// The pre-event of a restart: the executor holds `restart-node:<path>`; the birth is held
     /// through its Leaving until its later birth is heard.
     NodeRestarting,
-    ReleaseEndpoints,
     /// Only on a removal.
     ReleaseStorage,
     /// Only in a whole-mesh retire: the executor's own membership view has heard this birth's
@@ -160,7 +157,7 @@ pub enum RetireStep {
 }
 
 impl RetireStep {
-    pub const ORDER: [RetireStep; 11] = [
+    pub const ORDER: [RetireStep; 10] = [
         Self::NodeDeleting,
         Self::MarkDraining,
         Self::WaitForDrain,
@@ -168,7 +165,6 @@ impl RetireStep {
         Self::CloseRpcAdmission,
         Self::TerminateRuntime,
         Self::NodeDeleted,
-        Self::ReleaseEndpoints,
         Self::ReleaseStorage,
         Self::RemoveTopologyMembership,
         Self::Complete,
@@ -184,7 +180,6 @@ impl RetireStep {
             Self::PublishLeaving => "PublishLeaving",
             Self::CloseRpcAdmission => "CloseRpcAdmission",
             Self::TerminateRuntime => "TerminateRuntime",
-            Self::ReleaseEndpoints => "ReleaseEndpoints",
             Self::ReleaseStorage => "ReleaseStorage",
             Self::ObserveDeparture => "ObserveDeparture",
             Self::RemoveTopologyMembership => "RemoveTopologyMembership",
@@ -542,6 +537,8 @@ pub struct LaunchTemplate {
     pub executable: PathBuf,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
+    /// The admin these launches are made by: the target of each birth's `JoinNode`.
+    pub launcher: rafka_mesh_entity::launch::Launcher,
     /// Passed through to every node (`RDM_EVIDENCE_DIR`, `RUST_LOG`, ...).
     pub env: BTreeMap<String, String>,
     pub data_root: PathBuf,
@@ -586,10 +583,6 @@ pub struct RetireRequest {
     /// Part of a whole-mesh retire: hold the local cleanup until this admin's own membership view
     /// has heard the birth's `Leaving` ([`RetireStep::ObserveDeparture`]).
     pub observe_departure: bool,
-    /// A restart: the next birth binds the same addresses, so they stay held (and claimed on the
-    /// host) through the retire; releasing them would let another admin hand them out between the
-    /// runtime's exit and the rebirth.
-    pub keep_endpoints: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -628,9 +621,35 @@ impl Default for Timeouts {
     }
 }
 
+/// Where a birth reported it bound: the addresses its own digest names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Bound {
+    transport: SocketAddr,
+    listeners: Vec<(String, SocketAddr)>,
+}
+
+impl Bound {
+    fn of(d: &rafka_mesh_entity::MeshDigest) -> Result<Self, String> {
+        let transport = d.node.transport_addr;
+        if transport.ip().is_unspecified() || transport.port() == 0 {
+            return Err(format!("it reported the transport address {transport}, which is not an address a peer can dial"));
+        }
+        let mut listeners = Vec::new();
+        if let Some(base) = &d.admin_api_base {
+            let addr = base
+                .strip_prefix("http://")
+                .and_then(|a| a.parse::<SocketAddr>().ok())
+                .ok_or_else(|| format!("it reported the control API base {base:?}, which is not http://<ip>:<port>"))?;
+            listeners.push(("control".to_string(), addr));
+        }
+        Ok(Self { transport, listeners })
+    }
+}
+
 pub struct DeploymentPipeline<'a> {
     pub provider: &'a dyn DeploymentProvider,
-    pub allocator: &'a tokio::sync::Mutex<EndpointAllocator>,
+    /// The births this admin deployed and awaits a `JoinNode` from.
+    pub joins: &'a Joins,
     pub observer: &'a dyn NodeObserver,
     pub sink: &'a dyn TopologySink,
     pub lifecycle: &'a dyn LifecycleEvents,
@@ -845,24 +864,6 @@ impl DeploymentPipeline<'_> {
                     .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })?;
                 run.done.clear();
             }
-        } else if let Some(Some(v)) = run.done.get(CreateStep::AllocateEndpoints.name()) {
-            // The earlier attempt allocated endpoints and never recorded a runtime. Its receipt is
-            // reused only while it is still this allocator's reservation for the node: the same
-            // live executor, whose record is the reservation (rafka-v2 node-admin: the spawn
-            // record holds the port while node-admin lives). Any other executor never takes it:
-            // whatever that attempt launched may still bind it after its executor died, so the
-            // endpoints are allocated afresh by the claim and the bind probe; the identity (never
-            // born) is kept.
-            let recorded: Option<Assignment> = serde_json::from_value(v.clone()).ok();
-            let ours = !recorded_by_another(&run, CreateStep::AllocateEndpoints)
-                && match recorded {
-                    Some(a) => self.allocator.lock().await.held(&req.node) == Some(&a),
-                    None => false,
-                };
-            if !ours {
-                tracing::info!(node = %req.node, "the earlier attempt's endpoints are not this executor's reservation: allocated afresh");
-                run.done.remove(CreateStep::AllocateEndpoints.name());
-            }
         }
         let prior = req.restart_of.clone();
         let id: Identity = self
@@ -875,22 +876,10 @@ impl DeploymentPipeline<'_> {
                 })
             })
             .await?;
-        let reused_endpoints = run.reusing && run.done.contains_key(CreateStep::AllocateEndpoints.name());
-        let assigned: Assignment = self
-            .step(&mut run, CreateStep::AllocateEndpoints.name(), async {
-                // A restart reuses identity and data dir and binds fresh ports
-                // (fabric-node-lifecycle.md), never its recorded ones.
-                // The assignment probes ports through the host-wide claims (a file lock, claim
-                // files, bind probes): the allocator's lock is async, so a pipeline waiting on it
-                // yields its worker, and the probing itself leaves the runtime's core.
-                let mut allocator = self.allocator.lock().await;
-                crate::deployment::endpoint::off_the_core(|| allocator.assign(&req.node, req.spec)).map_err(|e| e.to_string())
-            })
-            .await?;
-        if reused_endpoints {
-            // The decision stands: hold exactly these, take nothing new.
-            self.allocator.lock().await.adopt(&req.node, assigned.clone());
-        }
+        // The node binds port 0 and the operating system assigns the port; the address it
+        // reports at its join is the one this admin publishes for the birth.
+        let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
+        let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let data_dir = match prior.as_ref().and_then(|p| p.data_dir.clone()) {
             Some(d) => PathBuf::from(d),
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
@@ -906,8 +895,9 @@ impl DeploymentPipeline<'_> {
             node_id: id.node_id.clone(),
             incarnation: id.incarnation.clone(),
             supersedes: id.supersedes.clone(),
-            transport_addr: assigned.transport,
-            listeners: assigned.listeners.clone(),
+            bind_addr,
+            listeners: bind_listeners.clone(),
+            launcher: Some(self.template.launcher.clone()),
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
@@ -927,8 +917,8 @@ impl DeploymentPipeline<'_> {
                 args: vec![],
                 env,
                 data_dir: data_dir.clone(),
-                transport: assigned.transport,
-                listeners: assigned.listeners.clone(),
+                transport: bind_addr,
+                listeners: bind_listeners.clone(),
             }
         };
         let handle: DeploymentHandle = self
@@ -941,6 +931,20 @@ impl DeploymentPipeline<'_> {
                 self.provider.spawn(&spec).await.map_err(|e| e.to_string())
             })
             .await?;
+        // What this admin deployed, held before the node can report: its `JoinNode` is verified
+        // against it, and the address it reports is the one published for the birth.
+        let reported = match handle.fact() {
+            Some(runtime) => Some(self.joins.expect(Deployed {
+                name: req.node.clone(),
+                node_id: id.node_id.clone(),
+                incarnation: id.incarnation.clone(),
+                supersedes: id.supersedes.clone(),
+                endpoint_id: endpoint_id.clone(),
+                runtime,
+                data_dir: data_dir.display().to_string(),
+            })),
+            None => None,
+        };
         // What DeployRuntime obtained, committed one prerequisite at a time.
         let fact = handle.fact();
         let exact = || {
@@ -986,27 +990,26 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         let fact = exact().map_err(|reason| PipelineError { step: CreateStep::MakeRuntimeFactAvailableToBirth.name(), reason })?;
-        self.step(&mut run, CreateStep::WaitForBind.name(), async {
-            let until = Instant::now() + self.timeouts.bind;
-            loop {
-                if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
-                    let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                    return Err(format!("runtime exited (code {code:?}) before binding: {detail}"));
-                }
-                let mut held = Vec::new();
-                for (_, addr, transport) in assigned.sockets() {
-                    if self.provider.holds(&handle, addr, transport).await {
-                        held.push(addr);
+        let bound: Bound = self
+            .step(&mut run, CreateStep::WaitForBind.name(), async {
+                let mut reported = reported.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
+                let until = Instant::now() + self.timeouts.bind;
+                loop {
+                    if let Some(d) = reported.borrow().clone() {
+                        return Bound::of(&d).map_err(|e| format!("{}: {e}", req.node));
                     }
+                    if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
+                        let detail = self.provider.failure_detail(&handle, &data_dir).await;
+                        return Err(format!("runtime exited (code {code:?}) before reporting where it bound: {detail}"));
+                    }
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(format!("{} did not report where it bound (JoinNode) within {:?}", req.node, self.timeouts.bind));
+                    }
+                    let _ = tokio::time::timeout(left.min(Duration::from_millis(100)), reported.changed()).await;
                 }
-                match verify_bound_with(&assigned, |a, _| held.contains(&a)) {
-                    Ok(()) => return Ok(()),
-                    Err(e) if Instant::now() >= until => return Err(e.to_string()),
-                    Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-                }
-            }
-        })
-        .await?;
+            })
+            .await?;
         let mut node = Node::allocated(req.node.clone());
         node.node_id = id.node_id.clone();
         node.endpoint_id = Some(endpoint_id);
@@ -1014,8 +1017,8 @@ impl DeploymentPipeline<'_> {
         node.deployment_id = Some(id.deployment_id.clone());
         node.provider = Some(self.provider.kind());
         node.data_dir = Some(data_dir.display().to_string());
-        node.transport_addr = Some(assigned.transport);
-        node.listeners = assigned.listeners.clone();
+        node.transport_addr = Some(bound.transport);
+        node.listeners = bound.listeners.clone();
         node.status = NodeStatus::Pending;
         if let Some(p) = &prior {
             node.is_primary = p.is_primary;
@@ -1096,6 +1099,7 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
+        self.joins.forget(&id.node_id);
         Ok(Created { node, handle })
     }
 
@@ -1270,15 +1274,6 @@ impl DeploymentPipeline<'_> {
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleted(&op).await;
         }
-        self.step(&mut run, RetireStep::ReleaseEndpoints.name(), async {
-            if req.keep_endpoints {
-                tracing::info!(node = %name, "a restart keeps its addresses: held for the next birth, never released");
-            } else {
-                self.allocator.lock().await.release(name);
-            }
-            Ok(())
-        })
-        .await?;
         // Storage disposition (the lock's StorageMeta): a restart keeps the storage; a removal
         // does what the accepted Build's meta for this path says, read here and
         // interpreted here, never by the provider. The receipt names the disposition.

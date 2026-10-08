@@ -386,12 +386,6 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
           "dir": "target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth"
-        },
-        {
-          "name": "process_port_allocator_survives_seeded_collisions",
-          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
-          "command": "RDM_COLLISION_SEED=2783 RDM_COLLISION_ROUNDS=60 RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_port_allocator_survives_seeded_collisions -- --exact",
-          "dir": "target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions"
         }
       ]
     },
@@ -489,6 +483,18 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2900.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_FULL_EVERY_ROUNDS=12 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rafka-test-scenario --test i143_acceptance_2900 mesh_member_recovers_delta_gap_from_own_primary -- --exact",
           "dir": "target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary"
+        }
+      ]
+    },
+    "i143-rj1-unit": {
+      "issue": "rj1",
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match",
+          "source": "crates/rafka-node-admin-core/tests/i143_rj1_join.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_rj1_join join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match -- --exact",
+          "dir": "target/i143-acceptance/rj1/unit/join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match"
         }
       ]
     }

@@ -18,7 +18,7 @@
 
 use crate::build::BuildOperation;
 use crate::build_state::BuildStateAdapter;
-use crate::deployment::endpoint::{spec_for, EndpointAllocator};
+use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
     CreateRequest, DeploymentPipeline, LaunchTemplate, NodeObserver, RetireKind, RetireRequest, Timeouts, TopologySink,
@@ -38,7 +38,7 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
-use rafka_mesh_transport::entry::{EntryAnswer, EntryServer, ENTRY_ALPN};
+use rafka_mesh_transport::entry::EntryAnswer;
 use rafka_mesh_transport::membership::{announce_leaving, gossip_interval, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tracing::Instrument;
@@ -120,7 +120,7 @@ impl AdminConfig {
                 Some(set.validate(&expect).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_ENDPOINT_PORT_RANGE", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS"]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS"]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -714,12 +714,28 @@ struct EntryState {
     membership: Membership,
 }
 
+impl EntryState {
+    /// What this admin holds now: the answer to a join.
+    async fn answer(&self) -> EntryAnswer {
+        let e = self;
+        let mut members = e.book.current(e.book.staleness_floor());
+        members.push(e.digest.lock().unwrap().clone());
+        let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
+        // The fabric control state a new admin hydrates before it may be Ready.
+        // The attempt the answering admin holds of the Build the pointer names: the floor
+        // a joiner's own copy of that Build's attempt facts must reach before it is Ready.
+        let build = e.accepted.current(&*e.builds).await.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt }));
+        let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held(), "build": build });
+        EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()), sources: e.membership.entry_sources() }
+    }
+}
+
 use crate::fence::FenceOutcome;
 
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
     pub provider: Arc<dyn DeploymentProvider>,
-    pub allocator: tokio::sync::Mutex<EndpointAllocator>,
+    pub joins: Arc<crate::join::Joins>,
     pub observer: Arc<MembershipObserver>,
     pub records: Arc<Records>,
     pub builds: Arc<dyn BuildStateAdapter>,
@@ -857,7 +873,7 @@ impl AdminRunner {
     fn pipeline<'a>(&'a self, template: &'a LaunchTemplate) -> DeploymentPipeline<'a> {
         DeploymentPipeline {
             provider: &*self.provider,
-            allocator: &self.allocator,
+            joins: &self.joins,
             observer: &*self.observer,
             sink: &*self.records,
             lifecycle: &*self.lifecycle_events,
@@ -963,26 +979,15 @@ impl AdminRunner {
     }
 
     /// Does `node`'s runtime answer when asked directly (not through gossip)?
-    /// An rpc node: a Node RPC `Ping`. A node-admin: an
-    /// entry pull on its mesh endpoint (QUIC; no node ever calls an admin's
-    /// HTTP API). Two seconds each; a frozen or gone runtime does not.
+    /// A Node RPC `Ping`, two seconds; a frozen or gone runtime does not answer.
     async fn answers(&self, node: &Node) -> bool {
         const WITHIN: Duration = Duration::from_secs(2);
-        match node.kind {
-            NodeKind::NodeAdmin => {
-                let (Some(ep), Some(endpoint_id), Some(addr)) = (&self.endpoint, &node.endpoint_id, node.transport_addr) else { return false };
-                let Ok(peer) = endpoint_id.0.parse::<iroh::PublicKey>() else { return false };
-                let anchor = EndpointAddr::new(peer).with_ip_addr(addr);
-                rafka_mesh_transport::entry::pull_once(ep, anchor, &self.me.to_string(), WITHIN).await.is_ok()
-            }
-            NodeKind::RpcNode | NodeKind::Broker | NodeKind::Gateway | NodeKind::Compute => {
-                let Some(node_rpc) = &self.node_rpc else { return false };
-                let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
-                let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"fence".to_vec() };
-                let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::ping::Ping>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
-                out.reply().is_some()
-            }
-        }
+        // Every kind, a node-admin included, serves Ping on its one endpoint.
+        let Some(node_rpc) = &self.node_rpc else { return false };
+        let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
+        let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"fence".to_vec() };
+        let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::ping::Ping>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
+        out.reply().is_some()
     }
 
     /// `Node: Pending -> ReadyForTraffic`, committed once the node reports ready.
@@ -1046,29 +1051,22 @@ impl AdminRunner {
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, RetireKind::Removal, false, false).await
+        self.retire_with(build_id, attempt, node, RetireKind::Removal, false).await
     }
 
-    /// The retire half of a restart: the birth's addresses are claimed by this admin before its
-    /// runtime stops and stay held for the rebirth (a successor never launched it, and the claim
-    /// of the admin that did may name a dead process).
+    /// The retire half of a restart: the birth stops; its logical node and storage stay.
     async fn retire_for_restart(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, RetireKind::Restart, false, true).await
+        self.retire_with(build_id, attempt, node, RetireKind::Restart, false).await
     }
 
-    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind, observe_departure: bool, keep_endpoints: bool) -> Result<Option<Node>, String> {
+    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind, observe_departure: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
             None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
         };
-        if keep_endpoints {
-            if let Some(held) = crate::deployment::endpoint::Assignment::of_node(&record) {
-                self.allocator.lock().await.adopt(node, held);
-            }
-        }
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure, keep_endpoints };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
@@ -1188,7 +1186,7 @@ impl AdminRunner {
                 // `Leaving`.
                 for node in retire_mesh_order(members, last_admin.as_ref()) {
                     let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                    self.retire_with(build_id, attempt, &node, RetireKind::Removal, true, false).instrument(span).await?;
+                    self.retire_with(build_id, attempt, &node, RetireKind::Removal, true).instrument(span).await?;
                 }
                 self.records.meshes.lock().unwrap().remove(mesh);
                 Ok(())
@@ -1447,13 +1445,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
         (Some(l), _) => {
             let control = l.listeners.iter().find(|(n, _)| n == "control").map(|(_, a)| *a).ok_or_else(|| "launch assigns no `control` listener".to_string())?;
-            (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), l.transport_addr, control, l.seeds.clone())
+            (l.name.clone(), l.node_id.clone(), l.incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
         }
         (None, Some(own)) => {
-            let addr_of = |s: &str| match s {
-                "mesh" => Some(own.transport_addr),
-                _ => own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a),
-            };
+            let addr_of = |s: &str| own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a);
             let mut contacts = nodes_storage.contacts().await.map_err(storage_err)?;
             contacts.retain(|c| c.node_id != own.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
@@ -1472,7 +1467,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 own.node_id.clone(),
                 IncarnationId::mint(),
                 Some(own.incarnation_id.clone()),
-                addr_of("mesh").unwrap_or_else(|| SocketAddr::new(cfg.api_bind.ip(), 0)),
+                // A restart reuses identity and data dir and binds a fresh port (the operating
+                // system assigns it), never the one it last held: its peers learn the new address
+                // from its digest.
+                SocketAddr::new(own.transport_addr.ip(), 0),
                 addr_of("control").unwrap_or(cfg.api_bind),
                 seeds,
             )
@@ -1515,59 +1513,14 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
         .build();
     let alpns = vec![iroh_gossip::ALPN.to_vec(), rafka_node_rpc::ALPN.to_vec()];
-    // A restart reuses identity and data dir and binds a fresh port (fabric-node-lifecycle.md),
-    // never the one it last held: its peers learn the new address from its digest.
-    let mesh_addr = match &restart {
-        Some(_) => crate::deployment::endpoint::EndpointAllocator::from_env()
-            .take_transport(&name)
-            .map_err(|e| format!("no reserved port is free for this restart's mesh address: {e}"))?,
-        None => mesh_addr,
-    };
-    // A launched admin holds its handed addresses as itself before binding them: the admin
-    // that reserved them may die while this one lives on them.
-    if let Some(l) = &cfg.launch {
-        crate::deployment::endpoint::hold_as_runtime(std::iter::once(l.transport_addr).chain(l.listeners.iter().map(|(_, a)| *a)));
-    }
-    let endpoint = match rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), transport.clone()).await {
-        Ok(ep) => ep,
-        // A process outside the allocator may hold the reclaimed address; then a fresh port serves.
-        Err(e) if restart.is_some() => {
-            // A reserved port from the host-wide allocator, never an OS-chosen one: the ephemeral
-            // range overlaps the allocator's, and a port a birth was assigned but has not bound
-            // yet would be taken from under it.
-            let fresh = crate::deployment::endpoint::EndpointAllocator::from_env().take_transport(&name).map_err(|e| format!("mesh address {mesh_addr} is taken and no reserved port is free: {e}"))?;
-            tracing::info!(addr = %mesh_addr, fresh = %fresh, error = %e, "the mesh address this admin last held is taken; binding a reserved fresh port");
-            rafka_node_rpc::endpoint::bind_exact(key.clone(), fresh, alpns.clone(), transport)
-                .await
-                .map_err(|e| format!("mesh address {fresh}: {e}"))?
-        }
-        Err(e) => return Err(format!("mesh address {mesh_addr}: {e}")),
-    };
+    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), transport)
+        .await
+        .map_err(|e| format!("mesh address {mesh_addr}: {e}"))?;
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     // Entry: what this admin holds, for a node it launched (filled once the
-    // admin's own digest exists; until then a pull is told it is not ready).
+    // admin's own digest exists; until then a join is told it is not ready).
     let entry: Arc<std::sync::OnceLock<EntryState>> = Arc::new(std::sync::OnceLock::new());
-    let served = entry.clone();
-    let entry_server = EntryServer::new(move |_req| {
-        let served = served.clone();
-        async move {
-            match served.get() {
-                None => EntryAnswer::default(),
-                Some(e) => {
-                    let mut members = e.book.current(e.book.staleness_floor());
-                    members.push(e.digest.lock().unwrap().clone());
-                    let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
-                    // The fabric control state a new admin hydrates before it may be Ready.
-                    // The attempt the answering admin holds of the Build the pointer names: the floor
-                    // a joiner's own copy of that Build's attempt facts must reach before it is Ready.
-                    let build = e.accepted.current(&*e.builds).await.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt }));
-                    let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held(), "build": build });
-                    EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()), sources: e.membership.entry_sources() }
-                }
-            }
-        }
-    });
     // Node RPC on the admin's one endpoint: the status declarations it applies as an authority
     // (`status_rpc`). The authority is filled once this admin holds a view; until then NotReady.
     // This admin's own connections: hydrated from its storage, then kept by what its client
@@ -1590,40 +1543,100 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     connections.held().lock().unwrap().set_membership(node_rpc_resolver.clone());
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
     let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
+    // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
+    let joins = Arc::new(crate::join::Joins::default());
+    let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(node_rpc_resolver.clone(), connections.clone()).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
         let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
         Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
     });
-    let rpc_server = crate::build_claim::serve(crate::status_rpc::serve(core, authority.clone()), claim_slot.clone())
+    let rpc_server = crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority.clone()), claim_slot.clone()), join_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let iroh_router = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
-        .accept(ENTRY_ALPN, entry_server)
         .accept(rafka_node_rpc::ALPN, rpc_server)
         .spawn();
     let seed_addrs: Vec<EndpointAddr> = seeds
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
+    // The control API listens now: the operating system assigns its port (a launched admin is
+    // handed `<ip>:0`), and the admin reports the address it really holds in its join digest.
+    let listener = match tokio::net::TcpListener::bind(control_addr).await {
+        Ok(l) => l,
+        // A restart's last control address may be held by another process now.
+        Err(e) if restart.is_some() => {
+            tracing::info!(addr = %control_addr, error = %e, "the control address this admin last held is taken; binding a fresh port");
+            tokio::net::TcpListener::bind(SocketAddr::new(control_addr.ip(), 0)).await.map_err(|e| format!("control address {control_addr}: {e}"))?
+        }
+        Err(e) => return Err(format!("control address {control_addr}: {e}")),
+    };
+    let api_base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
+    // A launched admin takes the runtime record its launcher's pipeline made available; it is
+    // part of the digest it reports at its join.
+    let launched_runtime = match &cfg.launch {
+        Some(_) => {
+            let dir = cfg.data_dir.clone();
+            Some(
+                tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
+                    .await
+                    .map_err(|e| format!("reading the runtime record: {e}"))??,
+            )
+        }
+        None => None,
+    };
     // The mesh's id names its membership channel: the launch names it (the
-    // launching admin always does), else the entry pull's projection knows
+    // launching admin always does), else the join answer's projection knows
     // it, else this admin is the mesh's first and mints it.
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
-    let mesh_id = match (&cfg.mesh_id, &launched_anchor) {
+    if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
+        // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
+        // addresses it really bound, to the admin that deployed it.
+        let join_digest = MeshDigest {
+            fabric_id: cfg.fabric_id.clone(),
+            node: MeshNode {
+                node_id: node_id.clone(),
+                name: name.clone(),
+                endpoint_id: EndpointId(key.public().to_string()),
+                transport_addr: mesh_addr,
+                incarnation: incarnation.clone(),
+                supersedes: supersedes.clone(),
+                runtime: Some(runtime.clone()),
+            },
+            status: MemberStatus::Pending,
+            admin_api_base: Some(api_base.clone()),
+            emitted_at_rafka_ms: 0,
+            digest_seq: 0,
+            mesh_id: cfg.mesh_id.clone(),
+            in_flight: None,
+            extra: BTreeMap::new(),
+            data_dir: Some(cfg.data_dir.display().to_string()),
+        };
+        node_rpc_resolver.apply(
+            rafka_node_rpc::ResolvedNode {
+                node_id: launcher.node_id.clone(),
+                name: launcher.name.clone(),
+                endpoint_id: anchor.id,
+                transport_addr: anchor.ip_addrs().next().copied().ok_or_else(|| format!("the launching admin {} has no address in this admin's seeds", launcher.name))?,
+                incarnation: launcher.incarnation.clone(),
+            },
+            None,
+        );
+        let join_client = rafka_node_rpc::NodeRpcClient::new(endpoint.clone(), node_rpc_resolver.clone());
+        let answer = crate::join::call_join(&join_client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &anchor.id.fmt_short().to_string(), &join_digest, 5)
+            .await
+            .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
+        pulled = Some(answer);
+    }
+    let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
-        (None, Some(anchor)) => {
-            let answer = rafka_mesh_transport::entry::pull(&endpoint, anchor.clone(), &name.to_string(), 5)
-                .await
-                .map_err(|e| format!("entry pull from the launching admin failed: {e}"))?;
-            let known = serde_json::from_value::<Topology>(answer.topology.clone())
-                .ok()
-                .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh))
-                .and_then(|m| m.id);
-            pulled = Some(answer);
-            known.unwrap_or_else(MeshId::mint)
-        }
+        (None, Some(answer)) => serde_json::from_value::<Topology>(answer.topology.clone())
+            .ok()
+            .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh))
+            .and_then(|m| m.id)
+            .unwrap_or_else(MeshId::mint),
         (None, None) => MeshId::mint(),
     };
     // Subscribe first, pull second: what changes during the pull arrives by
@@ -1674,13 +1687,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // refuses to start by name.
     let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
     let policy = match &launched_anchor {
-        Some(anchor) => {
-            let answer = match pulled.take() {
-                Some(a) => a,
-                None => rafka_mesh_transport::entry::pull(&endpoint, anchor.clone(), &name.to_string(), 5)
-                    .await
-                    .map_err(|e| format!("entry pull from the launching admin failed: {e}"))?,
-            };
+        Some(_) => {
+            let answer = pulled.take().ok_or_else(|| format!("{name}: a launched admin joins its launcher before it takes its entry, and its launch names no launcher or runtime to join with"))?;
             let topology: Topology =
                 serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the entry answer from {} holds no topology: {e}", answer.served_by))?;
             let mut mesh_peers = Vec::new();
@@ -1748,17 +1756,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         b.check_image(provider_image(policy.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
     }
 
-    // The control API.
-    let listener = match tokio::net::TcpListener::bind(control_addr).await {
-        Ok(l) => l,
-        // As the mesh address: a restart's last control address may be held by another process now.
-        Err(e) if restart.is_some() => {
-            tracing::info!(addr = %control_addr, error = %e, "the control address this admin last held is taken; binding a fresh port");
-            tokio::net::TcpListener::bind(SocketAddr::new(control_addr.ip(), 0)).await.map_err(|e| format!("control address {control_addr}: {e}"))?
-        }
-        Err(e) => return Err(format!("control address {control_addr}: {e}")),
-    };
-    let api_base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
     let records = Arc::new(Records::default());
     let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
@@ -1817,6 +1814,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         // it (loopback for a process fabric, the gateway or its own container address for a
         // container fabric).
         seeds: vec![(key.public().to_string(), mesh_addr)],
+        launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
         env: cfg.passthrough.clone(),
         data_root,
     };
@@ -1828,34 +1826,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
     let runner = Arc::new(AdminRunner {
         provider: provider_dyn.clone(),
-        // The record check (rafka-v2 node-admin's ports_held): every socket the topology names is
-        // taken, whichever process reserved it and however that reservation ended; and every
-        // socket a birth this admin launched names, read from its launch records directly (the
-        // spawn-record table), not through the view: a launched birth runs, and binds, before it
-        // joins the mesh, and while another birth of its name is still heard (a restart's, a
-        // replacement's) the view shows that one, not the launch.
-        allocator: tokio::sync::Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
-            let topology = control.topology.clone();
-            let launched = records.clone();
-            // The view is read without waiting (the allocator is used under its own mutex, inside
-            // the pipeline's steps); when a writer holds or awaits it, the last snapshot read
-            // answers, never an empty one: the records only ever grow between two reads.
-            let last: std::sync::Mutex<Vec<(crate::model::PathName, std::net::SocketAddr)>> = std::sync::Mutex::new(Vec::new());
-            let sockets_of = |n: &Node| -> Vec<(crate::model::PathName, std::net::SocketAddr)> {
-                n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(|a| (n.name.clone(), a)).collect()
-            };
-            move || {
-                let mut now = if let Ok(view) = topology.try_read() {
-                    let v: Vec<_> = view.nodes.iter().flat_map(sockets_of).collect();
-                    *last.lock().unwrap() = v.clone();
-                    v
-                } else {
-                    last.lock().unwrap().clone()
-                };
-                now.extend(launched.nodes.lock().unwrap().values().flat_map(sockets_of));
-                now
-            }
-        }))),
+        joins: joins.clone(),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
         records: records.clone(),
         builds: builds_dyn.clone(),
@@ -1882,13 +1853,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // launched, adopts its own process (Day 0, one receipt per step). Either
     // way it is published with the birth.
     let mut adoption = None;
-    let runtime = match &cfg.launch {
-        Some(_) => {
-            let dir = cfg.data_dir.clone();
-            tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
-                .await
-                .map_err(|e| format!("reading the runtime record: {e}"))??
-        }
+    let runtime = match launched_runtime {
+        Some(r) => r,
         None => {
             // In a container of this fabric's container runtime, its runtime is that container;
             // a host process stays a process (it then cannot be failed over by a container admin,
@@ -2018,6 +1984,39 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         shutdown: shutdown_control.clone(),
         membership: membership.clone(),
     });
+    // The join door: this admin verifies a node's digest against what it deployed, installs the
+    // address for its key and answers what it holds.
+    {
+        let (st, resolver, m, book, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.book.clone(), membership.clone());
+        let door = Arc::new(crate::join::JoinDoor {
+            me: name.clone(),
+            joins: joins.clone(),
+            answer: Arc::new(move || {
+                let st = st.clone();
+                Box::pin(async move {
+                    match st.get() {
+                        Some(e) => e.answer().await,
+                        None => EntryAnswer::default(),
+                    }
+                })
+            }),
+            install: Arc::new(move |d: &MeshDigest| {
+                // The same effect hearing the digest on gossip has: where the key is, and the
+                // live resolver's birth (which cancels every dial aimed at the key's old address).
+                m.learn(d.clone(), "join");
+                if let Ok(endpoint_id) = d.node.endpoint_id.0.parse::<iroh::PublicKey>() {
+                    let applied = resolver.apply(
+                        rafka_node_rpc::ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id, transport_addr: d.node.transport_addr, incarnation: d.node.incarnation.clone() },
+                        d.node.supersedes.as_ref(),
+                    );
+                    tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
+                }
+            }),
+            is_member: Arc::new(move |d: &MeshDigest| book.get(d.node.node_id.as_str()).is_some_and(|(held, _)| held.node.incarnation == d.node.incarnation)),
+            primary: Arc::new(move || topo.mesh_primary().map(|p| p.node.name.to_string())),
+        });
+        let _ = join_slot.set(door);
+    }
     let mut tasks = vec![contacts_task, node_rpc_feed];
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
     // becomes eligible for every seat) only once it can manage every birth it
@@ -2691,7 +2690,6 @@ mod tests {
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let n = t.node(&admin.node.name).expect("held");
         assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
-        assert!(crate::deployment::endpoint::Assignment::of_node(n).is_some_and(|a| a.listeners.len() == 1));
     }
 
     #[test]

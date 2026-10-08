@@ -199,13 +199,13 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         deployment_id: runtime.deployment_id.clone(),
         incarnation: launch.incarnation.0.clone(),
     });
-    // This runtime holds the claims of its handed addresses as itself before binding them: the
-    // admin that reserved them may die while this node lives on them.
-    rafka_node_admin_core::deployment::endpoint::hold_as_runtime(std::iter::once(launch.transport_addr).chain(launch.listeners.iter().map(|(_, a)| *a)));
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
-    let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.transport_addr)
+    let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.bind_addr)
         .await
-        .with_context(|| format!("the node cannot bind its assigned transport address {}", launch.transport_addr))?;
+        .with_context(|| format!("the node cannot bind {}", launch.bind_addr))?;
+    // The operating system assigned the port: the address the node reports is the one the bound
+    // endpoint holds, never one anybody chose.
+    let bound_addr = ep0.bound_sockets().into_iter().find(|a| a.is_ipv4()).ok_or_else(|| anyhow!("the endpoint bound at {} holds no IPv4 socket", launch.bind_addr))?;
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
     // This node's own connections: hydrated from its data dir, then kept by what its client
@@ -247,56 +247,8 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
         .collect();
-    let anchor = seeds.first().cloned();
     let name = launch.name.to_string();
-    // The mesh's id names its channel; the launching admin writes it. A
-    // launch without one takes it from the entry pull's projection.
-    let mut pulled = None;
-    let mesh_id = match (&launch.mesh_id, &anchor) {
-        (Some(id), _) => id.clone(),
-        (None, Some(a)) => {
-            let answer = rafka_mesh_transport::entry::pull(&ep0, a.clone(), &name, 5).await.map_err(|e| anyhow!("entry pull: {e}"))?;
-            let id = answer.topology["meshes"]
-                .as_array()
-                .and_then(|ms| ms.iter().find(|m| m["name"] == launch.name.mesh.as_str()))
-                .and_then(|m| m["id"].as_str())
-                .ok_or_else(|| anyhow!("the entry answer names no id for mesh {}", launch.name.mesh))
-                .and_then(|v| rafka_mesh_entity::MeshId::parse(v).map_err(|e| anyhow!("the entry answer's mesh id: {e}")))?;
-            pulled = Some(answer);
-            id
-        }
-        (None, None) => return Err(anyhow!("a node needs its mesh's id or an admin to ask for it")),
-    };
-    // Subscribe first, pull second: what changes during the pull arrives by
-    // gossip, and the book keeps the newer copy.
-    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver, client, &membership.book, &name);
-    // Entry: take the launching admin's membership before marking ready. An
-    // admin that cannot answer does not hold the node: its view fills from
-    // gossip instead (the pull is named either way).
-    if let Some(anchor) = anchor {
-        let answer = match pulled {
-            Some(a) => Ok(a),
-            None => rafka_mesh_transport::entry::pull(&ep0, anchor, &name, 5).await,
-        };
-        if let Ok(answer) = answer {
-            let mut mesh_peers = Vec::new();
-            for d in answer.members.into_iter().filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name) {
-                if d.node.name.mesh == launch.name.mesh {
-                    mesh_peers.extend(rafka_mesh_transport::membership::gossip_addr(&d));
-                }
-                membership.learn(d, "entry");
-            }
-            membership.learn_statuses(&answer.statuses);
-            // The baseline of each source Mesh the launching admin serves: the publisher and
-            // version this node resumes that source's deltas from.
-            membership.learn_sources(&answer.sources);
-            let _ = membership.join_peers(mesh_peers).await;
-        }
-    }
-    // A delta that does not follow what this node holds desynchronizes that source; the node tops
-    // up from its Mesh's own primary (gossip.md §3.3).
-    membership.spawn_top_up(ep0.clone());
+    // This birth's digest as it reports it: the address is the one the bound endpoint holds.
     let digest = MeshDigest {
         fabric_id: launch.fabric_id.clone(),
         node: MeshNode {
@@ -305,7 +257,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             incarnation: launch.incarnation.clone(),
             supersedes: launch.supersedes.clone(),
-            transport_addr: launch.transport_addr,
+            transport_addr: bound_addr,
             runtime: Some(runtime.clone()),
         },
         status: MemberStatus::ReadyForTraffic,
@@ -318,6 +270,69 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         extra: Default::default(),
         data_dir: Some(launch.data_dir.display().to_string()),
     };
+    // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
+    // admin that deployed it; the admin verifies it against the deployment and answers what it
+    // holds. An admin that refuses the digest by name ends this node by that name.
+    let mut joined = None;
+    if let (Some(launcher), Some(seed)) = (&launch.launcher, seeds.first()) {
+        let launcher_ref = rafka_node_rpc::ResolvedNode {
+            node_id: launcher.node_id.clone(),
+            name: launcher.name.clone(),
+            endpoint_id: seed.id,
+            transport_addr: seed.ip_addrs().next().copied().ok_or_else(|| anyhow!("the launching admin's seed names no address"))?,
+            incarnation: launcher.incarnation.clone(),
+        };
+        resolver.apply(launcher_ref, None);
+        let mut join_digest = digest.clone();
+        join_digest.status = MemberStatus::Pending;
+        match rafka_node_admin_core::join::call_join(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &seed.id.fmt_short().to_string(), &join_digest, 5).await {
+            Ok(answer) => joined = Some(answer),
+            Err(rafka_node_admin_core::join::JoinFailure::Refused(why)) => return Err(anyhow!("{} was refused its join by {}: {why}", launch.name, launcher.name)),
+            Err(e @ rafka_node_admin_core::join::JoinFailure::Unreached(_)) => tracing::warn!(node = %launch.name, error = %e, "the launching admin could not take the join: this node's view fills from gossip"),
+        }
+    }
+    // The mesh's id names its channel; the launching admin writes it. A launch without one takes
+    // it from the join answer's projection.
+    let mesh_id = match (&launch.mesh_id, &joined) {
+        (Some(id), _) => id.clone(),
+        (None, Some(answer)) => answer.topology["meshes"]
+            .as_array()
+            .and_then(|ms| ms.iter().find(|m| m["name"] == launch.name.mesh.as_str()))
+            .and_then(|m| m["id"].as_str())
+            .ok_or_else(|| anyhow!("the join answer names no id for mesh {}", launch.name.mesh))
+            .and_then(|v| rafka_mesh_entity::MeshId::parse(v).map_err(|e| anyhow!("the join answer's mesh id: {e}")))?,
+        (None, None) => return Err(anyhow!("a node needs its mesh's id or an admin to ask for it")),
+    };
+    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
+    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
+    // Take the launching admin's membership before marking ready.
+    if let Some(answer) = joined {
+        let mut mesh_peers = Vec::new();
+        for d in answer.members.into_iter().filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name) {
+            if d.node.name.mesh == launch.name.mesh {
+                mesh_peers.extend(rafka_mesh_transport::membership::gossip_addr(&d));
+            }
+            membership.learn(d, "join");
+        }
+        membership.learn_statuses(&answer.statuses);
+        // The baseline of each source Mesh the launching admin serves: the publisher and
+        // version this node resumes that source's deltas from.
+        membership.learn_sources(&answer.sources);
+        let _ = membership.join_peers(mesh_peers).await;
+    }
+    // A delta that does not follow what this node holds desynchronizes that source; the node tops
+    // up from its Mesh's own primary (gossip.md §3.3), asking the same `JoinNode` of it.
+    {
+        let (client, digest) = (client.clone(), { let mut d = digest.clone(); d.status = MemberStatus::Pending; d });
+        membership.spawn_top_up(Arc::new(move |primary: MeshDigest| {
+            let (client, digest) = (client.clone(), digest.clone());
+            Box::pin(async move {
+                rafka_node_admin_core::join::call_join(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.endpoint_id.0.chars().take(10).collect::<String>(), &digest, 1)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+        }));
+    }
     // Born full: this node is published only now, its entry taken.
     tracing::info_span!(
         "rdm.mesh.node.update.via-ready",

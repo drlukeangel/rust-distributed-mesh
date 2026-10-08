@@ -8,6 +8,7 @@
 //! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
 
 pub mod entry;
+pub mod join;
 pub mod admin;
 pub mod accepted;
 pub mod build;

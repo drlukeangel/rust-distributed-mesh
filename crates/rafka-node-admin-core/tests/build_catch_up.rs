@@ -101,7 +101,7 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
             build_id: id.clone(),
             attempt: 1,
             operation: format!("create-node:mesh1.rpc.{i}"),
-            step: "AllocateEndpoints".into(),
+            step: "PrepareStorage".into(),
             outcome: StepOutcome::Complete,
             output: Some(
                 serde_json::to_value(rafka_node_admin_core::deployment::endpoint::Assignment {

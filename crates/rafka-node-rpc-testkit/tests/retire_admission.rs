@@ -13,7 +13,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published}
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{AdmissionClosure, DrainOutcome, 
     CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
 };
@@ -109,10 +109,8 @@ async fn exited(provider: &ProcessDeploymentProvider, h: &DeploymentHandle) -> b
 async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn {
@@ -124,7 +122,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
     };
     let pipeline = DeploymentPipeline {
         provider: &provider,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -156,7 +154,6 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
             handle: created.handle.clone(),
             kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
             observe_departure: false,
-            keep_endpoints: false,
         })
         .await;
     assert_eq!(
@@ -172,10 +169,8 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
 async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn {
@@ -187,7 +182,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     };
     let pipeline = DeploymentPipeline {
         provider: &provider,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -236,7 +231,6 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
             handle: b.handle.clone(),
             kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Restart,
             observe_departure: false,
-            keep_endpoints: false,
         })
         .await;
     // Under the lock the bounded drain never blocks an authorized retirement: B's drain was
@@ -264,22 +258,20 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
 async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
     let provider = Stubborn { inner: &process, ignore_stop: false };
     let observer = DeparturesLost { live: &admin.observer };
-    let pipeline = DeploymentPipeline { provider: &provider, allocator: &allocator, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
+    let pipeline = DeploymentPipeline { provider: &provider, joins: &admin.joins, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true })
         .await;
     let err = retired.expect_err("an unheard departure holds the mesh retire");
     assert!(err.to_string().contains("never heard its own Leaving"), "{err}");
@@ -294,20 +286,18 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
 async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
-    let pipeline = DeploymentPipeline { provider: &process, allocator: &allocator, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
+    let pipeline = DeploymentPipeline { provider: &process, joins: &admin.joins, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
         .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
     let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true })
         .await;
     assert_eq!(retired, Ok(()), "the departure was heard: the mesh retire completes");
     assert_eq!(sink.removed.lock().unwrap().as_slice(), &[created.node.name.clone()], "then the local cleanup ran");

@@ -3214,7 +3214,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
-    for want in ["NodeDeleting", "MarkDraining", "WaitForDrain", "PublishLeaving", "CloseRpcAdmission", "TerminateRuntime", "NodeDeleted", "ReleaseEndpoints", "ReleaseStorage", "RemoveTopologyMembership", "Complete"] {
+    for want in ["NodeDeleting", "MarkDraining", "WaitForDrain", "PublishLeaving", "CloseRpcAdmission", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"] {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
         assert!(at >= last, "{node}: retire steps out of order at `{want}`: {names:?}");
         last = at;

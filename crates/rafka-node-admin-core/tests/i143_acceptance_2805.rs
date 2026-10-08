@@ -356,7 +356,6 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
 async fn deadline_arm() -> DrainOutcome {
     use rafka_node_admin_core::build::BuildId;
     use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-    use rafka_node_admin_core::deployment::endpoint::EndpointAllocator;
     use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
     use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 
@@ -430,13 +429,14 @@ async fn deadline_arm() -> DrainOutcome {
         fabric_id: rafka_mesh_entity::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
     };
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new("127.0.0.1".parse().unwrap(), 1, 1));
+    let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline {
         provider: &Running,
-        allocator: &allocator,
+        joins: &joins,
         observer: &NeverDrained,
         sink: &Discard,
         lifecycle: &NoLifecycleEvents,
@@ -452,7 +452,7 @@ async fn deadline_arm() -> DrainOutcome {
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, observe_departure: false, keep_endpoints: false };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, observe_departure: false };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
     // (MarkDraining), its result (WaitForDrain: the deadline arm); and never NodeDeleted, because

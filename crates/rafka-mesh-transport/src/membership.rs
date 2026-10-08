@@ -1478,7 +1478,7 @@ impl Membership {
     /// mesh-primary through the entry service, installs it atomically, and resumes. Never the
     /// remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or held for
     /// later; the next delta or full from the primary signals or resumes it again.
-    pub fn spawn_top_up(&self, endpoint: Endpoint) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_top_up(&self, fetch: TopUpFetch) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
@@ -1487,13 +1487,13 @@ impl Membership {
                 me.view.desync.notified().await;
                 let gaps = me.desynced_sources();
                 if !gaps.is_empty() {
-                    me.top_up(&endpoint, gaps).await;
+                    me.top_up(&fetch, gaps).await;
                 }
             }
         })
     }
 
-    async fn top_up(&self, endpoint: &Endpoint, gaps: Vec<(String, Gap)>) {
+    async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
         let node = self.view.node.clone();
@@ -1502,12 +1502,7 @@ impl Membership {
                 .in_scope(|| tracing::info!("no Ready node-admin of this Mesh is held: nothing to top up from"));
             return;
         };
-        let Some(addr) = gossip_addr(&primary) else {
-            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "mesh-primary-address-unknown", primary = %primary.node.name)
-                .in_scope(|| tracing::info!("the Mesh's primary names no usable endpoint"));
-            return;
-        };
-        match crate::entry::pull_once(endpoint, addr, &node, Duration::from_secs(5)).await {
+        match fetch(primary.clone()).await {
             Ok(answer) => {
                 let installed = self.learn_sources(&answer.sources);
                 let still: Vec<String> = self.desynced_sources().into_iter().map(|(m, _)| m).collect();
@@ -1550,6 +1545,10 @@ impl Membership {
         self.mesh.join_peers(peers).await
     }
 }
+
+/// Asks a mesh primary for its answer (the join reply, over Node RPC): membership holds no
+/// Node RPC client, the process composition hands it one.
+pub type TopUpFetch = std::sync::Arc<dyn Fn(MeshDigest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::entry::EntryAnswer, String>> + Send>> + Send + Sync>;
 
 /// A node-admin's place on the backbone. What it hears there it holds; while
 /// it is its mesh's primary it publishes its mesh's members and forwards the

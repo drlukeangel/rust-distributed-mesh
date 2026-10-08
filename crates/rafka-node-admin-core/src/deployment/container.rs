@@ -12,7 +12,6 @@
 //! same path, so the launch environment is identical to the process
 //! provider's.
 
-use super::endpoint::EndpointAllocator;
 use super::provider::{tail, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use crate::model::ProviderKind;
 use std::collections::HashMap;
@@ -50,6 +49,13 @@ impl FabricNetwork {
     }
 }
 
+/// The node addresses this provider handed out on the fabric network.
+#[derive(Default)]
+struct NodeIps {
+    next: u32,
+    held: HashMap<crate::model::PathName, IpAddr>,
+}
+
 pub struct ContainerDeploymentProvider {
     fabric: String,
     network: FabricNetwork,
@@ -58,6 +64,7 @@ pub struct ContainerDeploymentProvider {
     exited: Mutex<HashMap<String, Option<i32>>>,
     /// Each live container (by immutable id): its data dir, where its logs
     /// are kept on removal, and its deployment.
+    ips: Mutex<NodeIps>,
     data_dirs: Mutex<HashMap<String, (std::path::PathBuf, crate::model::DeploymentId)>>,
     /// The Docker daemon this provider drives: the control domain a
     /// container id means something in.
@@ -293,19 +300,13 @@ impl ContainerDeploymentProvider {
             network,
             exited: Mutex::new(HashMap::new()),
             data_dirs: Mutex::new(HashMap::new()),
+            ips: Mutex::new(NodeIps::default()),
             domain: format!("container:{}", daemon.trim()),
         })
     }
 
     pub fn network(&self) -> &FabricNetwork {
         &self.network
-    }
-
-    /// The allocator for this fabric's nodes: one address each on its network.
-    pub fn allocator(&self, ports: (u16, u16)) -> EndpointAllocator {
-        let (first, last) = self.network.node_range();
-        let network = self.network.name.clone();
-        EndpointAllocator::per_node(first, last, ports.0, ports.1).with_held_elsewhere(super::endpoint::HeldElsewhere::new(move || network_addresses(&network)))
     }
 
     /// Remove every container of the fabric and its network.
@@ -499,11 +500,27 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         self.data_dirs.lock().unwrap().iter().map(|(id, (_, dep))| self.handle(dep.clone(), id.clone(), None)).collect()
     }
 
-    async fn holds(&self, handle: &DeploymentHandle, addr: SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
-        handle.pid.is_some_and(|pid| match transport {
-            super::endpoint::SlotTransport::Udp => netns_holds_udp(pid, addr).unwrap_or(false),
-            super::endpoint::SlotTransport::Tcp => netns_listens_tcp(pid, addr).unwrap_or(false),
-        })
+    /// A container is given its own address on the fabric network before it starts (`--ip`): the
+    /// one pre-boot address a container needs. Its ports are the operating system's.
+    fn bind_ip(&self, node: &crate::model::PathName) -> IpAddr {
+        let mut ips = self.ips.lock().unwrap();
+        if let Some(ip) = ips.held.get(node) {
+            return *ip;
+        }
+        let (first, last) = self.network.node_range();
+        let (first, last) = (u32::from(first), u32::from(last));
+        let taken: std::collections::BTreeSet<IpAddr> = ips.held.values().copied().chain(network_addresses(&self.network.name)).collect();
+        let mut next = ips.next.clamp(first, last);
+        for _ in 0..=(last - first) {
+            let ip = IpAddr::from(Ipv4Addr::from(next));
+            next = if next == last { first } else { next + 1 };
+            if !taken.contains(&ip) {
+                ips.next = next;
+                ips.held.insert(node.clone(), ip);
+                return ip;
+            }
+        }
+        panic!("every node address of the fabric network {} is held", self.network.name)
     }
 
     async fn failure_detail(&self, handle: &DeploymentHandle, _data_dir: &Path) -> String {

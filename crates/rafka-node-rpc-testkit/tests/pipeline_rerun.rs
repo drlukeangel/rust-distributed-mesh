@@ -1,6 +1,6 @@
 //! i143.e2.s5 functional: a create pipeline killed mid-step is re-run as the
 //! next attempt of the same Build and completes without duplicating effects:
-//! one runtime, the same endpoints, every step `Complete` exactly once.
+//! one runtime, the address it reported, every step `Complete` exactly once.
 //!
 //! The kill drops the pipeline's future at a chosen point (the executor
 //! dying), so nothing after that point runs, not even the receipt.
@@ -10,7 +10,7 @@ mod common;
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{
@@ -113,13 +113,12 @@ fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
         .collect()
 }
 
-async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
+async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
@@ -135,7 +134,7 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     let observer = Pausing { live: &admin.observer, pause: kill_at == KillAt::InWaitForMeshJoin, reached: reached.clone() };
     let pipeline = DeploymentPipeline {
         provider: &first,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -149,13 +148,14 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
         _ = reached.notified() => {}
     }
     let first_pid = *first.spawned.lock().unwrap().first().expect("attempt 1 spawned the runtime");
-    let held_after_kill = allocator.lock().await.held(&"mesh1.rpc.1".parse().unwrap()).cloned().unwrap();
+    // Where the first attempt's birth reported it bound, when it got as far as publishing it.
+    let reported_before_kill = sink.nodes.lock().unwrap().first().and_then(|n| n.transport_addr);
 
     // Attempt 2: the real provider and observer, the same Build.
     let second = Killable { inner: process.clone(), kill_at: None, reached, spawned: Mutex::new(vec![]) };
     let pipeline = DeploymentPipeline {
         provider: &second,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &admin.observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -171,8 +171,9 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
     assert!(second.spawned.lock().unwrap().is_empty(), "the re-run spawned a second runtime");
     assert_eq!(created.handle.pid, Some(first_pid));
     assert_eq!(runtimes_of(&created.node.node_id), vec![first_pid], "exactly one runtime runs for the node");
-    assert_eq!(created.node.transport_addr, Some(held_after_kill.transport));
-    assert_eq!(allocator.lock().await.in_use_count(), 1, "one socket, no port taken twice");
+    if let Some(addr) = reported_before_kill {
+        assert_eq!(created.node.transport_addr, Some(addr), "the re-run keeps the address the birth reported");
+    }
 
     // Every step Complete exactly once across both attempts; the steps
     // before the kill point keep attempt 1's receipt.
@@ -199,10 +200,10 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
-    killed_then_rerun(KillAt::AfterSpawn, rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
+    killed_then_rerun(KillAt::AfterSpawn).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
-    killed_then_rerun(KillAt::InWaitForMeshJoin, rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
+    killed_then_rerun(KillAt::InWaitForMeshJoin).await;
 }

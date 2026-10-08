@@ -138,9 +138,10 @@ async fn rig(dir: &std::path::Path) -> Rig {
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
-        transport_addr: "127.0.0.1:0".parse().unwrap(),
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: Vec::new(),
         seeds: Vec::new(),
+        launcher: None,
         data_dir,
         mesh_id: None,
     };

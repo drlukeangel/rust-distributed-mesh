@@ -261,18 +261,11 @@ pub trait DeploymentProvider: Send + Sync {
     /// instead of starting a second one.
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle>;
 
-    /// Does the runtime hold `addr` over `transport` (`WaitForBind`)? Asked
-    /// of the operating system, never of the runtime. Default: something in
-    /// this host's network namespace holds it.
-    /// Does this runtime hold `addr`? With a pid, the runtime's own descriptors answer: a port
-    /// another process holds is not this runtime's bind. Without one, whether anyone holds it.
-    async fn holds(&self, handle: &DeploymentHandle, addr: std::net::SocketAddr, transport: super::endpoint::SlotTransport) -> bool {
-        match (handle.pid, transport) {
-            (Some(pid), super::endpoint::SlotTransport::Udp) => super::container::process_holds(pid, "udp", addr, None).unwrap_or(false),
-            (Some(pid), super::endpoint::SlotTransport::Tcp) => super::container::process_holds(pid, "tcp", addr, Some("0A")).unwrap_or(false),
-            (None, super::endpoint::SlotTransport::Udp) => super::endpoint::udp_port_is_held(addr),
-            (None, super::endpoint::SlotTransport::Tcp) => super::endpoint::tcp_port_is_held(addr),
-        }
+    /// The host address `node`'s runtime binds on, with port 0 (the operating system assigns the
+    /// port; the node reports it at its join). Loopback for a process; a container's own address
+    /// on the fabric network.
+    fn bind_ip(&self, _node: &crate::model::PathName) -> std::net::IpAddr {
+        std::net::IpAddr::from([127, 0, 0, 1])
     }
 
     /// Every runtime this provider started that it has not seen exit: what a

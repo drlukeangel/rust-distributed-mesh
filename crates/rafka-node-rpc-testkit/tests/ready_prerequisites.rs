@@ -15,7 +15,7 @@ use rafka_node_admin_core::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts, READY_PREREQUISITES,
 };
@@ -95,20 +95,19 @@ impl NodeObserver for Counting<'_> {
     }
 }
 
-async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
+async fn create_losing(lose: Option<&'static str>) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let inner = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0, ports.1));
     let provider = ProcessDeploymentProvider::new();
     let observer = Counting { live: &admin.observer, asked_ready: AtomicUsize::new(0) };
     let sink = Published::default();
     let pipeline = DeploymentPipeline {
         provider: &provider,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -156,11 +155,11 @@ async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
 async fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
     for (i, lost) in READY_PREREQUISITES.iter().enumerate() {
         let _ = i;
-        create_losing(Some(lost.name()), rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
+        create_losing(Some(lost.name())).await;
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ready_follows_every_runtime_prerequisite_receipt() {
-    create_losing(None, rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
+    create_losing(None).await;
 }

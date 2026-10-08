@@ -11,7 +11,8 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
+use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, DrainOutcome, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink,
 };
@@ -19,7 +20,6 @@ use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle,
 use rafka_node_admin_core::model::{DeploymentId, Node, PathName, ProviderKind};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -107,6 +107,9 @@ struct Fleet {
     next_pid: AtomicU32,
     spawned: Mutex<Vec<Spawn>>,
     terminated: Mutex<Vec<u32>>,
+    /// Each executor's deployments, by the endpoint key its launches carry as their seed: the
+    /// admin a launched birth reports its join to.
+    executors: Mutex<BTreeMap<String, Arc<Joins>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,7 +123,7 @@ struct Spawn {
 
 impl Fleet {
     fn new() -> Arc<Self> {
-        Arc::new(Self { dies: Mutex::new(Dies::Not), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]) })
+        Arc::new(Self { dies: Mutex::new(Dies::Not), reached: Notify::new(), next_pid: AtomicU32::new(40_000), spawned: Mutex::new(vec![]), terminated: Mutex::new(vec![]), executors: Mutex::new(BTreeMap::new()) })
     }
     fn spawns(&self) -> Vec<Spawn> {
         self.spawned.lock().unwrap().clone()
@@ -131,6 +134,33 @@ impl Fleet {
 }
 
 const DOMAIN: &str = "i143-2892";
+
+/// The digest a launched node reports at its join, from the launch it was handed.
+fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity::RuntimeFact>) -> rafka_mesh_entity::MeshDigest {
+    let env = |k: &str| spec.env.get(k).cloned().unwrap_or_else(|| panic!("the launch names {k}"));
+    let key_hex = std::fs::read_to_string(spec.data_dir.join("node-key")).expect("PrepareStorage wrote the node key");
+    let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
+    rafka_mesh_entity::MeshDigest {
+        fabric_id: rafka_mesh_entity::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
+        node: rafka_mesh_entity::MeshNode {
+            node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
+            name: env("RDM_NODE_NAME").parse().unwrap(),
+            endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
+            transport_addr: "127.0.0.1:34567".parse().unwrap(),
+            incarnation: IncarnationId(env("RDM_INCARNATION_ID")),
+            supersedes: spec.env.get("RDM_SUPERSEDES").cloned().map(IncarnationId),
+            runtime,
+        },
+        status: rafka_mesh_entity::MemberStatus::Pending,
+        admin_api_base: None,
+        digest_seq: 0,
+        emitted_at_rafka_ms: 0,
+        data_dir: Some(spec.data_dir.display().to_string()),
+        mesh_id: None,
+        in_flight: None,
+        extra: Default::default(),
+    }
+}
 
 #[async_trait::async_trait]
 impl DeploymentProvider for Fleet {
@@ -150,6 +180,20 @@ impl DeploymentProvider for Fleet {
             container: None,
             domain: Some(DOMAIN.into()),
         };
+        // The birth reports where it bound to the executor that launched it, as a real node does at
+        // its join, once that executor has registered the deployment (after `DeployRuntime`).
+        if let Some(joins) = spec.env.get("RDM_SEEDS").and_then(|s| s.split('@').next()).and_then(|k| self.executors.lock().unwrap().get(k).cloned()) {
+            let digest = fake_node_digest(spec, handle.fact());
+            tokio::spawn(async move {
+                for _ in 0..500 {
+                    if joins.standing(&digest) == rafka_node_admin_core::join::Standing::Deployed {
+                        joins.report(&digest);
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            });
+        }
         self.spawned.lock().unwrap().push(Spawn {
             pid,
             node_id: NodeId::parse(spec.env.get("RDM_NODE_ID").expect("the launch names its node")).unwrap(),
@@ -175,9 +219,6 @@ impl DeploymentProvider for Fleet {
     }
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
         self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone())
-    }
-    async fn holds(&self, _: &DeploymentHandle, _: SocketAddr, _: rafka_node_admin_core::deployment::endpoint::SlotTransport) -> bool {
-        true
     }
 }
 
@@ -218,25 +259,23 @@ impl TopologySink for Discard {
 /// An executor: one admin birth, named by its own endpoint (the seed every launch it makes carries).
 struct Executor {
     template: LaunchTemplate,
-    allocator: tokio::sync::Mutex<EndpointAllocator>,
+    joins: Arc<Joins>,
 }
 
-fn executor(data_root: &std::path::Path, key: &str) -> Executor {
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    // The seed address is one port of the lane's range; the executor's allocator holds its claim,
-    // so no birth is handed it.
-    let mut allocator = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
-    let addr: SocketAddr = allocator.assign(&"mesh1.rpc.99".parse().unwrap(), &RPC_NODE).expect("a seed port").transport;
+fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
+    let joins = Arc::new(Joins::default());
+    fleet.executors.lock().unwrap().insert(key.to_string(), joins.clone());
     Executor {
         template: LaunchTemplate {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
-            seeds: vec![(key.into(), addr)],
+            seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
         },
-        allocator: tokio::sync::Mutex::new(allocator),
+        joins,
     }
 }
 
@@ -244,7 +283,7 @@ impl Executor {
     fn pipeline<'a>(&'a self, fleet: &'a Fleet, builds: &'a MemoryBuildStateAdapter) -> DeploymentPipeline<'a> {
         DeploymentPipeline {
             provider: fleet,
-            allocator: &self.allocator,
+            joins: &self.joins,
             observer: fleet,
             sink: &Discard,
             lifecycle: &NoLifecycleEvents,
@@ -306,8 +345,8 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     let result = cap.run(async {
         let fleet = Fleet::new();
         let builds = MemoryBuildStateAdapter::new();
-        let lost = executor(&data_root, "lostadminkey");
-        let successor = executor(&data_root, "successoradminkey");
+        let lost = executor(&fleet, &data_root, "lostadminkey");
+        let successor = executor(&fleet, &data_root, "successoradminkey");
 
         // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
         let own = "mesh1.rpc.1".parse::<PathName>().unwrap();

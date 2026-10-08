@@ -16,8 +16,17 @@ pub const ENV_SUPERSEDES: &str = "RDM_SUPERSEDES";
 pub const ENV_TRANSPORT_ADDR: &str = "RDM_TRANSPORT_ADDR";
 pub const ENV_LISTENERS: &str = "RDM_LISTENERS";
 pub const ENV_SEEDS: &str = "RDM_SEEDS";
+pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
+
+/// The node-admin that deployed a birth: the target of its `JoinNode`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launcher {
+    pub name: PathName,
+    pub node_id: NodeId,
+    pub incarnation: IncarnationId,
+}
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,10 +38,15 @@ pub struct Launch {
     pub node_id: NodeId,
     pub incarnation: IncarnationId,
     pub supersedes: Option<IncarnationId>,
-    /// The one address the process's Iroh endpoint binds: gossip and Node RPC.
-    pub transport_addr: SocketAddr,
-    /// Non-Iroh listeners the process binds (a node-admin's `control` HTTP API), by name.
+    /// Where the process's Iroh endpoint binds (gossip and Node RPC): the host address with port
+    /// 0. The operating system assigns the port; the node reports the address it really bound in
+    /// its `JoinNode` digest.
+    pub bind_addr: SocketAddr,
+    /// Where the process binds each non-Iroh listener (a node-admin's `control` HTTP API), by
+    /// name: the host address with port 0, reported the same way.
     pub listeners: Vec<(String, SocketAddr)>,
+    /// The node-admin that deployed this birth and answers its `JoinNode`.
+    pub launcher: Option<Launcher>,
     /// `(public key hex, address)` of members to join gossip through.
     pub seeds: Vec<(String, SocketAddr)>,
     pub data_dir: PathBuf,
@@ -54,6 +68,19 @@ pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
             Ok((n.to_string(), a.parse().map_err(|x| format!("address in `{e}`: {x}"))?))
         })
         .collect()
+}
+
+/// `<path.name>,<node id>,<incarnation id>`
+pub fn decode_launcher(s: &str) -> Result<Launcher> {
+    let mut it = s.split(',');
+    let (Some(name), Some(node_id), Some(incarnation), None) = (it.next(), it.next(), it.next(), it.next()) else {
+        return Err(format!("{ENV_LAUNCHER} `{s}` is not name,node_id,incarnation"));
+    };
+    Ok(Launcher {
+        name: name.parse().map_err(|e| format!("{ENV_LAUNCHER} name: {e}"))?,
+        node_id: NodeId::parse(node_id).map_err(|e| format!("{ENV_LAUNCHER} node id: {e}"))?,
+        incarnation: IncarnationId(incarnation.to_string()),
+    })
 }
 
 /// `<public key>@<addr>,...`
@@ -78,7 +105,10 @@ impl Launch {
         if let Some(s) = &self.supersedes {
             m.insert(ENV_SUPERSEDES.into(), s.0.clone());
         }
-        m.insert(ENV_TRANSPORT_ADDR.into(), self.transport_addr.to_string());
+        m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
+        if let Some(l) = &self.launcher {
+            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation.0));
+        }
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
@@ -97,8 +127,9 @@ impl Launch {
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
             incarnation: IncarnationId(req(ENV_INCARNATION)?),
             supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(IncarnationId),
-            transport_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
+            bind_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
             listeners: decode_listeners(&get(ENV_LISTENERS).unwrap_or_default())?,
+            launcher: get(ENV_LAUNCHER).filter(|v| !v.trim().is_empty()).map(|v| decode_launcher(&v)).transpose()?,
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
@@ -119,8 +150,9 @@ mod tests {
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             supersedes: Some(IncarnationId::mint()),
-            transport_addr: "127.0.0.1:41001".parse().unwrap(),
-            listeners: vec![("control".into(), "127.0.0.1:41002".parse().unwrap())],
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
+            launcher: Some(Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }),
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             mesh_id: Some(MeshId::mint()),

@@ -11,12 +11,11 @@ mod common;
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::model::Node;
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::time::Duration;
 
 struct Discard;
@@ -34,6 +33,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         fabric_id: FabricId::mint(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: BTreeMap::new(),
         data_root: data_root.clone(),
     };
@@ -67,12 +67,11 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         })
         .await
         .unwrap();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
+    let joins = rafka_node_admin_core::join::Joins::default();
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
         provider: &provider,
-        allocator: &allocator,
+        joins: &joins,
         observer: &Never,
         sink: &Discard,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,

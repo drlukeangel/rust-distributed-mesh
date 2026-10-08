@@ -1,11 +1,9 @@
 //! i143.e2.s5 functional: the retire pipeline runs its steps in order —
 //! MarkDraining, WaitForDrain, PublishLeaving, CloseRpcAdmission,
-//! TerminateRuntime, ReleaseEndpoints, ReleaseStorage (permanent),
+//! TerminateRuntime, ReleaseStorage (permanent),
 //! RemoveTopologyMembership, Complete — each with a receipt and a step span,
-//! and a retire then create on the same node leaks no port.
+//! and a retire then create on the same node succeeds.
 //!
-//! The allocator holds exactly the two ports one rpc node needs, so the
-//! second create can only succeed if the retirement released both.
 //! Its own test binary: it asserts spans (see `process_pipeline_failure.rs`).
 
 mod common;
@@ -13,7 +11,7 @@ mod common;
 use common::{add_node, admin_side, publish_build, template, Published, Spans};
 use rafka_mesh_entity::{FabricId, MemberStatus};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::{EndpointAllocator, RPC_NODE};
+use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
@@ -28,15 +26,13 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
 
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone());
+    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
-    let allocator = tokio::sync::Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
         provider: &provider,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer: &admin.observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -52,7 +48,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
 
     let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
     pipeline
-        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false })
         .await
         .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -75,8 +71,6 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     assert_eq!(digest.status, MemberStatus::Leaving, "the node said Leaving on the fabric before it went");
     assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
     assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
-    assert_eq!(allocator.lock().await.held(&node), None);
-    assert_eq!(allocator.lock().await.in_use_count(), 0, "no port leaked");
     assert!(!std::path::Path::new(first.node.data_dir.as_deref().unwrap()).exists(), "permanent: the data dir is gone");
     assert_eq!(*sink.removed.lock().unwrap(), vec![node.clone()]);
 
@@ -97,12 +91,6 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
         && f.get("pipeline").map(String::as_str) == Some("retire")));
 
-    // The retired node's port is released: an allocator whose whole range is that one port hands it out.
-    let mut released = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), port.port(), port.port());
-    let reclaimed = released.assign(&"mesh1.rpc.9".parse().unwrap(), &rafka_node_admin_core::deployment::endpoint::RPC_NODE).expect("the retired node's port is free again");
-    assert_eq!(reclaimed.transport, port);
-    released.release(&"mesh1.rpc.9".parse().unwrap());
-
     // Create again on the same node.
     let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
     assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
@@ -117,7 +105,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
     let again_build = publish_build(&builds, keep).await;
     pipeline
-        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false, keep_endpoints: false })
+        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false })
         .await
         .unwrap();
     assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");
@@ -127,6 +115,5 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     )
     .unwrap();
     assert_eq!(disposition, rafka_node_admin_core::deployment::pipeline::StorageDisposition::Preserved);
-    assert_eq!(allocator.lock().await.in_use_count(), 0);
     let _ = std::fs::remove_dir_all(&template.data_root);
 }

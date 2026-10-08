@@ -204,6 +204,10 @@ pub const TEST_MESH_ID: &str = "meshd0000001";
 pub struct AdminSide {
     pub observer: LiveMesh,
     pub seed: (String, SocketAddr),
+    /// The births this admin side deployed and awaits a `JoinNode` from.
+    pub joins: Arc<rafka_node_admin_core::join::Joins>,
+    /// The admin every launch from `template` names as its launcher.
+    pub launcher: rafka_mesh_entity::launch::Launcher,
     _router: Router,
 }
 
@@ -214,20 +218,35 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
         .keep_alive_interval(Duration::from_secs(1))
         .max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap()))
         .build();
-    let alpns = vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec(), rafka_mesh_transport::entry::ENTRY_ALPN.to_vec()];
+    let alpns = vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()];
     let admin_ep = rafka_node_rpc::endpoint::bind_exact(SecretKey::generate(), SocketAddr::new(ip, 0), alpns, transport).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
-    // Entry, as a node-admin serves it: a launched node pulls what the admin hears before it
-    // publishes. Without it every pull is refused and the node's join rests on gossip alone.
+    // The join, as a node-admin serves it: a launched node reports its digest to the admin that
+    // deployed it, which verifies it against the deployment and answers what it hears.
     let book = membership.book.clone();
-    let entry = rafka_mesh_transport::entry::EntryServer::new(move |_req| {
-        let book = book.clone();
-        async move {
-            rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), members: book.current(book.staleness_floor()), ..Default::default() }
-        }
-    });
-    let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_mesh_transport::entry::ENTRY_ALPN, entry).spawn();
+    let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
+    let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
+    let join_slot: rafka_node_admin_core::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
+    let door = {
+        let (answer_book, member_book, learner) = (book.clone(), book.clone(), membership.clone());
+        Arc::new(rafka_node_admin_core::join::JoinDoor {
+            me: "mesh1.admin.1".parse().unwrap(),
+            joins: joins.clone(),
+            answer: Arc::new(move || {
+                let book = answer_book.clone();
+                Box::pin(async move { rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), members: book.current(book.staleness_floor()), ..Default::default() } })
+            }),
+            install: Arc::new(move |d| learner.learn(d.clone(), "join")),
+            is_member: Arc::new(move |d| member_book.get(d.node.node_id.as_str()).is_some_and(|(h, _)| h.node.incarnation == d.node.incarnation)),
+            primary: Arc::new(|| None),
+        })
+    };
+    let _ = join_slot.set(door);
+    let rpc_server = rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot)
+        .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
+        .expect("the admin side's catalog seals");
+    let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
     // A node admits a downward lifecycle operation (a probe, a drain) only from a node-admin it
     // holds in its own membership book, so the admin side publishes its digest as a real
@@ -236,11 +255,11 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     let admin_digest = rafka_mesh_entity::digest::MeshDigest {
         fabric_id: fabric.clone(),
         node: rafka_mesh_entity::digest::MeshNode {
-            node_id: NodeId::mint(),
+            node_id: admin_node_id.clone(),
             name: "mesh1.admin.1".parse().unwrap(),
             endpoint_id: rafka_mesh_entity::EndpointId(admin_ep.id().to_string()),
             transport_addr: addr,
-            incarnation: IncarnationId::mint(),
+            incarnation: admin_incarnation.clone(),
             supersedes: None,
             runtime: None,
         },
@@ -258,17 +277,20 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver },
         seed: (admin_ep.id().to_string(), addr),
+        joins,
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
         _router: router,
     }
 }
 
 /// A launch template for `rafka-rpc-node` with a fresh data root.
-pub fn template(fabric: &FabricId, seed: (String, SocketAddr)) -> LaunchTemplate {
+pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_mesh_entity::launch::Launcher) -> LaunchTemplate {
     LaunchTemplate {
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![seed],
+        launcher,
         env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())].into_iter().collect(),
         data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
     }
@@ -339,16 +361,15 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     // The admin side, on the address the provider's runtimes can reach.
     let admin = admin_side(prepared.admin_ip, &fabric_id).await;
     let observer = &admin.observer;
-    let template = template(&fabric_id, admin.seed.clone());
+    let template = template(&fabric_id, admin.seed.clone(), admin.launcher.clone());
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
     let node_name = "mesh1.rpc.1".parse().unwrap();
-    let allocator = tokio::sync::Mutex::new(prepared.allocator);
     let sink = Published::default();
     let pipeline = DeploymentPipeline {
         provider: &*provider,
-        allocator: &allocator,
+        joins: &admin.joins,
         observer,
         sink: &sink,
         lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
@@ -369,8 +390,8 @@ pub async fn deploy_through_every_step(spawn_type: &str) -> Smoke {
     assert_eq!(provider.inspect(&created.handle).await, DeploymentStatus::Running);
     let published = sink.nodes.lock().unwrap().clone();
     assert_eq!(published.iter().map(|n| n.status).collect::<Vec<_>>(), vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic]);
-    let held = allocator.lock().await.held(&created.node.name).cloned().expect("the allocator holds the node");
-    assert_eq!(created.node.transport_addr, Some(held.transport));
+    let reported = created.node.transport_addr.expect("a created node carries the address it reported");
+    assert!(reported.port() != 0 && !reported.ip().is_unspecified(), "{reported} is not an address a peer can dial");
 
     // A container node lives in its own network namespace, at its own
     // address on the fabric network: nothing on the host holds its ports.
