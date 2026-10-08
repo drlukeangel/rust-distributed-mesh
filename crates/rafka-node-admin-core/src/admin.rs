@@ -1599,6 +1599,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The mesh's id names its membership channel: the launch names it (the
     // launching admin always does), else the join answer's projection knows
     // it, else this admin is the mesh's first and mints it.
+    // The process's one Node RPC client, built before the join: the join is its first call, and
+    // the membership feed starts once the process holds a book.
+    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
@@ -1634,8 +1637,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             },
             None,
         );
-        let join_client = rafka_node_rpc::NodeRpcClient::new(endpoint.clone(), node_rpc_resolver.clone());
-        let answer = crate::join::call_join(&join_client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &anchor.id.fmt_short().to_string(), &join_digest, 5)
+        let answer = crate::join::call_join(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &anchor.id.fmt_short().to_string(), &join_digest, 5)
             .await
             .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
         pulled = Some(answer);
@@ -1770,7 +1772,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let _ = records.contacts.set(nodes_storage.clone());
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
-    let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::start_observed(node_rpc_resolver.clone(), endpoint.clone(), &book, &name.to_string(), Some(connections.clone()));
+    let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
     let control = Arc::new(
         ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)).with_contexts(attempt_contexts.clone()),
     );

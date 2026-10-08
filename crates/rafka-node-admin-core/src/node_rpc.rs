@@ -41,13 +41,25 @@ impl ProcessNodeRpc {
         node: &str,
         observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
+        let me = Self::new(resolver, endpoint, observer);
+        let feed = me.feed(book, node);
+        (me, feed)
+    }
+
+    /// The process's one client on `endpoint`, dialling through `resolver`, before any membership
+    /// exists: a node's first call (its `JoinNode`) goes through it, and [`Self::feed`] starts the
+    /// resolver's membership feed once the process holds a book.
+    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>) -> Self {
         let mut client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
         if let Some(o) = observer {
             client = client.with_connection_observer(o);
         }
-        let client = Arc::new(client);
-        let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
-        (Self { resolver, client }, feed)
+        Self { resolver, client: Arc::new(client) }
+    }
+
+    /// Feed this process's resolver from `book` for as long as the returned task runs.
+    pub fn feed(&self, book: &DigestBook, node: &str) -> tokio::task::JoinHandle<()> {
+        spawn_feed(book.clone(), self.resolver.clone(), node.to_string())
     }
 }
 
