@@ -78,6 +78,8 @@ pub enum Refusal {
     AlreadyExited { pid: u32 },
     /// The signal was refused by the OS.
     SignalFailed { pid: u32, errno: i32 },
+    /// The signal was sent and the OS did not show its consequence within the bound.
+    NotAcknowledged { fault: Fault, pid: u32, state_after: Option<char> },
 }
 
 /// The OS observation that acknowledged an applied fault.
@@ -171,7 +173,7 @@ impl ExactRuntime {
                 return if acked {
                     Ok(Applied { fault, runtime: self.clone(), state_after: if exited { None } else { state }, exited })
                 } else {
-                    Err(Refusal::SignalFailed { pid: self.pid, errno: 0 })
+                    Err(Refusal::NotAcknowledged { fault, pid: self.pid, state_after: state })
                 };
             }
             std::thread::sleep(Duration::from_millis(10));

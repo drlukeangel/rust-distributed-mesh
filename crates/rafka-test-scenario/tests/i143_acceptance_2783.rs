@@ -730,8 +730,29 @@ async fn process_port_allocator_survives_seeded_collisions() {
     if !bind_errors.is_empty() {
         violations.push(format!("a runtime hit EADDRINUSE: {bind_errors:?}"));
     }
+    // The iroh `UnknownIssuer` mechanism (a caller keeping a restarted birth's old address that a
+    // foreign process now holds): every log and every exported span is scanned for it.
+    let mut unknown_issuer: Vec<String> = Vec::new();
+    for e in walk_logs(&root) {
+        for line in std::fs::read_to_string(&e).unwrap_or_default().lines().filter(|l| l.contains("UnknownIssuer")) {
+            unknown_issuer.push(format!("{}: {}", e.display(), line.chars().take(400).collect::<String>()));
+        }
+    }
     estate.stop().await;
     let spans = estate.spans();
+    for sp in &spans {
+        if sp.to_string().contains("UnknownIssuer") {
+            unknown_issuer.push(format!("span {} {}", sp["name"], sp["span_id"]));
+        }
+    }
+    for e in walk_logs(&root) {
+        for line in std::fs::read_to_string(&e).unwrap_or_default().lines().filter(|l| l.contains("UnknownIssuer")) {
+            let l = format!("{}: {}", e.display(), line.chars().take(400).collect::<String>());
+            if !unknown_issuer.contains(&l) {
+                unknown_issuer.push(l);
+            }
+        }
+    }
     let bind_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| attr(st, "step") == "WaitForBind").collect();
     let failed_binds: Vec<&&Value> = bind_steps.iter().filter(|st| attr(st, "outcome") != "complete").collect();
     if !failed_binds.is_empty() {
@@ -746,7 +767,7 @@ async fn process_port_allocator_survives_seeded_collisions() {
         "totals": {"birth_rounds": birth_rounds, "squats_skipped_by_the_allocator": skipped_total, "stale_claims_taken_over": stale_taken_total, "squatter_binds_refused": refused_total, "squatter_processes": squatter_count, "distinct_ports_squatted": held_by_squatters.len(), "wait_for_bind_steps": bind_steps.len()},
         "rows": rows, "violations": violations,
         "backend_spans": named(&own, "rdm.testkit.fault.update.via-process-signal").len(),
-        "unknown_issuer_observed": false,
+        "unknown_issuer": {"scanned": "every .log under the estate root (before and after the estate stopped) and every exported span", "matches": unknown_issuer.len(), "lines": unknown_issuer},
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
