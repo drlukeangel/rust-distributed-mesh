@@ -37,6 +37,11 @@
 //! there every step runs. `DeployRuntime` first looks for the runtime its
 //! deployment id already started, so a crash between spawning and the
 //! receipt never starts a second one. Every other step is idempotent.
+//!
+//! Each receipt records the executing admin (its endpoint, the seed every launch it makes
+//! carries). A birth launched by another executor that never joined is stopped and decided afresh
+//! under this executor's endpoint (`rdm.node_admin.deployment.reject.via-lost-executor`); a birth
+//! that joined, and an identity no runtime was made under, stand.
 
 use super::endpoint::{verify_bound_with, Assignment, EndpointAllocator, KindSpec};
 use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
@@ -542,6 +547,15 @@ pub struct LaunchTemplate {
     pub data_root: PathBuf,
 }
 
+impl LaunchTemplate {
+    /// The executing admin, as its receipts record it: the endpoint (`key@addr`) every launch
+    /// from this template carries as its seed. Another birth of the same admin path has another
+    /// endpoint, so a decision recorded under one executor is told from another's.
+    pub fn executor(&self) -> String {
+        self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(",")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
     pub build_id: BuildId,
@@ -688,6 +702,8 @@ struct Run<'r> {
     operation: String,
     /// Outputs of this operation's `Complete` receipts from earlier attempts.
     done: HashMap<String, Option<serde_json::Value>>,
+    /// The executor that recorded each of `done` (`None`: a line that did not record it).
+    owner: HashMap<String, Option<String>>,
     /// Still reusing: no step of this run has had to execute yet.
     reusing: bool,
 }
@@ -698,19 +714,17 @@ impl DeploymentPipeline<'_> {
     /// died mid-run), after the last attempt whose run ended
     /// ([`last_ended_attempt`]): failed, or finished.
     async fn begin<'r>(&self, build_id: &'r BuildId, attempt: u32, node: &'r PathName, operation: String) -> Run<'r> {
-        let done = match self.builds.read_build(build_id).await {
+        let (done, owner) = match self.builds.read_build(build_id).await {
             Ok(view) => {
                 let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
                 let ended = last_ended_attempt(&earlier.iter().collect::<Vec<_>>(), &operation, attempt);
-                earlier
-                    .into_iter()
-                    .filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete)
-                    .map(|r| (r.step, r.output))
-                    .collect()
+                let handed_on: Vec<BuildStepReceipt> = earlier.into_iter().filter(|r| r.attempt > ended && r.outcome == StepOutcome::Complete).collect();
+                let owner = handed_on.iter().map(|r| (r.step.clone(), r.executor.clone())).collect();
+                (handed_on.into_iter().map(|r| (r.step, r.output)).collect(), owner)
             }
-            Err(_) => HashMap::new(),
+            Err(_) => (HashMap::new(), HashMap::new()),
         };
-        Run { build_id, attempt, node, operation, done, reusing: true }
+        Run { build_id, attempt, node, operation, done, owner, reusing: true }
     }
 
     fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32, restart: bool) -> tracing::Span {
@@ -769,7 +783,7 @@ impl DeploymentPipeline<'_> {
                 step: step.into(),
                 outcome,
                 output,
-                executor: None,
+                executor: Some(self.template.executor()),
             })
             .await;
         r.map_err(|reason| PipelineError { step, reason })
@@ -796,13 +810,39 @@ impl DeploymentPipeline<'_> {
         // runtime runs. A launch that has since died (its executor's mesh was
         // lost with it) is a lost birth: everything is decided afresh, a new
         // identity and endpoints the current allocator hands out.
+        let executor = self.template.executor();
+        let recorded_by_another = |run: &Run<'_>, step: CreateStep| run.owner.get(step.name()).is_some_and(|o| o.as_deref() != Some(executor.as_str()));
         if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
-            let alive = match serde_json::from_value::<DeploymentHandle>(h.clone()) {
-                Ok(h) => self.provider.inspect(&h).await == DeploymentStatus::Running,
-                Err(_) => false,
+            let earlier = serde_json::from_value::<DeploymentHandle>(h.clone()).ok();
+            let alive = match &earlier {
+                Some(h) => self.provider.inspect(h).await == DeploymentStatus::Running,
+                None => false,
             };
             if !alive {
                 tracing::info!(node = %req.node, "the earlier attempt's runtime is gone: a fresh birth");
+                run.done.clear();
+            } else if recorded_by_another(&run, CreateStep::DeployRuntime) && !run.done.contains_key(CreateStep::WaitForMeshJoin.name()) {
+                // Launched by an executor that is not this one and never joined: its only seed is
+                // that executor's endpoint, which this birth can no longer rely on (the lost admin's
+                // address may answer as another process). The birth is stopped and decided afresh
+                // under this executor's endpoint; a birth that joined has used its seed and stands.
+                let stranded = earlier.expect("alive implies a decoded handle");
+                let span = tracing::info_span!(
+                    "rdm.node_admin.deployment.reject.via-lost-executor",
+                    node = %req.node,
+                    build_id = %req.build_id,
+                    attempt = req.attempt,
+                    step = CreateStep::DeployRuntime.name(),
+                    deployment_id = %stranded.deployment_id,
+                    recorded_executor = run.owner.get(CreateStep::DeployRuntime.name()).and_then(|o| o.as_deref()).unwrap_or("not recorded"),
+                    executor = %executor,
+                );
+                use tracing::Instrument;
+                self.provider
+                    .terminate(&stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
+                    .instrument(span)
+                    .await
+                    .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })?;
                 run.done.clear();
             }
         } else if let Some(Some(v)) = run.done.get(CreateStep::AllocateEndpoints.name()) {
@@ -813,7 +853,8 @@ impl DeploymentPipeline<'_> {
             // whatever that attempt launched may still bind it after its executor died, so the
             // endpoints are allocated afresh by the claim and the bind probe; the identity (never
             // born) is kept.
-            let ours = serde_json::from_value::<Assignment>(v.clone()).ok().is_some_and(|a| self.allocator.lock().unwrap().held(&req.node) == Some(&a));
+            let ours = !recorded_by_another(&run, CreateStep::AllocateEndpoints)
+                && serde_json::from_value::<Assignment>(v.clone()).ok().is_some_and(|a| self.allocator.lock().unwrap().held(&req.node) == Some(&a));
             if !ours {
                 tracing::info!(node = %req.node, "the earlier attempt's endpoints are not this executor's reservation: allocated afresh");
                 run.done.remove(CreateStep::AllocateEndpoints.name());
