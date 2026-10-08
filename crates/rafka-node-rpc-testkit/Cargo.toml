@@ -42,3 +42,7 @@ path = "src/bin/rafka_rpc_probe.rs"
 [[bin]]
 name = "faulted-node-admin"
 path = "src/bin/faulted_node_admin.rs"
+
+[[bin]]
+name = "rafka-port-squatter"
+path = "src/bin/rafka_port_squatter.rs"
