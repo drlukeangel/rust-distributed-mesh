@@ -90,6 +90,16 @@ fn walk_logs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// One offline-tickle round at its longest: the direct ping and every via-peer carrier, each one call
+/// of the default budget.
+fn tickle_round() -> std::time::Duration {
+    let budget = match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => d,
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    };
+    budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32)
+}
+
 fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {
     sp["attributes"][k].as_str().unwrap_or_default()
 }
@@ -106,7 +116,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     let estate = Estate::bootstrap(owner(cell, provider), "fabric1", "mesh1").await;
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
-    let cfg = Config::mm(seed, secs, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval());
+    let cfg = Config::mm(seed, secs, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
     let driver = Driver::new(estate, cfg).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.

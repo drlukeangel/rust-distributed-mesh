@@ -103,12 +103,16 @@ pub struct Config {
     /// (`rafka_mesh_transport::membership`): the windows a silence is observed within.
     pub floor: Duration,
     pub backbone: Duration,
+    /// The longest one offline-tickle round takes: the direct ping plus every via-peer carrier, each
+    /// one call of the default budget (`rafka_node_rpc::CallOptions::default().budget` x (1 +
+    /// `rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT`)).
+    pub tickle_round: Duration,
 }
 
 impl Config {
     /// Two meshes of two node-admins and three rpc nodes; a mesh holds 2..=3 node-admins and
     /// 3..=4 rpc nodes.
-    pub fn mm(seed: u64, secs: u64, floor: Duration, backbone: Duration) -> Self {
+    pub fn mm(seed: u64, secs: u64, floor: Duration, backbone: Duration, tickle_round: Duration) -> Self {
         Self {
             seed,
             secs,
@@ -116,6 +120,20 @@ impl Config {
             bounds: BTreeMap::from([(NodeClass::NodeAdmin, ClassBounds { min: 2, max: 3 }), (NodeClass::RpcNode, ClassBounds { min: 3, max: 4 })]),
             floor,
             backbone,
+            tickle_round,
+        }
+    }
+
+    /// How long a silenced node takes to be marked unheard in the view of the observer that judges
+    /// it. Pending-reconnect: the staleness floor, then the views converge. True offline (`dead`):
+    /// the mark at the floor, round 1 half a floor later, round 2 at least one floor after round 1
+    /// found no path, each round at most `tickle_round`, then the mesh primary's write reaches the
+    /// view (offline.rs, fabric-node-lifecycle.md section 7.3).
+    pub fn unheard_within(&self, true_offline: bool) -> Duration {
+        if true_offline {
+            self.floor * 5 / 2 + self.tickle_round * 2 + self.backbone * 4 + Duration::from_secs(10)
+        } else {
+            self.floor * 3 + self.backbone * 2 + Duration::from_secs(30)
         }
     }
 
@@ -148,6 +166,9 @@ pub struct Repro {
     pub original_len: usize,
     pub minimized: Vec<Action>,
     pub candidates_tried: usize,
+    /// The live facts of the failing round: the round's log entry (the node ids, the Build, what
+    /// the convergence was waiting on). The model carries none of them.
+    pub live: Value,
     /// What "minimized" means here.
     pub definition: &'static str,
 }
@@ -590,15 +611,30 @@ impl Driver {
             }
             None
         };
+        // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
+        // its class: it replaces the node at the same path.name only when no lower ordinal is free.
+        let lands_on_same_path = |p: &str| -> Option<String> {
+            let (mesh, _) = self.model.node(p)?;
+            let mut it = p.rsplitn(2, '.');
+            let ordinal: u32 = it.next()?.parse().ok()?;
+            let stem = it.next()?;
+            let free = (1..ordinal).find(|i| !self.model.meshes[mesh].nodes.contains_key(&format!("{stem}.{i}")))?;
+            Some(format!("replace: {stem}.{free} is free, so a spawn after deleting {p} lands there, not at {p}"))
+        };
         match a {
             Action::Kill { node: p } | Action::Wedge { node: p } => guarded(p, kind(a)),
-            Action::Shrink { node: p } | Action::Replace { node: p } => guarded(p, kind(a)),
+            Action::Replace { node: p } => guarded(p, kind(a)).or_else(|| lands_on_same_path(p)),
+            Action::Shrink { node: p } => guarded(p, kind(a)),
             Action::Restart { node: p } => node(p).filter(|n| n["is_fabric_primary"] == true).map(|_| format!("restart: {p} is the fabric-primary; it leaves only by a hand-off Build")),
             Action::HandOff { mesh } => {
                 let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic");
                 match primary {
                     None => Some(format!("hand-off: {mesh} has no ready mesh primary")),
-                    Some(p) => guarded(&s(&p["name"]), "hand-off").filter(|r| r.contains("bootstrap")),
+                    Some(p) if p["is_fabric_primary"] == true => Some(format!(
+                        "hand-off: {} is the fabric-primary; its hand-off Build closes before its runtime is gone, so the spawn after it finds the predecessor alive and creates nothing (fabric-primary hand-off defect)",
+                        s(&p["name"])
+                    )),
+                    Some(p) => guarded(&s(&p["name"]), "hand-off").filter(|r| r.contains("bootstrap")).or_else(|| lands_on_same_path(&s(&p["name"]))),
                 }
             }
             Action::Unheard { mesh } => {
@@ -621,7 +657,8 @@ impl Driver {
                 None => return Some(a),
                 Some(why) => {
                     self.sched.record("redraw", &why);
-                    *self.skipped.entry(why.split(':').next().unwrap_or("").to_string() + " (" + why.splitn(2, ": ").nth(1).unwrap_or("") + ")").or_default() += 1;
+                    let code = ["fabric-primary hand-off defect", "fabric-primary", "control address", "is free, so a spawn", "no ready mesh primary"].iter().find(|c| why.contains(**c)).copied().unwrap_or("other");
+                    *self.skipped.entry(format!("{}: {code}", kind(&a))).or_default() += 1;
                 }
             }
         }
@@ -703,7 +740,9 @@ impl Driver {
         });
         if let Some(v) = first {
             let involved: BTreeSet<String> = ledger_violations.iter().filter(|(r, _)| *r == v.rule).flat_map(|(_, d)| self.paths_named_in(d)).chain(self.executed.get(v.step).and_then(|a| node_of(a).map(String::from))).collect();
-            report.repro = Some(reproduce(self.cfg.seed, &self.initial, &self.executed, &v.rule, v.step, &v.detail, involved));
+            let mut repro = reproduce(self.cfg.seed, &self.initial, &self.executed, &v.rule, v.step, &v.detail, involved);
+            repro.live = report.rounds_log.iter().find(|e| e["step"] == v.step).cloned().unwrap_or(Value::Null);
+            report.repro = Some(repro);
         }
         (report, self.estate)
     }
@@ -983,8 +1022,7 @@ impl Driver {
         let container = self.estate.owner.provider == "container";
         let is_rpc = n["kind"] == "rpc_node";
         let exact = format!("exact:{}", s(&n["node_id"]));
-        let (floor, backbone) = (self.cfg.floor, self.cfg.backbone);
-        let within = floor * 3 + backbone * 2 + Duration::from_secs(30);
+        let floor = self.cfg.floor;
         let key = (9000 + round).to_string();
         let probe = self.estate.probe_handle();
         let admin = self.estate.admin.clone();
@@ -1022,7 +1060,7 @@ impl Driver {
         let true_offline = self.rng.next() % 2 == 0;
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
         let known = self.known.clone();
-        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, within).await;
+        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, self.cfg.unheard_within(true_offline)).await;
         let mut reads = Vec::new();
         let mut outcomes = Vec::new();
         if marked.is_ok() && is_rpc {
@@ -1103,7 +1141,7 @@ impl Driver {
         }
         // Seen from the other mesh: control is read through its admins.
         let others: Vec<String> = self.known.iter().filter(|b| !nodes.iter().any(|n| n["mesh"] == mesh && n["admin_api_base"] == b.as_str())).cloned().collect();
-        let within = self.cfg.floor * 3 + self.cfg.backbone * 2 + Duration::from_secs(30);
+        let within = self.cfg.unheard_within(false);
         self.silenced.insert(mesh.to_string(), sil);
         until_unheard(&mut self.estate, &others, &members, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
         entry["silenced"] = json!({"mesh": mesh, "members": members});
@@ -1261,7 +1299,7 @@ pub fn reproduce(seed: u64, initial: &Model, executed: &[Action], rule: &str, st
     let prefix: Vec<Action> = executed.iter().take(step + 1).cloned().collect();
     let failing = prefix.last().cloned();
     let Some(failing) = failing else {
-        return Repro { seed, rule: rule.into(), failing_step: step, failing_action: Action::Heal { mesh: String::new() }, involved: involved.into_iter().collect(), original_len: 0, minimized: Vec::new(), candidates_tried: 0, definition: REPRO_DEFINITION };
+        return Repro { seed, rule: rule.into(), failing_step: step, failing_action: Action::Heal { mesh: String::new() }, involved: involved.into_iter().collect(), original_len: 0, minimized: Vec::new(), candidates_tried: 0, live: Value::Null, definition: REPRO_DEFINITION };
     };
     let pre_shape = replay(initial, &prefix[..prefix.len() - 1]).map(|m| m.shape()).unwrap_or_default();
     let keep: Vec<&Action> = prefix.iter().filter(|a| node_of(a).is_some_and(|n| involved.contains(n))).collect();
@@ -1289,8 +1327,8 @@ pub fn reproduce(seed: u64, initial: &Model, executed: &[Action], rule: &str, st
         Err(fail(cand.len() - 1, detail))
     };
     match shrink(initial, &prefix, property) {
-        Some(sh) => Repro { seed, rule: rule.into(), failing_step: step, failing_action: failing, involved: involved.into_iter().collect(), original_len: prefix.len(), minimized: sh.minimized, candidates_tried: sh.candidates_tried, definition: REPRO_DEFINITION },
-        None => Repro { seed, rule: rule.into(), failing_step: step, failing_action: failing, involved: involved.into_iter().collect(), original_len: prefix.len(), minimized: prefix, candidates_tried: 0, definition: REPRO_DEFINITION },
+        Some(sh) => Repro { seed, rule: rule.into(), failing_step: step, failing_action: failing, involved: involved.into_iter().collect(), original_len: prefix.len(), minimized: sh.minimized, candidates_tried: sh.candidates_tried, live: Value::Null, definition: REPRO_DEFINITION },
+        None => Repro { seed, rule: rule.into(), failing_step: step, failing_action: failing, involved: involved.into_iter().collect(), original_len: prefix.len(), minimized: prefix, candidates_tried: 0, live: Value::Null, definition: REPRO_DEFINITION },
     }
 }
 
