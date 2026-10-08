@@ -851,6 +851,7 @@ impl AdminRunner {
             step: "NodeDeleted".into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: serde_json::to_value(&op).ok(),
+            executor: None,
         };
         if let Err(e) = self.builds.append_step_receipt(&receipt).await {
             tracing::info!(node = %path, error = %e, "the proven departure was published but not recorded on the Build");

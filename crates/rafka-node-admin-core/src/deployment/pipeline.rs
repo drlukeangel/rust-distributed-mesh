@@ -769,6 +769,7 @@ impl DeploymentPipeline<'_> {
                 step: step.into(),
                 outcome,
                 output,
+                executor: None,
             })
             .await;
         r.map_err(|reason| PipelineError { step, reason })
@@ -1276,7 +1277,7 @@ mod tests {
     use super::*;
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None }
+        BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]

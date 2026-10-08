@@ -79,7 +79,7 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
         (CreateStep::AllocateEndpoints.name(), serde_json::to_value(&dead_assignment).unwrap()),
     ] {
         builds
-            .append_step_receipt(&BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output: Some(output) })
+            .append_step_receipt(&BuildStepReceipt { build_id: build_id.clone(), attempt: 1, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output: Some(output), executor: None })
             .await
             .unwrap();
     }

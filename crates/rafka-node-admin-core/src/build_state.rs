@@ -97,6 +97,11 @@ pub struct BuildStepReceipt {
     /// a re-run reuses it instead of deciding again. Absent on older lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<serde_json::Value>,
+    /// The executing admin that decided this step: the endpoint (`key@addr`) every launch it made
+    /// carries as its seed. A re-run by another executor reads which of these decisions name a
+    /// lost admin. Absent on lines written by an executor that did not record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,7 +713,7 @@ mod tests {
     }
 
     fn step(id: &str, attempt: u32, op: &str) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId(id.into()), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None }
+        BuildStepReceipt { build_id: BuildId(id.into()), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
     }
 
     fn attempt(id: &str, attempt: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {
@@ -774,6 +779,7 @@ mod tests {
                 step: step.into(),
                 outcome: StepOutcome::Complete,
                 output: Some(serde_json::to_value(output).unwrap()),
+                executor: None,
             })
         };
         let facts = vec![

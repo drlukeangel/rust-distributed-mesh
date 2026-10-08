@@ -104,6 +104,7 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
             step: "AllocateEndpoints".into(),
             outcome: StepOutcome::Complete,
             output: Some(serde_json::json!([{"slot": "rpc-0", "addr": format!("127.0.0.1:{}", 41000 + i), "freshness": "f".repeat(32)}])),
+            executor: None,
         })
         .await
         .unwrap();
