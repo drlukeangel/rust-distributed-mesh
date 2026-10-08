@@ -222,6 +222,19 @@ pub struct Records {
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
     /// `Dead` while they stay silent.
     pub offline: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The peer mesh the fabric primary's investigation decided to rebirth: the fabric is
+    /// `degraded` from the decision until the mesh has a ready primary of a later birth.
+    peer_recovery: Mutex<Option<PeerRecovery>>,
+}
+
+/// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRecovery {
+    pub mesh: String,
+    /// The Rafka-time of the decision.
+    pub verdict_rafka_ms: u64,
+    /// The node-admin births of the mesh the decision found.
+    pub lost: Vec<IncarnationId>,
 }
 
 /// The seats (`is_primary`, `is_fabric_primary`) by holder. A fabric shutdown runs no election
@@ -238,6 +251,15 @@ pub struct Seats {
 }
 
 impl Records {
+    /// The peer mesh being reborn after the investigation's decision (`None`: no recovery is open).
+    pub fn peer_recovery(&self) -> Option<PeerRecovery> {
+        self.peer_recovery.lock().unwrap().clone()
+    }
+
+    pub fn set_peer_recovery(&self, recovery: Option<PeerRecovery>) {
+        *self.peer_recovery.lock().unwrap() = recovery;
+    }
+
     /// A fabric shutdown is held: keep the seats as they were before any admin drained.
     pub fn hold_seats(&self) {
         let mut seats = self.seats.lock().unwrap();
@@ -446,7 +468,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         }
     }
     if topology.fabric_primary().is_some() {
-        topology.fabric.status = ScopeStatus::ReadyForTraffic;
+        // The fabric primary authors `degraded` from the investigation's rebirth decision until the
+        // reborn mesh's primary authors ready (`crate::investigate`).
+        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
     }
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
@@ -473,6 +497,7 @@ pub async fn reconcile_drift(
     contexts: &crate::build_claim::AttemptContexts,
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
+    defers: &(dyn Fn(&str) -> bool + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
@@ -498,6 +523,12 @@ pub async fn reconcile_drift(
     }
     let t = &map;
     for n in crate::drift::unheard(t) {
+        // A peer mesh with no live node-admin is reborn on the investigation's decision
+        // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
+        // other birth, a node-admin of a mesh that still has one included, is proven here as ever.
+        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+            continue;
+        }
         let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
         let (fact, data_dir, birth) = match (&held, row) {
@@ -2654,6 +2685,26 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             }
         }));
     }
+    // The peer-mesh investigation (`crate::investigate`): while this admin is the fabric primary,
+    // a peer mesh it stops hearing on the backbone is probed through its own members and reborn
+    // only when one of them cannot reach its own node-admin. Its decision is what releases the
+    // drift check below to replace that mesh's node-admins.
+    let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::RULED)));
+    {
+        let held = connections.held();
+        let watch = crate::investigate::Watch {
+            me: name.clone(),
+            round: rafka_mesh_transport::membership::backbone_gossip_interval(),
+            membership: membership.clone(),
+            topology: control.topology.clone(),
+            records: records.clone(),
+            client: node_rpc.client.clone(),
+            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
+            ladder: ladder.clone(),
+            carriers: Mutex::new(BTreeMap::new()),
+        };
+        tasks.push(tokio::spawn(crate::investigate::run(watch)));
+    }
     let executor;
     // The executor: continues every Build whose next operation this admin
     // executes (`executor::executor_for`). A launched admin starts it only
@@ -2679,6 +2730,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let (me, deployer, accepted, drift_builds, drift_contexts) = (name.clone(), runner.provider.clone(), accepted.clone(), builds_dyn.clone(), attempt_contexts.clone());
         let frozen = shutdown_control.clone();
         let drift_nodes = nodes_storage.clone();
+        let ladder = ladder.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
             loop {
@@ -2697,7 +2749,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| ladder.lock().unwrap().defers_rebirth(mesh)).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {

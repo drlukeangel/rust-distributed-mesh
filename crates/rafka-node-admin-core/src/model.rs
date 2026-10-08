@@ -66,6 +66,8 @@ pub enum ScopeStatus {
     ReadyForTraffic,
     Draining,
     Retired,
+    /// The fabric primary has decided a peer mesh is reborn (`investigate`).
+    Degraded,
 }
 
 /// Deployment provider kind, fabric policy (PRD §1.7).

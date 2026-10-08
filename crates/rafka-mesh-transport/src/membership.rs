@@ -2336,6 +2336,25 @@ impl DigestBook {
         self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect()
     }
 
+    /// How long it has been since `mesh` was last heard on the backbone at `now`: the youngest
+    /// receipt of any of its members listed in an aggregate received here. `None` when no member of
+    /// the mesh was ever received that way (a mesh known only from forwarded topology, an entry
+    /// answer or this node's own mesh has no backbone receipt: topology is not liveness, R-G2).
+    pub fn mesh_unheard(&self, mesh: &str, now: Instant) -> Option<Duration> {
+        self.inner
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(d, _, heard)| d.node.name.mesh == mesh && *heard == Heard::Forwarded)
+            .map(|(_, at, _)| now.saturating_duration_since(*at))
+            .min()
+    }
+
+    /// The meshes with a backbone receipt held (see [`Self::mesh_unheard`]).
+    pub fn backbone_meshes(&self) -> BTreeSet<String> {
+        self.inner.lock().unwrap().values().filter(|(_, _, heard)| *heard == Heard::Forwarded).map(|(d, _, _)| d.node.name.mesh.clone()).collect()
+    }
+
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;

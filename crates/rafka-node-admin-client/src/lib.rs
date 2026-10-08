@@ -44,6 +44,7 @@ pub enum ScopeStatus {
     ReadyForTraffic,
     Draining,
     Retired,
+    Degraded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

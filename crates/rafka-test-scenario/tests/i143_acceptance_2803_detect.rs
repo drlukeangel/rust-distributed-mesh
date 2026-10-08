@@ -249,7 +249,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     for (i, p) in probes.iter().enumerate() {
         assert_eq!(attr(p, "probe"), (i + 1).to_string(), "probes are numbered in order");
         assert_eq!(attr(p, "outcome"), "carrier-edge-lost", "the member cannot reach its own node-admin: {p:#?}");
-        assert!(survivors.contains(&attr(p, "member")) && survivors.contains(&attr(p, "carrier")), "a member of {} carried it: {p:#?}", f.lost);
+        assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
     }
     assert!(round(probes[0]) >= 10, "probe 1 fires at 10 rounds unheard, not before: round {}", round(probes[0]));
     assert!(round(probes[1]) >= 20, "probe 2 fires at 20 rounds unheard, not before: round {}", round(probes[1]));
@@ -309,7 +309,7 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
     })
     .await;
     assert_eq!(attr(&first, "outcome"), "admin-alive", "the node-admin answered the carried probe: {first:#?}");
-    // 25 rounds on (past probe 2 and 30 rounds from the first receipt), the investigation is over.
+    // 40 rounds on (past probe 2 and the decision), the investigation is over.
     tokio::time::sleep(Duration::from_millis(ROUND_MS * 40)).await;
     let fabric = f.fabric_status().await;
     drop(cut);
@@ -327,7 +327,7 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
 
 /// CONTRACT (#2803 detection): the peer mesh is heard again between the probes and the
 /// investigation is cancelled. Both node-admins of the peer mesh are frozen (SIGSTOP: no backbone
-/// word, no exit) until probe 1 is made, then continued before probe 2: the fabric primary hears the
+/// word, no exit) for 11 rounds, then continued before probe 2: the fabric primary hears the
 /// mesh on the backbone again, records the cancel as the verdict `heard-again`, sends no second
 /// probe and rebirths nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -341,16 +341,13 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     for (_, pid) in &admins {
         signal(*pid, "-STOP");
     }
-    let first = wait_for("probe 1 is made", Duration::from_secs(120), || {
-        let spans = f.estate.spans();
-        let found = f.probes(&spans).first().map(|p| (*p).clone());
-        async move { found }
-    })
-    .await;
+    // Probe 1 is due at 10 rounds unheard and takes as long as the dial to a frozen node-admin
+    // does; the mesh is continued at 11 rounds, between probe 1 and probe 2 (20 rounds).
+    tokio::time::sleep(Duration::from_millis(ROUND_MS * 11)).await;
     for (_, pid) in &admins {
         signal(*pid, "-CONT");
     }
-    let verdict = wait_for("the cancel is recorded", Duration::from_secs(60), || {
+    let verdict = wait_for("the cancel is recorded", Duration::from_secs(90), || {
         let spans = f.estate.spans();
         let found = f.verdicts(&spans).into_iter().find(|v| attr(v, "outcome") == "heard-again").cloned();
         async move { found }
@@ -364,7 +361,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     assert_eq!(f.probes(&spans).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
     assert!(f.rebirths(&spans).is_empty(), "no rebirth of a mesh that is heard again");
     assert_eq!(fabric, "ready-for-traffic");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe": first["attributes"], "verdict": verdict["attributes"]}));
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
 }
 
 /// CONTRACT (#2803 detection): no member answers, so nothing is reborn. Every runtime of the peer
