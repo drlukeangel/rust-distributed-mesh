@@ -5,7 +5,6 @@ edition = "2021"
 description = "Generic Fabric/Mesh/Node control: model, topology, Build, deployment and lifecycle (i143)"
 publish = false
 
-# No doctest exists here, and a doctest build links the unhashed libiroh.rlib that any concurrent cargo run rewrites (vendor/iroh is a path crate).
 [lib]
 doctest = false
 

@@ -5,7 +5,6 @@ edition = "2021"
 description = "Generic Node RPC runtime over Iroh: exact-target client/server, commit cut, admission (i143)"
 publish = false
 
-# No doctest exists here, and a doctest build links the unhashed libiroh.rlib that any concurrent cargo run rewrites (vendor/iroh is a path crate).
 [lib]
 doctest = false
 
@@ -20,6 +19,8 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
+# i143_acceptance_2781 installs a custom PathSelector, which iroh gates behind this feature.
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }

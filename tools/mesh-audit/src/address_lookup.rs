@@ -72,7 +72,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = e.path();
         let name = e.file_name();
         if p.is_dir() {
-            if name != "target" && name != ".git" && name != "vendor" {
+            if name != "target" && name != ".git" {
                 rust_files(&p, out);
             }
         } else if p.extension().is_some_and(|x| x == "rs") {

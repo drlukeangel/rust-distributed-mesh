@@ -7,7 +7,6 @@ publish = false
 
 # Exactly the import manifest a product takes (i141 PRD §3): the generic packages, by workspace
 # path here, by one git+rev downstream. Nothing else of RDM.
-# No doctest exists here, and a doctest build links the unhashed libiroh.rlib that any concurrent cargo run rewrites (vendor/iroh is a path crate).
 [lib]
 doctest = false
 
