@@ -333,15 +333,28 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 /// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no
 /// `Complete` step yet. Derived from the Build facts on every round, never stored: a successor
 /// primary publishes the same overlays from the same facts.
-pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> Vec<rafka_mesh_entity::LifecycleOp> {
-    let mut out = Vec::new();
+pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
+    let mut out = InFlight::default();
     for p in builds.values() {
         for s in &p.steps {
             if s.outcome != StepOutcome::Complete || (s.step != "NodeDeleting" && s.step != "NodeRestarting") {
                 continue;
             }
-            let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) else {
-                continue;
+            // A pre-event step this build cannot read is refused by name, never skipped as if it
+            // carried no operation.
+            let unrecognised = |reason: String| UnrecognisedStep { build_id: s.build_id.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone(), reason };
+            let op = match s.output.as_ref() {
+                None => {
+                    out.unrecognised.push(unrecognised("the step recorded no operation".into()));
+                    continue;
+                }
+                Some(v) => match serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()) {
+                    Ok(op) => op,
+                    Err(e) => {
+                        out.unrecognised.push(unrecognised(format!("its recorded operation is not a LifecycleOp this build reads: {e}")));
+                        continue;
+                    }
+                },
             };
             let closed = if s.step == "NodeDeleting" {
                 p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
@@ -349,11 +362,29 @@ pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> Vec<rafka_m
                 p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
             };
             if !closed {
-                out.push(op);
+                out.ops.push(op);
             }
         }
     }
     out
+}
+
+/// The open lifecycle operations of the Build facts, and every pre-event step whose recorded
+/// operation this build does not recognise.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InFlight {
+    pub ops: Vec<rafka_mesh_entity::LifecycleOp>,
+    pub unrecognised: Vec<UnrecognisedStep>,
+}
+
+/// A completed `NodeDeleting`/`NodeRestarting` step whose recorded operation cannot be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognisedStep {
+    pub build_id: BuildId,
+    pub attempt: u32,
+    pub operation: String,
+    pub step: String,
+    pub reason: String,
 }
 
 #[async_trait]
@@ -819,7 +850,7 @@ mod tests {
             with(&b.operation, "NodeDeleting", &b),
             with(&b.operation, "MarkDraining", &b),
         ];
-        let open = in_flight_ops(&fold(&facts));
+        let open = in_flight_ops(&fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
 
         // A restart's pre-event is a step of its retire half; the restart is open until its
@@ -828,9 +859,38 @@ mod tests {
         let mut facts = facts;
         facts.push(with("retire-node:mesh1.rpc.3", "NodeRestarting", &c));
         facts.push(with("retire-node:mesh1.rpc.3", "TerminateRuntime", &c));
-        assert_eq!(in_flight_ops(&fold(&facts)), vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
+        assert_eq!(in_flight_ops(&fold(&facts)).ops, vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
         facts.push(with("restart-node:mesh1.rpc.3", "Complete", &c));
-        assert_eq!(in_flight_ops(&fold(&facts)), vec![b], "the restart's create half completing closes it");
+        assert_eq!(in_flight_ops(&fold(&facts)).ops, vec![b], "the restart's create half completing closes it");
+        assert!(in_flight_ops(&fold(&facts)).unrecognised.is_empty());
+    }
+
+    /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
+    /// another build wrote, a field it renamed) is refused by name (build, attempt, operation, step,
+    /// why) and opens no overlay; it is never skipped as if it carried nothing.
+    #[test]
+    fn a_pre_event_step_this_build_cannot_read_is_refused_by_name() {
+        let step = |output: Option<serde_json::Value>| {
+            BuildFact::Step(BuildStepReceipt {
+                build_id: BuildId("b1".into()),
+                attempt: 2,
+                operation: "retire-node:mesh1.rpc.1".into(),
+                step: "NodeDeleting".into(),
+                outcome: StepOutcome::Complete,
+                output,
+                executor: None,
+            })
+        };
+        let old_shape = serde_json::json!({"build_id": "b1", "attempt": 2, "operation": "retire-node:mesh1.rpc.1", "event_at_ms": 1});
+        let facts = vec![BuildFact::Accepted(intent("b1")), step(Some(old_shape))];
+        let read = in_flight_ops(&fold(&facts));
+        assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
+        assert_eq!(read.unrecognised.len(), 1, "{read:?}");
+        let u = &read.unrecognised[0];
+        assert_eq!((u.attempt, u.operation.as_str(), u.step.as_str()), (2, "retire-node:mesh1.rpc.1", "NodeDeleting"));
+        assert!(u.reason.contains("not a LifecycleOp this build reads"), "{}", u.reason);
+        let none = in_flight_ops(&fold(&[BuildFact::Accepted(intent("b1")), step(None)]));
+        assert_eq!(none.unrecognised[0].reason, "the step recorded no operation");
     }
 
     #[tokio::test]

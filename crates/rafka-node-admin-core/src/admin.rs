@@ -2235,12 +2235,21 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         hierarchy = tokio::spawn(async move {
             let mut last_overlays: Option<(Vec<rafka_mesh_entity::LifecycleOp>, Vec<rafka_mesh_entity::LifecycleOp>)> = None;
             let mut rounds: u32 = 0;
+            // Each unreadable pre-event step is named once, not every round.
+            let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
             loop {
                 // The open lifecycle overlays, derived from the Build facts each round: a
                 // successor primary publishes the same ones from the same facts.
                 if let Ok(facts) = adapter.facts().await {
-                    for op in crate::build_state::in_flight_ops(&crate::build_state::fold(&facts)) {
+                    let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
+                    for op in in_flight.ops {
                         membership.book.deleting(op);
+                    }
+                    for u in in_flight.unrecognised {
+                        if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
+                            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
+                                .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
+                        }
                     }
                 }
                 let t = topology.read().await.clone();
