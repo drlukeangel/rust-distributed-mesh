@@ -12,6 +12,7 @@ members = [
     "crates/rafka-node-rpc-contract",
     "crates/rafka-mesh-entity",
     "crates/rafka-test-scenario",
+    "crates/rafka-consumer-fixture",
     "gateway",
     "broker",
     "compute",

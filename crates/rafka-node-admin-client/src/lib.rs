@@ -10,6 +10,9 @@
 //! `client_contract` test pins that every route decodes into them.
 
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+/// The executable-binding contract an operator hands node-admin (`RAFKA_EXECUTABLE_BINDINGS`).
+pub use rafka_mesh_entity::binding;
+pub use rafka_mesh_entity::NodeKind as LaunchKind;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

@@ -66,6 +66,8 @@ malformed=$(jq -r '[(.jobs // {}), (.rshape_jobs // {} | del(._contract))] | map
 [ -z "$malformed" ] || { refuse "$JOB: job(s) $(echo $malformed) hold a cell without name, command or dir"; exit 2; }
 dupcells=$(jq -r '[(.jobs // {}), (.rshape_jobs // {} | del(._contract))] | map(to_entries[] | .key as $k | select((.value.cells | map(.name) | length) != (.value.cells | map(.name) | unique | length)) | $k) | .[]' "$REG")
 [ -z "$dupcells" ] || { refuse "$JOB: job(s) $(echo $dupcells) name a cell twice"; exit 2; }
+badevidence=$(jq -r '[(.jobs // {}), (.rshape_jobs // {} | del(._contract))] | map(to_entries[] | .key as $k | .value.layer as $l | .value.cells[]? | select(.evidence != null) | select(((.evidence == "runner") or (.evidence == "cell") or (.evidence == "model" and $l == "unit")) | not) | "\($k)/\(.name) evidence \(.evidence) on layer \($l)") | .[]' "$REG")
+[ -z "$badevidence" ] || { refuse "$JOB: a cell declares evidence the runner does not admit (model is for UNIT cells only; others are runner or cell): $(echo $badevidence)"; exit 2; }
 JOBFILE=$(mktemp)
 trap 'rm -f "$JOBFILE"' EXIT
 jq --arg j "$JOB" '(.jobs[$j] // .rshape_jobs[$j])' "$REG" > "$JOBFILE"
@@ -88,7 +90,7 @@ now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 case "$LAYER" in
     process|container|fast|fast-process|fast-container)
         if [ -z "${I143_ACCEPTANCE_SKIP_BUILD:-}" ]; then
-            if ! cargo build -p rafka-node-admin-core -p rafka-node-rpc-testkit --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
+            if ! cargo build -p rafka-node-admin-core -p rafka-node-rpc-testkit -p rafka-consumer-fixture --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
                 refuse "$JOB: the estate binaries did not build (see $JOBS_DIR/$JOB.build.log)"
                 exit 1
             fi
@@ -193,8 +195,12 @@ for i in $(seq 0 $((NCELLS - 1))); do
     provider=""
     if [ -z "$reason" ]; then
         case "$LAYER" in
-            unit|static)
-                if [ ! -s "$dir/spans.json" ] || ! jq -e . "$dir/spans.json" > /dev/null 2>&1; then
+            static) ;;
+            unit)
+                # A model cell (pure schema/model/algebra) has no runtime span: it declares that, and the receipt says so.
+                if [ "$evidence" = model ]; then
+                    :
+                elif [ ! -s "$dir/spans.json" ] || ! jq -e . "$dir/spans.json" > /dev/null 2>&1; then
                     reason="the UNIT cell left no spans.json in $dir"
                 fi
                 ;;
@@ -232,8 +238,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
         h=$(sha256sum "$f" | cut -d' ' -f1)
         artifacts=$(echo "$artifacts" | jq --arg p "$f" --arg h "$h" '. + {($p): $h}')
     done
-    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg outcome "$outcome" --arg reason "$reason" --argjson artifacts "$artifacts" \
-        '. + [{name:$cell, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts}]')
+    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --argjson artifacts "$artifacts" \
+        '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts}]')
     echo "i143-acceptance-gate: $JOB/$cell $outcome"
 done
 FINISHED=$(now)

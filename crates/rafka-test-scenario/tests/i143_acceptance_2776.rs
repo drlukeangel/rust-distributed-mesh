@@ -4,7 +4,7 @@
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
 //! `RAFKA_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
-use rafka_mesh_entity::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
+use rafka_node_admin_client::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_IMAGE};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -42,26 +42,28 @@ fn candidate_sha() -> String {
 
 // ---- the explicit external binary set ----------------------------------------------------------
 
-/// The four consumer executables, by launch id.
-const CONSUMER: [(&str, &str); 4] = [
-    ("node_admin", env!("CARGO_BIN_EXE_consumer-node-admin")),
-    ("broker", env!("CARGO_BIN_EXE_consumer-broker")),
-    ("gateway", env!("CARGO_BIN_EXE_consumer-gateway")),
-    ("compute", env!("CARGO_BIN_EXE_consumer-compute")),
-];
+/// The four consumer executables, by launch id (built by `-p rafka-consumer-fixture`).
+fn consumer_executables() -> [(&'static str, PathBuf); 4] {
+    let exe = |name: &str| {
+        let p = rafka_test_scenario::estate::bin_dir().join(name);
+        assert!(p.exists(), "RED: consumer executable `{name}` is not built at {} (cargo build -p rafka-consumer-fixture)", p.display());
+        p
+    };
+    [("node_admin", exe("consumer-node-admin")), ("broker", exe("consumer-broker")), ("gateway", exe("consumer-gateway")), ("compute", exe("consumer-compute"))]
+}
 
 /// The complete, true binding set of the consumer executables for the run's provider.
 fn consumer_set(sha: &str) -> BindingSet {
     let container = provider() == "container";
     BindingSet {
         candidate: Candidate { sha: sha.into(), build: "consumer-fixture".into() },
-        launch_ids: CONSUMER.iter().map(|(id, _)| id.to_string()).collect(),
-        bindings: CONSUMER
+        launch_ids: consumer_executables().iter().map(|(id, _)| id.to_string()).collect(),
+        bindings: consumer_executables()
             .iter()
             .map(|(id, path)| Binding {
                 launch_id: id.to_string(),
-                executable: PathBuf::from(path).canonicalize().unwrap(),
-                sha256: sha256_file(Path::new(path)).unwrap(),
+                executable: path.canonicalize().unwrap(),
+                sha256: sha256_file(path).unwrap(),
                 image: container.then(|| RUNTIME_IMAGE.to_string()),
             })
             .collect(),
@@ -681,6 +683,21 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
     let f = Fixture::new("cbuiltin", "process", "rshape_jobs", c, json!({}));
     plant("consumer_cell_estate_ran_on_built_ins", "built-in substitution", &f);
 
+    // A model cell: a result and no span. Declared on a UNIT cell it passes and the receipt says so; declared on another layer it is refused.
+    let mut c = cell(format!("{RESULT}; {PASS}"));
+    c["evidence"] = json!("model");
+    let f = Fixture::new("model", "unit", "jobs", c, json!({}));
+    let (ok, text, receipt) = f.run();
+    assert!(ok, "a model cell with a result and no spans.json passes:\n{text}");
+    assert_eq!(receipt.unwrap()["cells"][0]["evidence"], "model");
+    assert!(!f.cell_dir().join("spans.json").exists(), "no placeholder span was written");
+    let mut c = cell(format!("{RESULT}; {PASS}"));
+    c["evidence"] = json!("model");
+    let f = Fixture::new("modelproc", "process", "jobs", c, json!({}));
+    let (ok, text, _) = f.run();
+    assert!(!ok && text.contains("model is for UNIT cells only"), "{text}");
+    planted_results.push(json!({ "planted": "model_evidence_on_a_process_layer", "rule": "model is for UNIT cells only", "refused": true }));
+
     // The control: the same consumer cell with true executables and an explicit estate passes.
     let mut c = cell(consumer_cmd(&stage, "explicit"));
     c["consumer_manifest"] = json!(manifest(&want).to_str().unwrap());
@@ -698,7 +715,7 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
         let receipt = receipt.expect("the clean job's receipt");
         let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(keys(&receipt), ["job", "issue", "layer", "source_sha", "dirty_paths", "started", "finished", "outcome", "cells"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(), "exactly the canonical receipt: {receipt}");
-        assert_eq!(keys(&receipt["cells"][0]), ["name", "outcome", "refusal", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+        assert_eq!(keys(&receipt["cells"][0]), ["name", "evidence", "outcome", "refusal", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
         assert_eq!((receipt["outcome"].as_str(), receipt["source_sha"].as_str()), (Some("ok"), Some(head.as_str())));
         assert!(receipt["cells"][0]["refusal"].is_null());
         let arts = receipt["cells"][0]["artifacts"].as_object().unwrap();

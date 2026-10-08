@@ -4,8 +4,8 @@
 //! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 
-use rafka_mesh_entity::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
-use rafka_mesh_entity::NodeKind;
+use rafka_node_admin_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
+use rafka_node_admin_client::LaunchKind as NodeKind;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -223,9 +223,9 @@ pub fn binding_set_from_build_manifest(manifest: &Path, bin_dir: &Path, containe
     for (kind, file) in map {
         let file = file.as_str().ok_or_else(|| format!("{}: executable_map.{kind} is not a file name", manifest.display()))?;
         let sha256 = v["binaries"][file].as_str().ok_or_else(|| format!("{}: binaries names no sha256 for {file}", manifest.display()))?.to_string();
-        bindings.push(rafka_mesh_entity::binding::Binding { launch_id: kind.clone(), executable: bin_dir.join(file), sha256, image: container.then(|| RUNTIME_IMAGE.to_string()) });
+        bindings.push(rafka_node_admin_client::binding::Binding { launch_id: kind.clone(), executable: bin_dir.join(file), sha256, image: container.then(|| RUNTIME_IMAGE.to_string()) });
     }
-    Ok(BindingSet { candidate: rafka_mesh_entity::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
+    Ok(BindingSet { candidate: rafka_node_admin_client::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
 }
 
 /// The explicit executable bindings an estate launches from (the external-consumer seam): the

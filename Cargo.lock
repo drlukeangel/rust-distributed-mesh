@@ -3663,6 +3663,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rafka-consumer-fixture"
+version = "0.1.0"
+dependencies = [
+ "rafka-node-admin-core",
+ "rafka-node-base",
+ "tokio",
+]
+
+[[package]]
 name = "rafka-gateway"
 version = "0.1.0"
 dependencies = [
@@ -3876,8 +3885,6 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
- "rafka-node-admin-core",
- "rafka-node-base",
  "reqwest",
  "serde",
  "serde_json",

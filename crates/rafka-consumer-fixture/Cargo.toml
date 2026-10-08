@@ -1,0 +1,28 @@
+[package]
+name = "rafka-consumer-fixture"
+version = "0.1.0"
+edition = "2021"
+description = "Four behaviour-empty executables standing in for an external consumer's own launch set (i143.e7.s4)"
+publish = false
+
+# Each executable is one call into the public node runtime, exactly as a consumer's own would be.
+[dependencies]
+tokio = { workspace = true }
+rafka-node-base = { path = "../rafka-node-base" }
+rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+
+[[bin]]
+name = "consumer-node-admin"
+path = "src/bin/consumer_node_admin.rs"
+
+[[bin]]
+name = "consumer-broker"
+path = "src/bin/consumer_broker.rs"
+
+[[bin]]
+name = "consumer-gateway"
+path = "src/bin/consumer_gateway.rs"
+
+[[bin]]
+name = "consumer-compute"
+path = "src/bin/consumer_compute.rs"

@@ -147,9 +147,11 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
                 assert!(command.contains(" --test "), "{job}/{name}: the command names its test target");
             }
             assert!(root().join(c["source"].as_str().unwrap()).parent().unwrap().is_dir(), "{job}/{name}: the source's crate exists");
-            if let Some(e) = c.get("evidence") {
-                assert_eq!(e, "runner", "{job}/{name}: evidence is the cell's own or the runner's");
-                assert!(c.get("test").is_some(), "{job}/{name}: a runner-evidenced cell names the existing test it runs");
+            match c.get("evidence").and_then(Value::as_str) {
+                None => {}
+                Some("runner") => assert!(c.get("test").is_some(), "{job}/{name}: a runner-evidenced cell names the existing test it runs"),
+                Some("model") => assert_eq!(layer, "unit", "{job}/{name}: `evidence: model` (no runtime span) is for a UNIT cell only"),
+                Some(other) => panic!("{job}/{name}: evidence `{other}` is not admitted (runner or model)"),
             }
             for forbidden in ["runner", "receipt_writer", "receipt_schema"] {
                 assert!(c.get(forbidden).is_none() && j.get(forbidden).is_none(), "{job}/{name}: a second generic `{forbidden}` is declared; scripts/i143-acceptance-gate.sh is the one runner");
@@ -165,4 +167,42 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
             }
         }
     }
+}
+
+/// A model cell (pure schema/model/algebra) needs a result and no span; the receipt records the
+/// declaration. The same declaration on any other layer is refused by name.
+#[test]
+fn a_model_cell_needs_no_span_and_only_a_unit_cell_may_declare_it() {
+    let pass = "echo '{\"observed\":true}' > \"$I143_ACCEPTANCE_DIR/result.json\"; echo 'running 1 test'; echo 'test fixture_cell ... ok'; echo; echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'";
+    let f = fixture("model", pass);
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&f.registry).unwrap()).unwrap();
+    reg["jobs"][&f.job]["cells"][0]["evidence"] = serde_json::json!("model");
+    std::fs::write(&f.registry, serde_json::to_vec(&reg).unwrap()).unwrap();
+    let (ok, text, receipt) = run(&f);
+    assert!(ok, "a model cell with a result and no spans.json passes:\n{text}");
+    assert_eq!(receipt["cells"][0]["evidence"], "model", "the receipt records the declaration: {receipt}");
+    assert!(!f.dir.join("cell/spans.json").exists(), "no placeholder span was written");
+
+    // Without the declaration the same cell is refused for its missing span.
+    let g = fixture("nomodel", pass);
+    let (ok, text, _) = run(&g);
+    assert!(!ok && text.contains("left no spans.json"), "{text}");
+
+    // A model cell with no result is refused.
+    let h = fixture("modelnoresult", "echo 'running 1 test'; echo 'test fixture_cell ... ok'; echo; echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&h.registry).unwrap()).unwrap();
+    reg["jobs"][&h.job]["cells"][0]["evidence"] = serde_json::json!("model");
+    std::fs::write(&h.registry, serde_json::to_vec(&reg).unwrap()).unwrap();
+    let (ok, text, _) = run(&h);
+    assert!(!ok && text.contains("left no result.json"), "{text}");
+
+    // Another layer may not declare it.
+    let p = fixture("modelprocess", pass);
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&p.registry).unwrap()).unwrap();
+    reg["jobs"][&p.job]["layer"] = serde_json::json!("process");
+    reg["jobs"][&p.job]["cells"][0]["evidence"] = serde_json::json!("model");
+    std::fs::write(&p.registry, serde_json::to_vec(&reg).unwrap()).unwrap();
+    let out = Command::new("bash").arg(root().join("scripts/i143-acceptance-gate.sh")).arg(&p.job).env("I143_ACCEPTANCE_JOBS", &p.registry).env("I143_ACCEPTANCE_SKIP_BUILD", "1").current_dir(root()).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success() && text.contains("model is for UNIT cells only"), "{text}");
 }
