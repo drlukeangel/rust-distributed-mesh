@@ -144,7 +144,7 @@ async fn drop_cut(partition: Partition) -> u64 {
 /// fabric primary, and every node hears the peer mesh again. A rpc node then retired through a
 /// Build leaves the held set (its departure is the one lifecycle effect of the run, for exactly
 /// that birth) and a second cut, whose attempts on the peer mesh's node-admins complete whole
-/// repair windows, never names its NodeId.
+/// repair windows, never names its NodeId. One non-primary node-admin of the peer mesh is then retired the same way (that mesh keeps its primary admin) and a third cut shows no attempt naming its NodeId or name while attempts on the remaining peer admins continue once per window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let dir = acceptance_dir();
@@ -347,6 +347,64 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let marks2 = lifecycle_marks(&spans, cut2_at, healed2_at);
     assert!(marks2.is_empty(), "no death, tombstone, departure, rebirth or terminate during the second cut: {marks2:?}");
 
+    // ---- retirement of a node-admin: one non-primary admin of the peer mesh, a Build removal
+    // (that mesh keeps its primary admin; never the fabric primary)
+    let nodes3 = estate.nodes().await;
+    let admin_victim = nodes3.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == "mesh2" && n["is_primary"] == false && n["is_fabric_primary"] != true).cloned().expect("a non-primary admin of mesh2");
+    let (av_name, av_id) = (s(&admin_victim["name"]), s(&admin_victim["node_id"]));
+    let av_pid = pids[&av_name];
+    let survivors: Vec<(String, String)> = admins.iter().filter(|(n, _)| *n != av_name).cloned().collect();
+    let bases_left: Vec<(String, String)> = bases.iter().filter(|(n, _)| *n != av_name).cloned().collect();
+    let remaining2: Vec<String> = remaining.iter().filter(|n| **n != av_name).cloned().collect();
+    assert!(survivors.iter().filter(|(_, m)| m == "mesh2").count() == 1, "mesh2 keeps its other admin");
+    let retire2_at = now_ns();
+    let (status, d) = estate.delete(&format!("/api/nodes/{av_name}")).await;
+    assert_eq!(status, 202, "{d}");
+    estate.await_build(d["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    for (name, base) in &bases_left {
+        wait_for(&format!("{name} drops the retired admin {av_name}"), Duration::from_secs(60), || async {
+            let v = estate.nodes_at(base).await;
+            (!v.iter().any(|n| n["node_id"] == av_id.as_str() && n["status"] == "ready-for-traffic") && holds_all(&v, &remaining2)).then_some(())
+        })
+        .await;
+    }
+    wait_for("the retired admin's runtime has exited", Duration::from_secs(30), || async { (!alive(av_pid)).then_some(()) }).await;
+    let retire2_marks = lifecycle_marks(&estate.spans(), retire2_at, now_ns());
+    assert!(retire2_marks.iter().any(|n| n.contains("node.delete")), "the admin's retirement fired: {retire2_marks:?}");
+    let nodes4 = estate.nodes().await;
+    let (a1, a2) = (
+        nodes4.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect::<Vec<_>>(),
+        nodes4.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["name"])).collect::<Vec<_>>(),
+    );
+    assert!(!a2.contains(&av_name));
+    let cut3 = Partition::start(&udp_ports(&nodes4, &a1), &udp_ports(&nodes4, &a2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: {why}"));
+    let cut3_at = now_ns();
+    wait_for("attempts on the remaining peer admins continue, a whole window each", window * 6 + Duration::from_secs(40), || async {
+        every_cross_admin_pair_attempted(&attempts(&estate.spans(), cut3_at), &survivors, 2).then_some(())
+    })
+    .await;
+    let spans = estate.spans();
+    let named_admin: Vec<Value> = attempts(&spans, retire2_at).iter().filter(|sp| attr(sp, "peer_node_id") == av_id || attr(sp, "peer_node") == av_name).map(|sp| attempt_json(sp)).collect();
+    assert!(named_admin.is_empty(), "the retired admin {av_name} ({av_id}) is never a repair target after its departure: {named_admin:?}");
+    let att3: Vec<Value> = attempts(&spans, cut3_at).iter().map(|sp| attempt_json(sp)).collect();
+    assert!(att3.iter().all(|a| a["peer_node"] != av_name.as_str()));
+    // The lone admin of mesh2 has no own-mesh admin on the backbone, so the cut leaves that one
+    // channel without a neighbour: the edge fallback fires there and nowhere else.
+    let lone = survivors.iter().find(|(_, m)| m == "mesh2").unwrap().0.clone();
+    let fb3: Vec<(String, String)> = fallbacks(&spans, cut3_at).iter().map(|sp| (attr(sp, "node"), attr(sp, "channel"))).collect();
+    assert!(fb3.iter().all(|(n, c)| *n == lone && c == "backbone"), "only the lone admin's backbone falls back: {fb3:?}");
+    let healed3_at = drop_cut(cut3).await;
+    for (name, base) in &bases_left {
+        wait_for(&format!("{name} holds every surviving member ready after the third cut"), Duration::from_secs(60), || async { holds_all(&estate.nodes_at(base).await, &remaining2).then_some(()) }).await;
+    }
+    let marks3 = lifecycle_marks(&estate.spans(), cut3_at, healed3_at);
+    assert!(marks3.is_empty(), "no death, tombstone, departure, rebirth or terminate during the third cut: {marks3:?}");
+    let admin_retirement = json!({
+        "name": av_name, "node_id": av_id, "retired_at_unix_nano": retire2_at, "marks": retire2_marks, "exited_pid": av_pid,
+        "cut_3_at_unix_nano": cut3_at, "control_attempts": att3, "attempts_naming_the_retired_admin": named_admin.len(), "no_neighbours_fallbacks": fb3, "lifecycle_marks_during_cut_3": marks3,
+    });
+    let spans = estate.spans();
+
     let result = json!({
         "cell": CELL,
         "window_ms": window_ms,
@@ -369,6 +427,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         },
         "retirement": { "name": victim_name, "node_id": victim_id, "retired_at_unix_nano": retire_at, "marks": retire_marks, "exited_pid": retired_pid },
         "cut_2": { "cut_at_unix_nano": cut2_at, "control_attempts": control2, "attempts_naming_the_retired_birth": named_victim.len(), "lifecycle_marks": marks2 },
+        "admin_retirement": admin_retirement,
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
