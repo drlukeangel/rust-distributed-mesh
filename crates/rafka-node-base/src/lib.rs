@@ -158,7 +158,7 @@ pub async fn run(role: Role) -> Result<()> {
 pub async fn catalog_of(role: Role) -> Result<Vec<(u8, String, OpOwner, EntryKind)>> {
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await?;
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep.clone(), Arc::new(rafka_node_rpc::StaticResolver::new())));
-    let sealed = compose(role, "catalog", rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new()), client)
+    let sealed = compose(role, "catalog", rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new(), client.clone(), None), client)
         .seal(rafka_node_rpc::ServedBirth { node_id: "catalog".into(), incarnation: "catalog".into() })
         .map_err(|e| anyhow!("the role's catalog does not seal: {e:?}"))?;
     let mut out: Vec<_> = sealed.catalog().entries().map(|e| (e.op, e.name.clone(), e.owner.clone(), e.kind.clone())).collect();

@@ -1592,21 +1592,19 @@ fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<
     }
 }
 
-/// The Node RPC server a node-admin serves, before it seals: core (Ping), then the families the
+/// The Node RPC server a node-admin serves, before it seals: core (Ping, Forward), then the families the
 /// admin owns as an authority (status, build claim, join).
 pub fn rpc_server(
     resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     connections: Arc<crate::connections_writer::ConnectionsWriter>,
-    _client: Arc<rafka_node_rpc::NodeRpcClient>,
+    client: Arc<rafka_node_rpc::NodeRpcClient>,
     authority: crate::status_rpc::AuthoritySlot,
     claim: crate::build_claim::ClaimSlot,
     join: crate::join::JoinSlot,
 ) -> rafka_node_rpc::ServerBuilder {
-    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(resolver, connections).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
-        let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
-        Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
-    });
-    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join)
+    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(resolver, connections.clone()).serve_core(client, Some(connections));
+    // Status is forwardable: a peer may carry an authority's status call through this admin.
+    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
 }
 
 /// Bring a node-admin up: identity, policy, membership, Build state, the

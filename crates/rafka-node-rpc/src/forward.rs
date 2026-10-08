@@ -39,6 +39,18 @@ impl ServerBuilder {
         self
     }
 
+    /// The core families, which every node built on Node RPC serves: Ping, and Forward as one
+    /// direct inner call through `client` (the process's one client). `edges` is the node's own
+    /// account of its Direct edges when it keeps one ([`Self::serve_forward_with_edges`]).
+    pub fn serve_core(self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
+        use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+        self.serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
+            let PingRequest::Ping { payload, .. } = req;
+            Ok(PingReply::Pong { payload })
+        })
+        .serve_forward_with(client, edges)
+    }
+
     /// Serve [`Forward`]: each forward is one direct inner call through `client`.
     pub fn serve_forward(self, client: Arc<NodeRpcClient>) -> Self {
         self.serve_forward_with(client, None)

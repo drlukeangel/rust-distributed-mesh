@@ -7,7 +7,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionsHeld};
+use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_admin_core::storage::MemoryConnectionsStorage;
@@ -83,6 +83,8 @@ async fn rig() -> Rig {
         Arc::new(MemoryConnectionsStorage::default()),
         Arc::new(Mutex::new(ConnectionsHeld::new())),
     ));
+    connections.held().lock().unwrap().set_membership(live.clone());
+    connections.hydrate().await.unwrap();
     let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone(), Some(connections.clone()));
     let admin_server = rafka_node_admin_core::admin::rpc_server(live.clone(), connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .seal(served(&admin_birth))
@@ -139,33 +141,36 @@ async fn a_status_call_carried_to_a_target_the_admin_cannot_resolve_is_not_sent_
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
-/// A target the admin cannot reach, after the admin's own dial to it has failed once, is answered
-/// `CarrierEdgeLost` naming the admin's own Direct fact.
+/// A target the admin cannot reach, while the admin's own Direct fact toward it is not Active, is
+/// answered `CarrierEdgeLost` naming that fact, and the target handled nothing.
 ///
 /// CONTRACT: the admin carrier reports its own edge to a dead target, the same as any carrier.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let r = rig().await;
-    // The target's key is served by nobody: its port is closed.
+    // The dead target: the admin dials the live target's address for it and the handshake names another key.
     let dead = birth();
-    let dead_resolved = resolved(&dead, "mesh1.rpc.2", "127.0.0.1:1".parse().unwrap());
-    // The admin's resolver holds it: the admin dials it and the dial fails.
+    let mut dead_resolved = resolved(&dead, "mesh1.rpc.2", r.target_resolved.transport_addr);
+    dead_resolved.endpoint_id = SecretKey::generate().public();
     r.admin_live.apply(dead_resolved.clone(), None);
+    // The admin's own latest Direct fact toward it: Disconnected.
+    let own = ConnectionEnd { name: r.admin.name.clone(), node_id: r.admin.node_id.clone(), incarnation: Some(r.admin.incarnation.clone()) };
+    let destination = ConnectionEnd { name: dead_resolved.name.clone(), node_id: dead.node_id.clone(), incarnation: Some(dead.incarnation.clone()) };
+    r.admin_connections
+        .record(NodeConnection { source: own, destination, kind: ConnectionKind::Direct, state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
+        .await
+        .unwrap();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(r.admin.clone());
     resolver.insert(dead_resolved);
     let origin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let origin = NodeRpcClient::new(origin_ep, resolver);
-    let mut reasons = Vec::new();
-    for _ in 0..2 {
-        let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
-        let RpcOutcome::NotSent(n) = &out else { panic!("a dead target is NotSent through the admin carrier: {out:?}") };
-        reasons.push(n.reason().clone());
-        // The first forward teaches the carrier its edge: its writer has recorded the failed dial before the next.
-        r.admin_connections.drain().await;
+    let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
+    match &out {
+        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::CarrierEdgeLost(why) if why.contains("mesh1.admin.2 -> mesh1.rpc.2 Direct disconnected")), "{out:?}"),
+        other => panic!("the admin names its lost edge to the dead target: {other:?}"),
     }
-    assert!(matches!(&reasons[0], NotSentReason::Carried(_) | NotSentReason::CarrierEdgeLost(_)), "{reasons:?}");
-    assert!(matches!(&reasons[1], NotSentReason::CarrierEdgeLost(why) if why.contains("mesh1.admin.2 -> mesh1.rpc.2 Direct Failed")), "{reasons:?}");
+    assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
 /// Forward is not itself forwardable: an inner op naming Forward is refused by the admin carrier

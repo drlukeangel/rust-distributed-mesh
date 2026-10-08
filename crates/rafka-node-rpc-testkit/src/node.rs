@@ -9,7 +9,6 @@ use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcServer, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -31,12 +30,9 @@ pub fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey> {
     Ok(key)
 }
 
-/// Core Ping is served by every rpc node.
-pub fn core_protocols(b: ServerBuilder) -> ServerBuilder {
-    b.serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
-        let PingRequest::Ping { payload, .. } = req;
-        Ok(PingReply::Pong { payload })
-    })
+/// The core families (Ping, Forward) every node serves, over the process's one `client`.
+pub fn core_protocols(b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClient>, edges: Option<Arc<dyn rafka_node_rpc::CarrierEdges>>) -> ServerBuilder {
+    b.serve_core(client, edges)
 }
 
 pub struct RunningNode {
@@ -234,10 +230,9 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
     // Every connection this node accepts from a live peer is Direct Connected from this node
     // to that peer (connections.md §10), reported to the same writer as its own dials.
     let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
-    let server = serve_kick(register(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone())), seams), subject.clone())
+    let server = serve_kick(register(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
-        .serve_forward_with_edges(client.clone(), connections.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
