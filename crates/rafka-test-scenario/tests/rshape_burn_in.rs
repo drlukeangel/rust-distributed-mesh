@@ -1163,6 +1163,9 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
         assert!(seqs.insert(op.seq), "operation id {} issued twice", op.seq);
         let b = bucket(&call.out);
         *buckets.get_mut(&b).unwrap() += 1;
+        // A target whose NodeId left the fabric took its store with it: the operation is still
+        // classified from its typed outcome and its handler record, but its key has no final state.
+        let gone = final_state[&op.key].get("unverifiable").is_some();
         let present = final_state[&op.key] == json!({"found": true, "value": op.value});
         let other = final_state[&op.key]["found"] == true && !present;
         assert!(!other, "{}: the final value is not the one this operation wrote: {}", op.key, final_state[&op.key]);
@@ -1170,7 +1173,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
         assert!(handler_runs <= 1, "{} ({b:?}): applied {handler_runs} times in its trace; an operation is applied at most once", op.key);
         match b {
             Bucket::Reply if call.out["reply"]["result"] == json!({"stored": true}) => {
-                assert!(present, "{}: replied stored but the final state lacks its value: {}", op.key, final_state[&op.key]);
+                assert!(present || gone, "{}: replied stored but the final state lacks its value: {}", op.key, final_state[&op.key]);
                 assert_eq!(handler_runs, 1, "{}: replied stored with no handler execution in its trace", op.key);
                 assert_eq!(call.out["reply"]["executing_node"], op.target_id.as_str(), "{}: the reply names the requested node", op.key);
             }
@@ -1187,8 +1190,10 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
                 assert_eq!(handler_runs, 0, "{} ({b:?}): a handler ran for a request that was not dispatched", op.key);
             }
             Bucket::Indeterminate => {
-                assert_eq!(present, handler_runs == 1, "{}: the final state ({present}) and the handler record ({handler_runs}) disagree about whether the Indeterminate put applied", op.key);
-                indeterminate.push(json!({"seq": op.seq, "key": op.key, "applied": present, "reason": call.out["reason"]}));
+                if !gone {
+                    assert_eq!(present, handler_runs == 1, "{}: the final state ({present}) and the handler record ({handler_runs}) disagree about whether the Indeterminate put applied", op.key);
+                }
+                indeterminate.push(json!({"seq": op.seq, "key": op.key, "applied": if gone { handler_runs == 1 } else { present }, "reason": call.out["reason"], "target_retired": gone}));
             }
         }
         *summary.entry(format!("{:?}:{}", b, call.out["reason"].as_str().or(call.out["reply"]["result"]["refused"].as_str()).unwrap_or(""))).or_insert(0usize) += 1;
@@ -1201,11 +1206,13 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
     let classified: usize = buckets.values().sum();
     inv.holds("issued = Reply + NotSent + Unserved + RejectedStale + Indeterminate; every operation id issued once", classified == ops.len() && seqs.len() == ops.len() && seqs.iter().copied().eq(1..=ops.len() as u64), json!({"issued": ops.len(), "buckets": buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>()}));
     let present_keys = final_state.values().filter(|v| v["found"] == true).count();
-    let all_stored_on_targets = stored.iter().filter(|sp| ops.iter().any(|(o, _)| sp["attributes"]["node_id"] == o.target_id.as_str())).count();
+    let verifiable_targets: BTreeSet<&str> = ops.iter().filter(|(o, _)| final_state[&o.key].get("unverifiable").is_none()).map(|(o, _)| o.target_id.as_str()).collect();
+    let unverifiable = ops.iter().filter(|(o, _)| final_state[&o.key].get("unverifiable").is_some()).count();
+    let all_stored_on_targets = stored.iter().filter(|sp| verifiable_targets.iter().any(|t| sp["attributes"]["node_id"] == *t)).count();
     inv.holds(
         "no operation was applied twice: every put the brokers applied is a key that is in the final state exactly once",
         all_stored_on_targets == present_keys,
-        json!({"stored_handler_runs": all_stored_on_targets, "keys_present": present_keys}),
+        json!({"stored_handler_runs": all_stored_on_targets, "keys_present": present_keys, "operations_on_retired_targets_not_verifiable": unverifiable}),
     );
     inv.holds("every stored put holds its value, every protocol-refused or not-dispatched put is absent, every Indeterminate put is reported applied or not and was issued once (no automatic replay)", true, json!({"indeterminate": indeterminate, "probe_invocations_per_operation": 1}));
     inv.holds("the Indeterminate arm is reached or its absence recorded: the outcome classes seen are listed", true, json!({"classes_seen": summary}));
@@ -1384,6 +1391,8 @@ struct Traffic {
     seq: u64,
     brokers: Vec<Value>,
     gateways: Vec<String>,
+    /// A broker (or a gateway as carrier) every operation of a burst is aimed at, while set.
+    aim: Option<String>,
 }
 
 impl Traffic {
@@ -1391,12 +1400,20 @@ impl Traffic {
         let brokers: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "broker").cloned().collect();
         let gateways: Vec<String> = nodes.iter().filter(|n| n["kind"] == "gateway").map(|n| s(&n["name"])).collect();
         assert!(!brokers.is_empty() && !gateways.is_empty());
-        Self { ops: Vec::new(), rng: Rng(seed), seq: 0, brokers, gateways }
+        Self { ops: Vec::new(), rng: Rng(seed), seq: 0, brokers, gateways, aim: None }
+    }
+
+    /// The brokers the next operations are aimed at are the ones standing now: a node the fabric
+    /// re-birthed is a new NodeId, and an exact call to the old one is a call to nothing.
+    fn refresh(&mut self, nodes: &[Value]) {
+        let brokers: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "broker").cloned().collect();
+        assert!(!brokers.is_empty(), "no broker in the settled view");
+        self.brokers = brokers;
     }
 
     async fn burst(&mut self, f: &Formed, n: usize, window: &'static str) {
         for _ in 0..n {
-            issue(f, &mut self.ops, &mut self.rng, &mut self.seq, &self.brokers, &self.gateways, None, window).await;
+            issue(f, &mut self.ops, &mut self.rng, &mut self.seq, &self.brokers, &self.gateways, self.aim.as_deref(), window).await;
         }
     }
 }
@@ -1446,6 +1463,8 @@ struct Authority {
     actions: Vec<Value>,
     known_bases: BTreeSet<String>,
     probe_round: u64,
+    /// The Build projection as the fabric folds it, each time it changed: attempt, executor, state, reason.
+    build_obs: Vec<Value>,
 }
 
 /// What `Authority::finish` waits for, observed from the view and the Build, never from elapsed time.
@@ -1464,7 +1483,7 @@ fn progress(msg: &str) {
 
 impl Authority {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0 }
+        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0, build_obs: Vec::new() }
     }
 
     /// A GET on any live admin of this run: the entry admin first, then every admin base ever seen.
@@ -1481,6 +1500,17 @@ impl Authority {
             }
         }
         None
+    }
+
+    /// Keep a Build projection when its attempt, executor, state or reason moved since the last one seen.
+    fn observe_build(&mut self, b: &Value) {
+        if b["build_id"].is_null() {
+            return;
+        }
+        let key = |v: &Value| format!("{}|{}|{}|{}|{}", v["build_id"], v["attempt"], v["executor"], v["state"], v["reason"]);
+        if self.build_obs.last().is_none_or(|l| key(l) != key(b)) {
+            self.build_obs.push(json!({"t_ns": now_ns(), "build_id": b["build_id"], "attempt": b["attempt"], "executor": b["executor"], "state": b["state"], "reason": b["reason"], "last_failure": b["last_failure"]}));
+        }
     }
 
     async fn nodes_now(&mut self, f: &Formed) -> Vec<Value> {
@@ -1568,6 +1598,7 @@ impl Authority {
             tokio::time::sleep(Duration::from_millis(200)).await;
         };
         let converged_ms = t0.elapsed().as_millis() as u64;
+        self.traffic.refresh(&st.nodes);
         progress(&format!("checkpoint `{label}` stable after {converged_ms} ms: fabric-primary {} ({})", st.fp_name(), st.fp["node_id"]));
         // The births seen: pid, node, NodeId, incarnation.
         for a in &st.admins {
@@ -1639,6 +1670,7 @@ impl Authority {
             // The entry follows a live admin; the probe's admin is the same.
             let nodes = self.nodes(f).await;
             let b = self.get(f, &format!("/api/builds?id={build_id}")).await.unwrap_or(Value::Null);
+            self.observe_build(&b);
             if b["state"] == "failed" {
                 seen_failed += 1;
             }
@@ -2242,4 +2274,273 @@ async fn authority_run(cell: &str, shape: Shape) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_authority_handoffs_preserve_one_effective_writer() {
     authority_run("mock_authority_handoffs_preserve_one_effective_writer", any_tier()).await;
+}
+
+/// One imported implementation of the planner, the authority and the death detector: every span of
+/// the families that decide who executes, who is primary and which birth is proven gone comes from the
+/// consumer's `rshape-node-admin`, and its source path is the pinned RDM checkout of the candidate
+/// (never a file of the consumer's own).
+fn check_imported_mechanism(f: &Formed, spans: &[Value], inv: &mut Invariants) -> Value {
+    let short = &f.candidate[..7];
+    let families = [
+        "rdm.node_admin.build.update.via-reconcile",
+        "rdm.node_admin.build.update.via-proven-drift",
+        "rdm.node_admin.node.create.via-build",
+        "rdm.node_admin.node.update.via-build",
+        "rdm.node_admin.node.delete.via-build",
+        "rdm.mesh.election.resolve.via-recompute",
+        "rdm.mesh.election.resolve.via-mesh-primary",
+        "rdm.mesh.election.resolve.via-fabric-recompute",
+        "rdm.node_admin.build.create.via-rest",
+        "rdm.node_admin.build.update.via-rest",
+    ];
+    let mut seen = BTreeMap::new();
+    for fam in families {
+        let rows = named(spans, fam);
+        for sp in &rows {
+            let path = s(&sp["attributes"]["code.filepath"]);
+            assert_eq!(sp["service"], "rshape-node-admin", "{fam}: emitted by a process other than the consumer's imported node-admin: {sp}");
+            assert!(path.contains("/rust-distributed-mesh-") && path.contains(&format!("/{short}/crates/")), "{fam}: its source is {path}, not the pinned RDM checkout of {short}");
+        }
+        seen.insert(fam.to_string(), rows.len());
+    }
+    for must in ["rdm.node_admin.build.update.via-reconcile", "rdm.mesh.election.resolve.via-fabric-recompute", "rdm.mesh.election.resolve.via-mesh-primary"] {
+        assert!(seen[must] > 0, "no `{must}` span: the imported mechanism never ran");
+    }
+    inv.holds(
+        "one imported planner, authority and death detector: every reconcile, create/update/delete, election and drift span is the imported node-admin's, from the pinned RDM checkout of the candidate",
+        true,
+        json!({"candidate": f.candidate, "spans_by_family": seen}),
+    );
+    json!(seen)
+}
+
+/// Cell 5: the recovery of a Build. The accepted Build stays the one the fabric names; each recovery
+/// is a further attempt of it, executed by exactly one admin; a topology that did not change gets no
+/// new Build.
+async fn recovery_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let names_initial: BTreeSet<String> = nodes.iter().map(|n| s(&n["name"])).collect();
+    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let b0 = f.build_id.clone();
+    assert_eq!(s(&st.fabric["build_id"]), b0, "the fabric names the formation Build");
+    a.traffic.burst(&f, 12, "steady-before").await;
+    let mut trail = vec![json!({"after": "formed", "fabric_build_id": b0, "attempt": f.build["attempt"]})];
+
+    // 1. A restart opens the next attempt of the accepted Build: the Build id the fabric already names,
+    //    one attempt further, one executor. Done twice so the advance is seen to continue.
+    let fm = st.mesh_of_fp();
+    for round in 1..=2 {
+        let victim = st.secondary_of(&fm);
+        let node = s(&victim["name"]);
+        let ev = restart_via_build(&mut f, &mut a, &st, &node, &format!("R{round}: a Build-executed restart")).await;
+        assert_eq!(ev["build_id"], json!(b0), "R{round}: the restart is an attempt of the accepted Build, not a new one");
+        assert_eq!(ev["attempt_after"].as_u64(), ev["attempt_before"].as_u64().map(|x| x + 1), "R{round}: the attempt advanced by exactly one: {ev}");
+        st = a.stable(&mut f, &format!("R{round}: {node} restarted"), &both(2), &mut inv).await;
+        assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: Fabric.build_id stays the formation Build");
+        trail.push(json!({"after": format!("R{round}"), "fabric_build_id": st.fabric["build_id"], "attempt": ev["attempt_after"]}));
+    }
+
+    // 2. The executor of a Build dies mid-attempt: a non-fabric-primary mesh primary (a death the story
+    //    names) executes a role node's restart, and is SIGKILLed once the node has left service. The
+    //    surviving admin continues the same Build at the next attempt; the dead admin's path.name is
+    //    re-born by a further attempt of it. No Build is accepted for any of it.
+    let om = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
+    let fp_at_the_death = st.fp_name();
+    let executor = st.primary_of(&om);
+    let executor_name = s(&executor["name"]);
+    let survivor = st.secondary_of(&om);
+    let broker = format!("{om}.broker.1");
+    let broker_before = f.estate.node(&broker).await;
+    let fabric_build = s(&st.fabric["build_id"]);
+    point_entry_away(&mut f, &st, &executor_name);
+    let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
+    a.traffic.aim = Some(broker.clone());
+    let req_ns = now_ns();
+    let bid = a.write(&f, &st, "R3: node.restart of a role node under the mesh primary", "POST", &format!("/api/nodes/{broker}/restart"), &Value::Null).await;
+    assert_eq!(bid, b0, "R3: the role node's restart is an attempt of the accepted Build");
+    let started = Instant::now();
+    let (held, killed_at_attempt) = loop {
+        let b = a.get(&mut f, &format!("/api/builds?id={bid}")).await.unwrap_or(Value::Null);
+        a.observe_build(&b);
+        let nodes_now = a.nodes_now(&f).await;
+        let left_service = nodes_now.iter().find(|n| n["name"] == broker.as_str()).is_some_and(|n| n["status"] != "ready-for-traffic");
+        if b["state"] == "running" && b["executor"] == executor_name.as_str() && b["attempt"].as_u64() == Some(attempt_before + 1) && left_service {
+            break (b, attempt_before + 1);
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "R3: the attempt was never seen in flight under {executor_name} with {broker} out of service; build {b:#}");
+        a.traffic.burst(&f, 1, "during-restart").await;
+    };
+    let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
+    progress(&format!("R3: {executor_name} killed with attempt {killed_at_attempt} of {bid} in flight: {held}"));
+    let fin = a.finish(&mut f, &bid, Until::Reborn { node: broker.clone(), old_incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
+    a.traffic.aim = None;
+    let broker_after = f.estate.node(&broker).await;
+    assert_ne!(broker_after["incarnation_id"], broker_before["incarnation_id"], "R3: the broker stands under a new exact birth");
+    let broker_kept = broker_after["node_id"] == broker_before["node_id"];
+    let recovered = a.stable(&mut f, "R3: the dead executor's path.name is re-born", &both(2), &mut inv).await;
+    assert_eq!(s(&recovered.fabric["build_id"]), b0, "R3: recovery accepted no new Build");
+    a.events.push(json!({
+        "event": "executor.death", "scenario": "R3", "executor": executor_name, "executor_node_id": executor["node_id"], "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "broker": broker,
+        "broker_old_incarnation": broker_before["incarnation_id"], "broker_new_incarnation": broker_after["incarnation_id"], "broker_old_node_id": broker_before["node_id"], "broker_new_node_id": broker_after["node_id"], "broker_node_id_kept": broker_kept, "build_id": bid, "attempt_in_flight": killed_at_attempt, "attempt_final": fin["build"]["attempt"], "executor_final": fin["build"]["executor"],
+        "request_ns": req_ns, "kill": kill, "wall_ms": fin["wall_ms"],
+    }));
+    trail.push(json!({"after": "R3", "fabric_build_id": recovered.fabric["build_id"], "attempt": fin["build"]["attempt"]}));
+    let proof = prove_path(&mut f, &mut a, &both(2), "R3 after the executor's death", &mut inv).await;
+
+    // Final state, reads for the ledger, the stop.
+    a.traffic.burst(&f, 6, "steady-after").await;
+    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let nodes_end = st.nodes.clone();
+    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    assert_eq!(names_final, names_initial, "the topology is what it was: the same path.names, nothing added or removed");
+    let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
+    let mut verification = Vec::new();
+    let mut final_state: BTreeMap<String, Value> = BTreeMap::new();
+    for (op, _) in &a.traffic.ops {
+        // The target's NodeId in the final view: a restart keeps it; a node the fabric re-birthed under
+        // a successor executor is a new NodeId, and the old one's store left with it.
+        let alive = nodes_end.iter().any(|n| s(&n["node_id"]) == op.target_id);
+        if !alive {
+            assert_eq!(op.target, broker, "{}: only the node whose restart lost its executor may change NodeId", op.target);
+            final_state.insert(op.key.clone(), json!({"unverifiable": "the target's NodeId left the fabric; its store went with it"}));
+            continue;
+        }
+        let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{}", op.target_id), "--key", &op.key]);
+        assert_eq!(c.out["outcome"], "Reply", "verification read of {} must reply once the estate is settled: {}", op.key, c.out);
+        final_state.insert(op.key.clone(), c.out["reply"]["result"].clone());
+        verification.push(c);
+    }
+    let fabric_end = a.get(&mut f, "/api/fabric").await.expect("an admin answers /api/fabric");
+    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    let stop_t = Instant::now();
+    f.estate.stop().await;
+    let left = provider_left(&f, stop_t, &mut inv).await;
+    let spans = f.estate.spans();
+
+    let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
+    let claims = claim_rows(&spans);
+    let attempts = check_one_executor_per_attempt(&claims, &mut inv);
+    let fence = check_writes_and_fence(&f, &a, &spans, &mut inv);
+    let elections = check_election_history(&a, &spans, &mut inv);
+    let imported = check_imported_mechanism(&f, &spans, &mut inv);
+    // What the successor did to the broker whose restart lost its executor, from its create spans.
+    let successor_creates: Vec<Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
+        .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == broker.as_str())
+        .map(|c| json!({"name": c["name"], "attempt": attempt_of(c), "start_unix_nano": start_ns(c), "span_id": c["span_id"], "trace_id": c["trace_id"], "events": c["events"].as_array().into_iter().flatten().map(|e| e["name"].clone()).collect::<Vec<_>>()}))
+        .collect();
+
+    // The Build's attempt history, from the fabric's own folded projection (a SIGKILLed executor's
+    // spans are lost with it; its attempt is in the Build's facts) and from the survivors' spans.
+    let observed: Vec<&Value> = a.build_obs.iter().filter(|o| o["build_id"] == b0.as_str()).collect();
+    let mut executors_by_attempt: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    for o in &observed {
+        if let (Some(n), Some(e)) = (o["attempt"].as_u64(), o["executor"].as_str()) {
+            executors_by_attempt.entry(n).or_default().insert(e.to_string());
+        }
+    }
+    // The survivors' own spans of the same Build: an attempt the polling did not catch is in them, and
+    // an attempt both sources name must name the same admin.
+    for c in claims.iter().filter(|c| c["build_id"] == b0.as_str() && matches!(c["outcome"].as_str(), Some("converged" | "failed" | "handed-off" | "interrupted"))) {
+        executors_by_attempt.entry(c["attempt"].as_u64().unwrap()).or_default().insert(s(&c["executor"]));
+    }
+    for (n, e) in &executors_by_attempt {
+        assert_eq!(e.len(), 1, "the fabric's folded Build shows attempt {n} of {b0} held by {e:?}");
+    }
+    let dead_attempt = executors_by_attempt.get(&killed_at_attempt).unwrap_or_else(|| panic!("the in-flight attempt {killed_at_attempt} was never observed"));
+    assert!(dead_attempt.contains(&executor_name), "attempt {killed_at_attempt} was held by {executor_name}");
+    let later: Vec<(u64, &BTreeSet<String>)> = executors_by_attempt.iter().filter(|(n, _)| **n > killed_at_attempt).map(|(n, e)| (*n, e)).collect();
+    assert!(!later.is_empty(), "the Build advanced past the dead executor's attempt {killed_at_attempt}: {executors_by_attempt:?}");
+    // The attempt right after the dead executor's is a surviving admin's. (A later attempt may be held
+    // by the executor's path.name again: that is its re-born admin, a new birth.)
+    assert!(!later[0].1.contains(&executor_name), "the attempt after the dead executor's is held by a survivor, not by {executor_name}: {later:?}");
+    let kill_ns = kill["kill_ns"].as_u64().unwrap();
+    let spans_after: Vec<&Value> = claims.iter().filter(|c| c["build_id"] == b0.as_str() && c["start_unix_nano"].as_u64().unwrap() > kill_ns).collect();
+    assert!(!spans_after.is_empty(), "the surviving admins claimed further attempts of {b0} after the executor's death");
+    assert_eq!(spans_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving claim is the attempt that follows the dead executor's: {spans_after:#?}");
+    assert_ne!(spans_after[0]["executor"], executor_name.as_str(), "the first claim after the death is a survivor's");
+    // The dead admin's path.name is re-born by the same Build: a create under b0, by a later attempt,
+    // executed by the admin cohort's executor (the fabric-primary).
+    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
+        .collect();
+    assert!(!creates.is_empty(), "{executor_name} was re-born by node.create.via-build under {b0}");
+    assert!(creates.iter().all(|c| u64::from(attempt_of(c)) > killed_at_attempt), "the re-birth is a later attempt than the dead executor's");
+    let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).contains(&format!("create-node:{executor_name}"))).map(|c| s(&c["executor"])).collect();
+    assert_eq!(rebirth_executors, BTreeSet::from([fp_at_the_death.clone()]), "the dead admin's re-birth was planned and executed by the fabric-primary");
+    let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
+    assert_eq!(all_creates, BTreeSet::from([b0.clone()]), "the only Build ever accepted is the formation Build");
+    let max_attempt = executors_by_attempt.keys().max().copied().unwrap();
+    inv.holds(
+        "recovery retained the accepted Build and advanced its attempt: the in-flight attempt belonged to the executor that died, every later attempt to a surviving or re-born admin, exactly one holder per attempt, the dead admin's path.name re-born by the fabric-primary under the same Build, and the only Build ever accepted is the formation Build",
+        true,
+        json!({
+            "build_id": b0, "in_flight_attempt": killed_at_attempt, "executor_that_died": executor_name, "executors_by_attempt": executors_by_attempt, "max_attempt": max_attempt,
+            "claims_after_the_death": spans_after.iter().map(|c| json!({"attempt": c["attempt"], "executor": c["executor"], "previous_executor": c["previous_executor"], "reason": c["reason"], "outcome": c["outcome"], "operations": c["operations"]})).collect::<Vec<_>>(),
+            "re_birth_creates": creates.len(),
+        }),
+    );
+    let services = check_services(&spans, &mut inv);
+    let chains = check_formation_chain(&f, &spans, &mut inv);
+    let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
+    let index = copy_spans(&f.estate, &f.dir);
+    let mut actions = std::mem::take(&mut f.actions);
+    actions.extend(a.actions.iter().cloned());
+    actions.extend(a.traffic.ops.iter().map(|(_, c)| action_row(c)));
+    actions.extend(verification.iter().map(action_row));
+    actions.sort_by_key(|r| r["t_ms"].as_u64().unwrap_or(0));
+    let mut history = std::mem::take(&mut a.history);
+    history.extend(claims.iter().cloned());
+    history.extend(a.build_obs.iter().map(|o| json!({"phase": "build-projection", "observation": o})));
+    write_views(
+        Views {
+            f: &f,
+            topology_final: nodes_end,
+            actions,
+            operations: accounted.operations,
+            outcomes: accounted.outcomes,
+            authority_history: history,
+            route_history: Vec::new(),
+            runtime_history: runtime,
+            inv,
+            extra: json!({
+                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": chains,
+                "scenario_events": a.events, "build_trail": trail, "surviving_path_proof": proof, "births_seen": a.births, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
+                "build_projection_observations": a.build_obs, "successor_creates_for_the_broker": successor_creates, "final_launches": launches_end,
+                "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
+                "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)", "scenarios": ["R1", "R2", "R3"], "aimed_at": broker},
+            }),
+        },
+        index,
+        &spans,
+    );
+}
+
+/// CONTRACT: topology-preserving recovery keeps the accepted Build and only advances its attempt. In
+/// the formed estate two Build-executed admin restarts each open exactly the next attempt of the Build
+/// the fabric already names (same Build id, one attempt further, one executor, the same NodeId in a
+/// new birth). Then a non-fabric-primary mesh primary, executing a broker's restart, is SIGKILLed
+/// (a death the story names) with that attempt in flight and the broker out of service, while seeded
+/// puts are aimed at the broker: the fabric-primary's next attempt of the same Build re-births the
+/// dead admin's path.name and hands the broker's restart to the surviving mesh primary, whose attempt
+/// completes it; the broker ends back in service under a new exact birth (its NodeId kept or re-born
+/// is recorded). No
+/// Build is accepted for any of it, no two executors hold one attempt, the final view has the same
+/// path.names it began with, and every planner, authority and death-detector span in the run is the
+/// imported node-admin's, from the pinned RDM checkout of the candidate. Every operation is classified
+/// once, none applied twice, none replayed. What must NOT happen: a new Build for an unchanged
+/// topology, an attempt number that does not advance, two executors on one attempt, a signal to the
+/// fabric-primary, a missing or extra node in the final view.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_recovery_retains_build_and_advances_attempt() {
+    recovery_run("mock_recovery_retains_build_and_advances_attempt", any_tier()).await;
 }

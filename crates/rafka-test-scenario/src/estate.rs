@@ -637,7 +637,13 @@ impl Estate {
         let line = String::from_utf8_lossy(&out.stdout);
         let v: Value = serde_json::from_str(line.trim())
             .unwrap_or_else(|e| panic!("probe {args:?} printed no JSON ({e}): {line} / {}", String::from_utf8_lossy(&out.stderr)));
-        self.append_ledger(&json!({ "args": args, "result": v }));
+        // A probe that did not exit cleanly says how, so its missing evidence has a reason on record.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.success() && !stderr.contains("panicked") {
+            self.append_ledger(&json!({ "args": args, "result": v }));
+        } else {
+            self.append_ledger(&json!({ "args": args, "result": v, "exit": out.status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(&out.status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() }));
+        }
         v
     }
 

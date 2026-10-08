@@ -125,6 +125,9 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let req = DeclareRequest::Declare { to, state, node_id: a.as_node_id.clone(), incarnation: a.as_incarnation.clone() };
     let (out, _) = client.call::<DeclareProbe>(target, &req, &CallOptions::default()).await;
+    // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
+    // process ungracefully and its span file is lost (a call that never left the resolver is the case).
+    client.endpoint().close().await;
     Ok(match &out {
         RpcOutcome::Reply(r) => match r.value() {
             DeclareReply::Answered { outcome, reply, reason } => json!({
@@ -254,6 +257,9 @@ async fn run(a: Args) -> Result<Value, String> {
         Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
         Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
     };
+    // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
+    // process ungracefully and its span file is lost (a call that never left the resolver is the case).
+    client.endpoint().close().await;
     Ok(match &out {
         RpcOutcome::Reply(r) => json!({"outcome": out.name(), "route": leg, "reply": reply(r.value())}),
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", n.reason())}),
@@ -308,6 +314,9 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let req = ResolveRequest::Resolve { target: query };
     let (out, _) = client.call::<ResolveProbe>(target, &req, &CallOptions::default()).await;
+    // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
+    // process ungracefully and its span file is lost (a call that never left the resolver is the case).
+    client.endpoint().close().await;
     Ok(match &out {
         RpcOutcome::Reply(r) => {
             let v = r.value();
@@ -365,6 +374,9 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
+    // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
+    // process ungracefully and its span file is lost (a call that never left the resolver is the case).
+    client.endpoint().close().await;
     Ok(match &out {
         RpcOutcome::Reply(r) => match r.value() {
             OriginateReply::Called { by, destination_node_id, route, carrier, retired, outcome, reply, pooled } => json!({
