@@ -314,6 +314,11 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
             if acted.is_some_and(|(a, _)| a == p) {
                 continue;
             }
+            // An attempt that carries an action repairs exactly its birth. Another unheard birth is
+            // that birth's own proven drift, repaired by its own attempt, never swept up here.
+            if action.is_some() && observed.node(p).is_some_and(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)) {
+                continue;
+            }
             if !observed.node(p).is_some_and(|n| n.status.is_live()) {
                 ops.push(BuildOperation::CreateNode { node: p.clone(), replaces: None });
             }
@@ -621,9 +626,11 @@ mod tests {
             assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
             let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
             assert_eq!(plan(&cur, &o, Some(&replace)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
-            // Another birth at the path: the action is satisfied; the generic create decides alone.
+            // Another birth at the path: the action is satisfied, and the unheard birth is not swept
+            // up by it (its own proven drift opens its own attempt).
             let other = AttemptAction::Replace { path: path.clone(), from_incarnation: IncarnationId::mint() };
-            assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }], "{dead:?}");
+            assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![], "{dead:?}");
+            assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }], "no action: the generic create decides");
         }
         let mut leaving = mn();
         leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;

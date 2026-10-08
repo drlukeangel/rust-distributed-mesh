@@ -397,3 +397,32 @@ mod tests {
         assert!(!build_names_a_provider(&json!({"fabric": "f", "meshes": [{"name": "m", "node_admin": 1, "rpc_node": 1}]})));
     }
 }
+
+#[cfg(test)]
+mod exit_proof_tests {
+    use super::*;
+    use rafka_mesh_entity::runtime::{ExitRecord, TRANSPORT_STOPPED_EXIT_CODE};
+
+    fn process_fact(deployment: &str) -> RuntimeFact {
+        RuntimeFact { deployment_id: deployment.into(), provider: RuntimeProvider::Process, control_domain: "d".into(), locator: RuntimeLocator::Process { pid: 1, start: 1 } }
+    }
+
+    /// CONTRACT: a successor admin reads an unknown exit code (`Exited { code: None }`) as the
+    /// process runtime's own recorded code only from the exact record of that deployment and
+    /// incarnation; no record, another birth's record, or a provider-given code leave it as it was.
+    #[test]
+    fn an_unknown_exit_code_is_proven_only_by_the_births_own_record() {
+        let dir = std::env::temp_dir().join(format!("rafka-exit-proof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let unknown = || DeploymentStatus::Exited { code: None };
+        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a"), unknown(), "no record proves nothing");
+        ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
+        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-a"), DeploymentStatus::Exited { code: Some(4) });
+        assert_eq!(exit_proof(unknown(), &process_fact("dep-b"), Some(&dir), "inc-a"), unknown(), "another deployment's record");
+        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), Some(&dir), "inc-b"), unknown(), "another incarnation's record");
+        assert_eq!(exit_proof(unknown(), &process_fact("dep-a"), None, "inc-a"), unknown(), "no data dir known");
+        assert_eq!(exit_proof(DeploymentStatus::Exited { code: Some(137) }, &process_fact("dep-a"), Some(&dir), "inc-a"), DeploymentStatus::Exited { code: Some(137) }, "a code the provider saw stands");
+        assert_eq!(exit_proof(DeploymentStatus::Running, &process_fact("dep-a"), Some(&dir), "inc-a"), DeploymentStatus::Running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

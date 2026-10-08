@@ -66,6 +66,13 @@ impl World {
             r.answers = false;
         }
     }
+    /// The runtime exited with `code`.
+    fn exit_with(&self, node_id: &str, code: Option<i32>) {
+        for r in self.runtimes.lock().unwrap().values_mut().filter(|r| r.node_id == node_id) {
+            r.status = DeploymentStatus::Exited { code };
+            r.answers = false;
+        }
+    }
     /// The runtime is frozen: it runs, and it answers nothing.
     fn freeze(&self, node_id: &str) {
         for r in self.runtimes.lock().unwrap().values_mut().filter(|r| r.node_id == node_id) {
@@ -156,14 +163,19 @@ async fn estate() -> Estate {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let fp = view.read().await.fabric_primary().unwrap().name.to_string();
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
-    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
+    let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), restarted: Mutex::new(Vec::new()), hear_after_birth: std::sync::atomic::AtomicBool::new(false) });
     Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in membership, a live node.
 fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>) -> Node {
+    birth_as(world, book, fabric_id, path, supersedes, NodeId::mint())
+}
+
+/// [`birth`] under a given NodeId: a restart's new incarnation of the same node.
+fn birth_as(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, supersedes: Option<IncarnationId>, node_id: NodeId) -> Node {
     let mut n = Node::allocated(path.parse().unwrap());
-    n.node_id = NodeId::mint();
+    n.node_id = node_id;
     n.incarnation_id = Some(IncarnationId::mint());
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
     n.status = NodeStatus::ReadyForTraffic;
@@ -199,6 +211,7 @@ struct Runner {
     fabric_id: FabricId,
     ran: Mutex<Vec<(String, BuildOperation, FenceOutcome)>>,
     born: Mutex<Vec<String>>,
+    restarted: Mutex<Vec<String>>,
     /// Membership repair runs right after every birth, before the attempt's next operation: what a
     /// reborn forwarder does to the executor's view mid-attempt.
     hear_after_birth: std::sync::atomic::AtomicBool,
@@ -207,6 +220,17 @@ struct Runner {
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
     async fn run(&self, _: &BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        if let BuildOperation::RestartNode { node: path } = op {
+            // The same identity, a new incarnation: the exited birth's NodeId is kept.
+            let prev = self.view.read().await.node(path).cloned().ok_or_else(|| format!("{path} is not in the view"))?;
+            self.restarted.lock().unwrap().push(path.to_string());
+            let n = birth_as(&self.world, &self.book, &self.fabric_id, &path.to_string(), prev.incarnation_id, prev.node_id);
+            let mut v = self.view.write().await;
+            v.nodes.retain(|x| x.name != *path);
+            v.nodes.push(n);
+            rafka_node_admin_core::election::resolve(&mut v.nodes);
+            return Ok(());
+        }
         let BuildOperation::CreateNode { node: path, .. } = op else { return Err(format!("unexpected {op:?}")) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
@@ -465,4 +489,58 @@ async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.fence_of(m));
     }
     e.holds_the_shape().await;
+}
+
+/// CONTRACT: a runtime whose exit the provider proves carries the TRANSPORT_STOPPED code (4) is
+/// restarted: the next attempt of the same Build is a ProvenDrift Restart fenced to that birth,
+/// and the path is re-created under the SAME NodeId with a new incarnation. Nothing else is born.
+#[tokio::test]
+async fn a_transport_stopped_exit_is_restarted_with_the_same_identity() {
+    let e = estate().await;
+    let before = e.accepted.current(&*e.builds).await.unwrap();
+    let id = e.node_id("mesh1.rpc.2").await;
+    let old_inc = e.view.read().await.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
+    e.world.exit_with(&id, Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE));
+    e.unheard(&["mesh1.rpc.2"]).await;
+    e.drift().await.expect("a proven loss opens the next attempt");
+    let opened = e.accepted.current(&*e.builds).await.unwrap();
+    assert_eq!(opened.reason, rafka_node_admin_core::build_state::AttemptReason::ProvenDrift);
+    assert_eq!(opened.action, Some(rafka_node_admin_core::accepted::AttemptAction::Restart { path: "mesh1.rpc.2".parse().unwrap(), from_incarnation: old_inc.clone() }));
+    e.converge().await;
+    assert_eq!(e.runner.restarted.lock().unwrap().clone(), vec!["mesh1.rpc.2".to_string()]);
+    assert!(e.born().is_empty(), "no new node is created: {:?}", e.born());
+    assert_eq!(e.node_id("mesh1.rpc.2").await, id, "the same NodeId");
+    assert_ne!(e.view.read().await.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id, Some(old_inc), "a new incarnation");
+    e.holds_the_shape().await;
+    let after = e.accepted.current(&*e.builds).await.unwrap();
+    assert_eq!((after.build_id, after.attempt, after.state), (before.build_id, before.attempt + 1, BuildState::Complete));
+}
+
+/// CONTRACT: every other unplanned exit, and an exit whose reason is unknown, is replaced: a
+/// Replace attempt fenced to the exited birth, a new node at the path. Three exited births are
+/// three attempts, one per pass, lowest path.name first.
+#[tokio::test]
+async fn every_other_exit_is_replaced_one_birth_per_attempt_in_path_order() {
+    let e = estate().await;
+    let before = e.accepted.current(&*e.builds).await.unwrap();
+    let (a, b, c) = (e.node_id("mesh1.rpc.1").await, e.node_id("mesh1.rpc.2").await, e.node_id("mesh1.rpc.3").await);
+    e.world.exit_with(&c, Some(1));
+    e.world.exit_with(&a, None);
+    e.world.exit_with(&b, Some(137));
+    e.unheard(&["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"]).await;
+    for (pass, path) in ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"].into_iter().enumerate() {
+        let opened = e.drift().await;
+        assert!(opened.is_some(), "pass {pass}: an exited birth opens the next attempt; born so far {:?}", e.born());
+        assert_eq!(opened.unwrap().1, before.attempt + 1 + pass as u32);
+        let current = e.accepted.current(&*e.builds).await.unwrap();
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path: p, .. }) = current.action else { panic!("pass {pass}: not a Replace: {:?}", current.action) };
+        assert_eq!(p.to_string(), path, "pass {pass}: the lowest remaining exited path");
+        e.converge().await;
+        assert_eq!(e.born().last().map(String::as_str), Some(path));
+    }
+    assert_eq!(e.born().len(), 3);
+    assert!(e.runner.restarted.lock().unwrap().is_empty());
+    assert!(e.fence_of("mesh1.rpc.2").iter().all(|o| matches!(o, FenceOutcome::Clear { gone: Some(_) })));
+    e.holds_the_shape().await;
+    assert_eq!(e.drift().await, None, "nothing is left to repair");
 }
