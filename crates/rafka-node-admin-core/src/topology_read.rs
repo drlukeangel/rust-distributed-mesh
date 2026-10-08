@@ -209,7 +209,10 @@ impl std::fmt::Display for TopologyFailure {
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
     let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
-    let target_name = format!("{target:?}");
+    let target_name = match target {
+        NodeTarget::ExactNode(id) => id.to_string(),
+        other => format!("{other:?}"),
+    };
     let mut stream = match client.call_stream::<Topology>(target, &req, &opts).await {
         Ok((s, _)) => s,
         Err((RpcOutcome::Reply(r), _)) => return Err(refusal_of(r.value().clone())),

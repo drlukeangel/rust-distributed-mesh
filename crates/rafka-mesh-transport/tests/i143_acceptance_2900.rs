@@ -156,7 +156,7 @@ fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
 /// A top-up baseline as a topology read delivers it: the chunks of one snapshot.
 fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
     let mut last = None;
-    for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("read")) {
+    for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("topology-read")) {
         last = Some(rx.take_read_chunk(chunk_of(&f)));
     }
     last.expect("a snapshot has at least one chunk")
