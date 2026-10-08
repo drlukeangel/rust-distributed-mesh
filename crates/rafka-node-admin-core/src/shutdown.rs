@@ -237,9 +237,12 @@ async fn stop_and_wait(control: &ShutdownControl, stopper: &dyn Stopper, nodes: 
     if nodes.is_empty() {
         return;
     }
+    // The tiers are ordered (members, then the mesh's admins, then the other primaries); the nodes
+    // of one tier are stopped together, each terminate waiting out its own leave linger.
+    let stopped = futures_util::future::join_all(nodes.iter().map(|n| stopper.stop(n))).await;
     let mut waiting = Vec::new();
-    for n in nodes {
-        match stopper.stop(&n).await {
+    for (n, r) in nodes.into_iter().zip(stopped) {
+        match r {
             Ok(()) => waiting.push(n),
             Err(reason) => control.incomplete(&n.name.to_string(), reason),
         }
