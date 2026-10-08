@@ -252,9 +252,10 @@ pub async fn run(w: Watch) {
 
 /// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
 fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
-    // OLD-SHAPE
-    for gone in ladder.lock().unwrap().meshes().difference(heard).cloned().collect::<Vec<_>>() {
-        ladder.lock().unwrap().forget(&gone);
+    let gone: Vec<String> = ladder.lock().unwrap().meshes().difference(heard).cloned().collect();
+    let mut held = ladder.lock().unwrap();
+    for mesh in gone {
+        held.forget(&mesh);
     }
 }
 
