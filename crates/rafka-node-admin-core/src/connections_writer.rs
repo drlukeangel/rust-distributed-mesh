@@ -32,6 +32,9 @@ pub struct ConnectionsWriter {
     inner: Arc<Inner>,
 }
 
+/// Makes an observation's row from the held projection, inside the write gate.
+type Build = Box<dyn FnOnce(&ConnectionsWriter) -> NodeConnection + Send>;
+
 struct Inner {
     own: ConnectionEnd,
     storage: Arc<dyn ConnectionsStorage>,
@@ -44,7 +47,11 @@ struct Inner {
     /// waits for this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
-    /// Held across one observation's build, write and apply.
+    /// The observations in the order they were observed: one consumer builds, stamps, writes and
+    /// applies them one at a time, so the index member of a pair is always the last observed.
+    queue: tokio::sync::mpsc::UnboundedSender<(Build, &'static str)>,
+    /// The one write gate: held across every build, durable write and apply, whether it is an
+    /// observation, a [`ConnectionsWriter::record`] or a retirement settlement.
     write_gate: tokio::sync::Mutex<()>,
 }
 
@@ -74,7 +81,27 @@ fn state_name(s: ConnectionState) -> &'static str {
 impl ConnectionsWriter {
     /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
-        Self { inner: Arc::new(Inner { own, storage, held, runtime: tokio::runtime::Handle::current(), last_stamp: Mutex::new(0), in_flight: std::sync::atomic::AtomicUsize::new(0), idle: tokio::sync::Notify::new(), write_gate: tokio::sync::Mutex::new(()) }) }
+        let runtime = tokio::runtime::Handle::current();
+        let (queue, mut observations) = tokio::sync::mpsc::unbounded_channel::<(Build, &'static str)>();
+        let inner = Arc::new(Inner {
+            own,
+            storage,
+            held,
+            runtime: runtime.clone(),
+            last_stamp: Mutex::new(0),
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            idle: tokio::sync::Notify::new(),
+            queue,
+            write_gate: tokio::sync::Mutex::new(()),
+        });
+        let weak = Arc::downgrade(&inner);
+        runtime.spawn(async move {
+            while let Some((build, origin)) = observations.recv().await {
+                let Some(inner) = weak.upgrade() else { break };
+                ConnectionsWriter { inner }.write_observed(build, origin).await;
+            }
+        });
+        Self { inner }
     }
 
     pub fn held(&self) -> Arc<Mutex<ConnectionsHeld>> {
@@ -132,6 +159,7 @@ impl ConnectionsWriter {
 
     /// Record one fact: the raw log first, then the index, then the held projection.
     pub async fn record(&self, row: NodeConnection) -> Result<(), String> {
+        let _gate = self.inner.write_gate.lock().await;
         self.persist(&row).await?;
         let _ = self.inner.held.lock().unwrap().apply(row);
         Ok(())
@@ -172,6 +200,7 @@ impl ConnectionsWriter {
     /// so new calls cut back to Direct only then. A refused write is named and leaves the
     /// obligation standing for the next attempt. Returns how many landed.
     pub async fn settle_owed(&self) -> Result<usize, String> {
+        let _gate = self.inner.write_gate.lock().await;
         let at = self.stamp();
         let owed = owed_retirements(&self.inner.held.lock().unwrap(), at);
         let mut landed = 0;
@@ -237,11 +266,16 @@ impl ConnectionsWriter {
     /// observation already applied. A Direct Connected settles the Proxy retirement it may owe
     /// once its own write has landed.
     fn observed(&self, build: impl FnOnce(&Self) -> NodeConnection + Send + 'static, origin: &'static str) {
-        let w = self.clone();
         self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        self.inner.runtime.spawn(async move {
+        let _ = self.inner.queue.send((Box::new(build), origin));
+    }
+
+    /// Write one queued observation inside the write gate, then settle the retirement it may owe.
+    async fn write_observed(&self, build: Build, origin: &'static str) {
+        let w = self;
+        {
             let gate = w.inner.write_gate.lock().await;
-            let mut row = build(&w);
+            let mut row = build(w);
             row.logged_at_ms = w.stamp();
             let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
             let span = tracing::info_span!(
@@ -287,7 +321,7 @@ impl ConnectionsWriter {
             drop(span);
             w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             w.inner.idle.notify_waiters();
-        });
+        }
     }
 }
 

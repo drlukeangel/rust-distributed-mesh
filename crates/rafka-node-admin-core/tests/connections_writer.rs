@@ -84,30 +84,14 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     }
     let history = storage.history().await.unwrap();
     assert_eq!(history.len(), 7, "every failure joins the raw log");
-    // The index write trails the history append by one task step: read it once it names the
-    // seventh ordinal.
-    let mut index = storage.connections().await.unwrap();
-    for _ in 0..200 {
-        if index.first().and_then(|r| r.recovery.as_ref()).is_some_and(|r| r.attempt_ordinal == 7) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        index = storage.connections().await.unwrap();
-    }
+    let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1, "one Direct member for the pair: {index:?}");
     assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 7)), "the ordinal counts up in one epoch");
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1);
     // A Direct Connected ends the series and is the pair's one Direct member now.
     writer.direct_connected(&target);
     writer.drain().await;
-    let mut index = storage.connections().await.unwrap();
-    for _ in 0..200 {
-        if index.first().is_some_and(|r| r.state == ConnectionState::Connected) {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        index = storage.connections().await.unwrap();
-    }
+    let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1);
     assert_eq!(index[0].state, ConnectionState::Connected);
     assert!(reconnect_plan(&held.lock().unwrap(), |_| None).is_empty(), "nothing is owed after a connect");
@@ -319,4 +303,50 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     assert_eq!(index[0].recovery.map(|r| r.attempt_ordinal), Some(1));
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1, "the failure is held once it is durable");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An index whose put of the first failure's fact is slow: the interleaving where an earlier
+/// observation's index write would land after a later one's.
+struct SlowFirstPut(rafka_node_admin_core::storage::MemoryConnectionsStorage);
+
+#[async_trait::async_trait]
+impl ConnectionsStorage for SlowFirstPut {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        if fact.reason.as_deref() == Some("refused 0") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        self.0.put_connection(fact).await
+    }
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.connections().await
+    }
+    async fn remove_connection(&self, index: &rafka_mesh_entity::connections::ConnectionIndex) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.remove_connection(index).await
+    }
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.append_history(fact).await
+    }
+    async fn history(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.history().await
+    }
+}
+
+/// CONTRACT: observations of one pair reach the index in the order they were observed, so after
+/// the writer drains, the index member of the pair is the latest ordinal even when the first
+/// observation's index write is the slowest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
+    let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowFirstPut(Default::default()));
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held);
+    writer.hydrate().await.unwrap();
+    let target = resolved(&dest);
+    for i in 0..3 {
+        writer.direct_failed(&target, &format!("refused {i}"));
+    }
+    writer.drain().await;
+    let index = storage.connections().await.unwrap();
+    assert_eq!(index.len(), 1);
+    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
 }
