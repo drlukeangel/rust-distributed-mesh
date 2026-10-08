@@ -342,7 +342,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         nodes2.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect::<Vec<_>>(),
         nodes2.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["name"])).collect::<Vec<_>>(),
     );
-    assert!(!m2.contains(&victim_name) && !m1.contains(&victim_name));
+    assert!(!m2.contains(&victim_name) && !m1.contains(&victim_name), "the retired {victim_name} ({victim_id}) is absent from the control admin's view: {:?}", nodes2.iter().filter(|n| n["node_id"] == victim_id.as_str() || n["name"] == victim_name.as_str()).collect::<Vec<_>>());
     let cut2 = Partition::start(&udp_ports(&nodes2, &m1), &udp_ports(&nodes2, &m2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: {why}"));
     let cut2_at = now_ns();
     wait_for("a whole repair window completes on every peer-mesh admin pair after the retirement", window * 6 + Duration::from_secs(40), || async {
