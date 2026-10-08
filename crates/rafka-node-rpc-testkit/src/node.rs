@@ -288,9 +288,15 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
                 membership.learn(d, "entry");
             }
             membership.learn_statuses(&answer.statuses);
+            // The baseline of each source Mesh the launching admin serves: the publisher and
+            // version this node resumes that source's deltas from.
+            membership.learn_sources(&answer.sources);
             let _ = membership.join_peers(mesh_peers).await;
         }
     }
+    // A delta that does not follow what this node holds desynchronizes that source; the node tops
+    // up from its Mesh's own primary (gossip.md §3.3).
+    membership.spawn_top_up(ep0.clone());
     let digest = MeshDigest {
         fabric_id: launch.fabric_id.clone(),
         node: MeshNode {

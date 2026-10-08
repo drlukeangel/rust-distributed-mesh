@@ -49,6 +49,13 @@ pub struct EntryAnswer {
     /// instant kept): the top-up a node that missed the status frames takes. Never inside `members`.
     #[serde(default)]
     pub statuses: Vec<crate::membership::Frame>,
+    /// The cross-Mesh projection the answering node holds of every source Mesh, loads omitted,
+    /// with each source's publisher and `topology_version`: the baseline a node's top-up installs
+    /// atomically before it resumes that source's deltas (gossip.md §3.3). While the answerer is
+    /// its Mesh's primary these are the versions it last published into its Mesh, so the deltas it
+    /// sends next continue from them.
+    #[serde(default)]
+    pub sources: Vec<crate::snapshot::SourceSnapshot>,
 }
 
 /// The answer is awaited: what an admin holds (its fabric control state) is read through storage.
@@ -87,6 +94,7 @@ impl ProtocolHandler for EntryServer {
                 node = %req.node,
                 served_by = %answer.served_by,
                 members = answer.members.len(),
+                sources = answer.sources.len(),
             )
             .in_scope(|| tracing::info!("entry answered"));
             let _ = send.write_all(&serde_json::to_vec(&answer).unwrap_or_default()).await;

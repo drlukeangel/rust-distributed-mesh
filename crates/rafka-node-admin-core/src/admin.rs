@@ -1563,7 +1563,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     // a joiner's own copy of that Build's attempt facts must reach before it is Ready.
                     let build = e.accepted.current(&*e.builds).await.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt }));
                     let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held(), "build": build });
-                    EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()) }
+                    EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()), sources: e.membership.entry_sources() }
                 }
             }
         }
@@ -1631,7 +1631,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
-    let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), seed_addrs.clone())
+    let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
     // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
@@ -2264,11 +2264,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
         let adapter = runner.builds.clone();
-        // Provisional: the architecture measures this default from stripped-full sizes under the
-        // scale and chaos proofs (rafka-v2 #2900); 10 rounds is a placeholder, not the answer.
-        let full_every: u32 = std::env::var("RDM_FULL_EVERY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let full_every = rafka_mesh_transport::membership::full_every_rounds()?;
         hierarchy = tokio::spawn(async move {
-            let mut last_overlays: Option<(Vec<rafka_mesh_entity::LifecycleOp>, Vec<rafka_mesh_entity::LifecycleOp>)> = None;
             let mut rounds: u32 = 0;
             // Each unreadable pre-event step is named once, not every round.
             let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
@@ -2300,14 +2297,13 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 backbone.announce_statuses(&mesh_status, &status_of(t.fabric.status)).await;
-                // The mesh's own members hear the overlays and departures alone on their
-                // channel: on a change, and every `full_every` rounds as anti-entropy.
-                if live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me) {
-                    let now = (membership.book.in_flight(), membership.book.departed());
+                // The forwarding primary puts the stripped full of every source into its Mesh every
+                // `full_every` rounds as passive anti-entropy (gossip.md §3.3); a change in a source
+                // is a delta, sent when the move is heard (`Backbone::publish`, the backbone handler).
+                if live && backbone.is_mesh_primary() {
                     rounds += 1;
-                    if last_overlays.as_ref() != Some(&now) || rounds % full_every == 0 {
-                        let _ = membership.publish_overlays(&mesh, &me.to_string()).await;
-                        last_overlays = Some(now);
+                    if rounds % full_every == 0 {
+                        backbone.forward_fulls("every").await;
                     }
                 }
                 let addr = rafka_mesh_transport::membership::gossip_addr;

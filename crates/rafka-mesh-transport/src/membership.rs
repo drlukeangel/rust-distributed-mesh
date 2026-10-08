@@ -16,6 +16,7 @@
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
 
 use crate::clock::SharedClock;
+use crate::snapshot::{Chunk, Delta, Forward, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
@@ -24,7 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::{FabricId, LifecycleOp, MeshDigest, MeshId, DEPARTED_RETENTION};
+use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +57,46 @@ pub fn backbone_gossip_interval() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| env_ms("RDM_BACKBONE_INTERVAL_MS", 2_000))
 }
+/// The default `FULL_EVERY`: the forwarding primary puts the stripped full of every source into
+/// its Mesh every this many aggregate rounds (gossip.md §3.3). It is passive anti-entropy for a
+/// node that noticed nothing wrong, and the liveness word for a member heard only through forwarded
+/// topology, so it must stay inside that member's extra grace (see [`full_every_rounds`]). The
+/// default keeps a full within four rounds, a quarter of the grace at the default cadences.
+pub const FULL_EVERY_DEFAULT: u32 = 4;
+
+/// The upper bound `RDM_FULL_EVERY_ROUNDS` may name, whatever the cadences.
+pub const FULL_EVERY_MAX: u32 = 64;
+
+/// `FULL_EVERY`, from `RDM_FULL_EVERY_ROUNDS` (default [`FULL_EVERY_DEFAULT`]): a number of
+/// aggregate rounds between 1 and [`FULL_EVERY_MAX`] such that a full, plus one round, arrives
+/// inside the forwarded staleness floor. A member of a peer Mesh is heard by an ordinary node only
+/// through these fulls and deltas, so a value whose interval outlasts that floor would make every
+/// remote member flicker to `PendingReconnect`. A value outside the bounds is refused by name,
+/// never replaced by the default.
+pub fn full_every_rounds() -> Result<u32, String> {
+    let rounds = match std::env::var("RDM_FULL_EVERY_ROUNDS") {
+        Err(_) => FULL_EVERY_DEFAULT,
+        Ok(v) => v.parse::<u32>().map_err(|_| format!("RDM_FULL_EVERY_ROUNDS={v:?} is not a whole number of rounds"))?,
+    };
+    if rounds == 0 || rounds > FULL_EVERY_MAX {
+        return Err(format!("RDM_FULL_EVERY_ROUNDS={rounds} is outside 1..={FULL_EVERY_MAX}"));
+    }
+    let g = gossip_interval();
+    let forwarded_floor = staleness_floor() + backbone_gossip_interval() + staleness_floor() + backbone_gossip_interval();
+    if g * (rounds + 1) > forwarded_floor {
+        return Err(format!(
+            "RDM_FULL_EVERY_ROUNDS={rounds} at a {}ms round puts {}ms between fulls, past the {}ms a member heard only through forwarded topology stays heard",
+            g.as_millis(),
+            (g * rounds).as_millis(),
+            forwarded_floor.as_millis()
+        ));
+    }
+    Ok(rounds)
+}
+
 /// The largest encoded frame: iroh-gossip's default maximum message is 4096
 /// bytes; the rest is its own framing.
-const MAX_FRAME: usize = 3800;
+pub const MAX_FRAME: usize = 3800;
 
 /// A mesh's membership channel.
 pub fn mesh_topic(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
@@ -211,21 +249,45 @@ where
 pub enum Frame {
     /// A member's own digest (its mesh channel only).
     Digest { digest: MeshDigest },
-    /// Members of `mesh`, published on the backbone by that mesh's primary
-    /// (`publisher`), packed into as few frames as fit one gossip message, and
-    /// forwarded onto a peer mesh's channel by its primary (`forwarded_by`).
-    /// `published_at_rafka_ms` makes each publication distinct. Every frame of one
-    /// publication carries the mesh's open lifecycle overlays (`in_flight`)
-    /// and its retained proven departures (`departed`), so a node that missed
-    /// the events learns the same state from the next aggregate it hears. A
-    /// mesh primary also publishes the two lists alone (no digests) on its own
-    /// mesh channel, for its own members.
+    /// One chunk of a snapshot of `mesh`'s members (gossip.md §3.1). On the backbone it is the
+    /// complete Mesh with its loads, published by that Mesh's current primary (`publisher`, the
+    /// exact birth that holds the seat, which is the epoch of `topology_version`); on a peer
+    /// Mesh's own channel it is the forwarded full without loads, `publisher` still the SOURCE
+    /// primary and `forwarded_by` the local primary that sends it (the backbone frame carries
+    /// `None`). `topology_version` bumps on a material change of the normalized projection and
+    /// never on a heartbeat, a stamp, a load or an unchanged republish. All chunks of one
+    /// snapshot share `snapshot_id` (the sender's own counter, never a clock reading) and carry
+    /// the open lifecycle overlays (`in_flight`) and retained proven departures (`departed`)
+    /// split across them; a receiver installs the snapshot only once it holds every chunk.
+    /// `published_at_rafka_ms` makes each publication distinct.
     Members {
         mesh: String,
-        publisher: String,
+        publisher: PublisherId,
         forwarded_by: Option<String>,
+        topology_version: u64,
         published_at_rafka_ms: u64,
+        snapshot_id: u64,
+        chunk_index: u32,
+        chunk_count: u32,
         digests: Vec<MeshDigest>,
+        #[serde(default)]
+        in_flight: Vec<LifecycleOp>,
+        #[serde(default)]
+        departed: Vec<LifecycleOp>,
+    },
+    /// What moved a source Mesh's held projection from `base_version` to `topology_version`,
+    /// published on the forwarding primary's own mesh channel (gossip.md §3.1, §3.3). `base_version`
+    /// is the version that primary last published into its Mesh; a receiver applies the delta only
+    /// when it holds exactly that version of `source_publisher`'s Mesh. Loads are omitted.
+    /// `in_flight` and `departed` are the overlays and departures added since `base_version`.
+    MembersDelta {
+        mesh: String,
+        source_publisher: PublisherId,
+        base_version: u64,
+        topology_version: u64,
+        published_at_rafka_ms: u64,
+        changed: Vec<MeshDigest>,
+        removed: Vec<String>,
         #[serde(default)]
         in_flight: Vec<LifecycleOp>,
         #[serde(default)]
@@ -499,15 +561,14 @@ impl StatusBook {
     }
 }
 
-/// What a peer mesh's primary puts on its own mesh channel for a frame it heard on the backbone:
-/// the frame, unchanged but for `forwarded_by`, or nothing. `me` is the forwarding node, `own_mesh`
+/// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
+/// heard on the backbone: the frame, unchanged but for `forwarded_by`, or nothing. A source Mesh's
+/// members are never forwarded as heard: the [`Forwarder`] derives the delta or the stripped full
+/// from the two snapshots the primary holds (gossip.md §3.3). `me` is the forwarding node, `own_mesh`
 /// its mesh. A status keeps its publisher and its instant: a forwarder never restates one as its
 /// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
 pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
     match frame {
-        Frame::Members { mesh, publisher, published_at_rafka_ms, digests, in_flight, departed, .. } if mesh != own_mesh => {
-            Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms, digests, in_flight, departed })
-        }
         Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
@@ -826,7 +887,7 @@ impl Channel {
 /// Split `items` into runs whose frame (as `frame` builds it, sized as a
 /// forward would be) encodes within [`MAX_FRAME`]. An item alone too large
 /// travels alone.
-fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> Vec<Vec<T>> {
+pub(crate) fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> Vec<Vec<T>> {
     let mut out: Vec<Vec<T>> = Vec::new();
     let mut run: Vec<T> = Vec::new();
     for d in items {
@@ -853,6 +914,41 @@ fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Option<String
     }
 }
 
+/// Which channel a snapshot frame arrived on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// The node-admin backbone: every source Mesh complete, loads included.
+    Backbone,
+    /// This node's own Mesh channel: the other sources as its primary forwards them, no loads.
+    MeshChannel,
+}
+
+impl Side {
+    fn name(self) -> &'static str {
+        match self {
+            Side::Backbone => "backbone",
+            Side::MeshChannel => "mesh-channel",
+        }
+    }
+
+    fn via(self) -> &'static str {
+        match self {
+            Side::Backbone => "backbone",
+            Side::MeshChannel => "forwarded",
+        }
+    }
+}
+
+/// What a snapshot frame left behind.
+#[derive(Default)]
+struct SnapshotTaken {
+    /// The digests applied to the book, for their addresses.
+    carried: Vec<MeshDigest>,
+    /// A complete backbone snapshot of a source Mesh: `(mesh, publisher, version, full)`, for the
+    /// forwarding primary.
+    source: Option<(String, PublisherId, u64, Full)>,
+}
+
 /// What a node's view holds, fed by its mesh channel (and, for an admin, the
 /// backbone): every member's latest digest, the fabric status, and where it
 /// learned each mesh from.
@@ -860,19 +956,30 @@ fn ended(ev: Option<Result<Event, iroh_gossip::api::ApiError>>) -> Option<String
 struct View {
     /// This node's own mesh: its members are heard directly on the mesh channel.
     mesh: String,
+    /// This node's path name, for the spans it emits.
+    node: String,
     book: DigestBook,
     statuses: StatusBook,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
+    /// The cross-Mesh projection the backbone carries: each source complete, loads included.
+    backbone_rx: Arc<Mutex<SnapshotReceiver>>,
+    /// The cross-Mesh projection this Mesh's own channel carries: what the local primary forwards.
+    mesh_rx: Arc<Mutex<SnapshotReceiver>>,
+    /// What this node, as its Mesh's primary, has published into its Mesh.
+    forwarder: Arc<Mutex<Forwarder>>,
+    /// Wakes the top-up when a source of the Mesh channel desynchronizes.
+    desync: Arc<tokio::sync::Notify>,
 }
 
 impl View {
-    fn new(mesh: &str) -> Self {
-        Self { mesh: mesh.to_string(), ..Self::default() }
+    fn new(mesh: &str, node: &str) -> Self {
+        Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() }
     }
 
-    /// Hold what `f` carries; the digests it carries (for their addresses).
+    /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
+    /// not taken here: see [`View::take_snapshot`].
     fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         match f {
             Frame::Digest { digest } if &digest.fabric_id == fabric => {
@@ -880,30 +987,6 @@ impl View {
                     self.note(digest, via);
                 }
                 vec![digest.clone()]
-            }
-            Frame::Members { digests, in_flight, departed, .. } => {
-                // Departures first: a digest of a departed birth in the same frame is refused.
-                for op in departed {
-                    self.book.depart(op.clone());
-                }
-                for op in in_flight {
-                    if op.is_restart() {
-                        self.book.restarting(op.clone());
-                    } else {
-                        self.book.deleting(op.clone());
-                    }
-                }
-                let mine: Vec<MeshDigest> = digests.iter().filter(|d| &d.fabric_id == fabric).cloned().collect();
-                for d in &mine {
-                    // A member of this node's own mesh is heard directly on its mesh channel: an
-                    // aggregate copy is never "heard only through forwarded topology", so it earns
-                    // no forwarded grace (gossip.md §3.2).
-                    let taken = if d.node.name.mesh == self.mesh { self.book.record(d.clone()) } else { self.book.record_forwarded(d.clone()) };
-                    if taken {
-                        self.note(d, via);
-                    }
-                }
-                mine
             }
             Frame::NodeDeleting { op, .. } => {
                 self.book.deleting(op.clone());
@@ -923,6 +1006,175 @@ impl View {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// A `Members` chunk or a `MembersDelta`, arrived on `side`. A snapshot is applied to the book
+    /// only once complete; a delta only at exactly its base. A frame that does not belong on its
+    /// channel is refused by name.
+    fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side) -> SnapshotTaken {
+        match f {
+            Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => {
+                if forwarded_by.is_some() == (side == Side::Backbone) {
+                    tracing::info_span!(
+                        "rdm.mesh.membership.reject.via-members-on-wrong-channel",
+                        node = %self.node,
+                        channel = side.name(),
+                        mesh = %mesh,
+                        publisher = %publisher,
+                        forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    )
+                    .in_scope(|| tracing::warn!("a Members frame on a channel it is not published on: refused"));
+                    return SnapshotTaken::default();
+                }
+                let chunk = Chunk {
+                    mesh: mesh.clone(),
+                    publisher: publisher.clone(),
+                    forwarded_by: forwarded_by.clone(),
+                    topology_version: *topology_version,
+                    snapshot_id: *snapshot_id,
+                    chunk_index: *chunk_index,
+                    chunk_count: *chunk_count,
+                    digests: digests.clone(),
+                    in_flight: in_flight.clone(),
+                    departed: departed.clone(),
+                };
+                let taken = self.receiver(side).lock().unwrap().take_chunk(chunk);
+                match taken {
+                    Taken::Waiting { .. } => SnapshotTaken::default(),
+                    Taken::Refused(r) => {
+                        tracing::info_span!(
+                            "rdm.mesh.membership.reject.via-snapshot",
+                            node = %self.node,
+                            channel = side.name(),
+                            mesh = %mesh,
+                            publisher = %publisher,
+                            topology_version = *topology_version,
+                            snapshot_id = *snapshot_id,
+                            reason = ?r,
+                        )
+                        .in_scope(|| tracing::info!("a snapshot chunk refused: the held projection stands"));
+                        SnapshotTaken::default()
+                    }
+                    Taken::Installed(i) => self.installed(&i, fabric, side),
+                }
+            }
+            Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, departed, .. } => {
+                if side == Side::Backbone {
+                    tracing::info_span!("rdm.mesh.membership.reject.via-members-on-wrong-channel", node = %self.node, channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
+                        .in_scope(|| tracing::warn!("a MembersDelta on the backbone, where only complete snapshots travel: refused"));
+                    return SnapshotTaken::default();
+                }
+                let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), departed: departed.clone() };
+                let moved = self.mesh_rx.lock().unwrap().take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
+                match moved {
+                    Moved::Applied { delta, .. } => {
+                        tracing::info_span!(
+                            "rdm.mesh.membership.update.via-delta",
+                            node = %self.node,
+                            mesh = %mesh,
+                            source_publisher = %source_publisher,
+                            base_version = *base_version,
+                            topology_version = *topology_version,
+                            changed = delta.changed.len(),
+                            removed = delta.removed.len(),
+                            in_flight = delta.in_flight.len(),
+                            departed = delta.departed.len(),
+                        )
+                        .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
+                        let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
+                        SnapshotTaken { carried: self.apply_full(mesh, &full, fabric, side), source: None }
+                    }
+                    Moved::Duplicate { held_version } => {
+                        tracing::info_span!("rdm.mesh.membership.update.via-delta-already-held", node = %self.node, mesh = %mesh, held_version, topology_version = *topology_version)
+                            .in_scope(|| tracing::info!("a delta at or below the held version: a copy already applied"));
+                        SnapshotTaken::default()
+                    }
+                    Moved::Desynced { gap, .. } => {
+                        let (held_version, held_publisher) = match &gap {
+                            Gap::Version { held, .. } => (*held as i64, String::new()),
+                            Gap::OtherEpoch { held } => (-1, held.to_string()),
+                            _ => (-1, String::new()),
+                        };
+                        tracing::info_span!(
+                            "rdm.mesh.membership.update.via-version-gap",
+                            node = %self.node,
+                            mesh = %mesh,
+                            source_publisher = %source_publisher,
+                            gap = %gap,
+                            held_version,
+                            held_publisher = %held_publisher,
+                            base_version = *base_version,
+                            topology_version = *topology_version,
+                        )
+                        .in_scope(|| tracing::info!("the delta does not follow what is held: this source is desynchronized and tops up from its own primary"));
+                        self.desync.notify_one();
+                        SnapshotTaken::default()
+                    }
+                }
+            }
+            _ => SnapshotTaken::default(),
+        }
+    }
+
+    fn receiver(&self, side: Side) -> &Arc<Mutex<SnapshotReceiver>> {
+        match side {
+            Side::Backbone => &self.backbone_rx,
+            Side::MeshChannel => &self.mesh_rx,
+        }
+    }
+
+    /// A complete snapshot is held: apply it to the book.
+    fn installed(&self, i: &Install, fabric: &FabricId, side: Side) -> SnapshotTaken {
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-snapshot-installed",
+            node = %self.node,
+            channel = side.name(),
+            mesh = %i.mesh,
+            publisher = %i.publisher,
+            topology_version = i.topology_version,
+            snapshot_id = i.snapshot_id,
+            members = i.full.member_count(),
+            new_epoch = i.new_epoch,
+            resumed = i.resumed,
+            refreshed = i.refreshed,
+        )
+        .in_scope(|| tracing::debug!("a complete snapshot installed"));
+        let carried = self.apply_full(&i.mesh, &i.full, fabric, side);
+        let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
+        SnapshotTaken { carried, source }
+    }
+
+    /// Apply the members, overlays and departures of a snapshot or a delta to the book. Departures
+    /// first: a digest of a departed birth in the same snapshot is refused.
+    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side) -> Vec<MeshDigest> {
+        for op in full.departed() {
+            self.book.depart(op);
+        }
+        for op in full.in_flight() {
+            if op.is_restart() {
+                self.book.restarting(op);
+            } else {
+                self.book.deleting(op);
+            }
+        }
+        let mut carried = Vec::new();
+        for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
+            // A member of this node's own mesh is heard directly on its mesh channel: an
+            // aggregate copy is never "heard only through forwarded topology", so it earns no
+            // forwarded grace (gossip.md §3.2), and the Mesh channel's copy of it adds nothing.
+            let own = d.node.name.mesh == self.mesh;
+            let taken = match (side, own) {
+                (Side::Backbone, true) => self.book.record(d.clone()),
+                (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
+                (Side::MeshChannel, true) => false,
+                (Side::MeshChannel, false) => self.book.record_forwarded_unloaded(d.clone()),
+            };
+            if taken {
+                self.note(&d, side.via());
+                carried.push(d);
+            }
+        }
+        carried
     }
 
     fn note(&self, d: &MeshDigest, via: &'static str) {
@@ -949,11 +1201,16 @@ impl Membership {
     /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
     /// frame reads it.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let view = View::new(mesh);
-        let (replay_view, replay_fabric, replay_me) = (view.clone(), fabric.clone(), node.to_string());
+        let view = View::new(mesh, node);
+        let (replay_view, replay_fabric, replay_me, replay_clock) = (view.clone(), fabric.clone(), node.to_string(), clock.clone());
+        // A neighbour coming up on this channel (a join, a heal, a refeed) hears what the primary
+        // holds: the statuses, and the forwarded full of every source it has published (gossip.md
+        // §3.1, §3.3).
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
-                replay_view.statuses.held_frames(&replay_fabric, &replay_me)
+                let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
+                frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
+                frames
             } else {
                 Vec::new()
             }
@@ -961,8 +1218,10 @@ impl Membership {
         let lookup_slot: Arc<Mutex<Option<MemoryLookup>>> = Arc::default();
         let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
-            let via = if matches!(frame, Frame::Members { .. }) { "forwarded" } else { "mesh-channel" };
-            let carried = v.take(&frame, &f, via);
+            let carried = match &frame {
+                Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
+                _ => v.take(&frame, &f, "mesh-channel"),
+            };
             if let Some(l) = ls.lock().unwrap().as_ref() {
                 for d in &carried {
                     register_location(l, d);
@@ -1088,6 +1347,38 @@ impl Membership {
         self.mesh.broadcast(f).await
     }
 
+    /// Put what the forwarder decided for `source_mesh` onto this mesh's channel, and name it.
+    async fn send_forward(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, out: Forward) {
+        match out {
+            Forward::Full(frames) => {
+                tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %source_mesh, source_publisher = %publisher, topology_version = version, reason = "first-for-source", chunks = frames.len())
+                    .in_scope(|| tracing::info!("the first publication of this source into the mesh is a full, loads omitted"));
+                for f in &frames {
+                    let _ = self.forward(f).await;
+                }
+            }
+            Forward::Delta(frame) => {
+                if let Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. } = frame.as_ref() {
+                    tracing::info_span!(
+                        "rdm.mesh.membership.update.via-forwarded-delta",
+                        node = %me,
+                        mesh = %source_mesh,
+                        source_publisher = %publisher,
+                        base_version = *base_version,
+                        topology_version = version,
+                        changed = changed.len(),
+                        removed = removed.len(),
+                        in_flight = in_flight.len(),
+                        departed = departed.len(),
+                    )
+                    .in_scope(|| tracing::info!("a source moved: one delta from the version last published into this mesh"));
+                }
+                let _ = self.forward(&frame).await;
+            }
+            Forward::Nothing(_) => {}
+        }
+    }
+
     /// Publish a lifecycle event this node authored on its own mesh channel,
     /// applying it to its own view first.
     pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
@@ -1095,29 +1386,108 @@ impl Membership {
         self.mesh.broadcast(f).await
     }
 
-    /// Publish this mesh's open overlays and retained departures, alone, on
-    /// its own channel: what a member that missed the events, or joined
-    /// after them, resynchronizes from. Each list is packed into as few
-    /// frames as fit.
-    pub async fn publish_overlays(&self, mesh: &str, publisher: &str) -> Result<()> {
-        let sent = self.clock.now_rafka_ms();
-        let (in_flight, departed) = self.book.overlays_of(mesh);
-        let frame = |in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>| Frame::Members {
-            mesh: mesh.to_string(),
-            publisher: publisher.to_string(),
-            forwarded_by: None,
-            published_at_rafka_ms: sent,
-            digests: Vec::new(),
-            in_flight,
-            departed,
+    /// What a node asks of its Mesh's primary to resume the cross-Mesh projection (gossip.md
+    /// §3.3): the baselines this node serves in an entry answer. While it is the Mesh's primary
+    /// that is what it last published into its Mesh; otherwise what it holds from its primary.
+    pub fn entry_sources(&self) -> Vec<SourceSnapshot> {
+        if self.view.primary.load(Ordering::Relaxed) {
+            self.view.forwarder.lock().unwrap().snapshots()
+        } else {
+            self.view.mesh_rx.lock().unwrap().snapshots()
+        }
+    }
+
+    /// Hold the baselines an entry answer carried (a join, or a top-up): each source installs
+    /// atomically and resumes, recording its publisher and version.
+    pub fn learn_sources(&self, sources: &[SourceSnapshot]) -> Vec<(String, u64)> {
+        let mut installed = Vec::new();
+        for s in sources {
+            let taken = self.view.mesh_rx.lock().unwrap().install_baseline(s);
+            if let Taken::Installed(i) = taken {
+                self.view.apply_full(&i.mesh, &i.full, &self.fabric, Side::MeshChannel);
+                installed.push((i.mesh.clone(), i.topology_version));
+            }
+        }
+        installed
+    }
+
+    /// The sources of the Mesh channel that are desynchronized now, with the gap that did it.
+    pub fn desynced_sources(&self) -> Vec<(String, Gap)> {
+        self.view.mesh_rx.lock().unwrap().desynced()
+    }
+
+    /// The version this node holds of `mesh` from its Mesh channel and the publisher it is of.
+    pub fn held_source_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
+        self.view.mesh_rx.lock().unwrap().held_version(mesh)
+    }
+
+    /// This node's own Mesh's primary node-admin as this node's view holds it: the Ready
+    /// node-admin of the Mesh with the lowest NodeId, the election the node-admins make
+    /// (rafka-node-admin-core `election::elect`). The node tops up from it and from no other.
+    pub fn mesh_primary(&self) -> Option<MeshDigest> {
+        self.book
+            .current(self.book.staleness_floor())
+            .into_iter()
+            .filter(|d| d.node.name.mesh == self.view.mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic)
+            .min_by(|a, b| a.node.node_id.cmp(&b.node.node_id))
+    }
+
+    /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
+    /// did not follow what is held, the node pulls the current full fabric topology from its own
+    /// mesh-primary through the entry service, installs it atomically, and resumes. Never the
+    /// remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or held for
+    /// later; the next delta or full from the primary signals or resumes it again.
+    pub fn spawn_top_up(&self, endpoint: Endpoint) -> tokio::task::JoinHandle<()> {
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if me.desynced_sources().is_empty() {
+                    me.view.desync.notified().await;
+                }
+                let gaps = me.desynced_sources();
+                if !gaps.is_empty() {
+                    me.top_up(&endpoint, gaps).await;
+                }
+            }
+        })
+    }
+
+    async fn top_up(&self, endpoint: &Endpoint, gaps: Vec<(String, Gap)>) {
+        let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
+        let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
+        let node = self.view.node.clone();
+        let Some(primary) = self.mesh_primary() else {
+            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "no-mesh-primary-held")
+                .in_scope(|| tracing::info!("no Ready node-admin of this Mesh is held: nothing to top up from"));
+            return;
         };
-        for ops in pack(in_flight, |ops| frame(ops, Vec::new())) {
-            self.mesh.broadcast(&frame(ops, Vec::new())).await?;
+        let Some(addr) = gossip_addr(&primary) else {
+            tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, reason = "mesh-primary-address-unknown", primary = %primary.node.name)
+                .in_scope(|| tracing::info!("the Mesh's primary names no usable endpoint"));
+            return;
+        };
+        match crate::entry::pull_once(endpoint, addr, &node, Duration::from_secs(5)).await {
+            Ok(answer) => {
+                let installed = self.learn_sources(&answer.sources);
+                let still: Vec<String> = self.desynced_sources().into_iter().map(|(m, _)| m).collect();
+                tracing::info_span!(
+                    "rdm.mesh.entry.update.via-top-up",
+                    node = %node,
+                    meshes = %meshes,
+                    reasons = %reasons,
+                    mesh_primary = %primary.node.name,
+                    served_by = %answer.served_by,
+                    sources = answer.sources.len(),
+                    installed = installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
+                    still_desynced = still.join(","),
+                )
+                .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
+            }
+            Err(e) => {
+                tracing::info_span!("rdm.mesh.entry.reject.via-top-up", node = %node, meshes = %meshes, reasons = %reasons, mesh_primary = %primary.node.name, reason = "pull-refused", error = %e)
+                    .in_scope(|| tracing::info!("the Mesh's primary did not answer the top-up"));
+            }
         }
-        for ops in pack(departed, |ops| frame(Vec::new(), ops)) {
-            self.mesh.broadcast(&frame(Vec::new(), ops)).await?;
-        }
-        Ok(())
     }
 
     /// Re-broadcast `digest()` every `every` until the returned handle is aborted.
@@ -1158,13 +1528,38 @@ pub struct Backbone {
     fabric_status: Arc<Mutex<StatusPublisher>>,
     /// Wakes the status sender when a change starts its reinforcement.
     wake: Arc<tokio::sync::Notify>,
+    /// This admin's exact identity as a publisher: its path name and the birth that holds it.
+    publisher: PublisherId,
+    /// Set when the seat is taken: the next round puts the full of every source into the Mesh.
+    full_due: Arc<AtomicBool>,
+    /// The version counter of this Mesh's aggregate, and the complete projection it was last bumped on.
+    version: Arc<Mutex<SourceVersion>>,
+    /// This Mesh as the aggregate last published it (publisher, version, full): the forwarder's
+    /// own-Mesh source.
+    own: Arc<Mutex<Option<(u64, Full)>>>,
 }
 
 impl Backbone {
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
+    /// aggregate this admin publishes names as its publisher.
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let forwarding = Arc::new(AtomicBool::new(false));
         let (m, fw, me, own) = (membership.clone(), forwarding.clone(), node.to_string(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
+            if matches!(frame, Frame::Members { .. } | Frame::MembersDelta { .. }) {
+                let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone);
+                for d in &taken.carried {
+                    register_location(&m.mesh.lookup, d);
+                }
+                // A complete snapshot of a source Mesh: the forwarding primary says what moved
+                // since it last published that source into its own Mesh.
+                if let (Some((source_mesh, publisher, version, full)), true) = (taken.source, fw.load(Ordering::Relaxed)) {
+                    let sent = m.view.forwarder.lock().unwrap().source(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
+                    let (m, me) = (m.clone(), me.clone());
+                    tokio::spawn(async move { m.send_forward(&me, &source_mesh, &publisher, version, sent).await });
+                }
+                return;
+            }
             for d in m.view.take(&frame, &m.fabric, "backbone") {
                 register_location(&m.mesh.lookup, &d);
             }
@@ -1202,6 +1597,10 @@ impl Backbone {
             mesh_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string())))),
             fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(membership.fabric.clone())))),
             wake: Arc::default(),
+            publisher: PublisherId { node: node.to_string(), incarnation },
+            full_due: Arc::default(),
+            version: Arc::default(),
+            own: Arc::default(),
         };
         me.spawn_status_sender();
         Ok(me)
@@ -1273,6 +1672,11 @@ impl Backbone {
         (flag.swap(on, Ordering::Relaxed) != on).then_some(if on { "start" } else { "stop" })
     }
 
+    /// The publisher and version of `mesh`'s complete snapshot this admin holds from the backbone.
+    pub fn held_source(&self, mesh: &str) -> Option<(PublisherId, u64)> {
+        self.membership.view.backbone_rx.lock().unwrap().held_version(mesh)
+    }
+
     /// Whether this backbone publishes its mesh's members now (it is the mesh's primary).
     pub fn is_mesh_primary(&self) -> bool {
         self.publishing.load(Ordering::Relaxed)
@@ -1281,6 +1685,12 @@ impl Backbone {
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
         self.membership.view.primary.store(primary, Ordering::Relaxed);
+        if self.publishing.load(Ordering::Relaxed) != primary {
+            // A forwarder that takes (or loses) the seat has published nothing into its Mesh: the
+            // first publication of every source after taking it is a full (gossip.md §3.3).
+            self.membership.view.forwarder.lock().unwrap().reset();
+            self.full_due.store(primary, Ordering::Relaxed);
+        }
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
@@ -1301,34 +1711,76 @@ impl Backbone {
         }
     }
 
-    /// One publication round: this mesh's `members` (while its primary) on the backbone. A status
+    /// One publication round: this mesh's `members` (while its primary) on the backbone, as one
+    /// chunked snapshot at the Mesh's `topology_version` (gossip.md §3.1). The version bumps when
+    /// the normalized projection changed since the last round and never otherwise, so a quiet Mesh
+    /// republishes the same version as passive anti-entropy. The same projection is this Mesh's
+    /// own source: what its members need of it goes into the Mesh as a delta or a full. A status
     /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
     pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) {
         let sent = membership.clock.now_rafka_ms();
-        if self.publishing.load(Ordering::Relaxed) {
-            // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
-            // aggregate. Each list is packed into as few frames as fit, like the digests.
-            let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
-            let frame = |digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>, forwarded_by: Option<String>| Frame::Members {
-                mesh: self.mesh.clone(),
-                publisher: self.node.clone(),
-                forwarded_by,
-                published_at_rafka_ms: sent,
-                digests,
-                in_flight,
-                departed,
-            };
-            // Sized as a peer primary's forward (a node name like this one).
-            let sized = Some(self.node.clone());
-            for digests in pack(members, |d| frame(d, Vec::new(), Vec::new(), sized.clone())) {
-                let _ = self.channel.broadcast(&frame(digests, Vec::new(), Vec::new(), None)).await;
-            }
-            for ops in pack(in_flight, |o| frame(Vec::new(), o, Vec::new(), sized.clone())) {
-                let _ = self.channel.broadcast(&frame(Vec::new(), ops, Vec::new(), None)).await;
-            }
-            for ops in pack(departed, |o| frame(Vec::new(), Vec::new(), o, sized.clone())) {
-                let _ = self.channel.broadcast(&frame(Vec::new(), Vec::new(), ops, None)).await;
-            }
+        if !self.publishing.load(Ordering::Relaxed) {
+            return;
+        }
+        // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
+        // aggregate.
+        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
+        let full = Full::new(members, in_flight, departed);
+        let (version, snapshot_id, bumped) = {
+            let mut v = self.version.lock().unwrap();
+            let before = v.version();
+            let version = v.observe(&full);
+            (version, v.next_snapshot_id(), version != before)
+        };
+        if bumped {
+            tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %self.node, mesh = %self.mesh, publisher = %self.publisher, topology_version = version, members = full.member_count())
+                .in_scope(|| tracing::info!("the normalized projection of this mesh changed: its topology_version bumped"));
+        }
+        let publisher = self.publisher.clone();
+        let mesh = self.mesh.clone();
+        for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+            mesh: mesh.clone(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: sent,
+            snapshot_id,
+            chunk_index,
+            chunk_count,
+            digests,
+            in_flight,
+            departed,
+        }) {
+            let _ = self.channel.broadcast(&frame).await;
+        }
+        *self.own.lock().unwrap() = Some((version, full.clone()));
+        // This Mesh's members hear every birth directly: its own source goes into the Mesh as the
+        // overlays and departures a member that missed an event resynchronizes from.
+        if self.full_due.swap(false, Ordering::Relaxed) {
+            self.forward_fulls("seat").await;
+        } else {
+            let out = self.membership.view.forwarder.lock().unwrap().source(&self.node, &self.mesh, &self.publisher, version, &full, sent);
+            self.membership.send_forward(&self.node, &self.mesh, &self.publisher, version, out).await;
+        }
+    }
+
+    /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
+    /// without loads: on taking the seat, and every `FULL_EVERY` rounds as passive anti-entropy.
+    /// `reason` is `seat` or `every`.
+    pub async fn forward_fulls(&self, reason: &'static str) {
+        if !self.forwarding.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut held: Vec<(String, PublisherId, u64, Full)> = self.membership.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
+        if let Some((version, full)) = self.own.lock().unwrap().clone() {
+            held.push((self.mesh.clone(), self.publisher.clone(), version, full));
+        }
+        let now = self.membership.clock.now_rafka_ms();
+        let frames = self.membership.view.forwarder.lock().unwrap().fulls(&self.node, &held, now);
+        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason, sources = held.len(), chunks = frames.len())
+            .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
+        for f in frames {
+            let _ = self.membership.forward(&f).await;
         }
     }
 
@@ -1698,8 +2150,20 @@ impl DigestBook {
         self.record_forwarded_at(d, Instant::now())
     }
 
+    /// [`Self::record_forwarded`] for a copy that omits loads (a peer Mesh's forwarded projection):
+    /// a copy of the very heartbeat already held keeps the held digest, load and all, and only
+    /// hears the member again, so a node that also holds the loaded backbone copy never trades it
+    /// for the stripped one.
+    pub fn record_forwarded_unloaded(&self, d: MeshDigest) -> bool {
+        self.record_forwarded_inner(d, Instant::now(), true)
+    }
+
     /// [`Self::record_forwarded`], heard at `now`.
     pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
+        self.record_forwarded_inner(d, now, false)
+    }
+
+    fn record_forwarded_inner(&self, d: MeshDigest, now: Instant, keep_held_load: bool) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
@@ -1716,6 +2180,12 @@ impl DigestBook {
             };
             if older {
                 return false;
+            }
+            if keep_held_load && held.node.incarnation == d.node.incarnation && d.digest_seq == held.digest_seq && held.node == d.node {
+                if let Some(e) = inner.get_mut(d.node.node_id.as_str()) {
+                    e.1 = now;
+                }
+                return true;
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
@@ -1875,6 +2345,33 @@ mod tests {
         assert!(book.record_at(digest(&id, &birth, None, MemberStatus::Leaving, 300), later), "a newer digest is taken");
     }
 
+    /// `f` (a `members` frame) as the one chunk of a one-chunk snapshot.
+    fn single_chunk(f: Frame) -> Frame {
+        match f {
+            Frame::Members { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, digests, in_flight, departed, .. } => {
+                Frame::Members { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index: 0, chunk_count: 1, digests, in_flight, departed }
+            }
+            other => other,
+        }
+    }
+
+    /// One `Members` chunk as a single-chunk snapshot at version 1.
+    fn members(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Frame {
+        Frame::Members {
+            mesh: mesh.into(),
+            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId("birth".into()) },
+            forwarded_by: forwarded_by.map(String::from),
+            topology_version: 1,
+            published_at_rafka_ms: 1,
+            snapshot_id: 1,
+            chunk_index: u32::MAX,
+            chunk_count: u32::MAX,
+            digests,
+            in_flight,
+            departed,
+        }
+    }
+
     fn op(id: &NodeId, inc: &IncarnationId, operation: &str) -> LifecycleOp {
         LifecycleOp {
             build_id: "b1".into(),
@@ -1956,7 +2453,7 @@ mod tests {
         let (in_flight, departed) = book.overlays_of("mesh1");
         assert!(in_flight.is_empty());
         assert_eq!(departed.len(), 60, "mesh2's departure is not mesh1's to publish");
-        let frame = |departed| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), published_at_rafka_ms: 1, digests: Vec::new(), in_flight: Vec::new(), departed };
+        let frame = |departed| members("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), Vec::new(), Vec::new(), departed);
         let runs = pack(departed, frame);
         assert!(runs.len() > 1, "sixty departures do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 60, "every departure travels");
@@ -1979,15 +2476,7 @@ mod tests {
         let ds: Vec<MeshDigest> = (0..40).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i)).collect();
         let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
         let departed: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
-        let frame = |digests| Frame::Members {
-            mesh: "mesh1".into(),
-            publisher: "mesh1.admin.1".into(),
-            forwarded_by: Some("mesh2.admin.1".into()),
-            published_at_rafka_ms: 1,
-            digests,
-            in_flight: in_flight.clone(),
-            departed: departed.clone(),
-        };
+        let frame = |digests| members("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, in_flight.clone(), departed.clone());
         let runs = pack(ds.clone(), frame);
         assert!(runs.len() > 1, "forty digests do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels");
@@ -2018,15 +2507,7 @@ mod tests {
                 d
             })
             .collect();
-        let frame = |digests| Frame::Members {
-            mesh: "mesh1".into(),
-            publisher: "mesh1.admin.1".into(),
-            forwarded_by: Some("mesh2.admin.1".into()),
-            published_at_rafka_ms: 1,
-            digests,
-            in_flight: Vec::new(),
-            departed: Vec::new(),
-        };
+        let frame = |digests| members("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, Vec::new(), Vec::new());
         let runs = pack(ds, frame);
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels with its runtime");
         for r in &runs {
@@ -2140,13 +2621,13 @@ mod tests {
     /// as forwarded and noticed the loss together with the peer mesh.
     #[test]
     fn an_own_mesh_member_in_an_aggregate_is_still_heard_directly() {
-        let view = View::new("mesh1");
+        let view = View::new("mesh1", "mesh1.admin.1");
         let fabric = FabricId::parse("fab000000001").unwrap();
         let id = NodeId::mint();
         let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
         assert!(view.book.record(d.clone()));
-        let aggregate = Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, published_at_rafka_ms: 100, digests: vec![d], in_flight: vec![], departed: vec![] };
-        let _ = view.take(&aggregate, &fabric, "backbone");
+        let aggregate = members("mesh1", "mesh1.admin.1", None, vec![d], vec![], vec![]);
+        let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone);
         let (_, at, forwarded) = view.book.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
         assert!(!forwarded, "its own mesh's member is held as heard directly, never forwarded");
         let _ = at;
@@ -2154,8 +2635,8 @@ mod tests {
         let peer = NodeId::mint();
         let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
         p.node.name = "mesh2.rpc.1".parse().unwrap();
-        let aggregate = Frame::Members { mesh: "mesh2".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, published_at_rafka_ms: 100, digests: vec![p], in_flight: vec![], departed: vec![] };
-        let _ = view.take(&aggregate, &fabric, "backbone");
+        let aggregate = members("mesh2", "mesh2.admin.1", None, vec![p], vec![], vec![]);
+        let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone);
         assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2, "a peer mesh's member is forwarded");
     }
 

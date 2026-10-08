@@ -120,9 +120,13 @@ fn main() {
     // 10. Frame::Members
     let frame_members = Frame::Members {
         mesh: "mesh1".into(),
-        publisher: "mesh1.admin.1".into(),
+        publisher: rafka_mesh_transport::snapshot::PublisherId { node: "mesh1.admin.1".into(), incarnation: inc.clone() },
         forwarded_by: None,
+        topology_version: 1,
         published_at_rafka_ms: 1718290000000,
+        snapshot_id: 1,
+        chunk_index: 0,
+        chunk_count: 1,
         digests: vec![digest.clone()],
         in_flight: vec![op.clone()],
         departed: vec![],

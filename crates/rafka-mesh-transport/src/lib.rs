@@ -98,3 +98,4 @@ pub async fn await_disconnect(conn: Connection) -> String {
 pub mod clock;
 pub mod entry;
 pub mod membership;
+pub mod snapshot;
