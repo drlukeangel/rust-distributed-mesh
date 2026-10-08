@@ -62,6 +62,7 @@ struct Seen {
 /// records every frame it decodes.
 struct Observer {
     endpoint: Endpoint,
+    _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
     started: Instant,
 }
@@ -72,6 +73,7 @@ impl Observer {
         let endpoint = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         learn_addresses(&endpoint, &seeds).unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh1", mesh_topic(fabric, mesh_id))] {
@@ -88,7 +90,7 @@ impl Observer {
                 }
             });
         }
-        Self { endpoint, seen, started: Instant::now() }
+        Self { endpoint, _router: router, seen, started: Instant::now() }
     }
 
     fn all(&self) -> Vec<Seen> {
