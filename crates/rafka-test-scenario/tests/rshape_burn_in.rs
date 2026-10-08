@@ -446,10 +446,23 @@ async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
     converge_connections_with(f, inv, true).await
 }
 
+/// [`converge_connections_with`] (`strict = false`) after a restart of `restarted_node_id`. When that node is
+/// its mesh's primary node-admin, canon owes no Direct fact from a role node to its new birth: the role node's
+/// status declaration is idempotent and durable, and a Direct Connected is evidence of activity, not an
+/// obligation (rafka-v2 docs/architecture/connections.md:505-517, section 10). The edge to that new birth is
+/// therefore not required; a Connected edge to the superseded birth is still listed as stale, never required away.
+async fn converge_connections_after_restart(f: &Formed, inv: &mut Invariants, restarted_node_id: &str) -> Value {
+    converge_connections_inner(f, inv, false, Some(restarted_node_id)).await
+}
+
 /// [`converge_connections`], optionally tolerating a Connected Direct fact whose destination has
 /// since been reborn (`strict = false`): such a fact is listed under `stale_connected` and never
 /// counted as missing. The required edge, to the mesh primary's current birth, is always required.
 async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: bool) -> Value {
+    converge_connections_inner(f, inv, strict, None).await
+}
+
+async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bool, owed_no_edge_to: Option<&str>) -> Value {
     let mut out = BTreeMap::new();
     let roles: Vec<String> = f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")).collect();
     for node in roles {
@@ -466,6 +479,7 @@ async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: boo
             let directs = snap["own_latest_directs"].as_array().cloned().unwrap_or_default();
             let mut missing: Vec<String> = admins
                 .iter()
+                .filter(|a| owed_no_edge_to != a["node_id"].as_str())
                 .filter(|a| !directs.iter().any(|d| d["state"] == "Connected" && d["destination"]["node_id"] == a["node_id"] && d["destination"]["incarnation"] == a["incarnation_id"]))
                 .map(|a| s(&a["name"]))
                 .collect();
@@ -493,7 +507,9 @@ async fn converge_connections_with(f: &Formed, inv: &mut Invariants, strict: boo
         let (snap, stale) = snap;
         out.insert(node, json!({"active_len": snap["active_len"], "owed": snap["owed"], "directs": snap["own_latest_directs"], "stale_connected": stale}));
     }
-    let msg = if strict {
+    let msg = if owed_no_edge_to.is_some() {
+        "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin, except a restarted primary's new birth (no Direct fact is owed to it), and owes no retirement"
+    } else if strict {
         "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin, none to a superseded birth, and owes no retirement"
     } else {
         "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin and owes no retirement (a Connected fact to a reborn node's superseded birth is listed, not required away)"
@@ -2920,7 +2936,7 @@ async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, 
     // Every compute and gateway holds an edge to the current primary node-admin birth and none to a superseded one.
     // A Connected fact a cross-mesh holder keeps for a superseded birth is listed under `routing` (observed
     // above), never required away here: the required edges are the current primary node-admin's.
-    let connections = converge_connections_with(f, inv, false).await;
+    let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
         "label": label, "node": node, "kind": kind, "node_id": node_id, "endpoint_id": endpoint, "old_incarnation_id": old_inc, "new_incarnation_id": new_inc,
         "runtimes": runtimes, "old_birth_terminal": terminal, "new_birth_launch": launch, "canary_key": ckey, "serves_proof_store": serves_proof_store, "restart": ev, "routing": routing, "connections": connections,
