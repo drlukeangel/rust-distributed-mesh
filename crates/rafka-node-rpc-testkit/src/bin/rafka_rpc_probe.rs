@@ -133,7 +133,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let ep = bind_endpoint().await?;
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let req = DeclareRequest::Declare { to, state, node_id: a.as_node_id.clone(), incarnation: a.as_incarnation.clone() };
     let (out, _) = client.call::<DeclareProbe>(target, &req, &CallOptions::default()).await;
@@ -245,9 +245,7 @@ async fn run(a: Args) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
-        .await
-        .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let ep = bind_endpoint().await?;
     let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
     // The exact final target first; `--via` only decides how it is reached.
     // The exact final target first (a `path:` is the current holder); a target the view does
@@ -331,9 +329,7 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
-        .await
-        .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let ep = bind_endpoint().await?;
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let req = ResolveRequest::Resolve { target: query };
     let (out, _) = client.call::<ResolveProbe>(target, &req, &CallOptions::default()).await;
@@ -356,6 +352,14 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
         RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "target_node_id": r.target_node_id()}),
     })
+}
+
+/// The probe's one endpoint. Its background tasks open spans of their own; bound under no span, they hang
+/// from no span of the call, so the probe's root span is closed (and exported) when the call ends, whatever
+/// those tasks are still winding down.
+async fn bind_endpoint() -> Result<iroh::Endpoint, String> {
+    use tracing::Instrument;
+    rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).instrument(tracing::Span::none()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))
 }
 
 /// Where the probe binds its one socket: `RDM_PROBE_BIND` (an address on the fabric's network,
@@ -399,9 +403,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     for n in resolved(&view) {
         resolver.insert(n);
     }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind())
-        .await
-        .map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let ep = bind_endpoint().await?;
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
     let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
