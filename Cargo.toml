@@ -48,7 +48,10 @@ opentelemetry-semantic-conventions = "0.27"
 # and two actors flooding each other deadlocked; the fork's try_send drops
 # that one enqueue and Plumtree repairs it. Vendor divergence and its removal
 # condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
-iroh = { version = "1" }
+# `unstable-custom-transports` is on for every build: iroh is a path crate (vendor/iroh), which cargo
+# re-fingerprints whenever the feature set it is asked for changes, so two `cargo test -p` runs that
+# ask for different sets rebuild it under each other and break a concurrent doctest build.
+iroh = { version = "1", features = ["unstable-custom-transports"] }
 iroh-base = { version = "1" }
 iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "fcf426396d8a7e2555cc07335e4cada9b0473511" }
 
