@@ -625,26 +625,17 @@ impl Estate {
 
     /// Run one probe invocation and record it in the RPC ledger.
     pub fn probe(&self, args: &[&str]) -> Value {
-        let mut cmd = Command::new(binary("rafka-rpc-probe"));
-        cmd.arg("--admin").arg(&self.admin).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
+        self.probe_handle().run(&self.admin, args).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// What a probe invocation needs of this estate, owned: a traffic task issues probes while the
+    /// estate itself is borrowed by the scenario's control loop.
+    pub fn probe_handle(&self) -> ProbeHandle {
         // A container fabric's nodes are reachable from the host through its network's gateway.
-        if self.owner.provider == "container" {
-            if let Ok(gw) = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &format!("rafka-{}", self.fabric_id)]) {
-                cmd.env("RDM_PROBE_BIND", gw);
-            }
-        }
-        let out = cmd.output().expect("run rafka-rpc-probe");
-        let line = String::from_utf8_lossy(&out.stdout);
-        let v: Value = serde_json::from_str(line.trim())
-            .unwrap_or_else(|e| panic!("probe {args:?} printed no JSON ({e}): {line} / {}", String::from_utf8_lossy(&out.stderr)));
-        // A probe that did not exit cleanly says how, so its missing evidence has a reason on record.
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        if out.status.success() && !stderr.contains("panicked") {
-            self.append_ledger(&json!({ "args": args, "result": v }));
-        } else {
-            self.append_ledger(&json!({ "args": args, "result": v, "exit": out.status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(&out.status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() }));
-        }
-        v
+        let bind = (self.owner.provider == "container")
+            .then(|| docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &format!("rafka-{}", self.fabric_id)]).ok())
+            .flatten();
+        ProbeHandle { evidence: self.evidence.clone(), artifacts: self.artifacts.clone(), bind }
     }
 
     /// Every span every process of this estate wrote.
@@ -961,6 +952,40 @@ impl Drop for Estate {
         }
         // Containers outlive every admin: the estate removes its Fabric's containers and network.
         self.remove_containers();
+    }
+}
+
+/// One estate's probe door: runs `rafka-rpc-probe` against an admin's node view and appends the
+/// invocation to the estate's RPC ledger (`rpc-ledger.jsonl`).
+#[derive(Clone)]
+pub struct ProbeHandle {
+    evidence: PathBuf,
+    artifacts: PathBuf,
+    bind: Option<String>,
+}
+
+impl ProbeHandle {
+    /// One probe invocation through the admin at `admin`. `Err` names an invocation that printed
+    /// no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
+    pub fn run(&self, admin: &str, args: &[&str]) -> Result<Value, String> {
+        let mut cmd = Command::new(binary("rafka-rpc-probe"));
+        cmd.arg("--admin").arg(admin).args(args).env("RAFKA_EVIDENCE_DIR", &self.evidence);
+        if let Some(gw) = &self.bind {
+            cmd.env("RAFKA_PROBE_BIND", gw);
+        }
+        let out = cmd.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        let v: Value = serde_json::from_str(line.trim()).map_err(|e| format!("probe {args:?} printed no JSON ({e}): {line} / {}", String::from_utf8_lossy(&out.stderr)))?;
+        // A probe that did not exit cleanly says how, so its missing evidence has a reason on record.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let entry = if out.status.success() && !stderr.contains("panicked") {
+            json!({ "args": args, "result": v })
+        } else {
+            json!({ "args": args, "result": v, "exit": out.status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(&out.status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() })
+        };
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.artifacts.join("rpc-ledger.jsonl")).map_err(|e| e.to_string())?;
+        writeln!(f, "{entry}").map_err(|e| e.to_string())?;
+        Ok(v)
     }
 }
 

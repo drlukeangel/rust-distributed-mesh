@@ -18,4 +18,5 @@ pub mod replay;
 pub mod runner;
 pub mod scenario;
 pub mod sim;
+pub mod soak;
 pub mod wedge;

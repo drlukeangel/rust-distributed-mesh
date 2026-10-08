@@ -36,6 +36,8 @@ fn kind(a: &Action) -> &'static str {
         Action::HandOff { .. } => "hand-off",
         Action::Unheard { .. } => "unheard",
         Action::Heal { .. } => "heal",
+        Action::Kill { .. } => "kill",
+        Action::Wedge { .. } => "wedge",
         Action::Proof(Operation::Put { .. }) => "proof-put",
         Action::Proof(Operation::Cas { .. }) => "proof-cas",
         Action::Proof(Operation::Delete { .. }) => "proof-delete",

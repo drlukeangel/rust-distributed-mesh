@@ -22,6 +22,7 @@
 
 use rafka_node_rpc_contract::outcome::{ReplyKind, RpcOutcome};
 use serde::Serialize;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -84,6 +85,44 @@ impl Classification {
             RpcOutcome::Indeterminate(i) => (format!("{:?}", i.reason()), false),
         };
         Self { bucket: Bucket::of(outcome), detail, reply_success }
+    }
+}
+
+impl Classification {
+    /// The classification of an outcome as `rafka-rpc-probe` prints it (`{"outcome": ..}`): the
+    /// probe is the typed `RpcOutcome` rendered to one JSON line, so the bucket is the outcome's
+    /// own name and the detail is the same typed reason text [`Self::of`] renders. A `Reply` is a
+    /// success when the proof store applied or answered the request; a compare-and-swap mismatch
+    /// is a protocol success that applied nothing, so it is a `Reply` with `reply_success` false
+    /// (the state algebra reads `reply_success` as "the mutation took effect"). A line that names
+    /// no outcome is refused by name, never guessed into a bucket.
+    pub fn of_probe(out: &Value) -> Result<Self, String> {
+        let text = |v: &Value| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+        match out["outcome"].as_str() {
+            Some("Reply") => {
+                let result = &out["reply"]["result"];
+                if let Some(refused) = result.get("refused") {
+                    let r = text(refused);
+                    let class = match r.as_str() {
+                        "too-large" | "store-failed" => "ProtocolRefusal".to_string(),
+                        other => other.chars().take_while(|c| c.is_alphanumeric()).collect(),
+                    };
+                    return Ok(Self { bucket: Bucket::Reply, detail: class, reply_success: false });
+                }
+                if result.get("swapped") == Some(&Value::Bool(false)) {
+                    return Ok(Self { bucket: Bucket::Reply, detail: "Success:mismatch".into(), reply_success: false });
+                }
+                if ["stored", "deleted", "found", "swapped"].iter().any(|k| result.get(*k).is_some()) {
+                    return Ok(Self { bucket: Bucket::Reply, detail: "Success".into(), reply_success: true });
+                }
+                Err(format!("a Reply whose result is none of stored, deleted, found, swapped or refused: {out}"))
+            }
+            Some("NotSent") => Ok(Self { bucket: Bucket::NotSent, detail: text(&out["reason"]), reply_success: false }),
+            Some("Unserved") => Ok(Self { bucket: Bucket::Unserved, detail: text(&out["reason"]), reply_success: false }),
+            Some("RejectedStale") => Ok(Self { bucket: Bucket::RejectedStale, detail: format!("stale target {}", text(&out["target_node_id"])), reply_success: false }),
+            Some("Indeterminate") => Ok(Self { bucket: Bucket::Indeterminate, detail: text(&out["reason"]), reply_success: false }),
+            other => Err(format!("the probe printed no typed RpcOutcome ({other:?}): {out}")),
+        }
     }
 }
 
@@ -222,7 +261,18 @@ impl Ledger {
     /// Classify an issued operation from its outcome, once. A second classification, or one for
     /// an operation never issued, is refused by name and also kept for [`Self::reconcile`].
     pub fn classify<R>(&mut self, id: OperationId, outcome: &RpcOutcome<R>) -> Result<(), Violation> {
-        let class = Classification::of(outcome);
+        self.classify_as(id, Classification::of(outcome))
+    }
+
+    /// Classify an issued operation from the outcome line `rafka-rpc-probe` printed
+    /// ([`Classification::of_probe`]), once. A line that is not a typed outcome leaves the
+    /// operation unclassified, which [`Self::reconcile`] names.
+    pub fn classify_probe(&mut self, id: OperationId, out: &Value) -> Result<(), String> {
+        let class = Classification::of_probe(out)?;
+        self.classify_as(id, class).map_err(|v| v.to_string())
+    }
+
+    fn classify_as(&mut self, id: OperationId, class: Classification) -> Result<(), Violation> {
         let violation = match self.ops.get_mut(id.0 as usize) {
             None => Violation::UnknownOperation { id },
             Some(o) => match &o.classification {
@@ -239,6 +289,13 @@ impl Ledger {
 
     pub fn operations(&self) -> &[Operation] {
         &self.ops
+    }
+
+    /// The operations `keep` selects, with their original ids, as a ledger of their own: the
+    /// state algebra of one store (one node birth) reads only the operations that reached it.
+    /// Violations met while recording stay with the whole ledger's [`Self::reconcile`].
+    pub fn select(&self, keep: impl Fn(&Operation) -> bool) -> Ledger {
+        Ledger { ops: self.ops.iter().filter(|o| keep(o)).cloned().collect(), recorded: Vec::new() }
     }
 
     pub fn issued(&self) -> usize {
@@ -356,5 +413,41 @@ impl Ledger {
             return Err(Refusal(found));
         }
         Ok(Reconciliation { issued: self.ops.len(), buckets: self.buckets(), applied_mutations: applied, indeterminate_mutations: indeterminate })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn probe_lines_classify_into_the_five_buckets() {
+        let c = |v: Value| Classification::of_probe(&v).unwrap();
+        assert_eq!(c(json!({"outcome": "Reply", "reply": {"result": {"stored": true}}})).reply_success, true);
+        let mismatch = c(json!({"outcome": "Reply", "reply": {"result": {"swapped": false, "current": null}}}));
+        assert_eq!((mismatch.bucket, mismatch.reply_success), (Bucket::Reply, false));
+        let draining = c(json!({"outcome": "Reply", "reply": {"result": {"refused": "Draining { reason: \"x\" }"}}}));
+        assert_eq!((draining.bucket, draining.detail.as_str(), draining.reply_success), (Bucket::Reply, "Draining", false));
+        assert_eq!(c(json!({"outcome": "NotSent", "reason": "Deadline"})).bucket, Bucket::NotSent);
+        assert_eq!(c(json!({"outcome": "Unserved", "reason": "x"})).bucket, Bucket::Unserved);
+        assert_eq!(c(json!({"outcome": "RejectedStale", "target_node_id": "n"})).bucket, Bucket::RejectedStale);
+        assert_eq!(c(json!({"outcome": "Indeterminate", "reason": "ReplyDeadline"})).detail, "ReplyDeadline");
+        assert!(Classification::of_probe(&json!({"outcome": "Refused", "reason": "x"})).is_err());
+    }
+
+    #[test]
+    fn a_probe_line_that_is_not_typed_leaves_the_operation_unclassified() {
+        let mut l = Ledger::new();
+        let a = l.issue(0x70, "n1", Some(MutationIntent { key: "1".into(), value: b"v".to_vec() }));
+        let b = l.issue(0x70, "n2", None);
+        l.classify_probe(a, &json!({"outcome": "Reply", "reply": {"result": {"stored": true}}})).unwrap();
+        assert!(l.classify_probe(b, &json!({"outcome": "Refused"})).is_err());
+        let refusal = l.reconcile().unwrap_err();
+        assert!(refusal.0.iter().any(|v| matches!(v, Violation::Unclassified { id, .. } if *id == b)), "{refusal}");
+        // One store's state algebra: its own operations against its own final state.
+        let n1 = l.select(|o| o.target_node_id == "n1");
+        assert!(n1.reconcile_state(&BTreeMap::from([("1".to_string(), b"v".to_vec())])).is_ok());
+        assert!(n1.reconcile_state(&BTreeMap::new()).is_err(), "a stored put that is not in the final state is lost");
     }
 }

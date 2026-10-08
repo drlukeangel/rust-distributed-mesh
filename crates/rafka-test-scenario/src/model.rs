@@ -92,6 +92,13 @@ pub enum Action {
     Unheard { mesh: String },
     /// The provider restores the mesh's network.
     Heal { mesh: String },
+    /// The provider ends the node's runtime (SIGKILL of the exact process; a container's
+    /// interface removed): drift recovery re-creates the path as a new birth. The model knows no
+    /// authority, so a scenario refuses a target that is the live fabric-primary.
+    Kill { node: String },
+    /// The provider holds the node's runtime in place (alive and silent) until the view marks it
+    /// unheard, then releases it: the same birth comes back.
+    Wedge { node: String },
     /// One proof-store operation on an rpc node.
     Proof(Operation),
 }
@@ -150,6 +157,12 @@ impl Model {
         m
     }
 
+    /// The topology alone: every mesh's path.names and their classes, with no birth or
+    /// incarnation.
+    pub fn shape(&self) -> BTreeMap<String, BTreeMap<String, NodeClass>> {
+        self.meshes.iter().map(|(m, ms)| (m.clone(), ms.nodes.iter().map(|(p, n)| (p.clone(), n.class)).collect())).collect()
+    }
+
     pub fn count(&self, mesh: &str, class: NodeClass) -> u32 {
         self.meshes.get(mesh).map(|m| m.nodes.values().filter(|n| n.class == class).count() as u32).unwrap_or(0)
     }
@@ -206,7 +219,7 @@ impl Model {
                 }
                 self.keeps_an_admin(step, action, &mesh, class)?;
             }
-            Action::Restart { node } | Action::Replace { node } => {
+            Action::Restart { node } | Action::Replace { node } | Action::Kill { node } | Action::Wedge { node } => {
                 let (mesh, class) = self.live_node(step, action, node)?;
                 self.keeps_an_admin(step, action, &mesh, class)?;
             }
@@ -274,7 +287,7 @@ impl Model {
                     }
                 }
             }
-            Action::HandOff { .. } | Action::Proof(_) => {}
+            Action::HandOff { .. } | Action::Proof(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
             Action::Unheard { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = true,
             Action::Heal { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = false,
         }
@@ -293,6 +306,8 @@ impl Model {
                 out.push(Action::Shrink { node: node.clone() });
                 out.push(Action::Restart { node: node.clone() });
                 out.push(Action::Replace { node: node.clone() });
+                out.push(Action::Kill { node: node.clone() });
+                out.push(Action::Wedge { node: node.clone() });
             }
             out.push(Action::HandOff { mesh: mesh.clone() });
             out.push(Action::Unheard { mesh: mesh.clone() });
