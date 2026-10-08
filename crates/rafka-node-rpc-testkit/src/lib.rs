@@ -11,3 +11,4 @@ pub mod proof_store;
 pub mod resolve_probe;
 pub mod faults;
 pub mod originate;
+pub mod admin_faults;

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 async-trait = "0.1"
+axum = "0.8.9"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
@@ -37,3 +38,7 @@ path = "src/bin/rafka_rpc_node.rs"
 [[bin]]
 name = "rafka-rpc-probe"
 path = "src/bin/rafka_rpc_probe.rs"
+
+[[bin]]
+name = "faulted-node-admin"
+path = "src/bin/faulted_node_admin.rs"
