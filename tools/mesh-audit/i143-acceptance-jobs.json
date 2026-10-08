@@ -364,6 +364,24 @@
           "dir": "target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery"
         }
       ]
+    },
+    "i143-2783-chaos-process": {
+      "issue": 2783,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "process_fault_backend_kills_exact_runtime_recovers_current_birth",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
+          "dir": "target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth"
+        },
+        {
+          "name": "process_port_allocator_survives_seeded_collisions",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
+          "command": "RAFKA_COLLISION_SEED=2783 RAFKA_COLLISION_ROUNDS=60 RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_port_allocator_survives_seeded_collisions -- --exact",
+          "dir": "target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions"
+        }
+      ]
     }
   },
   "rshape_jobs": {
