@@ -95,7 +95,6 @@ impl RunningNode {
             let in_flight = rafka_node_rpc::ServerStats::get(&stats.in_flight);
             let mut d = self.digest.clone();
             d.status = MemberStatus::Draining;
-            d.emitted_at_rafka_ms = now_ms();
             d.in_flight = Some(in_flight);
             let _ = self.membership.publish(&d).await;
             if in_flight == 0 || tokio::time::Instant::now() >= until {
@@ -119,7 +118,6 @@ impl RunningNode {
         rafka_mesh_transport::membership::announce_leaving(linger, rafka_mesh_transport::membership::LEAVE_EVERY, || {
             let mut d = digest.clone();
             d.status = MemberStatus::Leaving;
-            d.emitted_at_rafka_ms = now_ms();
             let m = membership.clone();
             async move {
                 let _ = m.publish(&d).await;
@@ -134,10 +132,6 @@ impl RunningNode {
             let _ = r.shutdown().await;
         }
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// Bring the node up exactly as `launch` says.
@@ -181,6 +175,12 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
 /// [`start_with_client`], handing `register` every process seam the testkit doors act through:
 /// the resolver, the client, the connections writer and the storage fault.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
+    start_with_clock(launch, rafka_mesh_transport::clock::os_clock(), register).await
+}
+
+/// [`start_with_seams`], stamping every gossip frame this node publishes with `clock`: the
+/// Rafka-time the executable composes (an RDM executable supplies the OS clock).
+pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // membership is joined.
@@ -262,7 +262,7 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
     };
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
-    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, seeds).await?;
+    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver, client, &membership.book, &name);
     // Entry: take the launching admin's membership before marking ready. An
     // admin that cannot answer does not hold the node: its view fills from
@@ -297,8 +297,9 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
         },
         status: MemberStatus::ReadyForTraffic,
         admin_api_base: None,
-        emitted_at_rafka_ms: now_ms(),
-        digest_seq: 1,
+        // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
+        emitted_at_rafka_ms: 0,
+        digest_seq: 0,
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
@@ -329,7 +330,6 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
     let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
         let mut d = d.clone();
         d.status = *st.lock().unwrap();
-        d.emitted_at_rafka_ms = now_ms();
         d.in_flight = Some(rafka_node_rpc::ServerStats::get(&stats.in_flight));
         d
     });
@@ -449,7 +449,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let status = *me.status.lock().unwrap();
                     let mut d = me.digest.clone();
                     d.status = status;
-                    d.emitted_at_rafka_ms = now_ms();
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
@@ -468,7 +467,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let in_flight = rafka_node_rpc::ServerStats::get(&me.server.stats().in_flight).saturating_sub(1);
                     let mut d = me.digest.clone();
                     d.status = MemberStatus::Draining;
-                    d.emitted_at_rafka_ms = now_ms();
                     d.in_flight = Some(in_flight);
                     let _ = me.membership.publish(&d).await;
                     tracing::info_span!(

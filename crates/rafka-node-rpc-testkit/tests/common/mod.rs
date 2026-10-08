@@ -217,7 +217,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     let alpns = vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec(), rafka_mesh_transport::entry::ENTRY_ALPN.to_vec()];
     let admin_ep = rafka_node_rpc::endpoint::bind_exact(SecretKey::generate(), SocketAddr::new(ip, 0), alpns, transport).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(admin_ep.clone());
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
     // Entry, as a node-admin serves it: a launched node pulls what the admin hears before it
     // publishes. Without it every pull is refused and the node's join rests on gossip alone.
     let book = membership.book.clone();

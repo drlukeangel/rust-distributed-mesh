@@ -174,7 +174,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let encoded: Value = serde_json::from_slice(&members.encode()).unwrap();
     let mut keys: Vec<&str> = encoded.as_object().unwrap().keys().map(|k| k.as_str()).collect();
     keys.sort();
-    assert_eq!(keys, vec!["departed", "digests", "forwarded_by", "frame", "in_flight", "mesh", "publisher", "published_at_rafka_ms"], "Members carries no status field");
+    assert_eq!(keys, vec!["departed", "digests", "forwarded_by", "frame", "in_flight", "mesh", "published_at_rafka_ms", "publisher"], "Members carries no status field");
 
     // The real Backbone: the publisher role is the span `via-status-publisher`, and a status the
     // primary announces is held under its own authorship at one instant.
@@ -184,7 +184,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         (ep, g)
     };
-    let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", me, vec![]).await.unwrap();
     backbone.announce_statuses("pending", "pending").await;
     assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");

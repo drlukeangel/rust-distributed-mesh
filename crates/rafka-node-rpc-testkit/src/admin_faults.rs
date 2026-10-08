@@ -374,6 +374,9 @@ impl LifecycleEvents for FaultedEvents {
         self.faults.hold(Probe::Event { event: "restarting", op: op.clone() }).await;
         self.inner.restarting(op).await
     }
+    fn now_rafka_ms(&self) -> u64 {
+        self.inner.now_rafka_ms()
+    }
 }
 
 /// A registered lifecycle hook that does nothing but cross its phase's cut.
@@ -403,6 +406,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         fabric_storage: Some(Box::new(move |inner| Arc::new(FaultedFabricStorage { inner, faults: f_storage }))),
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
+        clock: None,
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

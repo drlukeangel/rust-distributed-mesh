@@ -15,6 +15,7 @@
 //! Every member heard is registered with the endpoint at its gossip address
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
 
+use crate::clock::SharedClock;
 use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
@@ -85,27 +86,36 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
     Some(EndpointAddr::new(key).with_ip_addr(d.node.transport_addr))
 }
 
-/// The newest `emitted_at_rafka_ms` each key's address was registered from (rafka-v2 node-base
-/// `peer_location_wall_time`): governs the address book only, never the held view.
-fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, u64>> {
-    static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, u64>>> = std::sync::OnceLock::new();
+/// The newest birth and heartbeat each key's address was registered from (rafka-v2 node-base
+/// `peer_location_wall_time`): governs the address book only, never the held view. Ordered as the
+/// held view is: by `digest_seq` within one incarnation, and along the lineage across incarnations.
+type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>);
+
+fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark>> {
+    static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, LocationMark>>> = std::sync::OnceLock::new();
     W.get_or_init(Mutex::default)
 }
 
 /// Register where the birth `d` names is (rafka-v2 node-base `register_peer_location_if_fresher`).
-/// A digest strictly newer than the last one this key was registered from REPLACES the key's
-/// addresses (`set_endpoint_info`, never a union): a node that restarts keeps its key and binds a
-/// fresh port, and its old port, now free for anyone, must never be dialled for it again. A digest
-/// that is not newer (replayed, late, or an aggregate copy of an older view) only fills a key that
-/// has no address, so it never puts an old socket back.
+/// A digest newer than the last one this key was registered from REPLACES the key's addresses
+/// (`set_endpoint_info`, never a union): a node that restarts keeps its key and binds a fresh
+/// port, and its old port, now free for anyone, must never be dialled for it again. Newer is
+/// decided by `digest_seq` for the same incarnation, and by lineage across incarnations (the
+/// successor restarts its sequence at 1; the incarnation it replaced is older). A digest that is
+/// not newer (replayed, late, or an aggregate copy of an older view) only fills a key that has no
+/// address, so it never puts an old socket back.
 pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
     let Some(addr) = gossip_addr(d) else { return };
     let key = addr.id;
     let fresher = {
         let mut w = location_watermarks().lock().unwrap();
-        let fresher = !matches!(w.get(&key), Some(prev) if *prev >= d.emitted_at_rafka_ms);
+        let fresher = match w.get(&key) {
+            None => true,
+            Some((incarnation, seq, _)) if *incarnation == d.node.incarnation => d.digest_seq > *seq,
+            Some((_, _, supersedes)) => supersedes.as_ref() != Some(&d.node.incarnation),
+        };
         if fresher {
-            w.insert(key, d.emitted_at_rafka_ms);
+            w.insert(key, (d.node.incarnation.clone(), d.digest_seq, d.node.supersedes.clone()));
         }
         fresher
     };
@@ -509,10 +519,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         }
         _ => None,
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// This process's mesh transport has stopped for good: iroh-gossip refused a subscription (its
@@ -932,11 +938,17 @@ pub struct Membership {
     fabric: FabricId,
     cut_off: Arc<Mutex<CutOff>>,
     pub book: DigestBook,
+    /// The Rafka-time this process composes; every gossip stamp on this membership reads it.
+    clock: SharedClock,
+    /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
+    digest_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Membership {
-    /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
+    /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
+    /// frame reads it.
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::new(mesh);
         let (replay_view, replay_fabric, replay_me) = (view.clone(), fabric.clone(), node.to_string());
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
@@ -962,7 +974,7 @@ impl Membership {
             Arc::new(move || held_targets(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
         *lookup_slot.lock().unwrap() = Some(channel.lookup.clone());
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default() };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -1054,10 +1066,21 @@ impl Membership {
         }
     }
 
-    /// Broadcast this member's digest on its mesh channel (and record it).
+    /// The Rafka-time this process composed.
+    pub fn clock(&self) -> &SharedClock {
+        &self.clock
+    }
+
+    /// Broadcast this member's digest on its mesh channel (and record it). The heartbeat is
+    /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
+    /// sequence (from 1), and `emitted_at_rafka_ms` is the composed clock's reading. The order a
+    /// receiver acts on is the sequence, whatever the clock reads.
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
+        let mut d = d.clone();
+        d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         self.book.record(d.clone());
-        self.mesh.broadcast(&Frame::Digest { digest: d.clone() }).await
+        self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
 
     /// Broadcast a frame onto this mesh's channel (a forward).
@@ -1077,7 +1100,7 @@ impl Membership {
     /// after them, resynchronizes from. Each list is packed into as few
     /// frames as fit.
     pub async fn publish_overlays(&self, mesh: &str, publisher: &str) -> Result<()> {
-        let sent = now_ms();
+        let sent = self.clock.now_rafka_ms();
         let (in_flight, departed) = self.book.overlays_of(mesh);
         let frame = |in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>| Frame::Members {
             mesh: mesh.to_string(),
@@ -1228,7 +1251,7 @@ impl Backbone {
     /// a status that did not change sends nothing. A change is sent at once and reinforced by the
     /// status sender (five sends in all).
     pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str) {
-        let (now, now_ms) = (Instant::now(), now_ms());
+        let (now, now_ms) = (Instant::now(), self.membership.clock.now_rafka_ms());
         let first: Vec<Frame> = {
             let view = &self.membership.view;
             let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
@@ -1281,7 +1304,7 @@ impl Backbone {
     /// One publication round: this mesh's `members` (while its primary) on the backbone. A status
     /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
     pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) {
-        let sent = now_ms();
+        let sent = membership.clock.now_rafka_ms();
         if self.publishing.load(Ordering::Relaxed) {
             // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
             // aggregate. Each list is packed into as few frames as fit, like the digests.
@@ -1626,8 +1649,9 @@ impl DigestBook {
     }
 
     /// Hold `d` as its member's latest word, unless it is older than what is
-    /// held: a digest of the same birth emitted no later than the held one,
-    /// or a digest of the birth the held one supersedes. Gossip can deliver
+    /// held: a digest of the same birth whose `digest_seq` is no higher than the
+    /// held one's (the birth's own heartbeat order; Rafka-time stamps never
+    /// decide it), or a digest of the birth the held one supersedes. Gossip can deliver
     /// a digest late; a late one never refreshes a silent member or reverts
     /// its status. A digest of a departed node is refused: the departure
     /// stands for the retention, whatever incarnation the digest names.
@@ -1648,7 +1672,7 @@ impl DigestBook {
                 return false;
             }
             let older = if held.node.incarnation == d.node.incarnation {
-                d.emitted_at_rafka_ms <= held.emitted_at_rafka_ms
+                d.digest_seq <= held.digest_seq
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1686,7 +1710,7 @@ impl DigestBook {
                 return false;
             }
             let older = if held.node.incarnation == d.node.incarnation {
-                d.emitted_at_rafka_ms < held.emitted_at_rafka_ms
+                d.digest_seq < held.digest_seq
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1786,18 +1810,22 @@ mod tests {
     #[test]
     fn a_newer_birth_replaces_its_keys_address_and_an_older_digest_never_restores_it() {
         let key = iroh::SecretKey::generate().public();
-        let at = |port: u16, ms: u64| {
-            let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, ms);
+        // One logical node and two births of it: the second supersedes the first and starts its
+        // own heartbeat sequence again at 1.
+        let node_id = NodeId::mint();
+        let (first, second) = (IncarnationId::mint(), IncarnationId::mint());
+        let at = |port: u16, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, seq: u64| {
+            let mut d = digest(&node_id, incarnation, supersedes, MemberStatus::ReadyForTraffic, seq);
             d.node.endpoint_id = EndpointId(key.to_string());
             d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             d
         };
         let lookup = MemoryLookup::new();
         let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
-        register_location(&lookup, &at(41001, 10));
-        register_location(&lookup, &at(41002, 20));
+        register_location(&lookup, &at(41001, &first, None, 40));
+        register_location(&lookup, &at(41002, &second, Some(first.clone()), 1));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "the newer birth replaces, never joins, the old socket");
-        register_location(&lookup, &at(41001, 10));
+        register_location(&lookup, &at(41001, &first, None, 41));
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "a late digest of the old birth never restores its socket");
     }
 

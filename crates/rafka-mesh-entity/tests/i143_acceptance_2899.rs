@@ -14,11 +14,24 @@
 //! replaced is not. A real `Membership` given a frozen clock stamps one frozen `emitted_at_rafka_ms`
 //! and a strictly increasing `digest_seq` from 1 on every heartbeat it publishes.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
-use rafka_mesh_transport::membership::DigestBook;
+use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rafka_mesh_transport::clock::Clock;
+use rafka_mesh_transport::membership::{DigestBook, Membership};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
+
+/// A Rafka-time source the cell drives by hand: it reads whatever the cell last set.
+#[derive(Debug, Default)]
+struct HandClock(AtomicU64);
+
+impl Clock for HandClock {
+    fn now_rafka_ms(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 const CELL: &str = "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock";
 
@@ -160,13 +173,48 @@ async fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
     assert_eq!(held(&book, &node_id), (2, MemberStatus::ReadyForTraffic, 10));
     assert_eq!(book.get(node_id.as_str()).unwrap().0.node.incarnation, b2.incarnation);
 
+    // The sender, composed with a supplied clock: a real Membership stamps every heartbeat it
+    // publishes with the next `digest_seq` (from 1) and the clock's reading, and its own book
+    // takes each one however the clock behaves (frozen, stepped back, jumped far ahead).
+    let (endpoint, gossip) = {
+        let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+        let ep = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        (ep, g)
+    };
+    let hand = Arc::new(HandClock::default());
+    let me = "mesh1.rpc.1";
+    let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![]).await.unwrap();
+    let sender_id = NodeId::mint();
+    let sender = Birth::first(&fabric, &sender_id);
+    let mut stamped: Vec<Value> = Vec::new();
+    for (label, clock_ms, status) in [
+        ("clock frozen at 5000", 5_000u64, MemberStatus::Pending),
+        ("clock still frozen", 5_000, MemberStatus::ReadyForTraffic),
+        ("clock stepped back", 4_000, MemberStatus::Draining),
+        ("clock jumped far ahead", 99_999_999, MemberStatus::ReadyForTraffic),
+        ("clock back at zero", 0, MemberStatus::Leaving),
+    ] {
+        hand.0.store(clock_ms, Ordering::SeqCst);
+        membership.publish(&sender.digest(0, 0, status)).await.unwrap();
+        let (held, _) = membership.book.get(sender_id.as_str()).expect("the sender's own book holds its heartbeat");
+        let n = stamped.len() as u64 + 1;
+        assert_eq!((held.digest_seq, held.emitted_at_rafka_ms, held.status), (n, clock_ms, status), "{label}: stamped with the next sequence and the clock's reading, and taken");
+        stamped.push(json!({ "clock": label, "digest_seq": held.digest_seq, "emitted_at_rafka_ms": held.emitted_at_rafka_ms, "status": format!("{:?}", held.status) }));
+    }
+    endpoint.close().await;
+
     drop(telemetry);
     let spans = collect_spans(&dir);
+    let subscribed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-subscribe" && s["attributes"]["node"] == me).collect();
+    assert!(!subscribed.is_empty(), "the real membership emitted its subscribe span: {} spans read", spans.len());
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": CELL,
         "ordering": "digest_seq alone within one incarnation; a successor incarnation along the lineage restarts at 1",
         "observations": observations,
+        "sender_with_supplied_clock": stamped,
+        "subscribe_spans": subscribed.iter().map(|s| json!({ "name": s["name"], "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();

@@ -426,11 +426,6 @@ pub fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &st
         .collect()
 }
 
-/// Where node records are published (the fabric control projection).
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
 /// The lifecycle events a Mesh executor publishes around a retirement: the pre-notice once its
 /// own journal holds the step that records it, the departure once the provider proved the
 /// runtime terminal. Membership carries them; this trait is how the pipeline reaches it.
@@ -515,6 +510,9 @@ pub trait LifecycleEvents: Send + Sync {
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
+    /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
+    /// composed for its membership, never a clock of the pipeline's own.
+    fn now_rafka_ms(&self) -> u64;
 }
 
 /// No events: a pipeline under test with no membership.
@@ -525,6 +523,9 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
+    fn now_rafka_ms(&self) -> u64 {
+        rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock)
+    }
 }
 
 pub trait TopologySink: Send + Sync {
@@ -1123,7 +1124,7 @@ impl DeploymentPipeline<'_> {
                 node_id: node.node_id.clone(),
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
                 name: name.clone(),
-                event_at_rafka_ms: now_unix_ms(),
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             };
             // The receipt first, then the publish: the Build facts carry the overlay from the
             // moment it is announced, so a successor derives it from the same facts.
@@ -1140,7 +1141,7 @@ impl DeploymentPipeline<'_> {
                 node_id: node.node_id.clone(),
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
                 name: name.clone(),
-                event_at_rafka_ms: now_unix_ms(),
+                event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             };
             let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.restarting(&op).await;
@@ -1265,7 +1266,7 @@ impl DeploymentPipeline<'_> {
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
-            let op = LifecycleOp { event_at_rafka_ms: now_unix_ms(), ..op };
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleted(&op).await;
         }
