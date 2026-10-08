@@ -285,9 +285,22 @@ async fn run(a: Args) -> Result<Value, String> {
 
 /// A refusal keeps its evidence: the process returns its exit status from `main`, so the telemetry
 /// guard drops (flushes) before the process ends, and the refusal is a span with its reason.
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-probe");
+///
+/// The runtime ends BEFORE the guard drops. The call's connection work (tasks the dial and the
+/// stream leave winding down after the endpoint closes) holds spans that descend from the root, and a
+/// span is exported only when its last descendant has closed: the root closes when the runtime drops
+/// those tasks. A guard dropped while they are still alive flushes a file with the call's spans and
+/// no root.
+fn main() -> std::process::ExitCode {
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("the probe's runtime");
+    let telemetry = runtime.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-probe") });
+    let code = runtime.block_on(probe());
+    drop(runtime);
+    drop(telemetry);
+    code
+}
+
+async fn probe() -> std::process::ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
