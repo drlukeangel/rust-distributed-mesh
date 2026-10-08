@@ -8,6 +8,7 @@
 
 pub mod elections;
 pub mod estate;
+pub mod model;
 pub mod netfault;
 pub mod runner;
 pub mod scenario;
