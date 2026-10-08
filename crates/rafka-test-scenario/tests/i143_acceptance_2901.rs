@@ -205,7 +205,9 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert!(early.all().len() > before);
     // No Members frame carries a status: the frame has no such field.
     for x in early.all().iter().filter(|x| matches!(x.frame, Frame::Members { .. })) {
-        let v: Value = serde_json::from_slice(&x.frame.encode()).unwrap();
+        // The frame's own fields, not its wire bytes (postcard, R-W1).
+        let v: Value = serde_json::to_value(&x.frame).unwrap()["Members"].clone();
+        assert!(v.is_object(), "a Members frame: {v}");
         assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "Members carries no status: {v}");
     }
 
