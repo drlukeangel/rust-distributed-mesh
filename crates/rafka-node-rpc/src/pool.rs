@@ -213,7 +213,13 @@ impl Pool {
                 }
             }
         };
-        let connect = spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN);
+        // The resolver names this one socket for the peer: every other direct address the endpoint
+        // holds for the key is a superseded birth's, and its paths (open ones too) are retired
+        // before the dial so none of them takes part in it.
+        let connect = async {
+            spec.endpoint.replace_direct_addrs(key.peer, [spec.addr]).await;
+            spec.endpoint.connect(EndpointAddr::new(key.peer).with_ip_addr(spec.addr), crate::ALPN).await
+        };
         let res = tokio::select! {
             biased;
             _ = cancelled.wait_for(|c| *c) => None,

@@ -24,7 +24,7 @@ members = [
 ]
 # The R-shape qualification consumer is an independent customer: its own workspace root and
 # lockfile, importing RDM by git rev (scripts/i143-rshape-build-consumer.sh).
-exclude = ["qualification/rshape-consumer", "vendor/netwatch"]
+exclude = ["qualification/rshape-consumer", "vendor/netwatch", "vendor/iroh"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -80,6 +80,7 @@ dashmap = "6"
 # creating a container network) stops the runtime's timers and tasks for up to seconds.
 [patch.crates-io]
 netwatch = { path = "vendor/netwatch" }
+iroh = { path = "vendor/iroh" }
 
 # The executable-binding check hashes whole (debug-sized, hundreds of MB) executables at every
 # launch: the hash runs at release speed even in a debug build.

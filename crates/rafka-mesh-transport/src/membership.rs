@@ -141,8 +141,11 @@ fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark
 /// successor restarts its sequence at 1; the incarnation it replaced is older). A digest that is
 /// not newer (replayed, late, or an aggregate copy of an older view) only fills a key that has no
 /// address, so it never puts an old socket back.
-pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
-    let Some(addr) = gossip_addr(d) else { return };
+///
+/// Returns the key and the new socket when a newer birth MOVED the key: the caller then retires
+/// the endpoint's paths to every other socket (`retire_superseded`).
+pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh::PublicKey, std::net::SocketAddr)> {
+    let addr = gossip_addr(d)?;
     let key = addr.id;
     let fresher = {
         let mut w = location_watermarks().lock().unwrap();
@@ -157,8 +160,10 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
         fresher
     };
     let old = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
+    let mut moved = None;
     if fresher {
         if old.is_some_and(|o| o != d.node.transport_addr) {
+            moved = Some((key, d.node.transport_addr));
             tracing::info_span!(
                 "rdm.mesh.connection.update.via-peer-location-refreshed",
                 node = %d.node.name,
@@ -172,6 +177,16 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
     } else if old.is_none() {
         lookup.add_endpoint_info(addr);
     }
+    moved
+}
+
+/// A newer birth moved `key` to `new`: the endpoint retires every direct path it holds to any other
+/// socket of the key, open ones included (iroh `Endpoint::replace_direct_addrs`), so a connection
+/// to the old socket, or a dial's first packet to it, can no longer reach whoever took that port.
+fn retire_superseded(endpoint: &Endpoint, moved: Option<(iroh::PublicKey, std::net::SocketAddr)>) {
+    let Some((key, new)) = moved else { return };
+    let endpoint = endpoint.clone();
+    tokio::spawn(async move { endpoint.replace_direct_addrs(key, [new]).await });
 }
 
 /// `RDM_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
@@ -703,9 +718,15 @@ struct Channel {
     /// The peers asked while they stayed on the live list.
     joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     lookup: MemoryLookup,
+    endpoint: Endpoint,
 }
 
 impl Channel {
+    /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
+    fn register(&self, d: &MeshDigest) {
+        retire_superseded(&self.endpoint, register_location(&self.lookup, d));
+    }
+
     async fn join(
         gossip: &Gossip,
         endpoint: &Endpoint,
@@ -729,7 +750,7 @@ impl Channel {
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, mut receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup };
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone() };
         let neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>> = Arc::default();
         me.refeed(node.to_string(), channel.to_string(), neighbors.clone(), targets);
         let (shared, known, gossip, fabric, channel, node) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), node.to_string());
@@ -1221,16 +1242,16 @@ impl Membership {
                 Vec::new()
             }
         });
-        let lookup_slot: Arc<Mutex<Option<MemoryLookup>>> = Arc::default();
+        let lookup_slot: Arc<Mutex<Option<(MemoryLookup, Endpoint)>>> = Arc::default();
         let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             let carried = match &frame {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
                 _ => v.take(&frame, &f, "mesh-channel"),
             };
-            if let Some(l) = ls.lock().unwrap().as_ref() {
+            if let Some((l, ep)) = ls.lock().unwrap().as_ref() {
                 for d in &carried {
-                    register_location(l, d);
+                    retire_superseded(ep, register_location(l, d));
                 }
             }
         });
@@ -1238,7 +1259,7 @@ impl Membership {
         let targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync> =
             Arc::new(move || held_targets(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
-        *lookup_slot.lock().unwrap() = Some(channel.lookup.clone());
+        *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default() };
         me.watch_meshes(node.to_string());
         Ok(me)
@@ -1284,7 +1305,7 @@ impl Membership {
         if d.fabric_id != self.fabric {
             return;
         }
-        register_location(&self.mesh.lookup, &d);
+        self.mesh.register(&d);
         if self.book.record_forwarded(d.clone()) {
             self.view.note(&d, via);
         }
@@ -1568,7 +1589,7 @@ impl Backbone {
                 return;
             }
             for d in m.view.take(&frame, &m.fabric, "backbone") {
-                register_location(&m.mesh.lookup, &d);
+                m.mesh.register(&d);
             }
             if !fw.load(Ordering::Relaxed) {
                 return;
