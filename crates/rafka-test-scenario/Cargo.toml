@@ -27,7 +27,6 @@ rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 # i143_acceptance_2780 derives its cut list from the product's own documented step orders.
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 futures-lite = "2"

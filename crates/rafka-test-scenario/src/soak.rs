@@ -656,10 +656,6 @@ impl Driver {
                 let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic");
                 match primary {
                     None => Some(format!("hand-off: {mesh} has no ready mesh primary")),
-                    Some(p) if p["is_fabric_primary"] == true => Some(format!(
-                        "hand-off: {} is the fabric-primary; its hand-off Build closes before its runtime is gone, so the spawn after it finds the predecessor alive and creates nothing (fabric-primary hand-off defect)",
-                        s(&p["name"])
-                    )),
                     Some(p) => guarded(&s(&p["name"]), "hand-off").filter(|r| r.contains("bootstrap")).or_else(|| lands_on_same_path(&s(&p["name"]))),
                 }
             }
@@ -690,7 +686,7 @@ impl Driver {
                 None => return Some(a),
                 Some(why) => {
                     self.sched.record("redraw", &why);
-                    let code = ["fabric-primary hand-off defect", "fabric-primary", "control address", "is free, so a spawn", "no ready mesh primary"].iter().find(|c| why.contains(**c)).copied().unwrap_or("other");
+                    let code = ["fabric-primary", "control address", "is free, so a spawn", "no ready mesh primary"].iter().find(|c| why.contains(**c)).copied().unwrap_or("other");
                     *self.skipped.entry(format!("{}: {code}", kind(&a))).or_default() += 1;
                 }
             }
