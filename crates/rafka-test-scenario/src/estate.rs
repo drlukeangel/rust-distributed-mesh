@@ -1090,8 +1090,17 @@ impl Estate {
     pub fn kill_pid(&self, pid: u32) {
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
         assert!(ok, "kill -9 {pid}");
+        // Gone only once every task of the thread group is: the leader reads as a zombie while its
+        // sibling threads still run, and a child it forked is reparented only when the last of them
+        // exits. A caller that freezes that child before then has it killed by the kernel (SIGHUP to
+        // a stopped, newly orphaned process group).
+        let alive = || {
+            std::fs::read_dir(format!("/proc/{pid}/task"))
+                .map(|tasks| tasks.flatten().any(|t| std::fs::read_to_string(t.path().join("stat")).is_ok_and(|s| !s.rsplit(')').next().unwrap_or("").trim_start().starts_with('Z'))))
+                .unwrap_or(false)
+        };
         let until = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < until && Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+        while Instant::now() < until && alive() {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
