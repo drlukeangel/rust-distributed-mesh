@@ -226,6 +226,18 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
     sampler.abort();
     let statuses = statuses.lock().unwrap().clone();
+    // The return to ready is five sends a second apart: the estate is stopped once all five are on record.
+    let degraded_ms = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or(0);
+    let fp_for_sends = f.fabric_primary.clone();
+    wait_for("the return to ready is sent five times", Duration::from_secs(30), || {
+        let spans = f.estate.spans();
+        let n = named(&spans, "rdm.mesh.fabric.update.via-status-send")
+            .into_iter()
+            .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 > degraded_ms)
+            .count();
+        async move { (n >= 5).then_some(()) }
+    })
+    .await;
 
     let (_, fabric_after) = f.estate.get("/api/fabric").await;
     assert_eq!(s(&fabric_after["build_id"]), f.accepted, "no new Build: Fabric.build_id is unchanged");
@@ -248,7 +260,11 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert_eq!(probes.len(), 2, "two probes, no more: {probes:#?}");
     for (i, p) in probes.iter().enumerate() {
         assert_eq!(attr(p, "probe"), (i + 1).to_string(), "probes are numbered in order");
-        assert_eq!(attr(p, "outcome"), "carrier-edge-lost", "the member cannot reach its own node-admin: {p:#?}");
+        // A member may still hold a pooled connection to the killed node-admin: a probe over it
+        // commits and loses its reply (`Indeterminate`, unreachable). Its next dial fails at the dial,
+        // which is the edge-lost answer. Probe 2 is the one that decides.
+        let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail") == "Indeterminate";
+        assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
         assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
     }
     assert!(round(probes[0]) >= 10, "probe 1 fires at 10 rounds unheard, not before: round {}", round(probes[0]));

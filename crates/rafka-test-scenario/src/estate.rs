@@ -1224,9 +1224,41 @@ impl Drop for Estate {
             let _ = c.wait();
             sweep(self);
         }
+        // Admins this estate restarted on their own data dirs are its children too, and run under
+        // no deployment of any admin: a failed run leaves them unless they are killed here, and
+        // whatever they launched with them.
+        for mut c in self.restarted.drain(..) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        kill_estate_processes(&self.root);
         // Containers outlive every admin: the estate removes its Fabric's containers and network.
         self.remove_containers();
         keep_node_logs(&self.root, &self.artifacts);
+    }
+}
+
+/// Kill, until none is left, every process whose environment names `root` (`RDM_ESTATE_ROOT`: every
+/// admin and every node an admin launched inherits it): the reaper's own rule, applied by the
+/// estate when it ends, so a failed run leaves nothing behind for the reaper to find later.
+fn kill_estate_processes(root: &Path) {
+    let needle = format!("RDM_ESTATE_ROOT={}\0", root.display());
+    for _ in 0..10 {
+        let mut found = false;
+        for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+            let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+            if pid == std::process::id() {
+                continue;
+            }
+            let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else { continue };
+            if env.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                found |= Command::new("kill").args(["-9", &pid.to_string()]).status().is_ok_and(|s| s.success());
+            }
+        }
+        if !found {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
