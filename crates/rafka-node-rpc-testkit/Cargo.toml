@@ -28,6 +28,7 @@ serde_json = { workspace = true }
 reqwest = { version = "0.13.3", features = ["json"] }
 
 [dev-dependencies]
+libc = "0.2"
 tracing-subscriber = { workspace = true }
 # i143_acceptance_2775: the UNIT cell captures its own spans in an in-memory OTel exporter.
 opentelemetry = { workspace = true }

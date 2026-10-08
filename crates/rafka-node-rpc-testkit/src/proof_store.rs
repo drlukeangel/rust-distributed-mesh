@@ -435,8 +435,20 @@ mod tests {
     }
 
     fn dir() -> PathBuf {
+        static MADE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+        extern "C" fn remove_made() {
+            for d in MADE.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        }
         let d = std::env::temp_dir().join(format!("proof-store-{}-{}", std::process::id(), rand_suffix()));
         std::fs::create_dir_all(&d).unwrap();
+        let mut made = MADE.lock().unwrap();
+        if made.is_empty() {
+            // Every directory a test of this binary made is removed when the binary exits.
+            unsafe { libc::atexit(remove_made) };
+        }
+        made.push(d.clone());
         d
     }
 

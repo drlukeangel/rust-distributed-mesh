@@ -49,6 +49,12 @@ impl Drop for Fabric {
             docker(&["rm", "-f", id]);
         }
         docker(&["network", "rm", &format!("rafka-{}", self.0)]);
+        // The cell's node data dirs (`launch`): `<fabric>-node<n>` under the temp dir.
+        for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().starts_with(&format!("{}-node", self.0)) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
     }
 }
 

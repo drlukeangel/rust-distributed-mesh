@@ -3692,6 +3692,7 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-gossip",
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "rafka-mesh-entity",

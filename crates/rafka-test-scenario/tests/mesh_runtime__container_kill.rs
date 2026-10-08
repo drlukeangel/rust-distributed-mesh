@@ -123,6 +123,7 @@ fn give_up_leaves_nothing(tag: &str, exe: &std::path::Path, program: &str) {
     let ls = |args: &[&str]| String::from_utf8_lossy(&Command::new("docker").args(args).output().unwrap().stdout).trim().to_string();
     let containers = ls(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", e.fabric_id)]);
     let networks = ls(&["network", "ls", "-q", "--filter", &format!("label=rafka.fabric={}", e.fabric_id)]);
+    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!((containers.as_str(), networks.as_str()), ("", ""), "after the give-up ({:?}) the fabric {} left a container or network: {}", t.elapsed(), e.fabric_id, e.message);
 }
 
@@ -151,5 +152,112 @@ fn a_give_up_on_a_container_that_never_advertises_leaves_no_container_or_network
         eprintln!("SKIP container give-up: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
         return;
     }
-    give_up_leaves_nothing("silent", std::path::Path::new("/usr/bin/sleep"), "docker");
+    let dir = gate_dir("silent");
+    let exe = dir.join("silent.sh");
+    std::fs::write(&exe, "#!/bin/sh\nexec /usr/bin/sleep 1000\n").unwrap();
+    std::fs::set_permissions(&exe, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    give_up_leaves_nothing("silent", &exe, "docker");
+}
+
+// ---- an estate outlives neither its test binary nor its teardown ----
+
+const CHILD_ENV: &str = "RDM_ESTATE_SIGKILL_CHILD";
+
+/// The estate's processes: every process whose environment carries this estate's root.
+fn estate_processes(root: &str) -> Vec<u32> {
+    let needle = format!("RDM_ESTATE_ROOT={root}\0");
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())))
+        .collect()
+}
+
+/// The body of the estate a parent cell SIGKILLs: it runs only when the parent names a file for
+/// the estate's root; otherwise it does nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sigkill_cell_estate_body() {
+    let Ok(file) = std::env::var(CHILD_ENV) else { return };
+    let provider = std::env::var("RDM_ESTATE_SIGKILL_PROVIDER").unwrap();
+    let estate = Estate::bootstrap(
+        Owner { product: "mesh".into(), feature: "mesh-runtime".into(), subfeature: "estate-sigkill".into(), rung: "MN".into(), provider: provider.clone(), test: format!("sigkill_cell_estate_body_{provider}") },
+        "fabric1",
+        "mesh1",
+    )
+    .await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
+    std::fs::write(&file, estate.root.display().to_string()).unwrap();
+    tokio::time::sleep(Duration::from_secs(600)).await;
+}
+
+/// Run the estate body in a child test binary, SIGKILL the binary mid-estate, and return what the
+/// estate left: its processes, its root directory, and (container) its labelled containers.
+fn sigkill_mid_estate(provider: &str) -> (Vec<u32>, bool, String) {
+    let file = std::env::temp_dir().join(format!("rdm-sigkill-{provider}-{}", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "sigkill_cell_estate_body", "--test-threads=1"])
+        .env(CHILD_ENV, &file)
+        .env("RDM_ESTATE_SIGKILL_PROVIDER", provider)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(150);
+    while !file.exists() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let root = std::fs::read_to_string(&file).unwrap_or_else(|_| panic!("the estate body never reached its built fabric within 150 s ({:?})", child.try_wait()));
+    let fabric = std::fs::read_to_string(std::path::Path::new(&root).join("fabric_id")).unwrap_or_default();
+    let live = estate_processes(&root);
+    let containers = |fabric: &str| String::from_utf8_lossy(&Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={fabric}")]).output().unwrap().stdout).trim().to_string();
+    if provider == "container" {
+        assert!(!containers(&fabric).is_empty(), "the container estate runs containers before the kill");
+    } else {
+        assert!(live.len() >= 2, "the process estate runs an admin and a node before the kill: {live:?}");
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let left = estate_processes(&root);
+        let dir = std::path::Path::new(&root).exists();
+        let boxes = if provider == "container" { containers(&fabric) } else { String::new() };
+        let net = if provider == "container" { String::from_utf8_lossy(&Command::new("docker").args(["network", "ls", "-q", "--filter", &format!("label=rafka.fabric={fabric}")]).output().unwrap().stdout).trim().to_string() } else { String::new() };
+        if (left.is_empty() && !dir && boxes.is_empty() && net.is_empty()) || std::time::Instant::now() > until {
+            let _ = std::fs::remove_file(&file);
+            return (left, dir, format!("containers=[{boxes}] networks=[{net}]"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+fn container_cells_enabled() -> bool {
+    std::env::var("RDM_CONTAINER_PROOF").as_deref() == Ok("1") || std::env::var("RDM_REQUIRE_CONTAINER").as_deref() == Ok("1")
+}
+
+/// CONTRACT: when the test binary is SIGKILLed while its process-provider estate runs an admin
+/// and a node, no process of that estate and no directory of it remains.
+#[test]
+fn a_sigkilled_test_binary_leaves_no_process_or_directory_of_its_process_estate() {
+    if std::env::var(CHILD_ENV).is_ok() {
+        return;
+    }
+    let (left, dir, rest) = sigkill_mid_estate("process");
+    assert_eq!((left.as_slice(), dir), (&[][..], false), "processes {left:?} root-exists {dir} {rest}");
+}
+
+/// CONTRACT: when the test binary is SIGKILLed while its container estate runs, no container and
+/// no network labelled with its fabric, no process and no directory of it remains.
+#[test]
+fn a_sigkilled_test_binary_leaves_no_container_network_or_directory_of_its_container_estate() {
+    if std::env::var(CHILD_ENV).is_ok() || !container_cells_enabled() {
+        return;
+    }
+    let (left, dir, rest) = sigkill_mid_estate("container");
+    assert_eq!((left.as_slice(), dir, rest.as_str()), (&[][..], false, "containers=[] networks=[]"), "processes {left:?} root-exists {dir} {rest}");
 }

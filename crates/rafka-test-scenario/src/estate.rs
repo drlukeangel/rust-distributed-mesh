@@ -199,6 +199,7 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     let (base, prefix) = subnet.split_once('/').map(|(b, p)| (b.parse::<std::net::Ipv4Addr>().unwrap(), p.parse::<u32>().unwrap())).unwrap_or_else(|| panic!("network {network} subnet {subnet}"));
     // The network's last node address: the provider allocates upward from the gateway.
     let ip = std::net::Ipv4Addr::from(u32::from(base) + (1u32 << (32 - prefix)) - 2);
+    let _ = std::fs::write(root.join("fabric_id"), &fabric_id);
     env.push(("RDM_FABRIC_ID", fabric_id.clone()));
     env.push(("RDM_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
     for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG"] {
@@ -372,6 +373,71 @@ impl ExternalLaunch {
     }
 }
 
+/// What an estate owns on the host beyond its processes: its root directory under the temp dir
+/// and the reaper that outlives a SIGKILLed test binary. Dropping it (a finished estate, a panic
+/// anywhere in birth) stops the reaper and removes the root; the reaper does the same when the
+/// test binary dies without running any destructor.
+pub struct EstateScope {
+    root: PathBuf,
+    reaper: Option<Child>,
+}
+
+/// The reaper: waits for the test binary to die, then kills every process whose environment names
+/// this estate's root (`RDM_ESTATE_ROOT`: every admin, and every node an admin launched, inherits
+/// it), removes the container fabric recorded in `<root>/fabric_id`, and removes the root. It runs
+/// in its own session, so a gate that kills the test binary's process group leaves it running.
+const REAPER: &str = r#"
+owner=$1; root=$2
+while kill -0 "$owner" 2>/dev/null; do sleep 0.2; done
+for pass in 1 2 3 4 5 6 7 8 9 10; do
+  found=0
+  for e in $(grep -laP "RDM_ESTATE_ROOT=$root\x00" /proc/[0-9]*/environ 2>/dev/null); do
+    p=${e#/proc/}; p=${p%/environ}
+    [ "$p" = "$$" ] && continue
+    kill -9 "$p" 2>/dev/null && found=1
+  done
+  [ $found = 0 ] && break
+  sleep 0.2
+done
+fabric=$(cat "$root/fabric_id" 2>/dev/null)
+if [ -n "$fabric" ]; then
+  for pass in 1 2 3 4 5; do
+    ids=$(docker ps -aq --filter "label=rafka.fabric=$fabric")
+    [ -z "$ids" ] && break
+    docker rm -f $ids >/dev/null 2>&1
+    sleep 0.2
+  done
+  docker network rm "rafka-$fabric" >/dev/null 2>&1
+fi
+rm -rf "$root"
+"#;
+
+impl EstateScope {
+    fn begin(root: &Path) -> Self {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", REAPER, "estate-reaper", &std::process::id().to_string(), &root.display().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.env_remove("RDM_ESTATE_ROOT");
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        EstateScope { root: root.to_path_buf(), reaper: cmd.spawn().ok() }
+    }
+}
+
+impl Drop for EstateScope {
+    fn drop(&mut self) {
+        if let Some(mut r) = self.reaper.take() {
+            let _ = r.kill();
+            let _ = r.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 pub struct Estate {
     pub owner: Owner,
     pub root: PathBuf,
@@ -390,6 +456,8 @@ pub struct Estate {
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
     http: reqwest::Client,
+    /// Dropped last: stops the reaper and removes the root.
+    _scope: EstateScope,
 }
 
 impl Estate {
@@ -420,6 +488,7 @@ impl Estate {
         let root = std::env::temp_dir().join(format!("i143-{}-{}", owner.test, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
+        let scope = EstateScope::begin(&root);
         let external = external.map(|(validated, candidate)| {
             let file = root.join("executable-bindings.json");
             std::fs::write(&file, serde_json::to_vec_pretty(validated.set()).unwrap()).unwrap();
@@ -434,6 +503,7 @@ impl Estate {
             ("RDM_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
+            ("RDM_ESTATE_ROOT", root.display().to_string()),
         ];
         let admin_exe = match &external {
             Some(x) => {
@@ -454,7 +524,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new() };
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -876,6 +946,7 @@ impl Estate {
             ("RDM_DATA_DIR", data_dir.display().to_string()),
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", self.evidence.display().to_string()),
+            ("RDM_ESTATE_ROOT", self.root.display().to_string()),
         ];
         let exe = match &self.external {
             Some(x) => {
@@ -1045,6 +1116,7 @@ impl Drop for Estate {
         }
         // Containers outlive every admin: the estate removes its Fabric's containers and network.
         self.remove_containers();
+        keep_node_logs(&self.root, &self.artifacts);
     }
 }
 
@@ -1150,5 +1222,20 @@ mod spawn_tests {
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         assert!(!Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.contains(") Z ")), "pid {pid} still runs after the refusal");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The node and admin logs under an estate root, kept in the estate's artifacts before the root is
+/// removed: `<node dir>/stdout.log` and `stderr.log`.
+fn keep_node_logs(root: &Path, artifacts: &Path) {
+    let dest = artifacts.join("node-logs");
+    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        for name in ["stdout.log", "stderr.log"] {
+            let f = e.path().join(name);
+            if f.is_file() {
+                let _ = std::fs::create_dir_all(&dest);
+                let _ = std::fs::copy(&f, dest.join(format!("{}.{name}", e.file_name().to_string_lossy())));
+            }
+        }
     }
 }
