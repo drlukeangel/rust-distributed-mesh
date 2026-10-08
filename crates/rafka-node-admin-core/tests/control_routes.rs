@@ -478,4 +478,25 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
     assert!(by("mesh1.rpc.2").iter().all(|f| f.get("status").map(String::as_str) == Some("restarting") && f.get("reason").is_some_and(|r| !r.is_empty())), "{rejects:?}");
     assert_eq!(by("mesh1.rpc.3").len(), 1);
     assert_eq!(by("mesh1.rpc.3")[0].get("status").map(String::as_str), Some("dead"), "{rejects:?}");
+
+/// CONTRACT: a node being replaced is the node nobody hears, so the replace resolves it from the
+/// accepted Build, never from the heard view. A path the Build names, absent from the view,
+/// is replaced when the caller names the exact birth (`?incarnation=`): the attempt is fenced to
+/// that birth. Without a named birth the view lacks the node and it is refused `unknown-node`; a
+/// path the Build does not name is `unknown-node` whatever birth is named.
+#[tokio::test]
+async fn a_silent_node_absent_from_the_view_is_replaced_by_the_birth_the_caller_names() {
+    let h = harness(Router::new()).await;
+    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let birth = h.cp.topology.read().await.node(&"mesh1.rpc.3".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
+    h.cp.topology.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
+    let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.3/replace", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "no birth named: {v}");
+    let (s, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.9/replace?incarnation={}", birth.0), None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "not in the Build: {v}");
+    let (status, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.3/replace?incarnation={}", birth.0), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
+    assert_eq!((b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("replace"), Some("mesh1.rpc.3")), "{b}");
+    assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the named birth: {b}");
 }
