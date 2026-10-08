@@ -1,7 +1,8 @@
 //! i143.e4.s6 process E2E: the mesh creation contract (PRD §1.15, §12.1).
 //!
 //! desired {mesh1} -> {mesh1, mesh2}, through one fabric Build:
-//! - the fabric primary creates mesh2's node-admin cohort;
+//! - the fabric primary creates mesh2's first node-admin; mesh2's own admin primary (that
+//!   first admin) creates mesh2's second;
 //! - mesh2's own admin primary creates mesh2's members (the same Build, a
 //!   later attempt claimed by that admin);
 //! - the test reads mesh2's control endpoint from the advertised topology and
@@ -116,15 +117,15 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.admin = fabric_base;
     estate.stop().await;
     let spans = estate.spans();
-    // The admin cohort is created by whoever held the fabric seat when the create ran: the
-    // executor's own view at that moment. Day 0's fabric primary may hand the seat to a lower
-    // NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the test is
-    // not the creator's seat.
-    for a in ["mesh2.admin.1", "mesh2.admin.2"] {
-        let op = operation(&spans, "rdm.node_admin.node.create.via-build", a, &create);
-        let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", a, &create);
-        assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "{a}: created by the admin holding the fabric seat when it ran");
-    }
+    // The first admin of a mesh that has none is created by whoever held the fabric seat when the
+    // create ran: the executor's own view at that moment. Day 0's fabric primary may hand the seat
+    // to a lower NodeId in mesh2 as soon as mesh2's first admin is ready, so a name read after the
+    // test is not the creator's seat. The second admin is created by mesh2's own primary, which at
+    // that moment is the only admin mesh2 has (node-admin-lifecycle.md 4.3).
+    let op = operation(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.1", &create);
+    let creator = executed_by(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.1", &create);
+    assert_eq!(fabric_primary_seen_by(&spans, &creator, op), creator, "mesh2.admin.1: created by the admin holding the fabric seat when it ran");
+    assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", "mesh2.admin.2", &create), "mesh2.admin.1", "mesh2.admin.2: created by mesh2's own primary");
     for r in ["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3"] {
         assert_eq!(executed_by(&spans, "rdm.node_admin.node.create.via-build", r, &create), mesh2_primary, "{r}: mesh2's primary creates its members");
     }
