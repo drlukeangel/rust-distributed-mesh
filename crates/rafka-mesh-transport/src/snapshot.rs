@@ -18,20 +18,7 @@ use rafka_mesh_entity::{IncarnationId, LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-/// A publisher's EXACT identity: its path name AND the birth that holds the seat. It is the epoch
-/// of the versions it publishes (gossip.md §3.1): a restarted primary is a new publisher, so its
-/// versions start again without ever being compared with its previous birth's.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PublisherId {
-    pub node: String,
-    pub incarnation: IncarnationId,
-}
-
-impl std::fmt::Display for PublisherId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.node, self.incarnation.0)
-    }
-}
+pub use rafka_mesh_entity::PublisherId;
 
 type OpKey = (String, u32, String);
 

@@ -18,6 +18,7 @@ pub mod outcome;
 pub mod protocol;
 pub mod status;
 pub mod streaming;
+pub mod topology;
 
 pub use codes::ResetCode;
 pub use outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, ReplyKind, MalformedKind, RequestFinished, RpcOutcome};
