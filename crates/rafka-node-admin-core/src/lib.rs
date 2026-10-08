@@ -37,5 +37,6 @@ pub mod connections_writer;
 pub mod storage;
 pub mod status_storage;
 pub mod topology;
+pub mod topology_read;
 pub mod wire;
 pub mod wiring;

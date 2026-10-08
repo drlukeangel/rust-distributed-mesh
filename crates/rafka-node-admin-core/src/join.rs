@@ -12,7 +12,7 @@
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use rafka_mesh_entity::wire::WireDigest;
 use rafka_mesh_entity::{MeshDigest, RuntimeFact};
-use rafka_mesh_transport::entry::EntryAnswer;
+use crate::wire::JoinAnswer;
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
@@ -132,12 +132,10 @@ pub struct JoinDoor {
     pub me: PathName,
     pub joins: Arc<Joins>,
     /// What the admin answers a joiner with.
-    pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = EntryAnswer> + Send>> + Send + Sync>,
+    pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Option<JoinAnswer>> + Send>> + Send + Sync>,
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
-    /// Is this exact birth already a member this admin holds?
-    pub is_member: Arc<dyn Fn(&MeshDigest) -> bool + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
@@ -179,10 +177,6 @@ impl JoinDoor {
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
                 self.joined(&d.node.name).await
             }
-            Standing::Unknown if (self.is_member)(&d) => {
-                span.record("outcome", "member");
-                self.joined(&d.node.name).await
-            }
             Standing::Unknown => {
                 span.record("outcome", "not-authority");
                 let primary = (self.primary)();
@@ -194,11 +188,10 @@ impl JoinDoor {
     }
 
     async fn joined(&self, node: &PathName) -> JoinReply {
-        let answer = (self.answer)().await;
-        if answer.served_by.is_empty() {
+        let Some(answer) = (self.answer)().await else {
             return JoinReply::NotReady { reason: format!("{}: this admin is not ready to answer yet", self.me) };
-        }
-        tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, members = answer.members.len(), sources = answer.sources.len())
+        };
+        tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, statuses = answer.statuses.len())
             .in_scope(|| tracing::info!("entry answered"));
         match crate::wire::answer_to_wire(&answer) {
             Ok(bytes) => JoinReply::Joined { answer: bytes },
@@ -240,7 +233,7 @@ impl std::fmt::Display for JoinFailure {
 
 /// `JoinNode` to `target` (the admin whose endpoint reads `anchor` in short form) with `digest`,
 /// within `attempts` of five seconds each. A refusal by name ends it at once.
-pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str, digest: &MeshDigest, attempts: u32) -> Result<EntryAnswer, JoinFailure> {
+pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str, digest: &MeshDigest, attempts: u32) -> Result<JoinAnswer, JoinFailure> {
     let req = JoinRequest::JoinNode { digest: WireDigest::from(digest) };
     let node = digest.node.name.to_string();
     let mut last = String::new();
@@ -249,7 +242,7 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
         let span = tracing::info_span!("rdm.mesh.entry.update.via-pull-attempt", node = %node, anchor, attempt, step = tracing::field::Empty, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
         let started = std::time::Instant::now();
         let (out, _) = client.call::<Join>(target, &req, &opts).await;
-        let (step, result): (&str, Result<EntryAnswer, JoinFailure>) = match out {
+        let (step, result): (&str, Result<JoinAnswer, JoinFailure>) = match out {
             RpcOutcome::Reply(r) => match r.value().clone() {
                 JoinReply::Joined { answer } => match crate::wire::answer_from_wire(&answer) {
                     Ok(a) => ("answered", Ok(a)),
@@ -268,7 +261,7 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
         span.in_scope(|| tracing::info!("one join attempt"));
         match result {
             Ok(a) => {
-                tracing::info_span!("rdm.mesh.entry.update.via-membership-pulled", node = %node, served_by = %a.served_by, members = a.members.len(), attempt)
+                tracing::info_span!("rdm.mesh.entry.update.via-membership-pulled", node = %node, served_by = %a.served_by, statuses = a.statuses.len(), attempt)
                     .in_scope(|| tracing::info!("joined"));
                 return Ok(a);
             }

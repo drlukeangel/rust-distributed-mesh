@@ -1,49 +1,22 @@
-//! The join's answer travels as one postcard frame: an entry answer survives
-//! `answer_to_wire` / `answer_from_wire` unchanged, and a part with no wire shape is refused by
-//! name rather than sent as something else.
+//! The join's answer travels as one postcard frame: a join answer survives
+//! `answer_to_wire` / `answer_from_wire` unchanged. It carries the control state and the statuses;
+//! the topology is read with `GetTopology` (op `0x1E`), never in the join.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
-use rafka_mesh_transport::entry::EntryAnswer;
-use rafka_node_admin_core::model::{Fabric, Mesh, ProviderKind, ScopeStatus};
-use rafka_node_admin_core::topology::Topology;
-use rafka_node_admin_core::wire::{answer_from_wire, answer_to_wire};
+use rafka_mesh_entity::FabricId;
+use rafka_node_admin_core::fabric_storage::{FabricRecord, FabricShutdown};
+use rafka_node_admin_core::model::ProviderKind;
+use rafka_node_admin_core::wire::{answer_from_wire, answer_to_wire, BuildFloor, JoinAnswer, JoinControl};
 
-fn digest() -> MeshDigest {
-    MeshDigest {
-        fabric_id: FabricId::mint(),
-        node: MeshNode {
-            node_id: NodeId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
-            endpoint_id: EndpointId("k".into()),
-            transport_addr: "127.0.0.1:34567".parse().unwrap(),
-            incarnation: IncarnationId::mint(),
-            supersedes: None,
-            runtime: None,
-        },
-        status: MemberStatus::ReadyForTraffic,
-        admin_api_base: None,
-        digest_seq: 3,
-        emitted_at_rafka_ms: 9,
-        data_dir: None,
-        mesh_id: None,
-        in_flight: None,
-        extra: Default::default(),
-    }
-}
-
-fn answer() -> EntryAnswer {
-    let topology = Topology {
-        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: None, name: "mesh1".into(), status: ScopeStatus::Pending }],
-        nodes: vec![],
-    };
-    EntryAnswer {
+fn answer() -> JoinAnswer {
+    JoinAnswer {
         served_by: "mesh1.admin.1".into(),
-        topology: serde_json::to_value(&topology).unwrap(),
-        members: vec![digest()],
-        control: serde_json::json!({ "fabric": null, "shutdown": null, "build": null }),
+        control: JoinControl {
+            provider: ProviderKind::Process,
+            fabric: Some(FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: None }),
+            shutdown: Some(FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: "n".into(), initiated_at_ms: 4 }),
+            build: Some(BuildFloor { build_id: rafka_node_admin_core::build::BuildId::mint(), attempt: 2 }),
+        },
         statuses: vec![],
-        sources: vec![],
     }
 }
 
@@ -55,16 +28,16 @@ fn a_join_request_and_its_answer_round_trip_through_postcard() {
     assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_err(), "the frame is not JSON");
     let back = answer_from_wire(&bytes).expect("and decodes");
     assert_eq!(back.served_by, a.served_by);
-    assert_eq!(back.topology, a.topology);
-    assert_eq!(back.members, a.members);
-    assert_eq!(back.control, a.control);
+    assert_eq!(back.control.provider, a.control.provider);
+    assert_eq!(back.control.fabric, a.control.fabric);
+    assert_eq!(back.control.shutdown, a.control.shutdown);
+    assert_eq!(back.control.build.map(|b| (b.build_id, b.attempt)), a.control.build.map(|b| (b.build_id, b.attempt)));
 }
 
 // @feature: node-lifecycle
 #[test]
-fn an_answer_whose_topology_is_not_a_topology_is_refused_by_name() {
-    let mut a = answer();
-    a.topology = serde_json::json!({ "not": "a topology" });
-    let e = answer_to_wire(&a).unwrap_err();
-    assert!(e.contains("topology"), "{e}");
+fn a_truncated_answer_is_refused_by_name_not_decoded_partially() {
+    let bytes = answer_to_wire(&answer()).unwrap();
+    let e = answer_from_wire(&bytes[..bytes.len() - 1]).unwrap_err();
+    assert!(!e.is_empty());
 }

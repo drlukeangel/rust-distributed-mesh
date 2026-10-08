@@ -230,7 +230,8 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
     // Every connection this node accepts from a live peer is Direct Connected from this node
     // to that peer (connections.md §10), reported to the same writer as its own dials.
     let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
-    let server = serve_kick(register(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), seams), subject.clone())
+    let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
@@ -286,45 +287,58 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
             Err(e @ rafka_node_admin_core::join::JoinFailure::Unreached(_)) => tracing::warn!(node = %launch.name, error = %e, "the launching admin could not take the join: this node's view fills from gossip"),
         }
     }
-    // The mesh's id names its channel; the launching admin writes it. A launch without one takes
-    // it from the join answer's projection.
+    // The mesh's id names its channel; the launching admin writes it.
     let mesh_id = match (&launch.mesh_id, &joined) {
         (Some(id), _) => id.clone(),
-        (None, Some(answer)) => answer.topology["meshes"]
-            .as_array()
-            .and_then(|ms| ms.iter().find(|m| m["name"] == launch.name.mesh.as_str()))
-            .and_then(|m| m["id"].as_str())
-            .ok_or_else(|| anyhow!("the join answer names no id for mesh {}", launch.name.mesh))
-            .and_then(|v| rafka_mesh_entity::MeshId::parse(v).map_err(|e| anyhow!("the join answer's mesh id: {e}")))?,
-        (None, None) => return Err(anyhow!("a node needs its mesh's id or an admin to ask for it")),
+        (None, _) => return Err(anyhow!("a node needs its mesh's id from its launch")),
     };
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
-    // Take the launching admin's membership before marking ready.
-    if let Some(answer) = joined {
-        let mut mesh_peers = Vec::new();
-        for d in answer.members.into_iter().filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name) {
-            if d.node.name.mesh == launch.name.mesh {
-                mesh_peers.extend(rafka_mesh_transport::membership::gossip_addr(&d));
-            }
-            membership.learn(d, "join");
-        }
+    // This node serves the topology it holds from here on (until now a read is `NotReady`).
+    let status = Arc::new(Mutex::new(MemberStatus::Pending));
+    {
+        let (own, st) = (digest.clone(), status.clone());
+        let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(
+            membership.clone(),
+            Arc::new(move || {
+                let mut d = own.clone();
+                d.status = *st.lock().unwrap();
+                d
+            }),
+        )));
+    }
+    // Take the launching admin's topology before marking ready: the join answered the control
+    // state; `GetTopology` reads the topology from the same admin, installed per mesh only when
+    // its snapshot is complete.
+    if let (Some(answer), Some(launcher)) = (joined, &launch.launcher) {
         membership.learn_statuses(&answer.statuses);
-        // The baseline of each source Mesh the launching admin serves: the publisher and
-        // version this node resumes that source's deltas from.
-        membership.learn_sources(&answer.sources);
+        let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None)
+            .await
+            .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
+        let mesh_peers: Vec<EndpointAddr> = read
+            .installed
+            .iter()
+            .flat_map(|m| m.members.iter())
+            .filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name && d.node.name.mesh == launch.name.mesh)
+            .filter_map(rafka_mesh_transport::membership::gossip_addr)
+            .collect();
         let _ = membership.join_peers(mesh_peers).await;
     }
     // A delta that does not follow what this node holds desynchronizes that source; the node tops
-    // up from its Mesh's own primary (gossip.md §3.3), asking the same `JoinNode` of it.
+    // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
     {
-        let (client, digest) = (client.clone(), { let mut d = digest.clone(); d.status = MemberStatus::Pending; d });
-        membership.spawn_top_up(Arc::new(move |primary: MeshDigest| {
-            let (client, digest) = (client.clone(), digest.clone());
+        let client = client.clone();
+        membership.spawn_top_up(Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
+            let client = client.clone();
             Box::pin(async move {
-                rafka_node_admin_core::join::call_join(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.endpoint_id.0.chars().take(10).collect::<String>(), &digest, 1)
-                    .await
-                    .map_err(|e| e.to_string())
+                let mut done = rafka_mesh_transport::membership::TopUpDone::default();
+                for mesh in meshes {
+                    let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &membership, Some(&mesh), None)
+                        .await
+                        .map_err(|e| format!("{mesh}: {e}"))?;
+                    done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
+                }
+                Ok(done)
             })
         }));
     }
@@ -347,7 +361,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         source = "self-published-membership"
     )
         .in_scope(|| tracing::info!("ready for traffic"));
-    let status = Arc::new(Mutex::new(MemberStatus::ReadyForTraffic));
+    *status.lock().unwrap() = MemberStatus::ReadyForTraffic;
     let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), server: server.clone() }));
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
     let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {

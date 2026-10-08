@@ -14,7 +14,6 @@
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRecord;
-use rafka_mesh_transport::entry::EntryAnswer;
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{Budget, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
@@ -78,63 +77,58 @@ impl MapNode {
     }
 }
 
+/// The births of one topology read, as the map a Ping reaches.
+pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mesh_entity::FabricId) -> Vec<MapNode> {
+    read.installed
+        .iter()
+        .flat_map(|m| m.members.iter())
+        .filter(|d| &d.fabric_id == fabric)
+        .map(|d| {
+            let ready = d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic;
+            MapNode {
+                settled: ready,
+                ready,
+                data_dir: d.data_dir.clone(),
+                admin_api_base: d.admin_api_base.clone(),
+                node_id: d.node.node_id.clone(),
+                name: d.node.name.clone(),
+                endpoint_id: d.node.endpoint_id.clone(),
+                transport_addr: d.node.transport_addr,
+                incarnation: d.node.incarnation.clone(),
+            }
+        })
+        .collect()
+}
+
 /// Where a topology is read from.
 pub enum TopologySource<'a> {
-    /// The maker's answer to this admin's JoinNode.
-    Maker(&'a EntryAnswer),
     /// This admin's durable map (nodes.storage), with no maker.
     DurableMap(&'a [NodeRecord]),
-    /// A node of the own mesh: this admin joins the mesh channel with it as the seed and takes the
-    /// digests the channel delivers.
-    LocalNode { node: &'a MapNode, membership: &'a Membership },
+    /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E) and installed
+    /// (topology, never liveness), and this admin joins the mesh channel with it as the seed.
+    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership },
 }
 
 /// The topology `source` holds, every mesh, as births a Ping can reach. `Err` names what failed.
+/// The maker's topology is read by the birth itself (`topology_read::get_topology` on the maker),
+/// whose installed read is mapped by [`map_of_read`].
 pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, String> {
     match source {
-        TopologySource::Maker(answer) => {
-            let t: crate::topology::Topology = serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the maker {} answered no topology: {e}", answer.served_by))?;
-            Ok(t.nodes
-                .into_iter()
-                .filter_map(|n| {
-                    let settled = matches!(n.status, crate::model::NodeStatus::ReadyForTraffic | crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
-                    let ready = n.status == crate::model::NodeStatus::ReadyForTraffic;
-                    Some(MapNode { node_id: n.node_id, name: n.name, endpoint_id: n.endpoint_id?, transport_addr: n.transport_addr?, incarnation: n.incarnation_id?, settled, ready, data_dir: n.data_dir, admin_api_base: n.admin_api_base })
-                })
-                .collect())
-        }
         TopologySource::DurableMap(rows) => Ok(rows
             .iter()
             .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false, data_dir: None, admin_api_base: None })
             .collect()),
-        TopologySource::LocalNode { node, membership } => {
+        TopologySource::LocalNode { node, client, membership } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
+            let read = crate::topology_read::get_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership, None, None)
+                .await
+                .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
             membership.join_peers(vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
-            let floor = membership.book.staleness_floor();
-            let until = Instant::now() + floor;
-            loop {
-                let heard = membership.book.current(floor);
-                if heard.iter().any(|d| d.node.node_id == node.node_id) {
-                    return Ok(heard
-                        .into_iter()
-                        .map(|d| MapNode {
-                            settled: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
-                            ready: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
-                            data_dir: d.data_dir,
-                            admin_api_base: d.admin_api_base,
-                            node_id: d.node.node_id,
-                            name: d.node.name,
-                            endpoint_id: d.node.endpoint_id,
-                            transport_addr: d.node.transport_addr,
-                            incarnation: d.node.incarnation,
-                        })
-                        .collect());
-                }
-                if Instant::now() >= until {
-                    return Err(format!("{} joined the channel but no digest of it arrived within {} ms", node.name, floor.as_millis()));
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
+            let Some(fabric) = fabric else {
+                return Err(format!("{} answered a topology read that does not name itself", node.name));
+            };
+            Ok(map_of_read(&read, &fabric))
         }
     }
 }
@@ -194,7 +188,7 @@ pub async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec
         }
     }
     if let Some(l) = &local {
-        match get_topology(TopologySource::LocalNode { node: l, membership: &ctx.membership }).await {
+        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, membership: &ctx.membership }).await {
             Ok(current) => {
                 // The local node's read is current: it replaces the map's entry for a name, and
                 // adds the names the map lacked.

@@ -14,7 +14,7 @@
 //! ```
 
 use crate::membership::{pack, Frame, MAX_FRAME};
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, MeshDigest};
+use rafka_mesh_entity::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -456,13 +456,14 @@ impl SnapshotReceiver {
         Moved::Desynced { mesh: mesh.to_string(), gap: if already { Gap::AlreadyDesynced } else { gap } }
     }
 
-    /// Install a top-up baseline: the complete snapshot the node's own primary published, resuming
-    /// the source. A baseline older than a version held from the same publisher moves nothing but
-    /// still ends the desynchronization: this node is at or past it.
-    pub fn install_baseline(&mut self, s: &SourceSnapshot) -> Taken {
-        match self.install(s.mesh.clone(), s.publisher.clone(), s.topology_version, 0, s.full()) {
+    /// One chunk of a topology read. Installs like [`SnapshotReceiver::take_chunk`]; a complete
+    /// snapshot older than a version held from the same publisher moves nothing but still ends the
+    /// source's desynchronization: this node is at or past it.
+    pub fn take_read_chunk(&mut self, c: Chunk) -> Taken {
+        let mesh = c.mesh.clone();
+        match self.take_chunk(c) {
             Taken::Refused(r @ Refusal::OlderThanHeld { .. }) => {
-                if let Some(h) = self.held.get_mut(&s.mesh) {
+                if let Some(h) = self.held.get_mut(&mesh) {
                     h.desynced = None;
                 }
                 Taken::Refused(r)

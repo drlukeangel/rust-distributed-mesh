@@ -38,7 +38,6 @@ use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
-use rafka_mesh_transport::entry::EntryAnswer;
 use rafka_mesh_transport::membership::{announce_leaving, gossip_interval, leave_linger_from_env, Backbone, DigestBook, Membership, LEAVE_EVERY};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tracing::Instrument;
@@ -651,13 +650,6 @@ pub async fn hydration_blocker(me: &PathName, accepted: &AcceptedStore, builds: 
     }
 }
 
-/// The pointed Build's attempt, as an entry answer carries it.
-#[derive(serde::Deserialize)]
-struct EntryBuildFloor {
-    build_id: crate::build::BuildId,
-    attempt: u32,
-}
-
 /// The order a whole-mesh retire takes `members`: every ordinary member, then the admin cohort,
 /// then `last_admin` (the mesh's admin primary) last, so a live admin of the mesh forwards every
 /// departure before the last one goes. Within a group, path order.
@@ -838,12 +830,7 @@ impl NodeObserver for MembershipObserver {
 /// What this admin answers an entry pull with.
 struct EntryState {
     name: PathName,
-    fabric: String,
-    fabric_id: FabricId,
     provider: ProviderKind,
-    records: Arc<Records>,
-    book: DigestBook,
-    digest: Arc<Mutex<MeshDigest>>,
     accepted: Arc<AcceptedStore>,
     builds: Arc<dyn BuildStateAdapter>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
@@ -851,18 +838,16 @@ struct EntryState {
 }
 
 impl EntryState {
-    /// What this admin holds now: the answer to a join.
-    async fn answer(&self) -> EntryAnswer {
+    /// What this admin holds now: the answer to a join (its control state and statuses; the
+    /// topology is read with `GetTopology`).
+    async fn answer(&self) -> crate::wire::JoinAnswer {
         let e = self;
-        let mut members = e.book.current(e.book.staleness_floor());
-        members.push(e.digest.lock().unwrap().clone());
-        let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
-        // The fabric control state a new admin hydrates before it may be Ready.
-        // The attempt the answering admin holds of the Build the pointer names: the floor
-        // a joiner's own copy of that Build's attempt facts must reach before it is Ready.
-        let build = e.accepted.current(&*e.builds).await.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt }));
-        let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held(), "build": build });
-        EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()), sources: e.membership.entry_sources() }
+        // The fabric control state a new admin hydrates before it may be Ready: the attempt the
+        // answering admin holds of the Build the pointer names is the floor a joiner's own copy
+        // of that Build's attempt facts must reach before it is Ready.
+        let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
+        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build };
+        crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) }
     }
 }
 
@@ -1777,10 +1762,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::default());
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
+    let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
     let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
-    let rpc_server = rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone())
+    let rpc_server = crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let iroh_router = IrohRouter::builder(endpoint.clone())
@@ -1833,7 +1819,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The process's one Node RPC client, built before the join: the join is its first call, and
     // the membership feed starts once the process holds a book.
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
-    let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
+    let mut pulled: Option<crate::wire::JoinAnswer> = None;
     if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
         // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
         // addresses it really bound, to the admin that deployed it.
@@ -1874,11 +1860,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     }
     let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
-        (None, Some(answer)) => serde_json::from_value::<Topology>(answer.topology.clone())
-            .ok()
-            .and_then(|t| t.meshes.into_iter().find(|m| m.name == cfg.mesh))
-            .and_then(|m| m.id)
-            .unwrap_or_else(MeshId::mint),
+        (None, Some(answer)) => return Err(format!("{name}: a launched admin takes its mesh's id from its launch, and this launch names none (joined {})", answer.served_by)),
         (None, None) => MeshId::mint(),
     };
     // Subscribe first, pull second: what changes during the pull arrives by
@@ -1934,17 +1916,19 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let policy = match &launched_anchor {
         Some(_) => {
             let answer = pulled.take().ok_or_else(|| format!("{name}: a launched admin joins its launcher before it takes its entry, and its launch names no launcher or runtime to join with"))?;
-            // Topology read from the maker: when the own mesh already has nodes, this admin is
-            // entering an existing mesh (recovery); a mesh's first birth finds none.
-            if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::Maker(&answer)).await {
-                entry_map = Some(("maker", map));
-            }
-            let topology: Topology =
-                serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the entry answer from {} holds no topology: {e}", answer.served_by))?;
+            // The topology: read from the same admin that took the join, installed per mesh only
+            // when its snapshot is complete (`GetTopology`, op `0x1E`).
+            let launcher = cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()).ok_or_else(|| format!("{name}: a launched admin joined without a launcher"))?;
+            let read = crate::topology_read::get_topology(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None)
+                .await
+                .map_err(|e| format!("the topology read from the launching admin {} failed: {e}", launcher.name))?;
+            // When the own mesh already has nodes, this admin is entering an existing mesh
+            // (recovery); a mesh's first birth finds none.
+            entry_map = Some(("maker", crate::reenter::map_of_read(&read, &cfg.fabric_id)));
             let mut mesh_peers = Vec::new();
             let mut admins = Vec::new();
-            for d in answer.members.into_iter().filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
-                if let Some(a) = rafka_mesh_transport::membership::gossip_addr(&d) {
+            for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
+                if let Some(a) = rafka_mesh_transport::membership::gossip_addr(d) {
                     if d.node.name.mesh == cfg.mesh {
                         mesh_peers.push(a.clone());
                     }
@@ -1952,34 +1936,26 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                         admins.push(a);
                     }
                 }
-                membership.learn(d, "entry");
             }
             membership.learn_statuses(&answer.statuses);
             let _ = membership.join_peers(mesh_peers).await;
             backbone.join_admins(admins).await;
             // Hydrate `Fabric.build_id` from the launching admin; without it this admin stays
             // Pending (the Ready gate below). The Build it names arrives on the Build topic.
-            match answer.control.get("fabric").filter(|v| !v.is_null()).cloned().map(serde_json::from_value::<crate::fabric_storage::FabricRecord>) {
-                Some(Ok(r)) => accepted.learn(r, &*builds, &answer.served_by).await,
-                Some(Err(e)) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's Fabric record does not decode"),
-                None => {}
+            if let Some(r) = answer.control.fabric.clone() {
+                accepted.learn(r, &*builds, &answer.served_by).await;
             }
             // The attempt facts of the pointed Build this admin must hold before it is Ready.
-            if let Some(Ok(floor)) = answer.control.get("build").filter(|v| !v.is_null()).cloned().map(serde_json::from_value::<EntryBuildFloor>) {
+            if let Some(floor) = answer.control.build.clone() {
                 *entry_floor.lock().unwrap() = Some((floor.build_id, floor.attempt));
             }
             // A fabric shutdown in force: this admin comes up frozen.
-            if let Some(v) = answer.control.get("shutdown").filter(|v| !v.is_null()).cloned() {
-                match serde_json::from_value::<crate::fabric_storage::FabricShutdown>(v) {
-                    Ok(sd) => {
-                        shutdown_control.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
-                    }
-                    Err(e) => tracing::info!(served_by = %answer.served_by, error = %e, "the entry answer's fabric shutdown does not decode"),
-                }
+            if let Some(sd) = answer.control.shutdown.clone() {
+                shutdown_control.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
             }
             tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                 .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
-            FabricPolicy { provider: topology.fabric.provider }
+            FabricPolicy { provider: answer.control.provider }
         }
         None => {
             // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
@@ -2283,12 +2259,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     }
     let _ = entry.set(EntryState {
         name: name.clone(),
-        fabric: cfg.fabric.clone(),
-        fabric_id: cfg.fabric_id.clone(),
         provider: policy.provider,
-        records: records.clone(),
-        book: book.clone(),
-        digest: digest.clone(),
         accepted: accepted.clone(),
         builds: builds_dyn.clone(),
         shutdown: shutdown_control.clone(),
@@ -2297,7 +2268,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The join door: this admin verifies a node's digest against what it deployed, installs the
     // address for its key and answers what it holds.
     {
-        let (st, resolver, m, book, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.book.clone(), membership.clone());
+        let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.clone());
         let door = Arc::new(crate::join::JoinDoor {
             me: name.clone(),
             joins: joins.clone(),
@@ -2305,8 +2276,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 let st = st.clone();
                 Box::pin(async move {
                     match st.get() {
-                        Some(e) => e.answer().await,
-                        None => EntryAnswer::default(),
+                        Some(e) => Some(e.answer().await),
+                        None => None,
                     }
                 })
             }),
@@ -2322,10 +2293,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
                 }
             }),
-            is_member: Arc::new(move |d: &MeshDigest| book.get(d.node.node_id.as_str()).is_some_and(|(held, _)| held.node.incarnation == d.node.incarnation)),
             primary: Arc::new(move || topo.mesh_primary().map(|p| p.node.name.to_string())),
         });
         let _ = join_slot.set(door);
+        // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
+        let own = digest.clone();
+        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()))));
     }
     // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
     // a blind put (a successor fabric primary proves an exit from it).

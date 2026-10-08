@@ -153,6 +153,15 @@ fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
     }
 }
 
+/// A top-up baseline as a topology read delivers it: the chunks of one snapshot.
+fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
+    let mut last = None;
+    for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("read")) {
+        last = Some(rx.take_read_chunk(chunk_of(&f)));
+    }
+    last.expect("a snapshot has at least one chunk")
+}
+
 fn installed(t: Taken) -> rafka_mesh_transport::snapshot::Install {
     match t {
         Taken::Installed(i) => *i,
@@ -352,7 +361,7 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     assert!(matches!(rx.take_delta("mesh3", &p3, 1, 2, &d78), Moved::Desynced { gap: Gap::NoBaseline, .. }));
     // The top-up: the primary's baseline is what it last PUBLISHED, which may lag what it holds.
     let published_baseline = SourceSnapshot { mesh: "mesh2".into(), publisher: p.clone(), topology_version: 9, digests: f8.digests(), in_flight: vec![], departed: vec![] };
-    let r = installed(rx.install_baseline(&published_baseline));
+    let r = installed(read_baseline(&mut rx, &published_baseline));
     assert!(r.resumed);
     assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 9)));
     let mut f10 = changed_member.clone();
@@ -385,7 +394,7 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     }
     assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "the held version stands while a chunk is missing");
     let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 8, digests: big.digests(8), in_flight: vec![], departed: vec![] };
-    let r = installed(rx.install_baseline(&top_up));
+    let r = installed(read_baseline(&mut rx, &top_up));
     assert_eq!(r.topology_version, 8);
     assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)), "the top-up completed what the lost chunk left incomplete");
     let late = rx.take_chunk(chunk_of(&lossy[1]));

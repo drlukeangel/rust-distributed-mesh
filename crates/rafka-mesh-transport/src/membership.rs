@@ -970,6 +970,9 @@ enum Side {
     Backbone,
     /// This node's own Mesh channel: the other sources as its primary forwards them, no loads.
     MeshChannel,
+    /// A topology read (Node RPC op `0x1E`) from a node that holds the topology: installed into
+    /// the Mesh channel's receiver, every member recorded as heard through the node read.
+    Read,
 }
 
 impl Side {
@@ -977,6 +980,7 @@ impl Side {
         match self {
             Side::Backbone => "backbone",
             Side::MeshChannel => "mesh-channel",
+            Side::Read => "topology-read",
         }
     }
 
@@ -984,6 +988,7 @@ impl Side {
         match self {
             Side::Backbone => "backbone",
             Side::MeshChannel => "forwarded",
+            Side::Read => "read",
         }
     }
 }
@@ -1168,7 +1173,7 @@ impl View {
     fn receiver(&self, side: Side) -> &Arc<Mutex<SnapshotReceiver>> {
         match side {
             Side::Backbone => &self.backbone_rx,
-            Side::MeshChannel => &self.mesh_rx,
+            Side::MeshChannel | Side::Read => &self.mesh_rx,
         }
     }
 
@@ -1208,6 +1213,11 @@ impl View {
         }
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
+            // A read carries this node's own digest as the node read holds it: this node's own
+            // book is the authority on itself.
+            if side == Side::Read && d.node.name.to_string() == self.node {
+                continue;
+            }
             // A member of this node's own mesh is heard directly on its mesh channel: an
             // aggregate copy is never "heard only through forwarded topology", so it earns no
             // forwarded grace (gossip.md §3.2), and the Mesh channel's copy of it adds nothing.
@@ -1217,6 +1227,11 @@ impl View {
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
                 (Side::MeshChannel, true) => false,
                 (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
+                // A read installs topology, the rule `learn` applies to what an entry answer
+                // names: an own-mesh member is heard directly and ages from that, a peer mesh's
+                // member is topology and refreshes no liveness.
+                (Side::Read, true) => self.book.record_forwarded(d.clone()),
+                (Side::Read, false) => self.book.record_topology(d.clone()),
             };
             if taken {
                 self.note(&d, side.via());
@@ -1439,10 +1454,9 @@ impl Membership {
         self.mesh.broadcast(f).await
     }
 
-    /// What a node asks of its Mesh's primary to resume the cross-Mesh projection (gossip.md
-    /// §3.3): the baselines this node serves in an entry answer. While it is the Mesh's primary
-    /// that is what it last published into its Mesh; otherwise what it holds from its primary.
-    pub fn entry_sources(&self) -> Vec<SourceSnapshot> {
+    /// The baselines of the source meshes this node holds: while it is its Mesh's primary, what
+    /// it last published into its Mesh; otherwise what it holds from its primary.
+    fn held_sources(&self) -> Vec<SourceSnapshot> {
         if self.view.primary.load(Ordering::Relaxed) {
             self.view.forwarder.lock().unwrap().snapshots()
         } else {
@@ -1450,18 +1464,45 @@ impl Membership {
         }
     }
 
-    /// Hold the baselines an entry answer carried (a join, or a top-up): each source installs
-    /// atomically and resumes, recording its publisher and version.
-    pub fn learn_sources(&self, sources: &[SourceSnapshot]) -> Vec<(String, u64)> {
-        let mut installed = Vec::new();
-        for s in sources {
-            let taken = self.view.mesh_rx.lock().unwrap().install_baseline(s);
-            if let Taken::Installed(i) = taken {
-                self.view.installed(&i, &self.fabric, Side::MeshChannel);
-                installed.push((i.mesh.clone(), i.topology_version));
+    /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it). A
+    /// remote mesh is the source this node holds, with the publisher and version it holds it at.
+    /// This node's own mesh is its members as its book hears them, `own` among them, at the
+    /// publisher and version its primary last put into the mesh. `Err` names why the node holds
+    /// no topology yet.
+    pub fn held_topology(&self, own: &MeshDigest) -> Result<Vec<SourceSnapshot>, String> {
+        let mut held = self.held_sources();
+        let mesh = &self.view.mesh;
+        let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) else {
+            return Err(format!("{}: holds no source version of its own mesh {mesh} yet (its mesh primary has not put one into the mesh)", self.view.node));
+        };
+        let mut members: Vec<MeshDigest> = self
+            .book
+            .current(self.book.staleness_floor())
+            .into_iter()
+            .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
+            .collect();
+        members.push(own.clone());
+        members.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
+        let (in_flight, departed) = self.book.overlays_of(mesh);
+        at.digests = members;
+        at.in_flight = in_flight;
+        at.departed = departed;
+        Ok(held)
+    }
+
+    /// One chunk of a topology read from another node. The mesh installs atomically once every
+    /// chunk of its snapshot is held, through the same receiver the Mesh channel's snapshots
+    /// install into; a source it ends the desynchronization of is resumed. Every member the
+    /// snapshot carries is held as heard and its location registered.
+    pub fn take_read_chunk(&self, chunk: Chunk) -> Taken {
+        let taken = self.view.mesh_rx.lock().unwrap().take_read_chunk(chunk);
+        if let Taken::Installed(i) = &taken {
+            self.view.installed(i, &self.fabric, Side::Read);
+            for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
+                self.mesh.register(&d);
             }
         }
-        installed
+        taken
     }
 
     /// The sources of the Mesh channel that are desynchronized now, with the gap that did it.
@@ -1486,10 +1527,10 @@ impl Membership {
     }
 
     /// Resume desynchronized sources from this Mesh's own primary (gossip.md §3.3): when a delta
-    /// did not follow what is held, the node pulls the current full fabric topology from its own
-    /// mesh-primary through the entry service, installs it atomically, and resumes. Never the
-    /// remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or held for
-    /// later; the next delta or full from the primary signals or resumes it again.
+    /// did not follow what is held, the node reads the current topology of each desynchronized
+    /// mesh from its own mesh-primary (Node RPC op `0x1E`), installs it atomically, and resumes.
+    /// Never the remote Mesh, never over gossip. One attempt per gap signal: nothing is retried or
+    /// held for later; the next delta or full from the primary signals or resumes it again.
     pub fn spawn_top_up(&self, fetch: TopUpFetch) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
         tokio::spawn(async move {
@@ -1514,9 +1555,9 @@ impl Membership {
                 .in_scope(|| tracing::info!("no Ready node-admin of this Mesh is held: nothing to top up from"));
             return;
         };
-        match fetch(primary.clone()).await {
-            Ok(answer) => {
-                let installed = self.learn_sources(&answer.sources);
+        let names: Vec<String> = gaps.iter().map(|(m, _)| m.clone()).collect();
+        match fetch(self.clone(), primary.clone(), names).await {
+            Ok(done) => {
                 let still: Vec<String> = self.desynced_sources().into_iter().map(|(m, _)| m).collect();
                 tracing::info_span!(
                     "rdm.mesh.entry.update.via-top-up",
@@ -1524,9 +1565,8 @@ impl Membership {
                     meshes = %meshes,
                     reasons = %reasons,
                     mesh_primary = %primary.node.name,
-                    served_by = %answer.served_by,
-                    sources = answer.sources.len(),
-                    installed = installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
+                    served_by = %primary.node.name,
+                    installed = done.installed.iter().map(|(m, v)| format!("{m}@{v}")).collect::<Vec<_>>().join(","),
                     still_desynced = still.join(","),
                 )
                 .in_scope(|| tracing::info!("topped up from this Mesh's own primary"));
@@ -1558,9 +1598,17 @@ impl Membership {
     }
 }
 
-/// Asks a mesh primary for its answer (the join reply, over Node RPC): membership holds no
-/// Node RPC client, the process composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(MeshDigest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::entry::EntryAnswer, String>> + Send>> + Send + Sync>;
+/// What a top-up read installed.
+#[derive(Debug, Clone, Default)]
+pub struct TopUpDone {
+    /// `(mesh, topology_version)` of each mesh installed.
+    pub installed: Vec<(String, u64)>,
+}
+
+/// Reads the topology of `meshes` from a mesh primary and installs it into the given membership
+/// (the topology read, over Node RPC): membership holds no Node RPC client, the process
+/// composition hands it one.
+pub type TopUpFetch = std::sync::Arc<dyn Fn(Membership, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 /// A node-admin's place on the backbone. What it hears there it holds; while
 /// it is its mesh's primary it publishes its mesh's members and forwards the

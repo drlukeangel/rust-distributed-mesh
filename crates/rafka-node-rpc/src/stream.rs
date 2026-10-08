@@ -356,12 +356,26 @@ impl NodeRpcClient {
             Ok(p) => p,
             Err(e) => return Err((PreCommit::begin(P::OP).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
         };
-        match self.open::<P::Reply, _>(target, P::OP, crate::client::Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)).await {
-            Phase::Done(out, evidence) => Err((out, evidence)),
-            Phase::Committed(Opened { recv, evidence, reply_deadline, .. }) => Ok((
-                ReplyStream { recv, buf: Vec::new(), order: FrameOrder::new(), deadline: reply_deadline, done: false, _p: PhantomData },
-                evidence,
-            )),
+        // The caller's side of the call that opens the stream: its outcome and how long the open took.
+        let span = tracing::info_span!("rdm.node_rpc.request.update.via-call", target = ?target, op = P::OP, outcome = tracing::field::Empty, elapsed_ms = tracing::field::Empty);
+        let started = tokio::time::Instant::now();
+        let opened = tracing::Instrument::instrument(
+            self.open::<P::Reply, _>(target, P::OP, crate::client::Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)),
+            span.clone(),
+        )
+        .await;
+        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        match opened {
+            Phase::Done(out, evidence) => {
+                span.record("outcome", out.name());
+                span.in_scope(|| tracing::info!("node rpc stream call finished"));
+                Err((out, evidence))
+            }
+            Phase::Committed(Opened { recv, evidence, reply_deadline, .. }) => {
+                span.record("outcome", "stream-open");
+                span.in_scope(|| tracing::info!("node rpc stream call opened"));
+                Ok((ReplyStream { recv, buf: Vec::new(), order: FrameOrder::new(), deadline: reply_deadline, done: false, _p: PhantomData }, evidence))
+            }
         }
     }
 }

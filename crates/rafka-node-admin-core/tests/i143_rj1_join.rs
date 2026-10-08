@@ -9,7 +9,6 @@
 //! reported for its key and completes the wait for the node's own report.
 
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rafka_mesh_transport::entry::EntryAnswer;
 use rafka_node_admin_core::join::{Deployed, JoinDoor, Joins};
 use rafka_node_rpc_contract::join::{JoinReply, JoinRequest};
 use serde_json::{json, Value};
@@ -137,20 +136,14 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             joins: joins.clone(),
             answer: Arc::new(|| {
                 Box::pin(async {
-                    EntryAnswer {
+                    Some(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        topology: serde_json::to_value(rafka_node_admin_core::topology::Topology {
-                            fabric: rafka_node_admin_core::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic, provider: rafka_node_admin_core::model::ProviderKind::Process },
-                            meshes: vec![],
-                            nodes: vec![],
-                        })
-                        .unwrap(),
-                        ..Default::default()
-                    }
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None },
+                        statuses: vec![],
+                    })
                 })
             }),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
-            is_member: Arc::new(|_| false),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
         };
         let dep = deployed();

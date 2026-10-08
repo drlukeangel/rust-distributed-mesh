@@ -224,33 +224,47 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
-    let book = membership.book.clone();
     let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
     let join_slot: rafka_node_admin_core::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
-        let (answer_book, member_book, learner) = (book.clone(), book.clone(), membership.clone());
+        let learner = membership.clone();
         Arc::new(rafka_node_admin_core::join::JoinDoor {
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new(move || {
-                let book = answer_book.clone();
                 Box::pin(async move {
-                    let topology = rafka_node_admin_core::topology::Topology {
-                        fabric: rafka_node_admin_core::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic, provider: rafka_node_admin_core::model::ProviderKind::Process },
-                        meshes: vec![],
-                        nodes: vec![],
-                    };
-                    rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), topology: serde_json::to_value(&topology).unwrap(), members: book.current(book.staleness_floor()), ..Default::default() }
+                    Some(rafka_node_admin_core::wire::JoinAnswer {
+                        served_by: "mesh1.admin.1".into(),
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None },
+                        statuses: vec![],
+                    })
                 })
             }),
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
-            is_member: Arc::new(move |d| member_book.get(d.node.node_id.as_str()).is_some_and(|(h, _)| h.node.incarnation == d.node.incarnation)),
             primary: Arc::new(|| None),
         })
     };
     let _ = join_slot.set(door);
-    let rpc_server = rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot)
+    let own_digest_slot: Arc<std::sync::OnceLock<rafka_mesh_entity::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
+    // The admin side holds its own mesh at a version its primary put into the mesh, as a running
+    // admin does; it serves the topology it holds like every node.
+    let admin_publisher = rafka_mesh_entity::PublisherId { node: "mesh1.admin.1".into(), incarnation: admin_incarnation.clone() };
+    let held = rafka_mesh_transport::snapshot::Chunk {
+        mesh: "mesh1".into(),
+        publisher: admin_publisher,
+        forwarded_by: Some("topology-read".into()),
+        topology_version: 1,
+        snapshot_id: 1,
+        chunk_index: 0,
+        chunk_count: 1,
+        digests: vec![],
+        in_flight: vec![],
+        departed: vec![],
+    };
+    assert!(matches!(membership.take_read_chunk(held), rafka_mesh_transport::snapshot::Taken::Installed(_)));
+    let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    let rpc_server = rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
@@ -280,6 +294,8 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
         extra: Default::default(),
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    let _ = own_digest_slot.set(admin_digest.clone());
+    let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")))));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver },
