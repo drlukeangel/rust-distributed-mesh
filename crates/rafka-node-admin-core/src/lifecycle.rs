@@ -19,6 +19,7 @@
 //! new one.
 
 use async_trait::async_trait;
+use tracing::Instrument as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
@@ -297,10 +298,7 @@ impl LifecycleTransitionPipeline {
                     attempt,
                     outcome = tracing::field::Empty,
                 );
-                let r = {
-                    let _g = span.enter();
-                    hook.run(&ctx).await
-                };
+                let r = hook.run(&ctx).instrument(span.clone()).await;
                 let outcome = match &r {
                     Ok(()) => HookOutcome::Complete,
                     Err(e) => HookOutcome::Failed { reason: e.clone() },
@@ -343,27 +341,33 @@ impl LifecycleTransitionPipeline {
             from = ?t.key.from,
             to = ?t.key.to,
         );
-        let _g = span.enter();
-        let draining = t.key.to == LifecycleState::Draining;
-        let pre = if draining { [HookPhase::BeforeEligibility, HookPhase::BeforeDrain].as_slice() } else { &[HookPhase::BeforeEligibility] };
-        for &phase in pre {
-            if let Err((hook_id, reason)) = self.run_phase(&t, phase).await {
-                return TransitionResult::HookFailed { hook_id, phase, reason };
+        // The span is entered by the future, on each poll, never by a guard held across an await: a
+        // guard stays entered on the worker thread while the task is parked, and the next span any
+        // task creates there takes the closed span as its parent.
+        async move {
+            let draining = t.key.to == LifecycleState::Draining;
+            let pre = if draining { [HookPhase::BeforeEligibility, HookPhase::BeforeDrain].as_slice() } else { &[HookPhase::BeforeEligibility] };
+            for &phase in pre {
+                if let Err((hook_id, reason)) = self.run_phase(&t, phase).await {
+                    return TransitionResult::HookFailed { hook_id, phase, reason };
+                }
             }
+            if let Err(reason) = eligible() {
+                return TransitionResult::NotEligible { reason };
+            }
+            if let Err((hook_id, reason)) = self.run_phase(&t, HookPhase::AfterEligibilityBeforeCommit).await {
+                return TransitionResult::HookFailed { hook_id, phase: HookPhase::AfterEligibilityBeforeCommit, reason };
+            }
+            commit();
+            let post = if draining { [HookPhase::AfterTransition, HookPhase::AfterDrain].as_slice() } else { &[HookPhase::AfterTransition] };
+            for &phase in post {
+                // The state is committed; a failing post hook leaves a Failed receipt to retry, not a lie about state.
+                let _ = self.run_phase(&t, phase).await;
+            }
+            TransitionResult::Committed
         }
-        if let Err(reason) = eligible() {
-            return TransitionResult::NotEligible { reason };
-        }
-        if let Err((hook_id, reason)) = self.run_phase(&t, HookPhase::AfterEligibilityBeforeCommit).await {
-            return TransitionResult::HookFailed { hook_id, phase: HookPhase::AfterEligibilityBeforeCommit, reason };
-        }
-        commit();
-        let post = if draining { [HookPhase::AfterTransition, HookPhase::AfterDrain].as_slice() } else { &[HookPhase::AfterTransition] };
-        for &phase in post {
-            // The state is committed; a failing post hook leaves a Failed receipt to retry, not a lie about state.
-            let _ = self.run_phase(&t, phase).await;
-        }
-        TransitionResult::Committed
+        .instrument(span)
+        .await
     }
 }
 
