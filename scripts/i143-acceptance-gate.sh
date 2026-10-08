@@ -107,6 +107,8 @@ if [ "$LAYER" = container ] || [ "$LAYER" = fast-container ]; then
     fi
 fi
 
+TMPD=$(mktemp -d)
+trap 'rm -rf "$TMPD"' EXIT
 CELLS_JSON="[]"
 FAILED=0
 for i in $(seq 0 $((NCELLS - 1))); do
@@ -238,14 +240,22 @@ for i in $(seq 0 $((NCELLS - 1))); do
         h=$(sha256sum "$f" | cut -d' ' -f1)
         artifacts=$(echo "$artifacts" | jq --arg p "$f" --arg h "$h" '. + {($p): $h}')
     done
-    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --argjson artifacts "$artifacts" \
-        '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts}]')
+    # The artifact map of a twenty-node cell is far past the 128 KiB a single argument can carry
+    # (MAX_ARG_STRLEN): it goes to jq as a file, never as an argument.
+    echo "$artifacts" > "$TMPD/artifacts.json"
+    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --slurpfile artifacts "$TMPD/artifacts.json" \
+        '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts[0]}]')
     echo "i143-acceptance-gate: $JOB/$cell $outcome"
 done
 FINISHED=$(now)
 OUTCOME=ok; [ "$FAILED" -eq 0 ] || OUTCOME=refused
+echo "$CELLS_JSON" > "$TMPD/cells.json"
 jq -n --arg job "$JOB" --argjson issue "$ISSUE" --arg layer "$LAYER" --arg sha "$SHA" --argjson dirty "$DIRTY" --arg started "$STARTED" --arg finished "$FINISHED" \
-      --arg outcome "$OUTCOME" --argjson cells "$CELLS_JSON" \
-      '{job:$job, issue:$issue, layer:$layer, source_sha:$sha, dirty_paths:$dirty, started:$started, finished:$finished, outcome:$outcome, cells:$cells}' > "$RECEIPT"
+      --arg outcome "$OUTCOME" --slurpfile cells "$TMPD/cells.json" \
+      '{job:$job, issue:$issue, layer:$layer, source_sha:$sha, dirty_paths:$dirty, started:$started, finished:$finished, outcome:$outcome, cells:$cells[0]}' > "$RECEIPT"
+if [ ! -s "$RECEIPT" ] || ! jq -e . "$RECEIPT" > /dev/null 2>&1; then
+    refuse "$JOB: the receipt $RECEIPT was not written"
+    exit 1
+fi
 echo "i143-acceptance-gate: $JOB $OUTCOME ($((NCELLS - FAILED))/$NCELLS cells); receipt $RECEIPT"
 [ "$FAILED" -eq 0 ]
