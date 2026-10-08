@@ -1998,7 +1998,11 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
     got_updates.sort();
     want_updates.sort();
     assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts the cell sent");
-    let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
+    // The formation request may be refused once before the Day-0 admin holds the seat: the harness's
+    // topology request waits that out (`Estate::topology_request`); those are recorded, not counted
+    // against the probes. Every rejected DELETE is a probe answer or a refusal the cell asked for.
+    let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
+    let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
     let probe_answers: usize = a.probes.iter().map(|p| p["answers"].as_array().unwrap().len()).sum();
     assert_eq!(rejected_creates, probe_answers + a.refused_writes.len(), "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
     let mut rounds = Vec::new();
@@ -2023,7 +2027,7 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
         true,
         json!({"accepted_creates": got_creates.len(), "accepted_attempt_opens": got_updates.len(), "probe_rounds": rounds.len()}),
     );
-    json!({"accepted_creates": got_creates, "accepted_attempt_opens": got_updates, "probe_rounds": rounds})
+    json!({"accepted_creates": got_creates, "accepted_attempt_opens": got_updates, "probe_rounds": rounds, "formation_requests_refused_before_the_seat_was_held": formation_rejections})
 }
 
 /// Elections as the spans announce them: the order of every hand-off, the surviving admin's seat after
