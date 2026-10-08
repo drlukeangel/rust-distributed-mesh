@@ -255,6 +255,16 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     for (name, _) in &admins {
         assert!(unheard.contains(name), "{name} stopped hearing the peer mesh: {silent:?}");
     }
+    // R-G1 (gossip.md §3.3): the absence of a differential is never a refresh. While the peer mesh
+    // is unheard, no primary puts any forwarded frame about it into its mesh: no timer full, no
+    // delta, and no admin's coverage of the peer mesh is renewed by a forwarded word.
+    let forwarded: Vec<(String, String)> = ["rdm.mesh.membership.update.via-forwarded-full", "rdm.mesh.membership.update.via-delta"]
+        .iter()
+        .flat_map(|n| named(&spans, n))
+        .filter(|sp| at(sp) >= cut_at && at(sp) <= held)
+        .map(|sp| (s(&sp["name"]), attr(sp, "node")))
+        .collect();
+    assert!(forwarded.is_empty(), "no forwarded full or delta refreshed the unheard peer mesh during the cut: {forwarded:?}");
     // No death in any view.
     let seen_cut1 = statuses_seen.lock().unwrap().clone();
     let dead: Vec<&String> = seen_cut1.iter().filter(|(_, st)| st.contains("dead")).map(|(k, _)| k).collect();
