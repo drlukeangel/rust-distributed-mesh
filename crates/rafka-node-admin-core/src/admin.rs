@@ -1068,6 +1068,16 @@ impl AdminRunner {
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
+        // The provider proved the birth exited. A restart's next birth keeps the key and binds a
+        // port the operating system assigns, so this endpoint holds no path to the key until that
+        // birth reports one (R-I1's replacement, with no address left).
+        if kind == RetireKind::Restart {
+            if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
+                ep.replace_direct_addrs(key, []).await;
+                tracing::info_span!("rdm.node_admin.node.update.via-restart-paths-retired", node = %node, endpoint = %key.fmt_short())
+                    .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
+            }
+        }
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
     }

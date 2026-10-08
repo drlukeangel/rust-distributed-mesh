@@ -17,6 +17,7 @@ use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
 use rafka_node_rpc_contract::outcome::{MalformedKind, RpcOutcome};
 use std::collections::HashMap;
+use tracing::Instrument as _;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -157,7 +158,10 @@ impl JoinDoor {
             served_by = %self.me,
             outcome = tracing::field::Empty,
         );
-        let _in = span.enter();
+        self.decide(peer, d, span.clone()).instrument(span).await
+    }
+
+    async fn decide(&self, peer: EndpointId, d: MeshDigest, span: tracing::Span) -> JoinReply {
         if peer != d.node.endpoint_id {
             span.record("outcome", "unauthorized");
             return JoinReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not the endpoint {} the digest of {} names", self.me, peer.0, d.node.endpoint_id.0, d.node.name) };

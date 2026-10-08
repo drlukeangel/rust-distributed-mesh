@@ -933,6 +933,14 @@ impl DeploymentPipeline<'_> {
             .await?;
         // What this admin deployed, held before the node can report: its `JoinNode` is verified
         // against it, and the address it reports is the one published for the birth.
+        // The deployment is held only while this create runs, however it ends.
+        struct Forget<'j>(&'j Joins, NodeId);
+        impl Drop for Forget<'_> {
+            fn drop(&mut self) {
+                self.0.forget(&self.1);
+            }
+        }
+        let _forget = Forget(self.joins, id.node_id.clone());
         let reported = match handle.fact() {
             Some(runtime) => Some(self.joins.expect(Deployed {
                 name: req.node.clone(),
@@ -1099,7 +1107,6 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
-        self.joins.forget(&id.node_id);
         Ok(Created { node, handle })
     }
 
