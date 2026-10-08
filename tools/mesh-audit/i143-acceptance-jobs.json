@@ -145,15 +145,15 @@
         }
       ]
     },
-    "i143-2892-chaos-process": {
+    "i143-2892-process": {
       "issue": 2892,
       "layer": "process",
       "cells": [
         {
           "name": "surviving_admins_reproduce_primary_loss_with_complete_evidence",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2892.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rafka-test-scenario --test i143_acceptance_2892 surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
-          "dir": "target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2892/process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rafka-test-scenario --test i143_acceptance_2892 surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
+          "dir": "target/i143-acceptance/2892/process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
         }
       ]
     }

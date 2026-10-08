@@ -1,5 +1,5 @@
 //! i143 acceptance (rafka-v2 #2892, finding 2), CHAOS-PROCESS layer: run by
-//! `scripts/i143-acceptance-gate.sh i143-2892-chaos-process`, which exports `I143_ACCEPTANCE_DIR`
+//! `scripts/i143-acceptance-gate.sh i143-2892-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the
 //! estate's manifest and every process's spans land under it, feature `i143-2892`, test the
 //! cell's name).
@@ -35,7 +35,7 @@ fn owner() -> Owner {
 fn acceptance_dir() -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
         Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2892/chaos-process").join(CELL),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2892/process").join(CELL),
     }
 }
 
