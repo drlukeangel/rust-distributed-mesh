@@ -195,6 +195,7 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/fabric_builds.rs",
     "crates/rafka-node-admin-core/src/wire.rs",
     "crates/rafka-node-admin-core/src/join.rs",
+    "crates/rafka-node-admin-core/src/topology_read.rs",
     "crates/rafka-mesh-entity/src/wire.rs",
     "crates/rafka-node-rpc-contract/src",
     "crates/rafka-node-rpc/src",
@@ -226,6 +227,9 @@ pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "admin-ui/", "cli/", "gatew
 /// The join (`JoinNode`, 0x1D): its serve and call sites, and the cell that proves its postcard shape.
 pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
+/// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
+pub const TOPOLOGY_SOURCE: &str = "crates/rafka-node-admin-core/src/topology_read.rs";
+pub const TOPOLOGY_CELLS: &str = "crates/rafka-node-rpc-contract/tests/topology_wire.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -605,6 +609,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rafka_mesh_transport::wire::encode", "rafka_mesh_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["WireDigest::from", "crate::wire::answer_to_wire", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
+            require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "WireDigest::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
+            require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_eleven_variant_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
