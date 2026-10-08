@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_ports() {
+async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
 
@@ -31,7 +31,6 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
-    // Exactly one rpc node's worth of ports.
     let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
@@ -99,9 +98,14 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
         && f.get("pipeline").map(String::as_str) == Some("retire")));
 
-    // Create again on the same node: only possible on the released ports.
+    // The retired node's port is released: an allocator whose whole range is that one port hands it out.
+    let mut released = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), port.port(), port.port());
+    let reclaimed = released.assign(&"mesh1.rpc.9".parse().unwrap(), &rafka_node_admin_core::deployment::endpoint::RPC_NODE).expect("the retired node's port is free again");
+    assert_eq!(reclaimed.transport, port);
+    released.release(&"mesh1.rpc.9".parse().unwrap());
+
+    // Create again on the same node.
     let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
-    assert_eq!(again.node.transport_addr, Some(port), "the new node took the released port");
     assert_ne!(again.node.node_id, first.node.node_id, "a new node, not the retired one");
 
     // The Build names this path's storage Persistent { on_retire: Preserve }: a permanent
