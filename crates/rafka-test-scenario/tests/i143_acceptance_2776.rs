@@ -512,3 +512,246 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
 
     write_result(&dir, &json!({ "cell": cell, "provider": layer, "seed": SEED, "fault_schedule": a.fault_schedule, "run": a, "replay_equal": true, "replay_actions": b.actions(), "hosts": hosts }));
 }
+
+// ---- the acceptance runner's receipts ---------------------------------------------------------
+
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
+}
+
+static FIXTURES: AtomicUsize = AtomicUsize::new(0);
+
+/// A one-job registry under a private temp dir, run by the real runner.
+struct Fixture {
+    dir: PathBuf,
+    job: String,
+    section: &'static str,
+}
+
+impl Fixture {
+    /// `cell` is the registry cell object (its `dir` is filled in), `job` extra job-level fields.
+    fn new(tag: &str, layer: &str, section: &'static str, mut cell: Value, job_extra: Value) -> Self {
+        let n = FIXTURES.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("i143-2776-runner-{}-{n}-{tag}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = if section == "rshape_jobs" { format!("i143-rshape-fixture-{}-{n}-{tag}", std::process::id()) } else { format!("i143-fixture-{}-{n}-{tag}", std::process::id()) };
+        cell["name"] = json!("fixture_cell");
+        cell["source"] = json!(cell["source"].as_str().unwrap_or("none"));
+        cell["dir"] = json!(dir.join("cell").to_str().unwrap());
+        let mut j = json!({ "issue": 0, "layer": layer, "cells": [cell] });
+        for (k, v) in job_extra.as_object().into_iter().flatten() {
+            j[k] = v.clone();
+        }
+        let reg = json!({ "contract": "fixture", "jobs": if section == "jobs" { json!({ &job: j }) } else { json!({}) }, "rshape_jobs": if section == "rshape_jobs" { json!({ &job: j }) } else { json!({}) } });
+        std::fs::write(dir.join("jobs.json"), serde_json::to_vec_pretty(&reg).unwrap()).unwrap();
+        Self { dir, job, section }
+    }
+
+    fn receipt_path(&self) -> PathBuf {
+        let root = if self.section == "jobs" { "target/i143-acceptance/jobs" } else { "target/i143-rshape/jobs" };
+        workspace_root().join(root).join(format!("{}.json", self.job))
+    }
+
+    /// Run the runner on the job: (success, its whole output, the receipt if one was written).
+    fn run(&self) -> (bool, String, Option<Value>) {
+        let out = Command::new("bash")
+            .arg(workspace_root().join("scripts/i143-acceptance-gate.sh"))
+            .arg(&self.job)
+            .env("I143_ACCEPTANCE_JOBS", self.dir.join("jobs.json"))
+            .env("I143_ACCEPTANCE_SKIP_BUILD", "1")
+            .current_dir(workspace_root())
+            .output()
+            .expect("the runner starts");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let receipt = std::fs::read(self.receipt_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        (out.status.success(), text, receipt)
+    }
+
+    fn cell_dir(&self) -> PathBuf {
+        self.dir.join("cell")
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+        let _ = std::fs::remove_file(self.receipt_path());
+    }
+}
+
+const PASS: &str = "echo 'running 1 test'; echo 'test fixture_cell ... ok'; echo; echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'";
+const RESULT: &str = "echo '{\"observed\":true}' > \"$I143_ACCEPTANCE_DIR/result.json\"";
+const SPANS: &str = "echo '[]' > \"$I143_ACCEPTANCE_DIR/spans.json\"";
+
+fn cell(command: String) -> Value {
+    json!({ "command": command })
+}
+
+/// CONTRACT: the acceptance runner refuses, each by its own named rule and with the refused
+/// receipt written, a cell that matches no test, a cell left ignored, a cell that leaves no
+/// result or no span artifact, an estate that ran on another provider than its job's, a receipt
+/// whose source sha is not the tree's or whose artifact bytes changed, a consumer cell whose
+/// executables are not the build manifest's or whose estate ran on built-ins, a registry that
+/// declares a second generic runner or receipt schema, and a job id registered twice. A clean
+/// execution writes exactly the canonical receipt: job, issue, layer, source sha, dirty paths,
+/// start, finish, outcome and per cell its name, outcome, refusal and every artifact's sha256.
+#[test]
+fn acceptance_runner_rejects_invalid_job_execution_receipts() {
+    let cell_name = "acceptance_runner_rejects_invalid_job_execution_receipts";
+    let mut planted_results = Vec::new();
+    let mut plant = |name: &str, rule: &str, f: &Fixture| {
+        let (ok, text, receipt) = f.run();
+        assert!(!ok, "planted `{name}` was accepted:\n{text}");
+        assert!(text.contains("REFUSED") && text.contains(rule), "planted `{name}` is refused by `{rule}`:\n{text}");
+        planted_results.push(json!({ "planted": name, "rule": rule, "refused": true, "receipt_outcome": receipt.as_ref().map(|r| r["outcome"].clone()) }));
+        receipt
+    };
+
+    let f = Fixture::new("zero", "unit", "jobs", cell("echo 'running 0 tests'; echo; echo 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s'".into()), json!({}));
+    let r = plant("zero_match", "matched no test", &f).expect("a refused job still writes its receipt");
+    assert_eq!(r["outcome"], "refused");
+
+    let f = Fixture::new("skip", "unit", "jobs", cell("echo 'running 1 test'; echo 'test fixture_cell ... ignored'; echo; echo 'test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s'".into()), json!({}));
+    plant("ignored_cell", "was ignored", &f);
+
+    let f = Fixture::new("noresult", "unit", "jobs", cell(PASS.into()), json!({}));
+    plant("missing_result_artifact", "left no result.json", &f);
+
+    let f = Fixture::new("nospans", "unit", "jobs", cell(format!("{RESULT}; {PASS}")), json!({}));
+    plant("missing_span_artifact", "left no spans.json", &f);
+
+    let f = Fixture::new("noestate", "process", "jobs", cell(format!("{RESULT}; {PASS}")), json!({}));
+    plant("missing_estate_manifest", "left no estate manifest", &f);
+
+    let wrong_provider = format!("{RESULT}; mkdir -p \"$I143_ACCEPTANCE_DIR/estate/x\"; echo '{{\"provider\":\"container\"}}' > \"$I143_ACCEPTANCE_DIR/estate/x/manifest.json\"; {PASS}");
+    let f = Fixture::new("provider", "process", "jobs", cell(wrong_provider), json!({}));
+    plant("wrong_provider", "provider substitution", &f);
+
+    // A second generic runner / receipt schema: refused before any cell runs.
+    let f = Fixture::new("runner2", "unit", "jobs", cell(PASS.into()), json!({ "runner": "scripts/another-runner.sh" }));
+    plant("second_runner", "a second generic runner or receipt schema", &f);
+    let mut c = cell(PASS.into());
+    c["receipt_schema"] = json!("other.json");
+    let f = Fixture::new("schema2", "unit", "jobs", c, json!({}));
+    plant("second_receipt_schema", "a second generic runner or receipt schema", &f);
+
+    // A job id registered in both namespaces.
+    let f = Fixture::new("dup", "unit", "jobs", cell(PASS.into()), json!({}));
+    {
+        let mut reg: Value = serde_json::from_slice(&std::fs::read(f.dir.join("jobs.json")).unwrap()).unwrap();
+        reg["rshape_jobs"][&f.job] = reg["jobs"][&f.job].clone();
+        std::fs::write(f.dir.join("jobs.json"), serde_json::to_vec(&reg).unwrap()).unwrap();
+    }
+    plant("duplicate_job_id", "more than one place", &f);
+
+    // An external consumer cell: the executables are the build manifest's, and the estate ran on them.
+    let stage = std::env::temp_dir().join(format!("i143-2776-consumer-{}", std::process::id()));
+    std::fs::create_dir_all(&stage).unwrap();
+    std::fs::write(stage.join("rshape-x"), "binary").unwrap();
+    let want = sha256_file(&stage.join("rshape-x")).unwrap();
+    let manifest = |hash: &str| {
+        let p = stage.join("build-manifest.json");
+        std::fs::write(&p, json!({ "candidate_sha": "c", "binaries": { "rshape-x": hash } }).to_string()).unwrap();
+        p
+    };
+    let consumer_cmd = |bin: &Path, estate_mode: &str| {
+        let script = stage.join(format!("cell-{estate_mode}.sh"));
+        std::fs::write(
+            &script,
+            format!("{RESULT}\nmkdir -p \"$I143_ACCEPTANCE_DIR/estate/x\"\necho '{{\"provider\":\"process\",\"executable_bindings\":{{\"mode\":\"{estate_mode}\"}}}}' > \"$I143_ACCEPTANCE_DIR/estate/x/manifest.json\"\n{PASS}\n"),
+        )
+        .unwrap();
+        format!("RDM_RSHAPE_CONSUMER_BIN_DIR={} bash {}", bin.display(), script.display())
+    };
+    let mut c = cell(consumer_cmd(&stage, "explicit"));
+    c["consumer_manifest"] = json!(stage.join("absent-manifest.json").to_str().unwrap());
+    let f = Fixture::new("cmissing", "process", "rshape_jobs", c, json!({}));
+    plant("consumer_manifest_missing", "build manifest", &f);
+
+    let mut c = cell(consumer_cmd(&stage, "explicit"));
+    c["consumer_manifest"] = json!(manifest(&"0".repeat(64)).to_str().unwrap());
+    let f = Fixture::new("chash", "process", "rshape_jobs", c, json!({}));
+    plant("consumer_binary_hash_differs_from_build_manifest", "hashes to", &f);
+
+    let mut c = cell(consumer_cmd(&stage, "built-in"));
+    c["consumer_manifest"] = json!(manifest(&want).to_str().unwrap());
+    let f = Fixture::new("cbuiltin", "process", "rshape_jobs", c, json!({}));
+    plant("consumer_cell_estate_ran_on_built_ins", "built-in substitution", &f);
+
+    // The control: the same consumer cell with true executables and an explicit estate passes.
+    let mut c = cell(consumer_cmd(&stage, "explicit"));
+    c["consumer_manifest"] = json!(manifest(&want).to_str().unwrap());
+    let f = Fixture::new("cclean", "process", "rshape_jobs", c, json!({}));
+    let (ok, text, _) = f.run();
+    assert!(ok, "a consumer cell on the manifest's executables with explicit bindings passes:\n{text}");
+
+    // The clean job in each namespace, and verification of its receipt.
+    let head = candidate_sha();
+    let mut canonical = Vec::new();
+    for (section, layer) in [("jobs", "unit"), ("rshape_jobs", "static")] {
+        let f = Fixture::new("clean", layer, section, cell(format!("{RESULT}; {SPANS}; {PASS}")), json!({}));
+        let (ok, text, receipt) = f.run();
+        assert!(ok, "the clean {section} job passes:\n{text}");
+        let receipt = receipt.expect("the clean job's receipt");
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(keys(&receipt), ["job", "issue", "layer", "source_sha", "dirty_paths", "started", "finished", "outcome", "cells"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(), "exactly the canonical receipt: {receipt}");
+        assert_eq!(keys(&receipt["cells"][0]), ["name", "outcome", "refusal", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+        assert_eq!((receipt["outcome"].as_str(), receipt["source_sha"].as_str()), (Some("ok"), Some(head.as_str())));
+        assert!(receipt["cells"][0]["refusal"].is_null());
+        let arts = receipt["cells"][0]["artifacts"].as_object().unwrap();
+        for n in ["gate.log", "manifest.json", "result.json", "spans.json"] {
+            assert!(arts.iter().any(|(p, h)| p.ends_with(&format!("/{n}")) && h.as_str().unwrap().len() == 64), "{n} is hashed in the receipt");
+        }
+        let verify = |path: &Path| {
+            let o = Command::new("bash").arg(workspace_root().join("scripts/i143-acceptance-gate.sh")).arg("--verify-receipt").arg(path).current_dir(workspace_root()).output().unwrap();
+            (o.status.success(), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+        };
+        let (ok, text) = verify(&f.receipt_path());
+        assert!(ok, "a clean receipt verifies: {text}");
+
+        // A receipt of another source sha.
+        let mut forged = receipt.clone();
+        forged["source_sha"] = json!("0123456789abcdef0123456789abcdef01234567");
+        let forged_path = f.dir.join("forged-sha.json");
+        std::fs::write(&forged_path, forged.to_string()).unwrap();
+        let (ok, text) = verify(&forged_path);
+        assert!(!ok && text.contains("is not HEAD"), "a receipt of another source sha is refused by name: {text}");
+        planted_results.push(json!({ "planted": "mismatched_source_sha", "section": section, "refused": true, "refusal": text.trim() }));
+
+        // An artifact whose bytes changed after the receipt was written.
+        std::fs::write(f.cell_dir().join("result.json"), "{\"observed\":false}").unwrap();
+        let (ok, text) = verify(&f.receipt_path());
+        assert!(!ok && text.contains("no longer hashes"), "a changed artifact is refused by name: {text}");
+        planted_results.push(json!({ "planted": "artifact_bytes_changed", "section": section, "refused": true, "refusal": text.trim() }));
+
+        // An artifact deleted after the receipt was written.
+        std::fs::remove_file(f.cell_dir().join("spans.json")).unwrap();
+        let (ok, text) = verify(&f.receipt_path());
+        assert!(!ok && text.contains("is missing"), "a missing artifact is refused by name: {text}");
+        canonical.push(json!({ "section": section, "layer": layer, "receipt_keys": keys(&receipt), "cell_keys": keys(&receipt["cells"][0]) }));
+    }
+    let _ = std::fs::remove_dir_all(&stage);
+
+    // The registry the repository ships holds one runner and one receipt schema.
+    let shipped: Value = serde_json::from_slice(&std::fs::read(workspace_root().join("tools/mesh-audit/i143-acceptance-jobs.json")).unwrap()).unwrap();
+    let mut owners = Vec::new();
+    for section in ["jobs", "rshape_jobs"] {
+        for (id, j) in shipped[section].as_object().into_iter().flatten().filter(|(k, _)| !k.starts_with('_')) {
+            for key in ["runner", "receipt_writer", "receipt_schema"] {
+                if j.get(key).is_some() || j["cells"].as_array().unwrap().iter().any(|c| c.get(key).is_some()) {
+                    owners.push(format!("{id}.{key}"));
+                }
+            }
+        }
+    }
+    assert!(owners.is_empty(), "the shipped registry declares a second generic runner/schema: {owners:?}");
+    let runners: Vec<String> = std::fs::read_dir(workspace_root().join("scripts")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with("i143-acceptance-gate")).collect();
+    assert_eq!(runners, vec!["i143-acceptance-gate.sh".to_string()], "exactly one acceptance runner script");
+
+    let dir = acceptance_dir("unit", cell_name);
+    write_result(&dir, &json!({ "cell": cell_name, "planted": planted_results, "canonical_receipts": canonical, "shipped_registry_second_owners": owners, "runner_scripts": runners }));
+    std::fs::write(dir.join("spans.json"), "[]").unwrap();
+}

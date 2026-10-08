@@ -169,6 +169,54 @@
         }
       ]
     },
+    "i143-2776-unit": {
+      "issue": 2776,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "scenario_manifest_round_trips_owner_seed_and_fault_schedule",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_manifest_round_trips_owner_seed_and_fault_schedule -- --exact",
+          "dir": "target/i143-acceptance/2776/unit/scenario_manifest_round_trips_owner_seed_and_fault_schedule"
+        },
+        {
+          "name": "acceptance_runner_rejects_invalid_job_execution_receipts",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2776 acceptance_runner_rejects_invalid_job_execution_receipts -- --exact",
+          "dir": "target/i143-acceptance/2776/unit/acceptance_runner_rejects_invalid_job_execution_receipts"
+        }
+      ]
+    },
+    "i143-2776-process": {
+      "issue": 2776,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "scenario_runner_replays_manifest_preserves_semantic_outcomes",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_replays_manifest_preserves_semantic_outcomes -- --exact",
+          "dir": "target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes"
+        },
+        {
+          "name": "scenario_runner_launches_explicit_external_binary_set",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "dir": "target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set"
+        }
+      ]
+    },
+    "i143-2776-container": {
+      "issue": 2776,
+      "layer": "container",
+      "cells": [
+        {
+          "name": "scenario_runner_launches_explicit_external_binary_set",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
+          "command": "MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "dir": "target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set"
+        }
+      ]
+    },
     "i143-2775-unit": {
       "issue": 2775,
       "layer": "unit",
