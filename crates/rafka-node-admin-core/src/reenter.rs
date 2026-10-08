@@ -50,6 +50,20 @@ impl MapNode {
         })
     }
 
+    /// The birth as the view holds it until membership speaks for it: `status` is what the map
+    /// knows (`ReadyForTraffic` for a birth that answered a Ping, `PendingReconnect` for one not
+    /// yet reached; never `Dead`).
+    pub fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
+        let mut node = crate::model::Node::allocated(self.name.clone());
+        node.node_id = self.node_id.clone();
+        node.endpoint_id = Some(self.endpoint_id.clone());
+        node.incarnation_id = Some(self.incarnation.clone());
+        node.transport_addr = Some(self.transport_addr);
+        node.provider = Some(provider);
+        node.status = status;
+        node
+    }
+
     fn gossip_addr(&self) -> Option<iroh::EndpointAddr> {
         let key = self.endpoint_id.0.parse::<iroh::PublicKey>().ok()?;
         Some(iroh::EndpointAddr::new(key).with_ip_addr(self.transport_addr))

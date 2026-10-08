@@ -232,14 +232,16 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2803 acceptance 4, 5, 8, 9, 10, node-admin-lifecycle.md §3, §4): every node-admin of
-/// the fabric is lost at once (exact SIGKILL of all four admin runtimes; the ordinary members are
-/// untouched). A person starts ONE node-admin on the former fabric primary's data dir with both
-/// primary flags (`RDM_MESH_PRIMARY`, `RDM_FABRIC_PRIMARY`). It comes back as the same node (same
-/// NodeId, a new incarnation), reconnects from its durable topology, holds the same Fabric.build_id,
-/// and the fabric restores every missing node-admin through the Build rectifier from the durable
-/// runtime rows. What must NOT happen: a Day-0 start or a new Build, a new MeshId, an ordinary
-/// member re-created.
+/// CONTRACT (#2803 acceptance 4, 5, 8, 9, 10; node-admin-lifecycle.md 3, 4.4): every node-admin of the
+/// fabric is lost at once (exact SIGKILL of all four admin runtimes) and, with no admin running,
+/// one ordinary member of the fabric primary's mesh dies as well. A person starts ONE node-admin on
+/// the former fabric primary's data dir with both primary flags. It is not Day 0: it comes back as
+/// the same node (same NodeId, a new incarnation) with no maker, takes its durable map as the
+/// topology, connects to a local node of its own mesh, sweeps its own mesh once with a Ping (the
+/// dead sibling and the dead member do not answer), and sends them to the standard decommission.
+/// The other mesh's admins are restored by the fabric under the same Build with their existing
+/// MeshIds. What must NOT happen: a Day-0 start or a new Build or MeshId, a member that answered
+/// created or retired again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let cell = "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin";
@@ -247,16 +249,17 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 3},
     ]});
     let (status, a) = estate.post("/api/build", &shape).await;
     assert_eq!(status, 202, "{a}");
     let accepted = s(&a["build_id"]);
     estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want = names(&[("mesh1", 2, 2), ("mesh2", 2, 2)]);
+    let want = names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]);
     let before = estate.settled(&want, Duration::from_secs(30)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let holder_mesh = holder.split('.').next().unwrap().to_string();
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir_of(&holder).await };
     let mesh_ids: BTreeMap<String, String> = {
         let mut m = BTreeMap::new();
@@ -266,10 +269,12 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         }
         m
     };
+    let window_victim = format!("{holder_mesh}.rpc.3");
+    let own_members: Vec<String> = (1..=2).map(|i| format!("{holder_mesh}.rpc.{i}")).collect();
     let old = births(&before);
     let old_ids: BTreeMap<String, String> = before.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
 
-    // The fault: every node-admin, at once.
+    // The fault: every node-admin, at once; then, with the fabric admin-less, one ordinary member.
     let mut killed = Vec::new();
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -281,6 +286,13 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     estate.kill_bootstrap();
     killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
     assert_eq!(killed.len(), 4, "all four node-admins were lost: {killed:?}");
+    for (path, pid) in estate.live_runtimes() {
+        if path.file_name().unwrap().to_string_lossy().starts_with(&format!("{window_victim}-")) {
+            estate.kill_pid(pid);
+            killed.push(json!({"node": window_victim, "pid": pid}));
+        }
+    }
+    assert_eq!(killed.len(), 5, "the member died with no admin running: {killed:?}");
 
     // The person starts one node-admin on the former fabric primary's data dir.
     let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
@@ -296,31 +308,43 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let new = births(&after);
     let new_ids: BTreeMap<String, String> = after.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     for (name, inc) in &old {
-        if name.contains(".admin.") {
+        if name.contains(".admin.") || *name == window_victim {
             assert_ne!(&new[name], inc, "{name}: a new birth");
             if *name == holder {
                 assert_eq!(new_ids[name], old_ids[name], "{name}: the restarted admin is the same node");
             }
         } else {
-            assert_eq!(&new[name], inc, "{name}: an ordinary member is preserved, never re-created");
+            assert_eq!(&new[name], inc, "{name}: an ordinary member that lives is preserved, never re-created");
         }
     }
 
     estate.stop().await;
     let spans = estate.spans();
-    let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == holder).collect();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| attr(sp, "node") == holder).collect();
     assert!(
         started.iter().any(|sp| sp["attributes"]["mesh_primary"] == "true" && sp["attributes"]["fabric_primary"] == "true"),
         "the person-started admin recorded both recovery flags: {started:?}"
     );
-    let t0 = started.iter().map(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0)).min().unwrap_or(0);
+    let t0 = started.iter().map(|sp| at(sp)).min().unwrap_or(0);
+    // No maker: its topology is its durable map; one sweep of its own mesh, once.
+    let sweeps: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-entry-sweep").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
+    assert_eq!(sweeps.len(), 1, "one sweep on entering its mesh: {sweeps:?}");
+    assert_eq!(attr(sweeps[0], "source"), "durable-map", "a reborn fabric primary has no maker");
+    let silent: Vec<String> = named(&spans, "rdm.node_admin.node.reject.via-entry-sweep-no-reply").into_iter().filter(|sp| attr(sp, "sweeper") == holder && at(sp) >= t0).map(|sp| attr(sp, "node")).collect();
+    let sibling = format!("{holder_mesh}.admin.{}", if holder.ends_with(".1") { 2 } else { 1 });
+    for dead in [&window_victim, &sibling] {
+        assert!(silent.contains(dead), "{dead} died and did not answer the sweep: {silent:?}");
+    }
+    for m in &own_members {
+        assert!(!silent.contains(m), "{m} answered the sweep: {silent:?}");
+    }
     let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| c["start_unix_nano"].as_u64().unwrap_or(0) >= t0 && s(&c["attributes"]["node"]).contains(".rpc."))
+        .filter(|c| at(c) >= t0 && own_members.contains(&attr(c, "node")))
         .collect();
-    assert!(recreated.is_empty(), "no ordinary member is created again: {recreated:?}");
-    let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == accepted.as_str() && sp["start_unix_nano"].as_u64().unwrap_or(0) >= t0).collect();
-    assert_eq!(drift.len(), 3, "one proven-drift attempt per lost admin the restarted one did not itself replace: {drift:?}");
+    assert!(recreated.is_empty(), "no member that answered is created again: {recreated:?}");
 
     let result = json!({
         "cell": cell,
@@ -332,9 +356,8 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         "killed": killed,
         "live_before": old.len(),
         "live_after": new.len(),
-        "preserved_count": old.keys().filter(|n| n.contains(".rpc.")).count(),
-        "tombstoned_count": 0,
-        "created_count": drift.len(),
+        "preserved_count": own_members.len() + 3,
+        "not_reached": silent,
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

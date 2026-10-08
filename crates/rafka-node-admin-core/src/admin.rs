@@ -1948,6 +1948,25 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
 
     let records = Arc::new(Records::default());
     let _ = records.contacts.set(nodes_storage.clone());
+    // A fabric primary reborn from its data dir holds its durable topology as its map (rule 5):
+    // every birth the accepted Build names that nodes.storage heard is in its view as not yet
+    // reached, until membership or the sweep says more. Its view is never an empty one that plans
+    // a create for every member.
+    if restart.is_some() && cfg.launch.is_none() {
+        let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
+        for r in nodes_storage.contacts().await.map_err(storage_err)? {
+            if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
+                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true };
+                records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
+            }
+        }
+    }
+    // The meshes the accepted Build names keep the ids this admin stored for them.
+    if let Some(named) = accepted.current(&*builds_dyn).await.map(|b| b.topology) {
+        for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| named.meshes.contains_key(&m.name)) {
+            records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
+        }
+    }
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
     let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
@@ -2108,14 +2127,28 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // nodes.storage contacts: the births this admin hears, as bootstrap hints for a later restart.
     // A contact whose path another logical node now holds is dropped; nothing here is topology.
     let contacts_task = {
-        let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
+        let (book, nodes_storage, me, fabric_id, mesh_storage) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone(), mesh_storage.clone());
         tokio::spawn(async move {
+            // Every mesh this admin hears of, by name, as its own keyed row in mesh.storage: the
+            // durable map a restart takes the existing MeshIds from (a recovery never mints one).
+            let mut meshes_written: HashMap<String, MeshId> = mesh_storage.meshes().await.unwrap_or_default().into_iter().map(|m| (m.name, m.mesh_id)).collect();
             let mut runtimes_written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
             let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
                 nodes_storage.contacts().await.unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
             loop {
                 let heard: Vec<MeshDigest> = book.current(book.staleness_floor()).into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me).collect();
                 for d in &heard {
+                    if let Some(id) = &d.mesh_id {
+                        if meshes_written.get(&d.node.name.mesh) != Some(id) {
+                            let row = crate::storage::MeshRecord { mesh_id: id.clone(), name: d.node.name.mesh.clone() };
+                            match mesh_storage.put_mesh(&row).await {
+                                Ok(()) => {
+                                    meshes_written.insert(row.name, row.mesh_id);
+                                }
+                                Err(e) => tracing::info!(mesh = %d.node.name.mesh, error = %e, "a heard mesh's id could not be stored"),
+                            }
+                        }
+                    }
                     // The birth's exact runtime, once: its own keyed row, a blind put.
                     if let (Some(runtime), false) = (&d.node.runtime, runtimes_written.contains(&(d.node.node_id.clone(), d.node.incarnation.clone()))) {
                         let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: runtime.clone(), data_dir: d.data_dir.clone() };
@@ -2237,16 +2270,13 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let digest = digest.clone();
         tasks.push(tokio::spawn(async move {
             let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
-            // The nodes that did not answer stay in the map as not yet reached.
+            // A reply proves a live exact birth: the view holds it (until membership speaks for
+            // it). A node that did not answer stays in the map as not yet reached.
+            for n in &report.reached {
+                records.publish(n.as_node(NodeStatus::ReadyForTraffic, provider_kind));
+            }
             for (n, _) in &report.not_reached {
-                let mut node = Node::allocated(n.name.clone());
-                node.node_id = n.node_id.clone();
-                node.endpoint_id = Some(n.endpoint_id.clone());
-                node.incarnation_id = Some(n.incarnation.clone());
-                node.transport_addr = Some(n.transport_addr);
-                node.provider = Some(provider_kind);
-                node.status = NodeStatus::PendingReconnect;
-                records.publish(node);
+                records.publish(n.as_node(NodeStatus::PendingReconnect, provider_kind));
             }
             let unreached: Vec<crate::reenter::MapNode> = report.not_reached.iter().map(|(n, _)| n.clone()).collect();
             let _ = slot.set(report);
