@@ -237,9 +237,7 @@ pub async fn run(w: Watch) {
         }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        for gone in w.ladder.lock().unwrap().meshes().difference(&heard).cloned().collect::<Vec<_>>() {
-            w.ladder.lock().unwrap().forget(&gone);
-        }
+        forget_unheard_meshes(&w.ladder, &heard);
         let round_ms = w.round.as_millis().max(1) as u64;
         let mut tasks = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
@@ -249,6 +247,14 @@ pub async fn run(w: Watch) {
         }
         futures_util::future::join_all(tasks).await;
         restore(&w, &view);
+    }
+}
+
+/// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
+fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
+    // OLD-SHAPE
+    for gone in ladder.lock().unwrap().meshes().difference(heard).cloned().collect::<Vec<_>>() {
+        ladder.lock().unwrap().forget(&gone);
     }
 }
 
@@ -535,5 +541,22 @@ mod tests {
         }
         assert!(l.rebirth_decided("mesh2"));
         assert!(!l.rebirth_decided("mesh3"), "mesh3 was never decided");
+    }
+
+    /// CONTRACT (#2803 detection): forgetting the investigation of a mesh the backbone no longer
+    /// carries (a retired mesh) returns; it never holds the ladder's lock while it takes it again,
+    /// which would hold the fabric primary's watch and its drift check (both read the ladder) forever.
+    #[test]
+    fn forgetting_a_retired_mesh_does_not_deadlock_on_the_ladder_lock() {
+        let ladder = Arc::new(Mutex::new(ladder()));
+        ladder.lock().unwrap().step("mesh2", 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let l = ladder.clone();
+        std::thread::spawn(move || {
+            forget_unheard_meshes(&l, &BTreeSet::new());
+            let _ = tx.send(());
+        });
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(), "forgetting a retired mesh never returned: the ladder lock is held by the loop that takes it");
+        assert!(ladder.lock().unwrap().meshes().is_empty());
     }
 }
