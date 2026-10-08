@@ -3884,6 +3884,7 @@ dependencies = [
 name = "rafka-test-scenario"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "opentelemetry",
  "opentelemetry_sdk",
  "rafka-mesh-entity",
