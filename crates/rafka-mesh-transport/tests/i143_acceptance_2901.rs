@@ -3,8 +3,8 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span this process
 //! emitted, captured in-process by the evidence exporter) there.
 //!
-//! CONTRACT: a status change is sent at once and then once per second, five sends in all, every
-//! send carrying the one instant of the change; a status that did not change sends nothing; only
+//! CONTRACT: a status change is sent at once and then once per second, five sends in all, each
+//! send the same status stamped at its own send (iroh-gossip delivers a given byte string once); a status that did not change sends nothing; only
 //! the node holding the primary role authors a status frame; a forwarding primary keeps the
 //! original publisher; and no status travels inside `Members`.
 
@@ -66,7 +66,7 @@ fn sweep(p: &mut StatusPublisher, base: Instant, from: Duration, span: Duration,
     let mut out = Vec::new();
     let mut t = from;
     while t <= from + span {
-        if let Some(f) = p.due(base + t) {
+        if let Some(f) = p.due(base + t, 1_000 + t.as_millis() as u64) {
             out.push((t.as_millis() as u64, f));
         }
         t += step;
@@ -99,13 +99,15 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     assert_eq!(offsets, vec![1000, 2000, 3000, 4000], "four repeats, one per second after the first send, then nothing for two minutes");
     let sends: Vec<&Frame> = std::iter::once(&first).chain(repeats.iter().map(|(_, f)| f)).collect();
     assert_eq!(sends.len(), 5, "five sends in all");
+    let stamps: Vec<u64> = sends.iter().map(|f| ts(f)).collect();
+    assert_eq!(stamps, vec![1_000, 2_000, 3_000, 4_000, 5_000], "each send is stamped at its own instant");
+    let distinct: std::collections::BTreeSet<Vec<u8>> = sends.iter().map(|f| f.encode()).collect();
+    assert_eq!(distinct.len(), 5, "five byte-distinct frames: iroh-gossip would drop a repeat of the same bytes");
     for f in &sends {
-        assert_eq!(ts(f), 1_000, "all five sends carry the instant of the change");
         assert_eq!(publisher_of(f), me, "authored by the publisher itself");
         assert_eq!(status_of(f), "pending");
         assert!(matches!(f, Frame::MeshStatus { mesh, forwarded_by: None, .. } if mesh == "mesh1"));
     }
-    assert_eq!(sends[0].encode(), sends[4].encode(), "the fifth send is the first, byte for byte");
 
     // The same status observed again, however often, sends nothing.
     let mut unchanged_sends = 0;
@@ -113,7 +115,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         if mesh.observe("pending", None, base + ms(130_000 + k * 100), 99_999).is_some() {
             unchanged_sends += 1;
         }
-        if mesh.due(base + ms(130_000 + k * 100)).is_some() {
+        if mesh.due(base + ms(130_000 + k * 100), 99_999).is_some() {
             unchanged_sends += 1;
         }
     }
@@ -123,12 +125,12 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let mut fabric_pub = StatusPublisher::new(me, StatusScope::Fabric(fabric.clone()));
     fabric_pub.set_role(true);
     let a = fabric_pub.observe("pending", None, base, 10).unwrap();
-    let a2 = fabric_pub.due(base + ms(1000)).unwrap();
+    let a2 = fabric_pub.due(base + ms(1000), 1_010).unwrap();
     let b = fabric_pub.observe("ready-for-traffic", None, base + ms(1500), 20).unwrap();
     let rest = sweep(&mut fabric_pub, base, ms(1500), Duration::from_secs(30), ms(100));
-    assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 10, 20));
+    assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 1_010, 20));
     assert_eq!(rest.len(), 4, "the new change is repeated four times after its first send");
-    assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready-for-traffic"), "no repeat of the replaced change follows");
+    assert!(rest.iter().all(|(_, f)| ts(f) > 20 && status_of(f) == "ready-for-traffic"), "no repeat of the replaced change follows");
 
     // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
     let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));

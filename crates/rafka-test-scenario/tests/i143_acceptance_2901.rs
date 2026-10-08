@@ -6,9 +6,9 @@
 //! CONTRACT: on a real fabric, an observer that joined the backbone and a mesh channel before a
 //! status change decodes the frames the fabric puts there. A quiet fabric carries heartbeats and
 //! aggregates and no status frame at all. A new mesh's primary publishes its mesh's status as its
-//! own frame exactly five times, one per second, all at one instant, and then nothing. A member
+//! own frame exactly five times, one per second, and then nothing. A member
 //! that joins afterwards is told the held statuses by their holder, with the original publisher and
-//! instant, and then hears no status frame. The topology change is a Build through the node-admin.
+//! stamp, and then hears no status frame. The topology change is a Build through the node-admin.
 
 use bytes::Bytes;
 use futures_lite::StreamExt as _;
@@ -58,6 +58,7 @@ struct Seen {
 /// records every frame it decodes.
 struct Observer {
     endpoint: Endpoint,
+    _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
     started: Instant,
 }
@@ -68,6 +69,7 @@ impl Observer {
         let endpoint = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         learn_addresses(&endpoint, &seeds).unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
         let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
         for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh1", mesh_topic(fabric, mesh_id))] {
@@ -84,7 +86,7 @@ impl Observer {
                 }
             });
         }
-        Self { endpoint, seen, started: Instant::now() }
+        Self { endpoint, _router: router, seen, started: Instant::now() }
     }
 
     fn all(&self) -> Vec<Seen> {
@@ -164,7 +166,11 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let authored = |o: &Observer| -> Vec<Seen> {
         o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(&x.frame, Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
     };
-    wait_for("the observer heard the fifth send of mesh2's status", Duration::from_secs(30), || async { (authored(&early).len() >= 5).then_some(()) }).await;
+    let until = Instant::now() + Duration::from_secs(30);
+    while authored(&early).len() < 5 {
+        assert!(Instant::now() < until, "the observer did not hear five sends of mesh2's status; it heard {:#?}", early.statuses().iter().map(|x| row(&early, x)).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let sends = authored(&early);
     // No further send arrives: the fifth is the last.
     let last_at = sends.iter().map(|x| x.at).max().unwrap();
@@ -172,7 +178,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let sends_after = authored(&early);
     assert_eq!(sends_after.len(), 5, "mesh2's status was sent exactly five times, then nothing: {:#?}", sends_after.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
     let instants: Vec<u64> = sends_after.iter().map(|x| parts(&x.frame).5).collect();
-    assert!(instants.iter().all(|i| *i == instants[0]), "all five sends carry the one instant of the change: {instants:?}");
+    assert!(instants.windows(2).all(|w| w[1] > w[0]), "each send is stamped at its own instant: {instants:?}");
     assert!(sends_after.iter().all(|x| parts(&x.frame).2 == "ready-for-traffic"), "the status the five sends carry");
     let gaps_ms: Vec<u64> = sends_after.windows(2).map(|w| w[1].at.duration_since(w[0].at).as_millis() as u64).collect();
     assert!(gaps_ms.iter().all(|g| (800..=1500).contains(g)), "one send per second: {gaps_ms:?}");
@@ -200,7 +206,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     }
 
     // The late member joins now, with everything already said and the five sends long over.
-    let held_at: std::collections::BTreeMap<String, u64> = std::iter::once(("mesh2".to_string(), instants[0])).collect();
+    let held_at: std::collections::BTreeMap<String, u64> = std::iter::once(("mesh2".to_string(), *instants.last().unwrap())).collect();
     let late_nodes = estate.nodes().await;
     let late = Observer::join(&fabric, &mesh1_id, seeds_of(&late_nodes)).await;
     wait_for("the late member is told the held statuses of mesh1, mesh2 and the fabric", Duration::from_secs(30), || async {
@@ -216,7 +222,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     for x in &told_mesh2 {
         let p = parts(&x.frame);
         assert_eq!(p.3, "mesh2.admin.1", "the replay keeps mesh2's primary as publisher: {:?}", row(&late, x));
-        assert_eq!(p.5, held_at["mesh2"], "the replay carries the original instant of the change");
+        assert_eq!(p.5, held_at["mesh2"], "the replay carries the held status's own stamp, the fifth send's");
         assert_eq!(p.2, "ready-for-traffic");
         assert!(p.4.as_deref() != Some("mesh2.admin.1"), "a holder never names the author as its forwarder");
     }

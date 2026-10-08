@@ -237,8 +237,10 @@ pub enum Frame {
     NodeRestarting { op: LifecycleOp, forwarded_by: Option<String> },
     /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
-    /// restates it as its own. `published_at_rafka_ms` is the instant of the CHANGE: all five sends
-    /// of one change carry the same value (gossip.md §3.1, §3.2).
+    /// restates it as its own. `published_at_rafka_ms` is the instant of THIS send: iroh-gossip
+    /// drops a message whose bytes it has seen (its id is the hash of the content, kept 90 s), so
+    /// the five sends of one change differ by this stamp or only the first would be delivered.
+    /// A holder keeps the status with the newest stamp.
     MeshStatus { mesh: String, status: String, publisher: String, forwarded_by: Option<String>, published_at_rafka_ms: u64 },
     /// The fabric's status, authored by the fabric primary alone; same channels, forwarding and
     /// `published_at_rafka_ms` as [`Frame::MeshStatus`].
@@ -277,7 +279,8 @@ pub const STATUS_SENDS: u32 = 5;
 /// The spacing of a status change's reinforcing sends.
 pub const STATUS_EVERY: Duration = Duration::from_secs(1);
 
-/// A status change: the status and the instant it changed. Every send of one change carries both.
+/// A status send: the status and the instant of the send. Each send of one change carries the
+/// same status at a later instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusFact {
     pub status: String,
@@ -296,7 +299,7 @@ pub struct StatusReinforcement {
 }
 
 impl StatusReinforcement {
-    /// The status as observed at `now` (`now_ms` stamps a change). A change returns the fact to
+    /// The status as observed at `now` (`now_ms` stamps the send). A change returns the fact to
     /// send at once (the first of its five sends) and replaces any change still being reinforced;
     /// the same status returns nothing.
     pub fn observe(&mut self, status: &str, now: Instant, now_ms: u64) -> Option<StatusFact> {
@@ -317,15 +320,18 @@ impl StatusReinforcement {
         self.next_at = None;
     }
 
-    /// The next reinforcing send due at `now`, if any.
-    pub fn due(&mut self, now: Instant) -> Option<StatusFact> {
+    /// The next reinforcing send due at `now`, if any: the held status stamped `now_ms`, never at
+    /// or before the previous send's stamp.
+    pub fn due(&mut self, now: Instant, now_ms: u64) -> Option<StatusFact> {
         let at = self.next_at?;
         if now < at {
             return None;
         }
         self.sent += 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| at + STATUS_EVERY);
-        self.held.clone()
+        let held = self.held.as_mut()?;
+        held.published_at_rafka_ms = now_ms.max(held.published_at_rafka_ms + 1);
+        Some(held.clone())
     }
 
     /// When the next reinforcing send is due; `None` once the five sends are done.
@@ -404,12 +410,12 @@ impl StatusPublisher {
         self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
     }
 
-    /// The reinforcing send due at `now`: the same fact, the same instant, as the first send.
-    pub fn due(&mut self, now: Instant) -> Option<Frame> {
+    /// The reinforcing send due at `now`: the same status, stamped `now_ms`.
+    pub fn due(&mut self, now: Instant, now_ms: u64) -> Option<Frame> {
         if !self.role {
             return None;
         }
-        self.schedule.due(now).map(|f| self.frame(&f))
+        self.schedule.due(now, now_ms).map(|f| self.frame(&f))
     }
 
     pub fn next_due(&self) -> Option<Instant> {
@@ -418,7 +424,7 @@ impl StatusPublisher {
 }
 
 /// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
-/// frame older than the one held is refused by name, the same one again is taken once.
+/// frame older than the one held is refused by name, the same one again changes nothing.
 #[derive(Debug, Clone, Default)]
 pub struct StatusBook {
     meshes: Arc<Mutex<HashMap<String, MeshStatus>>>,
@@ -1199,7 +1205,8 @@ impl Backbone {
                     None => me.wake.notified().await,
                 }
                 let now = Instant::now();
-                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
+                let at_ms = now_ms();
+                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now, at_ms), me.fabric_status.lock().unwrap().due(now, at_ms)].into_iter().flatten().collect();
                 for f in due {
                     me.send_status(&f).await;
                 }
