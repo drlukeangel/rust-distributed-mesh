@@ -34,6 +34,8 @@ struct Args {
     via: Option<String>,
     /// Execute the `NoActiveRoute` choice: the seam sends nothing and answers by name.
     no_route: bool,
+    /// Failpoint: write half the request, then reset it with 499 (`NotSent(FrameNotSent)`).
+    cut_before_finish: bool,
     /// `declare`: the authority the node declares to (`path:`/`exact:`), the state, and the
     /// testkit-only overrides.
     to: Option<String>,
@@ -56,6 +58,7 @@ struct Args {
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut admin, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
     let mut no_route = false;
+    let mut cut_before_finish = false;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
     let mut pass_history = 0u32;
@@ -71,6 +74,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--query" => key = Some(take("--query")?),
             "--via" => via = Some(take("--via")?),
             "--no-route" => no_route = true,
+            "--cut-before-finish" => cut_before_finish = true,
             "--to" => to = Some(take("--to")?),
             "--state" => state = Some(take("--state")?),
             "--as-node-id" => as_node_id = Some(take("--as-node-id")?),
@@ -96,6 +100,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         expected,
         via,
         no_route,
+        cut_before_finish,
         to,
         state,
         as_node_id,
@@ -260,14 +265,15 @@ async fn run(a: Args) -> Result<Value, String> {
             resolver.resolve(&carrier).map(|c| rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
         }
     };
+    let opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
     let (out, leg): (RpcOutcome<ProofReply>, &str) = match route {
         Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), "via-peer"),
         Ok(route) => match resolver.resolve(&target) {
             Ok(n) => {
-                let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &CallOptions::default()).await;
+                let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &opts).await;
                 (out, leg.token())
             }
-            Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
+            Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &opts).await.0, "direct"),
             Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
         },
     };
