@@ -138,6 +138,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     let (status, v) = call(&h.app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     let b1 = v["build_id"].as_str().expect("build_id").to_string();
+    assert_eq!(v["attempt"], 1, "an accepted Build answers its first attempt: {v}");
     assert_ne!(b1, b0);
     let facts = h.facts().await;
     assert_eq!(facts.len(), seed + 1, "exactly one fact per accepted change: {facts:?}");
@@ -170,6 +171,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     let (status, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.2/restart", None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert_eq!(v["build_id"], b2.as_str(), "the same Build: {v}");
+    assert_eq!(v["attempt"], 2, "the restart answers the attempt it opened: {v}");
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
     assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("restart"), Some("restart"), Some("mesh1.rpc.2")), "{b}");
     assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b2 && o.attempt == 2));
@@ -193,6 +195,7 @@ async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_li
     let (status, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.2/replace", None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert_eq!(v["build_id"], b0.as_str(), "no Build is minted: {v}");
+    assert_eq!(v["attempt"], 2, "the replace answers the attempt it opened: {v}");
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("replace"), Some("replace"), Some("mesh1.rpc.2")), "{b}");
     assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the held birth: {b}");

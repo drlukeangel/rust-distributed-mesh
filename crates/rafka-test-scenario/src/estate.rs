@@ -687,6 +687,19 @@ impl Estate {
         .await
     }
 
+    /// Wait until attempt `attempt` of Build `id` is complete, where `attempt` is the one the
+    /// request that opened it answered 202 with. The Build's reported attempt must have reached
+    /// `attempt` and that attempt must have converged; a Build still reporting an earlier
+    /// attempt's `complete` is not yet this attempt's. A failed attempt fails the test with the
+    /// Build JSON.
+    pub async fn await_attempt(&self, id: &str, attempt: u64, within: Duration) -> Value {
+        wait_for(&format!("build {id} attempt {attempt} complete"), within, || async {
+            let (_, b) = self.get(&format!("/api/builds?id={id}")).await;
+            attempt_verdict(id, attempt, &b)
+        })
+        .await
+    }
+
     pub async fn nodes(&self) -> Vec<Value> {
         let (status, v) = self.get("/api/nodes").await;
         assert_eq!(status, 200, "GET /api/nodes: {v}");
@@ -1199,6 +1212,51 @@ pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
     }
     let f: Value = r.json().await.ok()?;
     (f["id"].as_str() == Some(fabric_id)).then_some(f)
+}
+
+/// What one reading of Build `id` says about attempt `attempt`: its converged Build, or nothing
+/// yet. A failed attempt panics with the Build JSON.
+pub fn attempt_verdict(id: &str, _attempt: u64, b: &Value) -> Option<Value> {
+    match b["state"].as_str() {
+        Some("complete") => Some(b.clone()),
+        Some("failed") => panic!("build {id} failed: {b:#}"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod attempt_verdict_tests {
+    use super::*;
+
+    fn at(state: &str, attempt: u64) -> Value {
+        json!({"build_id": "b", "state": state, "attempt": attempt})
+    }
+
+    /// CONTRACT: a reading that still carries the previous attempt's `complete` is not the
+    /// awaited attempt's verdict, and neither is the opened-but-unclaimed or running reading.
+    #[test]
+    fn the_previous_attempts_complete_is_not_the_awaited_attempts_verdict() {
+        assert!(attempt_verdict("b", 2, &at("complete", 1)).is_none(), "the previous attempt's complete");
+        assert!(attempt_verdict("b", 2, &at("pending", 1)).is_none(), "opened, not yet claimed");
+        assert!(attempt_verdict("b", 2, &at("running", 2)).is_none(), "claimed, running");
+    }
+
+    /// CONTRACT: the awaited attempt converging, or a later one, is the verdict.
+    #[test]
+    fn the_awaited_attempt_or_a_later_one_complete_is_the_verdict() {
+        assert!(attempt_verdict("b", 2, &at("complete", 2)).is_some());
+        assert!(attempt_verdict("b", 2, &at("complete", 3)).is_some());
+    }
+
+    /// CONTRACT: a failed awaited attempt fails the test carrying the Build; an earlier attempt's
+    /// failure is not this attempt's.
+    #[test]
+    fn a_failed_awaited_attempt_panics_with_the_build_and_an_earlier_failure_does_not() {
+        assert!(attempt_verdict("b", 2, &at("failed", 1)).is_none());
+        let e = std::panic::catch_unwind(|| attempt_verdict("b", 2, &at("failed", 2))).expect_err("a failed attempt fails the test");
+        let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(msg.contains("build b failed") && msg.contains("\"attempt\": 2"), "{msg}");
+    }
 }
 
 #[cfg(test)]
