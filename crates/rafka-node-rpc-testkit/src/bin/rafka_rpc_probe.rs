@@ -240,22 +240,26 @@ async fn run(a: Args) -> Result<Value, String> {
     // The exact final target first; `--via` only decides how it is reached.
     // The exact final target first (a `path:` is the current holder); a target the view does
     // not hold is the client's own `NotSent(Resolve(..))`, never a refusal here.
-    let route = match (&a.via, a.no_route) {
-        (_, true) => rafka_node_rpc::RouteChoice::NoActiveRoute,
-        (None, false) => rafka_node_rpc::RouteChoice::Direct,
+    // A carrier the view does not hold (it left the fabric while the call was aimed at it) is the same
+    // fact as a target it does not hold: the call is not sent, and the client says so.
+    let route: Result<rafka_node_rpc::RouteChoice, _> = match (&a.via, a.no_route) {
+        (_, true) => Ok(rafka_node_rpc::RouteChoice::NoActiveRoute),
+        (None, false) => Ok(rafka_node_rpc::RouteChoice::Direct),
         (Some(v), false) => {
             let carrier = self::target(v)?;
-            let c = resolver.resolve(&carrier).map_err(|f| format!("the carrier {v} does not resolve: {f:?}"))?;
-            rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name }
+            resolver.resolve(&carrier).map(|c| rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
         }
     };
-    let (out, leg): (RpcOutcome<ProofReply>, &str) = match resolver.resolve(&target) {
-        Ok(n) => {
-            let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &CallOptions::default()).await;
-            (out, leg.token())
-        }
-        Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
-        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
+    let (out, leg): (RpcOutcome<ProofReply>, &str) = match route {
+        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), "via-peer"),
+        Ok(route) => match resolver.resolve(&target) {
+            Ok(n) => {
+                let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &CallOptions::default()).await;
+                (out, leg.token())
+            }
+            Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &CallOptions::default()).await.0, "direct"),
+            Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
+        },
     };
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
     // process ungracefully and its span file is lost (a call that never left the resolver is the case).

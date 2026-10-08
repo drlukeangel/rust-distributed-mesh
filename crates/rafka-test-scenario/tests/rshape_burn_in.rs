@@ -1470,6 +1470,8 @@ struct Authority {
     /// The role nodes a checkpoint expects to stand, when a lifecycle cell has retired or not yet
     /// re-added one; the shape's own role nodes when unset.
     roles: Option<BTreeSet<String>>,
+    /// Topology writes the cell sent to an admin that is not the fabric-primary, to see them refused.
+    refused_writes: Vec<Value>,
 }
 
 /// What `Authority::finish` waits for, observed from the view and the Build, never from elapsed time.
@@ -1490,7 +1492,7 @@ fn progress(msg: &str) {
 
 impl Authority {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0, build_obs: Vec::new(), roles: None }
+        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new() }
     }
 
     /// A GET on any live admin of this run: the entry admin first, then every admin base ever seen.
@@ -1998,7 +2000,7 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
     assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts the cell sent");
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
     let probe_answers: usize = a.probes.iter().map(|p| p["answers"].as_array().unwrap().len()).sum();
-    assert_eq!(rejected_creates, probe_answers, "every rejected topology write is a fence probe answer");
+    assert_eq!(rejected_creates, probe_answers + a.refused_writes.len(), "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
     let mut rounds = Vec::new();
     for p in &a.probes {
         let path = s(&p["path"]);
@@ -3068,11 +3070,13 @@ async fn admin_views_of(a: &mut Authority, f: &Formed, name: &str) -> Vec<Value>
 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
-async fn refused_by_a_non_writer(f: &Formed, st: &Stable, path: &str) -> Value {
+async fn refused_by_a_non_writer(f: &Formed, a: &mut Authority, st: &Stable, path: &str) -> Value {
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
     let (status, v) = f.estate.delete_at(&s(&non_writer["admin_api_base"]), &format!("/api/nodes/{path}")).await;
     assert_eq!((status, v["error"].as_str(), &v["fabric_primary"]), (409, Some("rejected-not-authority"), &st.fp["name"]), "a retire sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
-    json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"]})
+    let rec = json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"], "path": path, "t_ms": now_ms()});
+    a.refused_writes.push(rec.clone());
+    rec
 }
 
 /// Retire `node` through the Build rectifier as the fabric-primary authorizes it, under seeded
@@ -3092,7 +3096,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
         carried_get(&f.estate, &n, &gw, &ckey);
         await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
-    let refusal = refused_by_a_non_writer(f, st, node).await;
+    let refusal = refused_by_a_non_writer(f, a, st, node).await;
     let still = f.estate.node(node).await;
     assert_eq!((still["node_id"].clone(), still["incarnation_id"].clone(), still["status"].clone()), (n["node_id"].clone(), n["incarnation_id"].clone(), json!("ready-for-traffic")), "{node}: the refused retire executed nothing: {still}");
     let mut roles: BTreeSet<String> = a.roles.clone().unwrap_or_else(|| f.shape.names().into_iter().filter(|x| launch_id(x) != "node_admin").collect());
@@ -3139,7 +3143,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     (rec, st2)
 }
 
-/// The spans of one retirement: REST (a new accepted Build) -> reconcile (`delete-node:<node>`) ->
+/// The spans of one retirement: REST (a new accepted Build) -> reconcile (`retire-node:<node>`) ->
 /// node.delete.via-build -> pipeline -> the retire steps in their documented order; NodeDeleting and
 /// NodeDeleted naming the old birth; the receivers' removal; and no Ready span of the NodeId at or
 /// after its departure.
@@ -3147,7 +3151,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
     let create = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == bid.as_str()).cloned().unwrap_or_else(|| panic!("{node}: no build.create.via-rest accepted {bid}"));
-    let op = format!("delete-node:{node}");
+    let op = format!("retire-node:{node}");
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op)))
@@ -3548,7 +3552,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     });
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([formation_build.clone(), s(&retired["build_id"]), add_build.clone()]), "the Builds accepted are the formation, the retirement and the add; the death's recovery accepted none");
-    inv.holds("every topology change was a Build the rectifier executed: the retirement (delete-node), the add (create-node) and the death's recovery (a proven-drift attempt of the same Build re-creating the path); exactly three Builds were ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
+    inv.holds("every topology change was a Build the rectifier executed: the retirement (retire-node), the add (create-node) and the death's recovery (a proven-drift attempt of the same Build re-creating the path); exactly three Builds were ever accepted", true, json!({"retire": retire_chain, "add": add_chain, "drift": drift_chain}));
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
