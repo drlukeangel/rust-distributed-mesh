@@ -324,9 +324,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     estate.await_build(d["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     let remaining: Vec<String> = everyone.iter().filter(|n| **n != victim_name).cloned().collect();
     for (name, base) in &bases {
-        wait_for(&format!("{name} drops the retired {victim_name}"), Duration::from_secs(60), || async {
+        wait_for(&format!("{name} no longer lists the retired {victim_name}"), Duration::from_secs(60), || async {
             let v = estate.nodes_at(base).await;
-            (!v.iter().any(|n| n["node_id"] == victim_id.as_str() && n["status"] == "ready-for-traffic") && holds_all(&v, &remaining)).then_some(())
+            (!v.iter().any(|n| n["node_id"] == victim_id.as_str()) && holds_all(&v, &remaining)).then_some(())
         })
         .await;
     }
@@ -378,9 +378,9 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     assert_eq!(status, 202, "{d}");
     estate.await_build(d["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     for (name, base) in &bases_left {
-        wait_for(&format!("{name} drops the retired admin {av_name}"), Duration::from_secs(60), || async {
+        wait_for(&format!("{name} no longer lists the retired admin {av_name}"), Duration::from_secs(60), || async {
             let v = estate.nodes_at(base).await;
-            (!v.iter().any(|n| n["node_id"] == av_id.as_str() && n["status"] == "ready-for-traffic") && holds_all(&v, &remaining2)).then_some(())
+            (!v.iter().any(|n| n["node_id"] == av_id.as_str()) && holds_all(&v, &remaining2)).then_some(())
         })
         .await;
     }
