@@ -1035,6 +1035,12 @@ impl Estate {
     /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its control
     /// API base.
     pub fn restart_admin(&mut self, data_dir: &Path) -> String {
+        self.restart_admin_with(data_dir, &[])
+    }
+
+    /// [`Self::restart_admin`] with more operator environment (the recovery flags
+    /// `RDM_MESH_PRIMARY` and `RDM_FABRIC_PRIMARY`).
+    pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> String {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
             ("RDM_DATA_DIR", data_dir.display().to_string()),
@@ -1042,6 +1048,7 @@ impl Estate {
             ("RDM_EVIDENCE_DIR", self.evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", self.root.display().to_string()),
         ];
+        env.extend(operator_env.iter().map(|(k, v)| (*k, v.to_string())));
         let exe = match &self.external {
             Some(x) => {
                 env.retain(|(k, _)| *k != "RDM_BIN_DIR");

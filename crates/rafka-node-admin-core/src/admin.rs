@@ -62,6 +62,11 @@ pub struct AdminConfig {
     pub mesh_primary: bool,
     /// `RDM_FABRIC_PRIMARY`: this admin must recover the fabric. Implies `mesh_primary`.
     pub fabric_primary: bool,
+    /// `RDM_SEEDS` of a person-started admin: live nodes it dials at once (a launched admin takes
+    /// its seeds from its launch).
+    pub seeds: Vec<(String, SocketAddr)>,
+    /// `RDM_FABRIC_ID` was given: the Fabric is named, not new.
+    pub fabric_id_named: bool,
     pub data_dir: PathBuf,
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
@@ -147,6 +152,11 @@ impl AdminConfig {
             fabric_id,
             mesh_primary,
             fabric_primary,
+            seeds: match &launch {
+                Some(_) => Vec::new(),
+                None => rafka_mesh_entity::launch::decode_seeds(&get(rafka_mesh_entity::launch::ENV_SEEDS).unwrap_or_default())?,
+            },
+            fabric_id_named: launch.is_some() || get(rafka_mesh_entity::launch::ENV_FABRIC_ID).is_some_and(|v| !v.trim().is_empty()),
             mesh,
             mesh_id: launch
                 .as_ref()
@@ -624,6 +634,55 @@ pub fn retire_mesh_order(members: Vec<PathName>, last_admin: Option<&PathName>) 
         ordinary.push(r.clone());
     }
     ordinary
+}
+
+/// A person-started admin that is not a restart (no row of its own in nodes.storage): what it
+/// is must be stated by its parameters, and contradictory inputs are refused by name. Day 0 is
+/// the start with no mesh, no seed and no flag on a data dir that holds nothing; a recovery start
+/// names its Fabric, its mesh, a seed and both primary flags. `holds` names what the data dir
+/// already holds, if anything.
+pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>) -> Result<(), String> {
+    if cfg.launch.is_some() {
+        return Ok(());
+    }
+    let dir = cfg.data_dir.display();
+    let recovering = cfg.mesh_primary || cfg.fabric_primary;
+    if let Some(what) = holds {
+        return Err(format!(
+            "{dir} holds {what} but no row for this admin in nodes.storage: it is neither a restart nor a fresh start, and this start will not take Day 0 or mint a Fabric, Build or MeshId over it"
+        ));
+    }
+    if recovering {
+        if !cfg.fabric_primary {
+            return Err(format!(
+                "RDM_MESH_PRIMARY without RDM_FABRIC_PRIMARY on {dir}: a mesh recovery is started by the fabric primary (it launches the admin and hands it its mesh's Pending); a person starts a fabric recovery with both flags"
+            ));
+        }
+        let mut missing = Vec::new();
+        if cfg.mesh_id.is_none() {
+            missing.push(rafka_mesh_entity::launch::ENV_MESH_ID);
+        }
+        if !cfg.fabric_id_named {
+            missing.push(rafka_mesh_entity::launch::ENV_FABRIC_ID);
+        }
+        if cfg.seeds.is_empty() {
+            missing.push(rafka_mesh_entity::launch::ENV_SEEDS);
+        }
+        if !missing.is_empty() {
+            return Err(format!("a fabric recovery on {dir} names the Fabric, the mesh and a live node to dial; missing {}", missing.join(", ")));
+        }
+    } else if cfg.mesh_id.is_some() || !cfg.seeds.is_empty() {
+        return Err(format!(
+            "{dir} is started with {} but no recovery flag: Day 0 names no mesh and no seed, and a recovery sets RDM_MESH_PRIMARY and RDM_FABRIC_PRIMARY",
+            [(cfg.mesh_id.is_some(), rafka_mesh_entity::launch::ENV_MESH_ID), (!cfg.seeds.is_empty(), rafka_mesh_entity::launch::ENV_SEEDS)]
+                .iter()
+                .filter(|(set, _)| *set)
+                .map(|(_, k)| *k)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ));
+    }
+    Ok(())
 }
 
 /// The most members of its own mesh a node-admin launch seeds beside its launcher.
@@ -1551,6 +1610,20 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         }
         _ => None,
     };
+    if restart.is_none() {
+        let holds = if fabric_storage.fabric().await.map_err(storage_err)?.is_some() {
+            Some("a Fabric record")
+        } else if !mesh_storage.meshes().await.map_err(storage_err)?.is_empty() {
+            Some("a mesh record")
+        } else if !nodes_storage.contacts().await.map_err(storage_err)?.is_empty() || !nodes_storage.runtimes().await.map_err(storage_err)?.is_empty() {
+            Some("a durable topology")
+        } else {
+            None
+        };
+        // A node-admin a launcher starts is handed its rows before it runs (runtimes): a launch
+        // owes no clean data dir.
+        refuse_contradictory_start(&cfg, holds.filter(|_| cfg.launch.is_none())).map_err(|e| format!("refusing to start: {e}"))?;
+    }
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
     // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
@@ -1595,7 +1668,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             None,
             SocketAddr::new(cfg.api_bind.ip(), 0),
             cfg.api_bind,
-            Vec::new(),
+            cfg.seeds.clone(),
         ),
     };
 
@@ -1864,6 +1937,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             if restart.is_some() {
                 tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %accepted.build_id().await.map(|b| b.0).unwrap_or_default())
                     .in_scope(|| tracing::info!("Fabric.build_id and its Build reloaded from this admin's own storage"));
+            } else if cfg.fabric_primary {
+                tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)
+                    .in_scope(|| tracing::info!("a fabric recovery accepts no Build of its own: Fabric.build_id and its Build are taken from the nodes it reaches"));
             } else if accepted.build_id().await.is_none() {
                 let b0 = crate::build_state::BuildAccepted {
                     build_id: crate::build::BuildId::mint(),
@@ -2885,5 +2961,44 @@ mod tests {
         book.record(newer.clone());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.node(&old.node.name).unwrap().incarnation_id.as_ref(), Some(&newer.node.incarnation));
+    }
+
+    fn cfg(env: &[(&str, &str)]) -> AdminConfig {
+        let env: std::collections::HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        AdminConfig::from_env(|k| env.get(k).cloned()).expect("a readable environment")
+    }
+
+    const MESH_ID: &str = "4f14h1k7m3p9";
+    const SEED: &str = "5d6b3f0e1a2c4b7d8e9f00112233445566778899aabbccddeeff001122334455@127.0.0.1:41000";
+
+    /// A person-started admin that is not a restart is exactly one of: Day 0 (no mesh, no seed, no
+    /// flag, an empty data dir) or a fabric recovery (Fabric, mesh, seed and both flags). Anything
+    /// else is refused by name, and nothing is minted over durable records.
+    #[test]
+    fn a_start_that_is_neither_day_zero_nor_a_named_recovery_is_refused_by_name() {
+        let ok = |env: &[(&str, &str)]| refuse_contradictory_start(&cfg(env), None);
+        let fabric = FabricId::mint().to_string();
+        assert_eq!(ok(&[]), Ok(()), "Day 0");
+        let recovery = [("RDM_FABRIC_ID", fabric.as_str()), ("RDM_MESH_ID", MESH_ID), ("RDM_SEEDS", SEED), ("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")];
+        assert_eq!(ok(&recovery), Ok(()), "a fabric recovery names everything it needs");
+        // Durable records without this admin's own row: never Day 0, never a mint.
+        for what in ["a Fabric record", "a mesh record", "a durable topology"] {
+            let e = refuse_contradictory_start(&cfg(&[]), Some(what)).unwrap_err();
+            assert!(e.contains(what) && e.contains("neither a restart nor a fresh start"), "{e}");
+            assert!(refuse_contradictory_start(&cfg(&recovery), Some(what)).is_err(), "a recovery start does not override durable records either");
+        }
+        // A mesh or a seed without a flag is not Day 0.
+        let e = ok(&[("RDM_MESH_ID", MESH_ID)]).unwrap_err();
+        assert!(e.contains("RDM_MESH_ID") && e.contains("no recovery flag"), "{e}");
+        assert!(ok(&[("RDM_SEEDS", SEED)]).unwrap_err().contains("RDM_SEEDS"));
+        // A recovery names what it recovers: each missing input is named.
+        let missing = ok(&[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]).unwrap_err();
+        for k in ["RDM_MESH_ID", "RDM_FABRIC_ID", "RDM_SEEDS"] {
+            assert!(missing.contains(k), "{missing}");
+        }
+        // A mesh recovery is the fabric primary's launch, not a person's.
+        assert!(ok(&[("RDM_MESH_PRIMARY", "1"), ("RDM_MESH_ID", MESH_ID), ("RDM_SEEDS", SEED)]).unwrap_err().contains("started by the fabric primary"));
+        // The fabric flag implies the mesh flag.
+        assert!(AdminConfig::from_env(|k| (k == "RDM_FABRIC_PRIMARY").then(|| "1".to_string())).unwrap_err().contains("RDM_FABRIC_PRIMARY is set without RDM_MESH_PRIMARY"));
     }
 }

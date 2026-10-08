@@ -226,3 +226,110 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
+
+/// CONTRACT (#2803 acceptance 4, 5, 8, 9, 10, node-admin-lifecycle.md §3, §4): every node-admin of
+/// the fabric is lost at once (exact SIGKILL of all four admin runtimes; the ordinary members are
+/// untouched). A person starts ONE node-admin on the former fabric primary's data dir with both
+/// primary flags (`RDM_MESH_PRIMARY`, `RDM_FABRIC_PRIMARY`). It comes back as the same node (same
+/// NodeId, a new incarnation), reconnects from its durable topology, holds the same Fabric.build_id,
+/// and the fabric restores every missing node-admin through the Build rectifier from the durable
+/// runtime rows. What must NOT happen: a Day-0 start or a new Build, a new MeshId, an ordinary
+/// member re-created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
+    let cell = "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin";
+    let dir = acceptance_dir("chaos-process", cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let shape = json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
+    ]});
+    let (status, a) = estate.post("/api/build", &shape).await;
+    assert_eq!(status, 202, "{a}");
+    let accepted = s(&a["build_id"]);
+    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
+    let want = names(&[("mesh1", 2, 2), ("mesh2", 2, 2)]);
+    let before = estate.settled(&want, Duration::from_secs(30)).await;
+    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir_of(&holder).await };
+    let mesh_ids: BTreeMap<String, String> = {
+        let mut m = BTreeMap::new();
+        for mesh in ["mesh1", "mesh2"] {
+            let (_, v) = estate.get(&format!("/api/meshes/{mesh}")).await;
+            m.insert(mesh.to_string(), s(&v["id"]));
+        }
+        m
+    };
+    let old = births(&before);
+    let old_ids: BTreeMap<String, String> = before.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+
+    // The fault: every node-admin, at once.
+    let mut killed = Vec::new();
+    for (path, pid) in estate.live_runtimes() {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if name.contains(".admin.") {
+            estate.kill_pid(pid);
+            killed.push(json!({"node": name, "pid": pid}));
+        }
+    }
+    estate.kill_bootstrap();
+    killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
+    assert_eq!(killed.len(), 4, "all four node-admins were lost: {killed:?}");
+
+    // The person starts one node-admin on the former fabric primary's data dir.
+    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.admin = base;
+    let after = estate.settled(&want, Duration::from_secs(240)).await;
+
+    let (_, fabric_after) = estate.get("/api/fabric").await;
+    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new Build: Fabric.build_id is unchanged");
+    for (mesh, id) in &mesh_ids {
+        let (_, v) = estate.get(&format!("/api/meshes/{mesh}")).await;
+        assert_eq!(&s(&v["id"]), id, "{mesh} recovered under its own MeshId");
+    }
+    let new = births(&after);
+    let new_ids: BTreeMap<String, String> = after.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    for (name, inc) in &old {
+        if name.contains(".admin.") {
+            assert_ne!(&new[name], inc, "{name}: a new birth");
+            if *name == holder {
+                assert_eq!(new_ids[name], old_ids[name], "{name}: the restarted admin is the same node");
+            }
+        } else {
+            assert_eq!(&new[name], inc, "{name}: an ordinary member is preserved, never re-created");
+        }
+    }
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == holder).collect();
+    assert!(
+        started.iter().any(|sp| sp["attributes"]["mesh_primary"] == "true" && sp["attributes"]["fabric_primary"] == "true"),
+        "the person-started admin recorded both recovery flags: {started:?}"
+    );
+    let t0 = started.iter().map(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0)).min().unwrap_or(0);
+    let recreated: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+        .into_iter()
+        .filter(|c| c["start_unix_nano"].as_u64().unwrap_or(0) >= t0 && s(&c["attributes"]["node"]).contains(".rpc."))
+        .collect();
+    assert!(recreated.is_empty(), "no ordinary member is created again: {recreated:?}");
+    let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| sp["attributes"]["build_id"] == accepted.as_str() && sp["start_unix_nano"].as_u64().unwrap_or(0) >= t0).collect();
+    assert_eq!(drift.len(), 3, "one proven-drift attempt per lost admin the restarted one did not itself replace: {drift:?}");
+
+    let result = json!({
+        "cell": cell,
+        "fabric_id": estate.fabric_id,
+        "accepted_build_id": accepted,
+        "provider": estate.owner.provider,
+        "desired_shape": shape,
+        "fabric_primary": holder,
+        "killed": killed,
+        "live_before": old.len(),
+        "live_after": new.len(),
+        "preserved_count": old.keys().filter(|n| n.contains(".rpc.")).count(),
+        "tombstoned_count": 0,
+        "created_count": drift.len(),
+    });
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}

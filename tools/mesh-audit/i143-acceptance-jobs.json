@@ -543,6 +543,12 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803 recovery_admin_restores_lost_cohort_preserves_mesh_and_build -- --exact",
           "dir": "target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build"
+        },
+        {
+          "name": "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803 fabric_recovery_restarts_one_admin_and_restores_every_missing_admin -- --exact",
+          "dir": "target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin"
         }
       ]
     }
