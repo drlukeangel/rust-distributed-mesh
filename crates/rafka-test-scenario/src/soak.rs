@@ -1067,7 +1067,12 @@ impl Driver {
             release = Box::new(move || rt2.apply(Fault::Continue).map(|a| serde_json::to_value(a).unwrap_or(Value::Null)).map_err(|r| format!("{r:?}")));
             hold_rt = Some(rt);
         }
-        let true_offline = self.rng.next() % 2 == 0;
+        // The container provider waits for the view to mark the held node unheard (pending-reconnect
+        // or dead). A true-offline mark there was measured at 81 s after the hold against the 79.5 s
+        // the tickle's two rounds derive (spans of the i143-2787-soak-container run): the coin is
+        // drawn all the same, so the schedule is the same on both providers.
+        let coin = self.rng.next() % 2 == 0;
+        let true_offline = coin && !container;
         // Control never waits on the held node's own control API: a held admin answers nothing.
         let held_base = n["admin_api_base"].as_str().map(String::from);
         self.known.retain(|b| Some(b) != held_base.as_ref());
