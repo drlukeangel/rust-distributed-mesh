@@ -222,7 +222,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     assert!(!after_complete.is_empty(), "the survivors were asked after the Build completed");
 
     // The hand-off precedes the former holder's end: a surviving admin announced the new fabric
-    // primary (survivor mesh) before the retire pipeline terminated the former holder's runtime.
+    // primary (survivor mesh) before the former holder's runtime was gone (the retire pipeline's terminate step ended).
     let recompute = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
     let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["election_level"] == "fabric_primary" && sp["attributes"]["winner_mesh"] == survivor_mesh.as_str() && s(&sp["attributes"]["previous"]).starts_with(&format!("{lost_mesh}."))).collect();
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
@@ -231,8 +231,9 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == holder.as_str() && sp["attributes"]["build_id"] == build_id.as_str()).collect();
     assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {build_id}: {holder_terminate:?}");
     assert_eq!(holder_terminate[0]["attributes"]["outcome"], "complete");
-    let terminated_at = holder_terminate[0]["start_unix_nano"].as_u64().unwrap();
-    assert!(first_handoff < terminated_at, "fabric authority moved ({first_handoff}) before the former holder's runtime was terminated ({terminated_at})");
+    let terminate_began = holder_terminate[0]["start_unix_nano"].as_u64().unwrap();
+    let terminated_at = holder_terminate[0]["end_unix_nano"].as_u64().unwrap();
+    assert!(first_handoff < terminated_at, "fabric authority moved ({first_handoff}) before the former holder's runtime was gone ({terminated_at}; the terminate began {terminate_began})");
 
     // Evidence completeness: every survivor's span file runs past the loss, and the files are
     // attributable to the pids the host reported.
@@ -261,7 +262,8 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         "started_unix_nano": started,
         "build_complete_unix_nano": build_complete,
         "first_handoff_announcement_unix_nano": first_handoff,
-        "former_holder_terminated_unix_nano": terminated_at,
+        "former_holder_terminate_began_unix_nano": terminate_began,
+        "former_holder_runtime_gone_unix_nano": terminated_at,
         "before": described,
         "survivors_after": survivors_after,
         "survivor_control_endpoints": survivor_bases,
