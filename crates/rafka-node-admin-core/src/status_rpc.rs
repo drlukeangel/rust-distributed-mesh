@@ -139,8 +139,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
             if !me.is_fabric_primary {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "fabric-primary".into() } }, None);
             }
+            // The sender's Mesh id, as this holder knows it: the ids its own Build created, else the
+            // id the Mesh's members carry in the view. The fabric seat moves to whichever admin has
+            // the lowest node id, which may hold a Mesh it never created.
             let ids = (auth.mesh_ids)();
-            let senders_mesh = ids.get(&sender.mesh);
+            let senders_mesh = ids.get(&sender.mesh).or_else(|| view.meshes.iter().find(|m| m.name == sender.mesh).and_then(|m| m.id.as_ref()));
             if !(sender.kind == NodeKind::NodeAdmin && sender.is_primary && senders_mesh == Some(mesh_id)) {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender.name.to_string() } }, None);
             }
