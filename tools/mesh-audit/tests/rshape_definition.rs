@@ -196,6 +196,14 @@ fn check_sources(files: &[(String, String)]) -> Vec<String> {
                     }
                 }
             }
+            // Every topology operation is a Build the node-admin rectifier executes
+            // (build.*.via-rest -> via-reconcile -> node.*.via-build): the consumer never starts,
+            // signals or removes a process itself.
+            for banned in ["Command::new", "process::Command", "tokio::process", "libc::kill", "nix::sys::signal", "std::process::Child"] {
+                if line.contains(banned) && !line.trim_start().starts_with("//") {
+                    v.push(format!("rshape-consumer-topology-shortcut: {path}:{} uses `{banned}`; spawn, restart, replace and delete go through a Build", i + 1));
+                }
+            }
             if l.starts_with("use ") || l.contains("::") {
                 for word in l.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
                     if let Some(krate) = word.strip_prefix("rafka_") {
@@ -326,6 +334,7 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
         "a consumer-owned planner",
         check_sources(&[("src/lib.rs".into(), "pub struct ReplacementPlanner;\n".into())]),
     );
+    plant("rshape-consumer-topology-shortcut", "a consumer that spawns a process itself", check_sources(&[("src/lib.rs".into(), "let c = std::process::Command::new(\"x\");\n".into())]));
     plant("rshape-consumer-business-dependency", "a business crate named in source", check_sources(&[("src/lib.rs".into(), "use rafka_gateway::route;\n".into())]));
 
     // The build receipt, when a build has left one: the resolved metadata is the candidate and
