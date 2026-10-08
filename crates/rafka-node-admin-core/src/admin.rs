@@ -1592,6 +1592,23 @@ fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<
     }
 }
 
+/// The Node RPC server a node-admin serves, before it seals: core (Ping), then the families the
+/// admin owns as an authority (status, build claim, join).
+pub fn rpc_server(
+    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
+    connections: Arc<crate::connections_writer::ConnectionsWriter>,
+    _client: Arc<rafka_node_rpc::NodeRpcClient>,
+    authority: crate::status_rpc::AuthoritySlot,
+    claim: crate::build_claim::ClaimSlot,
+    join: crate::join::JoinSlot,
+) -> rafka_node_rpc::ServerBuilder {
+    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(resolver, connections).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
+        let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
+        Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
+    });
+    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join)
+}
+
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
@@ -1756,11 +1773,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::default());
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
-    let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(node_rpc_resolver.clone(), connections.clone()).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
-        let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;
-        Ok(rafka_node_rpc_contract::ping::PingReply::Pong { payload })
-    });
-    let rpc_server = crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority.clone()), claim_slot.clone()), join_slot.clone())
+    // The process's one Node RPC client is made before the server: core Forward is one direct inner
+    // call through it, and every other caller in the process takes it by clone.
+    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
+    let rpc_server = rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let iroh_router = IrohRouter::builder(endpoint.clone())
@@ -1812,7 +1828,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // it, else this admin is the mesh's first and mints it.
     // The process's one Node RPC client, built before the join: the join is its first call, and
     // the membership feed starts once the process holds a book.
-    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<rafka_mesh_transport::entry::EntryAnswer> = None;
     if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
