@@ -237,14 +237,12 @@ pub enum Frame {
     NodeRestarting { op: LifecycleOp, forwarded_by: Option<String> },
     /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
-    /// restates it as its own. `published_at_rafka_ms` is the instant of THIS send: iroh-gossip
-    /// drops a message whose bytes it has seen (its id is the hash of the content, kept 90 s), so
-    /// the five sends of one change differ by this stamp or only the first would be delivered.
-    /// A holder keeps the status with the newest stamp.
-    MeshStatus { mesh: String, status: String, publisher: String, forwarded_by: Option<String>, published_at_rafka_ms: u64 },
+    /// restates it as its own. `changed_at_rafka_ms` is the instant of the CHANGE: all five sends
+    /// of one change carry the same value (gossip.md §3.1, §3.2).
+    MeshStatus { mesh: String, status: String, publisher: String, forwarded_by: Option<String>, changed_at_rafka_ms: u64 },
     /// The fabric's status, authored by the fabric primary alone; same channels, forwarding and
-    /// `published_at_rafka_ms` as [`Frame::MeshStatus`].
-    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, published_at_rafka_ms: u64 },
+    /// `changed_at_rafka_ms` as [`Frame::MeshStatus`].
+    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, changed_at_rafka_ms: u64 },
 }
 
 impl Frame {
@@ -261,7 +259,7 @@ impl Frame {
 pub struct FabricStatus {
     pub status: String,
     pub publisher: String,
-    pub published_at_rafka_ms: u64,
+    pub changed_at_rafka_ms: u64,
 }
 
 /// A mesh's status a node holds, with its publisher and the instant of the change.
@@ -269,7 +267,7 @@ pub struct FabricStatus {
 pub struct MeshStatus {
     pub status: String,
     pub publisher: String,
-    pub published_at_rafka_ms: u64,
+    pub changed_at_rafka_ms: u64,
 }
 
 /// How many times one status change is sent: at once, then once per [`STATUS_EVERY`]
@@ -279,12 +277,11 @@ pub const STATUS_SENDS: u32 = 5;
 /// The spacing of a status change's reinforcing sends.
 pub const STATUS_EVERY: Duration = Duration::from_secs(1);
 
-/// A status send: the status and the instant of the send. Each send of one change carries the
-/// same status at a later instant.
+/// A status change: the status and the instant it changed. Every send of one change carries both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusFact {
     pub status: String,
-    pub published_at_rafka_ms: u64,
+    pub changed_at_rafka_ms: u64,
 }
 
 /// The bounded reinforcement of one status: a change is sent at once, then once per second, five
@@ -299,14 +296,14 @@ pub struct StatusReinforcement {
 }
 
 impl StatusReinforcement {
-    /// The status as observed at `now` (`now_ms` stamps the send). A change returns the fact to
+    /// The status as observed at `now` (`now_ms` stamps a change). A change returns the fact to
     /// send at once (the first of its five sends) and replaces any change still being reinforced;
     /// the same status returns nothing.
     pub fn observe(&mut self, status: &str, now: Instant, now_ms: u64) -> Option<StatusFact> {
         if self.held.as_ref().is_some_and(|h| h.status == status) {
             return None;
         }
-        let fact = StatusFact { status: status.to_string(), published_at_rafka_ms: now_ms };
+        let fact = StatusFact { status: status.to_string(), changed_at_rafka_ms: now_ms };
         self.held = Some(fact.clone());
         self.sent = 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
@@ -320,18 +317,15 @@ impl StatusReinforcement {
         self.next_at = None;
     }
 
-    /// The next reinforcing send due at `now`, if any: the held status stamped `now_ms`, never at
-    /// or before the previous send's stamp.
-    pub fn due(&mut self, now: Instant, now_ms: u64) -> Option<StatusFact> {
+    /// The next reinforcing send due at `now`, if any.
+    pub fn due(&mut self, now: Instant) -> Option<StatusFact> {
         let at = self.next_at?;
         if now < at {
             return None;
         }
         self.sent += 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| at + STATUS_EVERY);
-        let held = self.held.as_mut()?;
-        held.published_at_rafka_ms = now_ms.max(held.published_at_rafka_ms + 1);
-        Some(held.clone())
+        self.held.clone()
     }
 
     /// When the next reinforcing send is due; `None` once the five sends are done.
@@ -387,10 +381,10 @@ impl StatusPublisher {
     fn frame(&self, fact: &StatusFact) -> Frame {
         match &self.scope {
             StatusScope::Mesh(mesh) => {
-                Frame::MeshStatus { mesh: mesh.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, published_at_rafka_ms: fact.published_at_rafka_ms }
+                Frame::MeshStatus { mesh: mesh.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, changed_at_rafka_ms: fact.changed_at_rafka_ms }
             }
             StatusScope::Fabric(fabric) => {
-                Frame::FabricStatus { fabric: fabric.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, published_at_rafka_ms: fact.published_at_rafka_ms }
+                Frame::FabricStatus { fabric: fabric.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, changed_at_rafka_ms: fact.changed_at_rafka_ms }
             }
         }
     }
@@ -410,12 +404,12 @@ impl StatusPublisher {
         self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
     }
 
-    /// The reinforcing send due at `now`: the same status, stamped `now_ms`.
-    pub fn due(&mut self, now: Instant, now_ms: u64) -> Option<Frame> {
+    /// The reinforcing send due at `now`: the same fact, the same instant, as the first send.
+    pub fn due(&mut self, now: Instant) -> Option<Frame> {
         if !self.role {
             return None;
         }
-        self.schedule.due(now, now_ms).map(|f| self.frame(&f))
+        self.schedule.due(now).map(|f| self.frame(&f))
     }
 
     pub fn next_due(&self) -> Option<Instant> {
@@ -424,7 +418,7 @@ impl StatusPublisher {
 }
 
 /// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
-/// frame older than the one held is refused by name, the same one again changes nothing.
+/// frame older than the one held is refused by name, the same one again is taken once.
 #[derive(Debug, Clone, Default)]
 pub struct StatusBook {
     meshes: Arc<Mutex<HashMap<String, MeshStatus>>>,
@@ -435,30 +429,32 @@ impl StatusBook {
     /// Hold what `f` carries if it is newer than what is held; whether it was taken.
     pub fn take(&self, f: &Frame, fabric: &FabricId) -> bool {
         match f {
-            Frame::MeshStatus { mesh, status, publisher, published_at_rafka_ms, .. } => {
+            Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
                 let mut held = self.meshes.lock().unwrap();
-                if Self::refuse(held.get(mesh).map(|h| h.published_at_rafka_ms), *published_at_rafka_ms, &format!("mesh {mesh}")) {
+                if Self::refuse(held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms)), (publisher.as_str(), *changed_at_rafka_ms), &format!("mesh {mesh}")) {
                     return false;
                 }
-                held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), published_at_rafka_ms: *published_at_rafka_ms });
+                held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
                 true
             }
-            Frame::FabricStatus { fabric: f, status, publisher, published_at_rafka_ms, .. } if f == fabric => {
+            Frame::FabricStatus { fabric: f, status, publisher, changed_at_rafka_ms, .. } if f == fabric => {
                 let mut held = self.fabric.lock().unwrap();
-                if Self::refuse(held.as_ref().map(|h| h.published_at_rafka_ms), *published_at_rafka_ms, "the fabric") {
+                if Self::refuse(held.as_ref().map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms)), (publisher.as_str(), *changed_at_rafka_ms), "the fabric") {
                     return false;
                 }
-                *held = Some(FabricStatus { status: status.clone(), publisher: publisher.clone(), published_at_rafka_ms: *published_at_rafka_ms });
+                *held = Some(FabricStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
                 true
             }
             _ => false,
         }
     }
 
-    fn refuse(held: Option<u64>, offered: u64, what: &str) -> bool {
+    /// A repeat of the change already held (same publisher, same `changed_at_rafka_ms`) changes
+    /// nothing; a change older than the held one is refused by name.
+    fn refuse(held: Option<(&str, u64)>, offered: (&str, u64), what: &str) -> bool {
         match held {
-            Some(h) if offered < h => {
-                tracing::info!(reason = "older-than-held", what, held_at_rafka_ms = h, offered_at_rafka_ms = offered, "a status older than the one held is refused");
+            Some((_, h)) if offered.1 < h => {
+                tracing::info!(reason = "older-than-held", what, held_at_rafka_ms = h, offered_at_rafka_ms = offered.1, "a status older than the one held is refused");
                 true
             }
             Some(h) => h == offered,
@@ -483,11 +479,11 @@ impl StatusBook {
             .lock()
             .unwrap()
             .iter()
-            .map(|(mesh, h)| Frame::MeshStatus { mesh: mesh.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), published_at_rafka_ms: h.published_at_rafka_ms })
+            .map(|(mesh, h)| Frame::MeshStatus { mesh: mesh.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms })
             .collect();
         out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f { mesh.clone() } else { String::new() });
         if let Some(h) = self.fabric.lock().unwrap().as_ref() {
-            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), published_at_rafka_ms: h.published_at_rafka_ms });
+            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms });
         }
         out
     }
@@ -505,11 +501,11 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, published_at_rafka_ms } if mesh != own_mesh => {
-            Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms })
+        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
+            Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
-        Frame::FabricStatus { fabric, status, publisher, forwarded_by: None, published_at_rafka_ms } if publisher != me => {
-            Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms })
+        Frame::FabricStatus { fabric, status, publisher, forwarded_by: None, changed_at_rafka_ms } if publisher != me => {
+            Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
         _ => None,
     }
@@ -1205,8 +1201,7 @@ impl Backbone {
                     None => me.wake.notified().await,
                 }
                 let now = Instant::now();
-                let at_ms = now_ms();
-                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now, at_ms), me.fabric_status.lock().unwrap().due(now, at_ms)].into_iter().flatten().collect();
+                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
                 for f in due {
                     me.send_status(&f).await;
                 }
@@ -1216,6 +1211,13 @@ impl Backbone {
 
     /// One status send: the backbone, the author's own mesh channel, and its own view.
     async fn send_status(&self, f: &Frame) {
+        let (scope, status, changed_at) = match f {
+            Frame::MeshStatus { mesh, status, changed_at_rafka_ms, .. } => (format!("mesh:{mesh}"), status.as_str(), *changed_at_rafka_ms),
+            Frame::FabricStatus { fabric, status, changed_at_rafka_ms, .. } => (format!("fabric:{fabric}"), status.as_str(), *changed_at_rafka_ms),
+            _ => return,
+        };
+        tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.node, scope = %scope, status, changed_at_rafka_ms = changed_at)
+            .in_scope(|| tracing::info!("status sent"));
         let _ = self.channel.broadcast(f).await;
         let _ = self.membership.forward(f).await;
         let _ = self.membership.view.take(f, &self.fabric, "mesh-channel");
@@ -1229,8 +1231,8 @@ impl Backbone {
         let (now, now_ms) = (Instant::now(), now_ms());
         let first: Vec<Frame> = {
             let view = &self.membership.view;
-            let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, published_at_rafka_ms: h.published_at_rafka_ms });
-            let heard_fabric = view.statuses.fabric().map(|h| StatusFact { status: h.status, published_at_rafka_ms: h.published_at_rafka_ms });
+            let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
+            let heard_fabric = view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
             [self.mesh_status.lock().unwrap().observe(mesh_status, heard_mesh, now, now_ms), self.fabric_status.lock().unwrap().observe(fabric_status, heard_fabric, now, now_ms)]
                 .into_iter()
                 .flatten()

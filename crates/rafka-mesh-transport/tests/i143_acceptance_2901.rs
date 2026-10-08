@@ -3,8 +3,8 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span this process
 //! emitted, captured in-process by the evidence exporter) there.
 //!
-//! CONTRACT: a status change is sent at once and then once per second, five sends in all, each
-//! send the same status stamped at its own send (iroh-gossip delivers a given byte string once); a status that did not change sends nothing; only
+//! CONTRACT: a status change is sent at once and then once per second, five sends in all, every
+//! send carrying the one instant of the change; a status that did not change sends nothing; only
 //! the node holding the primary role authors a status frame; a forwarding primary keeps the
 //! original publisher; and no status travels inside `Members`.
 
@@ -41,7 +41,7 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
 
 fn ts(f: &Frame) -> u64 {
     match f {
-        Frame::MeshStatus { published_at_rafka_ms, .. } | Frame::FabricStatus { published_at_rafka_ms, .. } => *published_at_rafka_ms,
+        Frame::MeshStatus { changed_at_rafka_ms, .. } | Frame::FabricStatus { changed_at_rafka_ms, .. } => *changed_at_rafka_ms,
         other => panic!("not a status frame: {other:?}"),
     }
 }
@@ -66,7 +66,7 @@ fn sweep(p: &mut StatusPublisher, base: Instant, from: Duration, span: Duration,
     let mut out = Vec::new();
     let mut t = from;
     while t <= from + span {
-        if let Some(f) = p.due(base + t, 1_000 + t.as_millis() as u64) {
+        if let Some(f) = p.due(base + t) {
             out.push((t.as_millis() as u64, f));
         }
         t += step;
@@ -79,7 +79,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let cell = "status_publisher_reinforces_changed_state_five_times_then_stops";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RAFKA_EVIDENCE_DIR", &dir);
+    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-acceptance");
 
     let fabric = FabricId::mint();
@@ -99,15 +99,13 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     assert_eq!(offsets, vec![1000, 2000, 3000, 4000], "four repeats, one per second after the first send, then nothing for two minutes");
     let sends: Vec<&Frame> = std::iter::once(&first).chain(repeats.iter().map(|(_, f)| f)).collect();
     assert_eq!(sends.len(), 5, "five sends in all");
-    let stamps: Vec<u64> = sends.iter().map(|f| ts(f)).collect();
-    assert_eq!(stamps, vec![1_000, 2_000, 3_000, 4_000, 5_000], "each send is stamped at its own instant");
-    let distinct: std::collections::BTreeSet<Vec<u8>> = sends.iter().map(|f| f.encode()).collect();
-    assert_eq!(distinct.len(), 5, "five byte-distinct frames: iroh-gossip would drop a repeat of the same bytes");
     for f in &sends {
+        assert_eq!(ts(f), 1_000, "all five sends carry the instant of the change");
         assert_eq!(publisher_of(f), me, "authored by the publisher itself");
         assert_eq!(status_of(f), "pending");
         assert!(matches!(f, Frame::MeshStatus { mesh, forwarded_by: None, .. } if mesh == "mesh1"));
     }
+    assert_eq!(sends[0].encode(), sends[4].encode(), "the fifth send is the first, byte for byte");
 
     // The same status observed again, however often, sends nothing.
     let mut unchanged_sends = 0;
@@ -115,7 +113,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         if mesh.observe("pending", None, base + ms(130_000 + k * 100), 99_999).is_some() {
             unchanged_sends += 1;
         }
-        if mesh.due(base + ms(130_000 + k * 100), 99_999).is_some() {
+        if mesh.due(base + ms(130_000 + k * 100)).is_some() {
             unchanged_sends += 1;
         }
     }
@@ -125,12 +123,12 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let mut fabric_pub = StatusPublisher::new(me, StatusScope::Fabric(fabric.clone()));
     fabric_pub.set_role(true);
     let a = fabric_pub.observe("pending", None, base, 10).unwrap();
-    let a2 = fabric_pub.due(base + ms(1000), 1_010).unwrap();
+    let a2 = fabric_pub.due(base + ms(1000)).unwrap();
     let b = fabric_pub.observe("ready-for-traffic", None, base + ms(1500), 20).unwrap();
     let rest = sweep(&mut fabric_pub, base, ms(1500), Duration::from_secs(30), ms(100));
-    assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 1_010, 20));
+    assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 10, 20));
     assert_eq!(rest.len(), 4, "the new change is repeated four times after its first send");
-    assert!(rest.iter().all(|(_, f)| ts(f) > 20 && status_of(f) == "ready-for-traffic"), "no repeat of the replaced change follows");
+    assert!(rest.iter().all(|(_, f)| ts(f) == 20 && status_of(f) == "ready-for-traffic"), "no repeat of the replaced change follows");
 
     // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
     let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
@@ -142,19 +140,19 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     // A successor that hears the status it observes adopts it and authors nothing.
     let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
     successor.set_role(true);
-    let heard = rafka_mesh_transport::membership::StatusFact { status: "ready-for-traffic".into(), published_at_rafka_ms: 2 };
+    let heard = rafka_mesh_transport::membership::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
     assert!(successor.observe("ready-for-traffic", Some(heard), base, 77).is_none(), "the status the previous publisher published is not published again");
     assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty());
 
     // Forwarding: a peer mesh's primary keeps the original publisher and instant, names itself
     // only in forwarded_by, never forwards its own mesh's status, and forwards only what an author sent.
     let fwd = forward_of(first.clone(), peer, "mesh2").expect("a peer mesh's status is forwarded");
-    assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), published_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
+    assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
     assert!(forward_of(first.clone(), me, "mesh1").is_none(), "a primary does not forward its own mesh's status");
     assert!(forward_of(fwd.clone(), "mesh3.admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
     let fab = fabric_pub.observe("draining", None, base + ms(200_000), 30).unwrap();
     let fab_fwd = forward_of(fab.clone(), peer, "mesh2").unwrap();
-    assert!(matches!(&fab_fwd, Frame::FabricStatus { publisher, forwarded_by: Some(by), published_at_rafka_ms: 30, .. } if publisher == me && by == peer));
+    assert!(matches!(&fab_fwd, Frame::FabricStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 30, .. } if publisher == me && by == peer));
     assert!(forward_of(fab, me, "mesh1").is_none(), "the fabric primary does not forward its own status");
 
     // A holder keeps a status until the next change, refuses an older one, and replays the
@@ -162,12 +160,12 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let book = StatusBook::default();
     assert!(book.take(&fwd, &fabric));
     assert!(!book.take(&fwd, &fabric), "the same frame again is not taken twice");
-    let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: me.into(), forwarded_by: None, published_at_rafka_ms: 500 };
+    let older = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: me.into(), forwarded_by: None, changed_at_rafka_ms: 500 };
     assert!(!book.take(&older, &fabric), "an older status is refused");
     assert_eq!(book.mesh("mesh1").unwrap().status, "pending");
     let replay = book.held_frames(&fabric, peer);
     assert_eq!(replay.len(), 1);
-    assert!(matches!(&replay[0], Frame::MeshStatus { publisher, forwarded_by: Some(by), published_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
+    assert!(matches!(&replay[0], Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
     let own = book.held_frames(&fabric, me);
     assert!(matches!(&own[0], Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
 
@@ -196,8 +194,11 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let (m, f) = (membership.mesh_status("mesh1").expect("the mesh status is held"), membership.fabric_status().expect("the fabric status is held"));
     assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready-for-traffic"));
     assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready-for-traffic"));
+    // The real status sender runs on the real clock: its five sends are the spans below.
+    tokio::time::sleep(Duration::from_millis(5_500)).await;
     backbone.announce_statuses("ready-for-traffic", "ready-for-traffic").await;
-    assert_eq!(membership.mesh_status("mesh1").unwrap().published_at_rafka_ms, m.published_at_rafka_ms, "an unchanged status is not published again");
+    assert_eq!(membership.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
     backbone.set_mesh_primary(false);
     backbone.set_fabric_primary(false);
     endpoint.close().await;
@@ -208,21 +209,46 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     let role_of = |r: &str| roles.iter().filter(|s| s["attributes"]["role"] == r).count();
     assert_eq!((role_of("start"), role_of("stop")), (1, 1), "the fabric publisher role started and stopped once: {roles:?}");
 
+    // The five sends, proven at the SENDER by its own span for each send: one `via-status-send`
+    // per send, the first at once and the rest one second apart, every one carrying the SAME
+    // changed_at_rafka_ms, and none after the fifth nor for the unchanged announce nor before the role.
+    let sends_of = |scope: String| -> Vec<(u64, u64)> {
+        let mut v: Vec<(u64, u64)> = spans
+            .iter()
+            .filter(|s| s["name"] == "rdm.mesh.fabric.update.via-status-send" && s["attributes"]["node"] == me && s["attributes"]["scope"] == scope.as_str())
+            .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["attributes"]["changed_at_rafka_ms"].as_str().unwrap().parse::<u64>().unwrap()))
+            .collect();
+        v.sort();
+        v
+    };
+    let mut sender_proof = serde_json::Map::new();
+    for (label, scope, held_at) in [("mesh", "mesh:mesh1".to_string(), m.changed_at_rafka_ms), ("fabric", format!("fabric:{fabric}"), f.changed_at_rafka_ms)] {
+        let sends = sends_of(scope.clone());
+        assert_eq!(sends.len(), 5, "{label}: five send spans for one change, none for the unchanged announce, none before the role: {sends:?}");
+        assert!(sends.iter().all(|(_, at)| *at == held_at), "{label}: all five sends carry the one changed_at_rafka_ms {held_at}: {sends:?}");
+        let offsets_ms: Vec<u64> = sends.iter().map(|(t, _)| (t - sends[0].0) / 1_000_000).collect();
+        for (k, o) in offsets_ms.iter().enumerate() {
+            assert!((k as u64 * 1_000..k as u64 * 1_000 + 500).contains(o), "{label}: send {k} is due {k} s after the first: {offsets_ms:?}");
+        }
+        sender_proof.insert(label.into(), json!({ "scope": scope, "send_offsets_ms": offsets_ms, "changed_at_rafka_ms": held_at }));
+    }
+
     let result = json!({
         "cell": cell,
+        "sender_send_spans": sender_proof,
         "clock": "fake: Instant offsets from one base, stepped by the cell; no sleeping",
         "sends_per_change": STATUS_SENDS,
         "send_offsets_ms": std::iter::once(0u64).chain(offsets.iter().copied()).collect::<Vec<_>>(),
-        "send_published_at_rafka_ms": sends.iter().map(|f| ts(f)).collect::<Vec<_>>(),
+        "send_changed_at_rafka_ms": sends.iter().map(|f| ts(f)).collect::<Vec<_>>(),
         "send_publishers": sends.iter().map(|f| publisher_of(f)).collect::<Vec<_>>(),
         "sends_after_fifth_over_two_minutes": 0,
         "unchanged_observations": 600,
         "unchanged_sends": unchanged_sends,
         "replaced_change_repeats_after_replacement": rest.len(),
-        "forwarded": { "publisher": publisher_of(&fwd), "forwarded_by": peer, "published_at_rafka_ms": ts(&fwd) },
+        "forwarded": { "publisher": publisher_of(&fwd), "forwarded_by": peer, "changed_at_rafka_ms": ts(&fwd) },
         "members_frame_keys": keys,
-        "held_mesh_status": { "publisher": m.publisher, "status": m.status, "published_at_rafka_ms": m.published_at_rafka_ms },
-        "held_fabric_status": { "publisher": f.publisher, "status": f.status, "published_at_rafka_ms": f.published_at_rafka_ms },
+        "held_mesh_status": { "publisher": m.publisher, "status": m.status, "changed_at_rafka_ms": m.changed_at_rafka_ms },
+        "held_fabric_status": { "publisher": f.publisher, "status": f.status, "changed_at_rafka_ms": f.changed_at_rafka_ms },
         "publisher_role_spans": roles.iter().map(|s| json!({ "role": s["attributes"]["role"], "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),
         "spans_read": spans.len(),
     });

@@ -3886,6 +3886,10 @@ dependencies = [
 name = "rafka-test-scenario"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "futures-lite",
+ "iroh",
+ "iroh-gossip",
  "libc",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -3893,6 +3897,7 @@ dependencies = [
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
+ "rafka-node-rpc",
  "rafka-node-rpc-contract",
  "reqwest",
  "serde",
