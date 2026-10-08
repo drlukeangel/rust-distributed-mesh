@@ -3843,6 +3843,8 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-gossip",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
@@ -3854,6 +3856,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
