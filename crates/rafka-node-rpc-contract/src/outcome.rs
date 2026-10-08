@@ -64,6 +64,9 @@ pub enum NotSentReason {
     FrameNotSent,
     /// A carrier proved the inner call never committed at the final target.
     Carried(String),
+    /// The carrier's own Direct edge to the final target is not Active, so it made no inner call
+    /// that arrived; the string is the carrier's own account of that edge.
+    CarrierEdgeLost(String),
     /// The protocol is not forwardable, so it never travels through a carrier.
     NotForwardable { op: u8 },
     /// Connections chose no route to the exact target: no leg was started.
@@ -379,6 +382,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         ForwardReply::InnerUnserved { op } => RpcOutcome::Unserved(Unserved { op }),
         ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id: target_node_id.into() }),
         ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
+        ForwardReply::CarrierEdgeLost { reason } => not_sent(NotSentReason::CarrierEdgeLost(reason)),
         ForwardReply::NotForwardable { op } => not_sent(NotSentReason::NotForwardable { op }),
         // The carrier refused the forward itself, before any inner call.
         ForwardReply::PeerUnresolved { reason }

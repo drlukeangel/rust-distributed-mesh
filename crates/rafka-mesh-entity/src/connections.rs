@@ -15,14 +15,39 @@
 //!
 //! [`resolve`] answers how a new invocation from this node reaches one exact destination under
 //! its protocol's [`CarrierPolicy`]: a valid own Proxy, else an active Direct, else no route.
-//! A Proxy is valid only while the carrier's own active Direct edge to the destination stands and
-//! names the destination process and the carrier process the Proxy recorded; a superseded
-//! destination or carrier incarnation is fenced by name.
+//! A Proxy is valid only while the destination process and the carrier process it recorded are the
+//! ones membership holds now (a superseded one is fenced by name) and the carrier's own Direct
+//! edge to the destination is Active. The incarnations reach the source through membership
+//! ([`CurrentIncarnations`]); the carrier's edge is the carrier's own fact, learned from the
+//! carried call that returns `carrier-edge-lost` (connections.md section 8), never held here.
+//! A Direct fact naming a destination process membership no longer holds is not current either.
 
 use crate::ids::{IncarnationId, NodeId};
 use crate::path::{NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// Which process birth each path holds now, as the holder's membership knows it. Facts, never
+/// policy: `None` means membership does not hold the path, and then nothing is fenced.
+pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
+    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId>;
+}
+
+/// A fixed table of current process births per path: membership for a holder fed by hand.
+#[derive(Debug, Default)]
+pub struct StaticIncarnations(std::sync::RwLock<HashMap<PathName, IncarnationId>>);
+
+impl StaticIncarnations {
+    pub fn set(&self, path: PathName, incarnation: IncarnationId) {
+        self.0.write().unwrap().insert(path, incarnation);
+    }
+}
+
+impl CurrentIncarnations for StaticIncarnations {
+    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
+        self.0.read().unwrap().get(path).cloned()
+    }
+}
 
 /// An entry's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -139,6 +164,8 @@ pub struct ConnectionsHeld {
     /// This node's latest Direct entry per destination, whatever its state: what its reconnect
     /// series is reconstructed from.
     own_directs: HashMap<PathName, NodeConnection>,
+    /// Membership's current process birth per path; absent until the holder is given one.
+    membership: Option<std::sync::Arc<dyn CurrentIncarnations>>,
 }
 
 /// Why an entry was not applied.
@@ -192,6 +219,25 @@ impl ConnectionsHeld {
         }
     }
 
+    /// Give the holder the membership its incarnation judgements read.
+    pub fn set_membership(&mut self, membership: std::sync::Arc<dyn CurrentIncarnations>) {
+        self.membership = Some(membership);
+    }
+
+    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
+        self.membership.as_ref().and_then(|m| m.current_incarnation(path))
+    }
+
+    /// Whether `edge` names a destination process membership no longer holds at the
+    /// destination's path: such a fact is evidence about a birth that is gone, never about the
+    /// current one. An edge naming no process, or a path membership does not hold, is not judged.
+    pub fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
+        match (edge.destination.incarnation.as_ref(), self.current_incarnation(&edge.destination.name)) {
+            (Some(named), Some(current)) => *named != current,
+            _ => false,
+        }
+    }
+
     /// The holder now has every route.
     pub fn mark_complete(&mut self) {
         self.complete = true;
@@ -239,14 +285,19 @@ impl ConnectionsHeld {
         Some(self.cells.get(&key).and_then(|c| c.active.as_ref()))
     }
 
-    /// Every active Direct fact whose destination is `destination`, sorted by source; `None` when
-    /// the holder is not complete.
+    /// Every active Direct fact whose destination is `destination`, sorted by source, leaving out
+    /// a fact that names a superseded destination process; `None` when the holder is not
+    /// complete.
     pub fn active_directs_to(&self, destination: &PathName) -> Option<Vec<&NodeConnection>> {
         if !self.complete {
             return None;
         }
-        let mut out: Vec<&NodeConnection> =
-            self.cells.values().filter_map(|c| c.active.as_ref()).filter(|e| &e.destination.name == destination).collect();
+        let mut out: Vec<&NodeConnection> = self
+            .cells
+            .values()
+            .filter_map(|c| c.active.as_ref())
+            .filter(|e| &e.destination.name == destination && !self.names_superseded_destination(e))
+            .collect();
         out.sort_by(|a, b| a.source.name.cmp(&b.source.name));
         Some(out)
     }
@@ -271,7 +322,7 @@ pub enum CarrierPolicy {
     Forwardable { carrier_kind: NodeKind },
 }
 
-/// The carrier's active Direct edge to the destination is gone, or names no destination process.
+/// The carrier's own Direct edge to the destination is not Active: the carried call answered it.
 pub const INVALID_CARRIER_EDGE_LOST: &str = "carrier-edge-lost";
 /// The carrier's edge names another carrier process than the Proxy recorded.
 pub const INVALID_CARRIER_SUPERSEDED: &str = "carrier-incarnation-superseded";
@@ -281,8 +332,9 @@ pub const INVALID_DESTINATION_SUPERSEDED: &str = "destination-incarnation-supers
 /// How a new invocation reaches its destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectiveRoute {
-    /// Dial the destination directly. `known` is `false` when the holder is not complete, so the
-    /// Direct graph could not be read and the direct dial is the only thing to try.
+    /// Dial the destination directly. `known` is `false` when no current Direct fact is held: the
+    /// holder is not complete, or the Direct fact it holds names a destination process that is
+    /// gone. The direct dial is the only thing to try.
     Direct { known: bool },
     /// Forward through `carrier`: the valid own Proxy `proxy` names it.
     ViaPeer { carrier: PathName, proxy: NodeConnection },
@@ -295,7 +347,7 @@ impl EffectiveRoute {
     pub fn token(&self) -> &'static str {
         match self {
             EffectiveRoute::Direct { known: true } => "direct",
-            EffectiveRoute::Direct { known: false } => "projection-incomplete",
+            EffectiveRoute::Direct { known: false } => "direct-unknown",
             EffectiveRoute::ViaPeer { .. } => "via-peer",
             EffectiveRoute::NoActiveRoute => "no-active-route",
         }
@@ -309,23 +361,23 @@ pub struct RouteResolution {
     pub retire: Option<(NodeConnection, &'static str)>,
 }
 
-/// Why `proxy` is not valid now over `held`, or `None` when it is.
+/// Why `proxy` is not valid now over `held`, or `None` when it is. The destination and carrier
+/// processes it recorded must be the ones membership holds at their paths now. The carrier's own
+/// Direct edge to the destination is not judged here: it is the carrier's fact, and the carried
+/// call answers `carrier-edge-lost` when it is not Active.
 pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&'static str> {
     let Some(carrier) = proxy.carrier.as_ref() else {
         return Some(INVALID_CARRIER_EDGE_LOST);
     };
-    let edge = match held.active_direct(&carrier.name, &proxy.destination.name) {
-        Some(Some(edge)) => edge,
-        _ => return Some(INVALID_CARRIER_EDGE_LOST),
-    };
-    let Some(current_destination) = edge.destination.incarnation.as_ref() else {
-        return Some(INVALID_CARRIER_EDGE_LOST);
-    };
-    if proxy.destination.incarnation.as_ref() != Some(current_destination) {
-        return Some(INVALID_DESTINATION_SUPERSEDED);
+    if let (Some(recorded), Some(current)) = (proxy.destination.incarnation.as_ref(), held.current_incarnation(&proxy.destination.name)) {
+        if *recorded != current {
+            return Some(INVALID_DESTINATION_SUPERSEDED);
+        }
     }
-    if carrier.incarnation.is_none() || edge.source.incarnation != carrier.incarnation {
-        return Some(INVALID_CARRIER_SUPERSEDED);
+    if let (Some(recorded), Some(current)) = (carrier.incarnation.as_ref(), held.current_incarnation(&carrier.name)) {
+        if *recorded != current {
+            return Some(INVALID_CARRIER_SUPERSEDED);
+        }
     }
     None
 }
@@ -350,6 +402,9 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
         }
     }
     let route = match held.active_direct(own, destination) {
+        // A Direct fact naming a destination process that is gone is no evidence about the
+        // current one: the dial is the only thing to try.
+        Some(Some(edge)) if held.names_superseded_destination(edge) => EffectiveRoute::Direct { known: false },
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
         Some(None) => EffectiveRoute::NoActiveRoute,
         None => EffectiveRoute::Direct { known: false },

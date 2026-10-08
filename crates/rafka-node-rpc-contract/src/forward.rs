@@ -48,6 +48,11 @@ pub enum ForwardReply {
     Draining { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
+    /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
+    /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
+    /// toward the target. The origin retires its Proxy through this carrier with the structural
+    /// reason `carrier-edge-lost`.
+    CarrierEdgeLost { reason: String },
 }
 
 impl NodeProtocol for Forward {
@@ -57,7 +62,7 @@ impl NodeProtocol for Forward {
     const MAX_REPLY_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 12;
+    const REPLY_VARIANTS: u32 = 13;
 
     type Request = ForwardRequest;
     type Reply = ForwardReply;
@@ -69,7 +74,8 @@ impl NodeProtocol for Forward {
             | ForwardReply::InnerUnserved { .. }
             | ForwardReply::InnerRejectedStale { .. }
             | ForwardReply::InnerIndeterminate { .. }
-            | ForwardReply::NotForwardable { .. } => ReplyKind::ProtocolRefusal,
+            | ForwardReply::NotForwardable { .. }
+            | ForwardReply::CarrierEdgeLost { .. } => ReplyKind::ProtocolRefusal,
             ForwardReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ForwardReply::NotReady { .. } => ReplyKind::NotReady,
             ForwardReply::Busy { .. } => ReplyKind::Busy,
@@ -124,6 +130,7 @@ mod tests {
             ForwardReply::Draining { reason: "d".into() },
             ForwardReply::Malformed { kind: MalformedKind::Corrupt },
             ForwardReply::Unauthorized { reason: "u".into() },
+            ForwardReply::CarrierEdgeLost { reason: "e".into() },
         ];
         assert_eq!(replies.len() as u32, Forward::REPLY_VARIANTS);
         for r in replies {

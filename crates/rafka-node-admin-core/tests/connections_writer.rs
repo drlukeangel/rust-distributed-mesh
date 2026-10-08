@@ -241,3 +241,29 @@ async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
     assert!(storage.history().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "the retirement joined the raw log");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The carrier's account of its own edge (connections.md section 8): a Failed or Disconnected
+/// latest Direct toward the exact node is named; a Connected one and no fact at all are not.
+///
+/// CONTRACT: `edge_not_active` reports the carrier's own latest Direct fact toward the exact node
+/// and nothing else: no fact is "not named", never "lost".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected() {
+    use rafka_node_rpc::CarrierEdges;
+    let dir = data_dir("edges");
+    let (me, dest) = (end("mesh1.rpc.2"), end("mesh1.rpc.3"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&dir).unwrap());
+    let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
+    writer.hydrate().await.unwrap();
+    assert_eq!(writer.edge_not_active(&dest.node_id), None, "no fact is not an edge fact");
+    writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
+    assert_eq!(writer.edge_not_active(&dest.node_id), None, "a Connected edge is Active");
+    let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 20);
+    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    failed.reason = Some("dial failed".into());
+    writer.record(failed).await.unwrap();
+    let why = writer.edge_not_active(&dest.node_id).expect("a Failed edge is not Active");
+    assert_eq!(why, "mesh1.rpc.2 -> mesh1.rpc.3 Direct failed (dial failed)");
+    assert_eq!(writer.edge_not_active(&NodeId::mint()), None, "another node's edge is not named");
+    let _ = std::fs::remove_dir_all(&dir);
+}

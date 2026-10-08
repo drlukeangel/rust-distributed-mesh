@@ -214,6 +214,9 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
         )),
         Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
     ));
+    // Membership's current process births: how the held projection judges a Proxy's recorded
+    // destination and carrier, and a Direct fact's destination (connections.md section 8).
+    connections.held().lock().unwrap().set_membership(resolver.clone());
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     // An owed Proxy retirement whose write was refused is attempted again while owed
     // (connections.md §10); the task ends with the process.
@@ -227,7 +230,7 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
     let server = serve_kick(register(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone())), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
-        .serve_forward(client.clone())
+        .serve_forward_with_edges(client.clone(), connections.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());

@@ -295,3 +295,19 @@ impl ConnectionObserver for ConnectionsWriter {
         self.observed(self.direct(end_of(node), ConnectionState::Disconnected, Some(reason.to_string())), "dial");
     }
 }
+
+impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
+    fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
+        let held = self.inner.held.lock().unwrap();
+        let latest = held.own_latest_directs().into_iter().find(|d| &d.destination.node_id == target)?;
+        (latest.state != ConnectionState::Connected).then(|| {
+            format!(
+                "{} -> {} Direct {}{}",
+                latest.source.name,
+                latest.destination.name,
+                state_name(latest.state),
+                latest.reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default()
+            )
+        })
+    }
+}

@@ -1519,6 +1519,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The process's one live-node resolver: the client's and the server's (an accepted
     // connection's peer is named by it).
     let node_rpc_resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+    connections.held().lock().unwrap().set_membership(node_rpc_resolver.clone());
     let authority: crate::status_rpc::AuthoritySlot = Arc::new(std::sync::OnceLock::new());
     let core = rafka_node_rpc::ServerBuilder::new().with_connection_observer(node_rpc_resolver.clone(), connections.clone()).serve::<rafka_node_rpc_contract::ping::Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: rafka_node_rpc_contract::ping::PingRequest| async move {
         let rafka_node_rpc_contract::ping::PingRequest::Ping { payload } = req;

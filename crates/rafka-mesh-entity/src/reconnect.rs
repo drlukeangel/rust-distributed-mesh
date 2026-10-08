@@ -135,7 +135,7 @@ pub fn first_failure(
 pub fn owed_retirements(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()
         .into_iter()
-        .filter(|p| matches!(held.active_direct(&p.source.name, &p.destination.name), Some(Some(_))))
+        .filter(|p| matches!(held.active_direct(&p.source.name, &p.destination.name), Some(Some(edge)) if !held.names_superseded_destination(edge)))
         .map(|p| NodeConnection {
             state: ConnectionState::Disconnected,
             reason: Some(DIRECT_RESTORED.into()),

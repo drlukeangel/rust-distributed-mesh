@@ -3,10 +3,11 @@
 
 use rafka_mesh_entity::connections::{
     proxy_invalid, resolve, select_carrier, ApplyRefusal, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState,
-    ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection, INVALID_CARRIER_EDGE_LOST, INVALID_CARRIER_SUPERSEDED,
+    ConnectionsHeld, DirectRecovery, EffectiveRoute, NodeConnection, StaticIncarnations, INVALID_CARRIER_SUPERSEDED,
     INVALID_DESTINATION_SUPERSEDED,
 };
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+use std::sync::Arc;
 
 fn path(kind: NodeKind, ordinal: u32) -> PathName {
     PathName { mesh: "mesh1".into(), kind, ordinal }
@@ -104,14 +105,25 @@ fn an_incomplete_projection_answers_a_direct_dial_it_cannot_vouch_for() {
     assert!(select_carrier(&held, &own, &path(NodeKind::RpcNode, 3), RPC).unwrap_err().contains("not complete"));
 }
 
+/// Membership names `own`, `carrier` and `dest` as `estate()` recorded them.
+fn members(held: &mut ConnectionsHeld, ends: &[&ConnectionEnd]) -> Arc<StaticIncarnations> {
+    let m = Arc::new(StaticIncarnations::default());
+    for e in ends {
+        m.set(e.name.clone(), e.incarnation.clone().unwrap());
+    }
+    held.set_membership(m.clone());
+    m
+}
+
 #[test]
 fn a_stale_destination_incarnation_is_fenced() {
     let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    // The destination restarts: the carrier's edge now names process d2.
-    let restarted = ConnectionEnd { incarnation: Some(IncarnationId("d2".into())), ..dest.clone() };
-    held.apply(direct(carrier.clone(), restarted, ConnectionState::Connected, 40)).unwrap();
+    assert_eq!(proxy_invalid(&held, &p), None, "membership holds the birth the Proxy recorded");
+    // The destination restarts: membership now holds process d2 at its path.
+    m.set(dest.name.clone(), IncarnationId("d2".into()));
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
     assert_eq!(r.route, EffectiveRoute::NoActiveRoute);
@@ -121,20 +133,46 @@ fn a_stale_destination_incarnation_is_fenced() {
 #[test]
 fn a_stale_carrier_incarnation_is_fenced() {
     let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    let restarted = ConnectionEnd { incarnation: Some(IncarnationId("c2".into())), ..carrier.clone() };
-    held.apply(direct(restarted, dest.clone(), ConnectionState::Connected, 40)).unwrap();
+    m.set(carrier.name.clone(), IncarnationId("c2".into()));
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_SUPERSEDED));
 }
 
+/// CONTRACT: the carrier's own Direct edge is the carrier's fact (connections.md section 8). A
+/// source whose held graph does not hold it still keeps its Proxy valid; a Disconnected edge it
+/// does hold changes nothing either, because the carried call, not this read, answers
+/// `carrier-edge-lost`.
 #[test]
-fn a_proxy_whose_carrier_lost_its_edge_is_invalid() {
-    let (mut held, own, carrier, dest) = estate();
+fn a_proxy_is_valid_without_the_carriers_edge_in_the_sources_held_graph() {
+    let (own, carrier, dest) = (end(NodeKind::RpcNode, 1, Some("o1")), end(NodeKind::RpcNode, 2, Some("c1")), end(NodeKind::RpcNode, 3, Some("d1")));
+    let mut held = ConnectionsHeld::new();
+    held.set_own_source(own.name.clone());
+    held.mark_complete();
+    members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
+    assert_eq!(proxy_invalid(&held, &p), None);
+    assert!(matches!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::ViaPeer { .. }));
     held.apply(direct(carrier.clone(), dest.clone(), ConnectionState::Disconnected, 40)).unwrap();
-    assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_EDGE_LOST));
+    assert_eq!(proxy_invalid(&held, &p), None);
+}
+
+/// CONTRACT: a Direct fact naming a destination process membership no longer holds is not the
+/// current edge: routing dials instead of trusting it, it retires no Proxy, and it names no
+/// carrier.
+#[test]
+fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
+    let (mut held, own, carrier, dest) = estate();
+    let m = members(&mut held, &[&carrier, &dest]);
+    held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
+    m.set(dest.name.clone(), IncarnationId("d2".into()));
+    assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, membership holds d2");
+    assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no carrier edge names the current destination");
+    assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
 }
 
 #[test]

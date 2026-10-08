@@ -18,6 +18,14 @@ use rafka_node_rpc_contract::outcome::{carried, NotSentReason, PreCommit, RpcOut
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::sync::Arc;
 
+/// The carrier's account of its own Direct edges (connections.md §8): the one fact a carrier
+/// owns about a forward's final target.
+pub trait CarrierEdges: Send + Sync {
+    /// Why this node's own latest Direct edge to the exact node `target` is not Active, or `None`
+    /// when it is Active or this node holds no Direct fact toward it.
+    fn edge_not_active(&self, target: &NodeId) -> Option<String>;
+}
+
 impl ServerBuilder {
     /// Carry protocol `P` for others: a forward naming its op is executed only when `P` is
     /// forwardable. A protocol that is not forwardable is never carried, whatever is declared.
@@ -29,12 +37,24 @@ impl ServerBuilder {
     }
 
     /// Serve [`Forward`]: each forward is one direct inner call through `client`.
-    pub fn serve_forward(mut self, client: Arc<NodeRpcClient>) -> Self {
+    pub fn serve_forward(self, client: Arc<NodeRpcClient>) -> Self {
+        self.serve_forward_with(client, None)
+    }
+
+    /// [`Self::serve_forward`] for a carrier that records its own Direct edges: a forward whose
+    /// inner call ends `NotSent` at the dial while `edges` reports this carrier's own edge to the
+    /// final target not Active is answered [`ForwardReply::CarrierEdgeLost`] (connections.md §8),
+    /// so the origin learns the third Proxy validity condition from the carried call itself.
+    pub fn serve_forward_with_edges(self, client: Arc<NodeRpcClient>, edges: Arc<dyn CarrierEdges>) -> Self {
+        self.serve_forward_with(client, Some(edges))
+    }
+
+    fn serve_forward_with(mut self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
         let table = Arc::new(std::sync::OnceLock::new());
         self.carried_table = Some(table.clone());
         self.serve::<Forward, _, _>(OpOwner::Core, move |peer: PeerContext, req: ForwardRequest| {
-            let (client, table) = (client.clone(), table.clone());
-            async move { Ok(carry_once(&client, &table, &peer, req).await) }
+            let (client, table, edges) = (client.clone(), table.clone(), edges.clone());
+            async move { Ok(carry_once(&client, &table, edges.as_deref(), &peer, req).await) }
         })
     }
 }
@@ -42,6 +62,7 @@ impl ServerBuilder {
 async fn carry_once(
     client: &NodeRpcClient,
     table: &std::sync::OnceLock<std::collections::HashMap<u8, usize>>,
+    edges: Option<&dyn CarrierEdges>,
     peer: &PeerContext,
     req: ForwardRequest,
 ) -> ForwardReply {
@@ -81,7 +102,24 @@ async fn carry_once(
     span.in_scope(|| tracing::info!("one direct inner call"));
     match out {
         RpcOutcome::Reply(r) => ForwardReply::Relayed { inner: r.into_value() },
-        RpcOutcome::NotSent(n) => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
+        RpcOutcome::NotSent(n) => {
+            // Only a dial that ended in this carrier's own Direct fact speaks for the edge.
+            let at_the_dial = matches!(n.reason(), NotSentReason::Connection(_) | NotSentReason::Deadline);
+            match edges.filter(|_| at_the_dial).and_then(|e| e.edge_not_active(&target)) {
+                Some(reason) => {
+                    tracing::info_span!(
+                        "rdm.node_rpc.request.reject.via-carrier-edge-lost",
+                        inner_op,
+                        target = %target,
+                        caller = %peer.endpoint_id,
+                        edge = %reason
+                    )
+                    .in_scope(|| tracing::info!("the carrier's own Direct edge to the final target is not Active"));
+                    ForwardReply::CarrierEdgeLost { reason }
+                }
+                None => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
+            }
+        }
         RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { op: u.op() },
         RpcOutcome::RejectedStale(r) => match NodeId::parse(r.target_node_id()) {
             Ok(target_node_id) => ForwardReply::InnerRejectedStale { target_node_id },

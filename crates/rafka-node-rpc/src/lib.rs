@@ -22,6 +22,7 @@ pub mod stream;
 pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 
 pub use client::{Budget, CallEvidence, CallOptions, ConnectionObserver, Decode, NodeRpcClient};
+pub use forward::CarrierEdges;
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};

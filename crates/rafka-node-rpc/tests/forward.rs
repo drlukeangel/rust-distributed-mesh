@@ -4,7 +4,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
-use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
+use rafka_node_rpc::{CarrierEdges, ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
@@ -124,6 +124,12 @@ struct Rig {
 /// target serves Probe and Ping; the carrier serves forward and carries Probe (and Ping, which is
 /// not forwardable and so is never carried); the origin knows only the carrier and the target.
 async fn rig() -> Rig {
+    rig_with(None, false).await
+}
+
+/// `edges`: the carrier's account of its Direct edges. `carrier_misdials`: the carrier's own view
+/// of the target names another transport identity, so its dial fails at the handshake.
+async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bool) -> Rig {
     let handled = Arc::new(AtomicU64::new(0));
     let applied = Arc::new(tokio::sync::Notify::new());
     let (h, a) = (handled.clone(), applied.clone());
@@ -156,16 +162,20 @@ async fn rig() -> Rig {
     let carrier_ep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let carrier_addr = carrier_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let carrier_resolver = Arc::new(StaticResolver::new());
-    carrier_resolver.insert(target.resolved.clone());
+    let mut seen = target.resolved.clone();
+    if carrier_misdials {
+        seen.endpoint_id = SecretKey::generate().public();
+    }
+    carrier_resolver.insert(seen);
     let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver));
     let carrier_birth = birth();
-    let carrier_server = ServerBuilder::new()
-        .ledger(test_ledger())
-        .carry::<Probe>()
-        .carry::<Ping>()
-        .serve_forward(carrier_client)
-        .seal(served(&carrier_birth))
-        .unwrap();
+    let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
+    let carrier_server = match edges {
+        Some(e) => carrier_builder.serve_forward_with_edges(carrier_client, e),
+        None => carrier_builder.serve_forward(carrier_client),
+    }
+    .seal(served(&carrier_birth))
+    .unwrap();
     let carrier = Node {
         router: Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server).spawn(),
         key: carrier_key.clone(),
@@ -266,4 +276,80 @@ async fn an_inner_reply_lost_at_the_target_is_indeterminate_through_the_carrier(
         matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::Carried(_))),
         "the carrier could not learn the inner outcome: {out:?}"
     );
+}
+
+/// A carrier's own account of its Direct edge to the final target.
+struct EdgeFact(Option<String>);
+
+impl CarrierEdges for EdgeFact {
+    fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
+        self.0.clone()
+    }
+}
+
+/// A carrier whose inner dial to the final target fails while its own latest Direct fact toward
+/// it is not Active answers the typed `CarrierEdgeLost`, naming the fact; the origin sees
+/// `NotSent(CarrierEdgeLost)` and the target never handled the call.
+///
+/// CONTRACT: the third Proxy validity condition (connections.md section 8) is learned from the
+/// carried call: no rewording of an inner NotSent stands in for it.
+#[tokio::test]
+async fn a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost() {
+    let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), true).await;
+    let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::CarrierEdgeLost("Direct Failed (dial failed)".into())), "{out:?}");
+    assert_eq!(r.handled.load(Ordering::SeqCst), 0);
+}
+
+/// The same dial failure with the carrier holding no non-Active edge fact stays the carrier's
+/// plain `InnerNotSent`: the refusal is the edge fact, not the failure.
+///
+/// CONTRACT: a carrier that cannot name its own non-Active edge never claims `carrier-edge-lost`.
+#[tokio::test]
+async fn a_carrier_with_no_non_active_edge_fact_keeps_the_plain_inner_not_sent() {
+    let r = rig_with(Some(Arc::new(EdgeFact(None))), true).await;
+    let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(_))), "{out:?}");
+}
+
+/// The source of a Proxy `origin -> carrier -> target` and the held projection that records it.
+fn proxied_held(r: &Rig) -> (rafka_mesh_entity::connections::ConnectionsHeld, rafka_mesh_entity::PathName, rafka_mesh_entity::connections::NodeConnection) {
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+    let own: rafka_mesh_entity::PathName = "mesh1.rpc.1".parse().unwrap();
+    let end = |n: &ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let proxy = NodeConnection {
+        source: ConnectionEnd { name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
+        destination: end(&r.target.resolved),
+        kind: ConnectionKind::Proxy,
+        state: ConnectionState::Connected,
+        carrier: Some(end(&r.carrier.resolved)),
+        recovery: None,
+        reason: None,
+        logged_at_ms: 10,
+    };
+    let mut held = ConnectionsHeld::new();
+    held.set_own_source(own.clone());
+    held.mark_complete();
+    held.apply(proxy.clone()).unwrap();
+    (held, own, proxy)
+}
+
+/// A call over a Proxy whose carrier answers `CarrierEdgeLost` hands the Proxy back for
+/// retirement with the structural reason `carrier-edge-lost`, and the seam writes nothing; a
+/// plain `InnerNotSent` retires nothing.
+///
+/// CONTRACT: the source learns the third Proxy validity condition from the carried call itself
+/// (connections.md section 8) and from nothing else.
+#[tokio::test]
+async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_for_retirement() {
+    use rafka_mesh_entity::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
+    let policy = CarrierPolicy::Forwardable { carrier_kind: rafka_mesh_entity::NodeKind::RpcNode };
+    for (edge, retired) in [(Some("Direct Failed".to_string()), true), (None, false)] {
+        let r = rig_with(Some(Arc::new(EdgeFact(edge))), true).await;
+        let (held, own, proxy) = proxied_held(&r);
+        let resolution = resolve(&held, &own, &r.target.resolved.name, policy);
+        let call = r.origin.call_resolved::<Probe>(resolution, &own, &r.target.resolved.name, &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
+        assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
+        assert_eq!(call.retire, retired.then_some((proxy, INVALID_CARRIER_EDGE_LOST)));
+    }
 }

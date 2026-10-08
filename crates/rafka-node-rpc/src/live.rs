@@ -327,3 +327,11 @@ mod tests {
         assert!(rx.has_changed().unwrap());
     }
 }
+
+/// Membership as the connections holder reads it: the process birth each path holds now. A path
+/// this process does not hold (or whose node departed) answers `None`, and nothing is fenced.
+impl rafka_mesh_entity::connections::CurrentIncarnations for LiveNodeResolver {
+    fn current_incarnation(&self, path: &PathName) -> Option<IncarnationId> {
+        self.resolve(&NodeTarget::CurrentPath(path.clone())).ok().map(|n| n.incarnation)
+    }
+}
