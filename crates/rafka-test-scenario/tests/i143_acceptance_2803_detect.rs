@@ -236,7 +236,8 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
             .into_iter()
             .filter(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 > degraded_ms)
             .count();
-        let seat_lost = named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
+        let any_sent = named(spans, "rdm.mesh.fabric.update.via-status-send").into_iter().any(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == "ready-for-traffic" && at_ns(sp) / 1_000_000 > degraded_ms);
+        let seat_lost = any_sent && named(spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().any(|sp| attr(sp, "node") == fp_for_sends && attr(sp, "role") == "stop" && at_ns(sp) / 1_000_000 > degraded_ms);
         (sent, seat_lost)
     };
     wait_for("the return to ready is sent five times or the seat moves", Duration::from_secs(30), || {
@@ -297,18 +298,23 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
     let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
     assert!(authored_for_peer.is_empty(), "the fabric primary never authors {}'s MeshStatus: {authored_for_peer:#?}", f.lost);
-    let fabric_sends: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope").starts_with("fabric:")).collect();
-    for status in ["degraded", "ready-for-traffic"] {
-        let mut by_change: BTreeMap<String, usize> = BTreeMap::new();
-        for sp in fabric_sends.iter().filter(|sp| attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= last_heard_ms) {
-            *by_change.entry(attr(sp, "changed_at_rafka_ms")).or_default() += 1;
+    // Degraded is the fabric primary's alone. The return to ready is the seat holder's: the fabric
+    // primary's while it holds the seat, else the admin that took it (the election is the lowest ready NodeId).
+    let sent_by = |status: &str, only_fp: bool| -> BTreeMap<(String, String), usize> {
+        let mut by_change: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= last_heard_ms && (!only_fp || attr(sp, "node") == fp)) {
+            *by_change.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_default() += 1;
         }
-        assert!(!by_change.is_empty(), "{status} was sent: {by_change:?}");
-        if status == "degraded" || !seat_moved {
-            assert!(by_change.values().all(|n| *n == 5), "{status} is one change sent five identical times: {by_change:?}");
-        } else {
-            assert!(by_change.values().all(|n| (1..=5).contains(n)), "the return to ready is one change, sent for as long as the fabric primary held the seat: {by_change:?}");
-        }
+        by_change
+    };
+    let degraded_sent = sent_by("degraded", true);
+    assert!(!degraded_sent.is_empty() && degraded_sent.values().all(|n| *n == 5), "degraded is one change sent five identical times: {degraded_sent:?}");
+    let ready_sent = sent_by("ready-for-traffic", !seat_moved);
+    assert!(!ready_sent.is_empty(), "the return to ready was sent: {ready_sent:?}");
+    if seat_moved {
+        assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the seat: {ready_sent:?}");
+    } else {
+        assert!(ready_sent.values().all(|n| *n == 5), "ready is one change sent five identical times: {ready_sent:?}");
     }
     result(
         &dir,
