@@ -969,9 +969,9 @@ impl ProbeHandle {
     /// no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
     pub fn run(&self, admin: &str, args: &[&str]) -> Result<Value, String> {
         let mut cmd = Command::new(binary("rafka-rpc-probe"));
-        cmd.arg("--admin").arg(admin).args(args).env("RAFKA_EVIDENCE_DIR", &self.evidence);
+        cmd.arg("--admin").arg(admin).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         if let Some(gw) = &self.bind {
-            cmd.env("RAFKA_PROBE_BIND", gw);
+            cmd.env("RDM_PROBE_BIND", gw);
         }
         let out = cmd.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
         let line = String::from_utf8_lossy(&out.stdout);

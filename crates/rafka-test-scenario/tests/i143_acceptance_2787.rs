@@ -1,8 +1,8 @@
 //! i143.e9.s2 acceptance (rafka-v2 #2787, hardened 2026-10-07), SOAK layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2787-soak-process` (and `-soak-container`), which exports
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose commands set
-//! `RAFKA_ARTIFACTS_DIR` (the estate's manifest, rpc ledger and every process's spans land under
-//! it, feature `i143-2787`), `RAFKA_SOAK_SECS` and `RAFKA_SOAK_SEED`.
+//! `RDM_ARTIFACTS_DIR` (the estate's manifest, rpc ledger and every process's spans land under
+//! it, feature `i143-2787`), `RDM_SOAK_SECS` and `RDM_SOAK_SEED`.
 //!
 //! One driver (`rafka_test_scenario::soak`) serves both providers; the cells differ only in the
 //! provider the estate runs on.
@@ -104,15 +104,15 @@ fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {
     sp["attributes"][k].as_str().unwrap_or_default()
 }
 
-/// The soak of one cell: the driver runs `RAFKA_SOAK_SECS` seconds (default 60) of seed
-/// `RAFKA_SOAK_SEED` (default the story's) on the provider, then the estate stops and the exported
+/// The soak of one cell: the driver runs `RDM_SOAK_SECS` seconds (default 60) of seed
+/// `RDM_SOAK_SEED` (default the story's) on the provider, then the estate stops and the exported
 /// spans are read.
 async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static str) {
-    let secs: u64 = std::env::var("RAFKA_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-    let seed: u64 = std::env::var("RAFKA_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(SEED);
+    let secs: u64 = std::env::var("RDM_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("RDM_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(SEED);
     let dir = acceptance_dir(cell, layer);
     let cap = capture(cell);
-    eprintln!("SOAK seed={seed} secs={secs} provider={provider}  (rerun: RAFKA_SOAK_SEED={seed} RAFKA_SOAK_SECS={secs})");
+    eprintln!("SOAK seed={seed} secs={secs} provider={provider}  (rerun: RDM_SOAK_SEED={seed} RDM_SOAK_SECS={secs})");
     let estate = Estate::bootstrap(owner(cell, provider), "fabric1", "mesh1").await;
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
@@ -210,7 +210,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     if let Some(repro) = &report.repro {
         eprintln!("SOAK FAILED seed={seed}: rule {} at step {}\nminimized reproduction ({} of {} actions): {:#?}", repro.rule, repro.failing_step, repro.minimized.len(), repro.original_len, repro.minimized);
     }
-    assert!(report.ok(), "seed {seed}: violations {:#?}; ledger {:#?}; rerun RAFKA_SOAK_SEED={seed} RAFKA_SOAK_SECS={secs}", report.violations, report.ledger.violations);
+    assert!(report.ok(), "seed {seed}: violations {:#?}; ledger {:#?}; rerun RDM_SOAK_SEED={seed} RDM_SOAK_SECS={secs}", report.violations, report.ledger.violations);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     assert!(left.is_empty(), "seed {seed}: no runtime of the estate is left running: {left:?}");
     assert!(containers.is_empty(), "seed {seed}: no container of the estate is left running: {containers:?}");
@@ -220,7 +220,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// CONTRACT (#2787): on an MM estate (two meshes, two node-admins and three rpc nodes each), the
 /// soak driver issues continuous proof-store operations (puts, compare-and-swaps, gets, deletes,
 /// each recorded in the operation ledger before it is sent and classified once from its typed
-/// outcome) for `RAFKA_SOAK_SECS` seconds of seed `RAFKA_SOAK_SEED` (1432787, 1800 s in the
+/// outcome) for `RDM_SOAK_SECS` seconds of seed `RDM_SOAK_SEED` (1432787, 1800 s in the
 /// registered job) while the action model's legal random actions run: grow, shrink, restart,
 /// replace and hand-off as Builds the node-admin rectifier executes, and kills and holds of exact
 /// runtimes on the process provider. After every action the estate converges (the Build's receipts

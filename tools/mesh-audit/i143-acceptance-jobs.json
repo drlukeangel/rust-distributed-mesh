@@ -432,7 +432,7 @@
         {
           "name": "soak_driver_reconciles_fixed_seed_thirty_minute_process_run",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2787.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run/estate RAFKA_SOAK_SECS=1800 RAFKA_SOAK_SEED=1432787 cargo test -p rafka-test-scenario --test i143_acceptance_2787 soak_driver_reconciles_fixed_seed_thirty_minute_process_run -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rafka-test-scenario --test i143_acceptance_2787 soak_driver_reconciles_fixed_seed_thirty_minute_process_run -- --exact",
           "dir": "target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run"
         }
       ]
@@ -444,7 +444,7 @@
         {
           "name": "soak_driver_reconciles_fixed_seed_thirty_minute_container_run",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2787.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run/estate RAFKA_SOAK_SECS=1800 RAFKA_SOAK_SEED=1432787 cargo test -p rafka-test-scenario --test i143_acceptance_2787 soak_driver_reconciles_fixed_seed_thirty_minute_container_run -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rafka-test-scenario --test i143_acceptance_2787 soak_driver_reconciles_fixed_seed_thirty_minute_container_run -- --exact",
           "dir": "target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run"
         }
       ]

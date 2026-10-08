@@ -5,23 +5,23 @@
 //! The schedule, the continuous proof-store traffic, the invariants, the operation ledger's
 //! reconciliation and the failure report (seed, executed sequence, minimized legal reproduction)
 //! are the soak driver's (`rafka_test_scenario::soak`); the 30-minute acceptance cells over it are
-//! `tests/i143_acceptance_2787.rs`. This stem runs the same driver for `RAFKA_SOAK_SECS` seconds
-//! (default 60) of `RAFKA_SOAK_SEED` (default random; the seed is printed so a run is exactly
+//! `tests/i143_acceptance_2787.rs`. This stem runs the same driver for `RDM_SOAK_SECS` seconds
+//! (default 60) of `RDM_SOAK_SEED` (default random; the seed is printed so a run is exactly
 //! rerunnable) on the provider `MESH_SPAWN_TYPE` names.
 
 use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::soak::{self, Config, Driver};
 
-/// CONTRACT: for `RAFKA_SOAK_SECS` seconds of one seed, the driver's legal random actions and
+/// CONTRACT: for `RDM_SOAK_SECS` seconds of one seed, the driver's legal random actions and
 /// continuous proof-store operations leave every invariant holding and every issued operation
 /// accounted for by the ledger. What must NOT happen: a violated invariant, an operation without an
 /// outcome, a lost applied write, a runtime left running. A failure names the seed and prints the
 /// minimized reproduction.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seeded_fault_schedule_holds_every_invariant() {
-    let secs: u64 = std::env::var("RAFKA_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-    let seed: u64 = std::env::var("RAFKA_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1);
-    eprintln!("SOAK seed={seed} secs={secs}  (rerun: RAFKA_SOAK_SEED={seed} RAFKA_SOAK_SECS={secs})");
+    let secs: u64 = std::env::var("RDM_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("RDM_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1);
+    eprintln!("SOAK seed={seed} secs={secs}  (rerun: RDM_SOAK_SEED={seed} RDM_SOAK_SECS={secs})");
     let provider = std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into());
     let owner = Owner { product: "mesh".into(), feature: "fabric-soak".into(), subfeature: "seeded".into(), rung: "MM".into(), provider, test: "a_seeded_fault_schedule_holds_every_invariant".into() };
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
