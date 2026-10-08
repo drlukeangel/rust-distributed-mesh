@@ -2,7 +2,8 @@
 //! the path the admin recorded it at (`<root>/faults/<name>.door`), armed, observed through
 //! `GET /faults` and released. Shared by every cell that holds a real admin at a named cut.
 
-use crate::estate::wait_for;
+use crate::estate::{bin_dir, wait_for};
+use rafka_node_admin_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
@@ -62,5 +63,32 @@ impl Door {
         assert_eq!(status, 200, "{}: releasing `{id}` is acknowledged: {v}", self.name);
         assert_eq!(v["released"], id, "{v}");
         v
+    }
+}
+
+/// The candidate SHA: `I143_CANDIDATE_SHA`, else this checkout's HEAD.
+pub fn candidate_sha() -> String {
+    if let Ok(s) = std::env::var("I143_CANDIDATE_SHA") {
+        return s;
+    }
+    let out = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(env!("CARGO_MANIFEST_DIR")).output().expect("git rev-parse HEAD");
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// The estate's executables: the faulted node-admin, and the testkit rpc node the admin launches.
+pub fn binding_set(sha: &str) -> BindingSet {
+    let exe = |name: &str| {
+        let p = bin_dir().join(name);
+        assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
+        p.canonicalize().unwrap()
+    };
+    let bind = |id: &str, name: &str| {
+        let path = exe(name);
+        Binding { launch_id: id.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None }
+    };
+    BindingSet {
+        candidate: Candidate { sha: sha.into(), build: "rafka-node-rpc-testkit".into() },
+        launch_ids: vec!["node_admin".into(), "rpc_node".into()],
+        bindings: vec![bind("node_admin", "faulted-node-admin"), bind("rpc_node", "rafka-rpc-node")],
     }
 }

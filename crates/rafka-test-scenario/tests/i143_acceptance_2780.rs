@@ -9,11 +9,10 @@
 //! released through that admin's door; the Builds that trigger them are the ones an operator makes
 //! (REST accept -> executor reconcile -> node operation -> deployment pipeline).
 
-use rafka_node_admin_client::binding::{sha256_file, Binding, BindingSet, Candidate};
 use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
-use rafka_test_scenario::estate::{bin_dir, named, wait_for, Estate, Owner};
-use rafka_test_scenario::faults::Door;
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,32 +35,6 @@ fn acceptance_dir() -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2780/process").join(CELL),
-    }
-}
-
-fn candidate_sha() -> String {
-    if let Ok(s) = std::env::var("I143_CANDIDATE_SHA") {
-        return s;
-    }
-    let out = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(env!("CARGO_MANIFEST_DIR")).output().expect("git rev-parse HEAD");
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
-}
-
-/// The estate's executables: the faulted node-admin, and the testkit rpc node the admin launches.
-fn binding_set(sha: &str) -> BindingSet {
-    let exe = |name: &str| {
-        let p = bin_dir().join(name);
-        assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
-        p.canonicalize().unwrap()
-    };
-    let bind = |id: &str, name: &str| {
-        let path = exe(name);
-        Binding { launch_id: id.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None }
-    };
-    BindingSet {
-        candidate: Candidate { sha: sha.into(), build: "rafka-node-rpc-testkit".into() },
-        launch_ids: vec!["node_admin".into(), "rpc_node".into()],
-        bindings: vec![bind("node_admin", "faulted-node-admin"), bind("rpc_node", "rafka-rpc-node")],
     }
 }
 

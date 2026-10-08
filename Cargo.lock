@@ -3884,6 +3884,8 @@ dependencies = [
 name = "rafka-test-scenario"
 version = "0.1.0"
 dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rafka-mesh-entity",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
@@ -3893,6 +3895,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "yaml_serde",
 ]
 
