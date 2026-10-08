@@ -610,7 +610,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, JOIN_SOURCE, &["WireDigest::from", "crate::wire::answer_to_wire", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
             require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "WireDigest::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
-            require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_eleven_variant_wire_schema"], ratchet, &mut out);
+            require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_twelve_variant_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
