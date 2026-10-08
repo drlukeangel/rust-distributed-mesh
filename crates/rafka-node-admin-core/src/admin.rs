@@ -1503,7 +1503,12 @@ impl Running {
                 mesh_span.record("outcome", if r.is_ok() { "sent" } else { "refused" });
                 mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
                 let mesh = d.node.name.mesh.clone();
-                let mine: Vec<MeshDigest> = m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect();
+                let started = std::time::Instant::now();
+                let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+                let mine: Vec<MeshDigest> = view_span.in_scope(|| m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect());
+                view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+                view_span.record("outcome", "read");
+                view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
                 let started = std::time::Instant::now();
                 let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
                 bb.publish(&m, mine).instrument(bb_span.clone()).await;
@@ -1519,9 +1524,12 @@ impl Running {
             runqueue_wait_ms = rafka_mesh_transport::membership::runqueue_wait_since_ms(waited),
             "said Leaving for the linger"
         );
+        let started = std::time::Instant::now();
+        let aborted = self.tasks.len();
         for t in self.tasks {
             t.abort();
         }
+        tracing::info_span!("rdm.mesh.node.update.via-leave-tasks", node = %me, aborted, elapsed_ms = started.elapsed().as_millis() as u64, outcome = "aborted").in_scope(|| tracing::info!("the node's tasks are aborted"));
         let started = std::time::Instant::now();
         let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
         let r = self.router.shutdown().instrument(span.clone()).await;
