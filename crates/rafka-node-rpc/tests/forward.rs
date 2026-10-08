@@ -281,8 +281,9 @@ async fn an_inner_reply_lost_at_the_target_is_indeterminate_through_the_carrier(
 /// A carrier's own account of its Direct edge to the final target.
 struct EdgeFact(Option<String>);
 
+#[async_trait::async_trait]
 impl CarrierEdges for EdgeFact {
-    fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
+    async fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
         self.0.clone()
     }
 }

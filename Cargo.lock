@@ -3658,6 +3658,7 @@ name = "rafka-node-rpc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "iroh",
  "iroh-gossip",
  "opentelemetry",

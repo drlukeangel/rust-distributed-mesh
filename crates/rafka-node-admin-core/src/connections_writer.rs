@@ -368,8 +368,12 @@ impl ConnectionObserver for ConnectionsWriter {
     }
 }
 
+#[async_trait::async_trait]
 impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
-    fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
+    async fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
+        // The dial that just failed handed its Failed fact to this writer; it is held once its write
+        // has landed. The carrier answers from the facts, so it waits for them.
+        self.drain().await;
         let held = self.inner.held.lock().unwrap();
         let latest = held.own_latest_directs().into_iter().find(|d| &d.destination.node_id == target)?;
         (latest.state != ConnectionState::Connected).then(|| {

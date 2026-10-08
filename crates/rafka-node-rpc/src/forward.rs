@@ -20,10 +20,13 @@ use std::sync::Arc;
 
 /// The carrier's account of its own Direct edges (connections.md §8): the one fact a carrier
 /// owns about a forward's final target.
+#[async_trait::async_trait]
 pub trait CarrierEdges: Send + Sync {
     /// Why this node's own latest Direct edge to the exact node `target` is not Active, or `None`
-    /// when it is Active or this node holds no Direct fact toward it.
-    fn edge_not_active(&self, target: &NodeId) -> Option<String>;
+    /// when it is Active or this node holds no Direct fact toward it. A fact the inner call itself
+    /// observed is held only once its durable write lands, so an implementation answers after the
+    /// observations already handed to it have landed.
+    async fn edge_not_active(&self, target: &NodeId) -> Option<String>;
 }
 
 impl ServerBuilder {
@@ -105,7 +108,11 @@ async fn carry_once(
         RpcOutcome::NotSent(n) => {
             // Only a dial that ended in this carrier's own Direct fact speaks for the edge.
             let at_the_dial = matches!(n.reason(), NotSentReason::Connection(_) | NotSentReason::Deadline);
-            match edges.filter(|_| at_the_dial).and_then(|e| e.edge_not_active(&target)) {
+            let edge = match edges.filter(|_| at_the_dial) {
+                Some(e) => e.edge_not_active(&target).await,
+                None => None,
+            };
+            match edge {
                 Some(reason) => {
                     tracing::info_span!(
                         "rdm.node_rpc.request.reject.via-carrier-edge-lost",

@@ -228,16 +228,57 @@ async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connect
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&dir).unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.hydrate().await.unwrap();
-    assert_eq!(writer.edge_not_active(&dest.node_id), None, "no fact is not an edge fact");
+    assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "no fact is not an edge fact");
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
-    assert_eq!(writer.edge_not_active(&dest.node_id), None, "a Connected edge is Active");
+    assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "a Connected edge is Active");
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 20);
     failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
     failed.reason = Some("dial failed".into());
     writer.record(failed).await.unwrap();
-    let why = writer.edge_not_active(&dest.node_id).expect("a Failed edge is not Active");
+    let why = writer.edge_not_active(&dest.node_id).await.expect("a Failed edge is not Active");
     assert_eq!(why, "mesh1.rpc.2 -> mesh1.rpc.3 Direct failed (dial failed)");
-    assert_eq!(writer.edge_not_active(&NodeId::mint()), None, "another node's edge is not named");
+    assert_eq!(writer.edge_not_active(&NodeId::mint()).await, None, "another node's edge is not named");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A storage whose index write takes its time.
+struct SlowIndex(Arc<dyn ConnectionsStorage>);
+
+#[async_trait::async_trait]
+impl ConnectionsStorage for SlowIndex {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        self.0.put_connection(fact).await
+    }
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.connections().await
+    }
+    async fn remove_connection(&self, index: &rafka_mesh_entity::connections::ConnectionIndex) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.remove_connection(index).await
+    }
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.0.append_history(fact).await
+    }
+    async fn history(&self) -> Result<Vec<NodeConnection>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.history().await
+    }
+}
+
+/// CONTRACT (#2803 detection): the carrier names its edge from the dial that just failed. The
+/// failed dial hands its fact to the writer, which holds it once its write lands; the carrier's
+/// answer waits for that, however long the write takes, so a member that cannot reach its own
+/// node-admin says `carrier-edge-lost` every time, never "not sent" for want of a write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write() {
+    use rafka_node_rpc::CarrierEdges;
+    let dir = data_dir("edges-slow");
+    let (me, dest) = (end("mesh2.rpc.1"), end("mesh2.admin.1"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&dir).unwrap())));
+    let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
+    writer.hydrate().await.unwrap();
+    writer.direct_failed(&resolved(&dest), "timed out");
+    let why = writer.edge_not_active(&dest.node_id).await.expect("the failed dial's fact is named");
+    assert_eq!(why, "mesh2.rpc.1 -> mesh2.admin.1 Direct failed (timed out)");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
