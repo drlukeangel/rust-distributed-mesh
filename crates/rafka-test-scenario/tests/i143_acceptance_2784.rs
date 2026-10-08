@@ -9,11 +9,13 @@
 
 use rafka_test_scenario::container_faults::{self, Inspected, Silenced};
 use rafka_test_scenario::elections::seats_as_expected;
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
 use rafka_test_scenario::wedge::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CELL: &str = "container_network_partitions_heals_preserves_live_runtimes";
@@ -637,6 +639,190 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         "recovery_admin": recovery_admin,
         "pending_handoff": span_row(first, &["mesh", "mesh_id", "node", "target", "outcome"]),
         "fault_unix_nano": fault_at,
+    });
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+const RETIRE_CELL: &str = "container_primary_mesh_retired_hands_off_authority_before_its_containers_end";
+
+/// CONTRACT (#2784, fabric loss): on a real Docker estate of two meshes (two node-admins and three
+/// rpc nodes each) the mesh that holds the fabric seat is lost the way an operator loses it: one
+/// Build retires it, executed by an admin outside it. While the Build runs, every surviving admin
+/// is asked who holds the fabric and the advertised endpoint is asked at once; an advertised
+/// endpoint is always a control endpoint of a birth of this run. Fabric authority moves to a ready
+/// admin of the surviving mesh, through an election a surviving admin announces before the former
+/// holder's terminate step ends; the former holder's containers are then gone from the Docker
+/// daemon's running set (each one's terminal state read from the daemon, or the container removed),
+/// while every surviving container is the one it was (same id, same init, same start, running) and
+/// every survivor answers for the Fabric from the new holder. What must NOT happen: the former
+/// holder's containers ended before the hand-off, a survivor's container replaced, an advertised
+/// endpoint that belongs to no birth of the run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn container_primary_mesh_retired_hands_off_authority_before_its_containers_end() {
+    assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
+    let cell = RETIRE_CELL;
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 3});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(&s(&a["build_id"]), Duration::from_secs(180)).await;
+    let before = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(60)).await;
+    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let lost_mesh = holder.split('.').next().unwrap().to_string();
+    let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
+
+    // Every container of the run before the loss, as the daemon holds it.
+    let mut containers_before: BTreeMap<String, (String, Inspected)> = BTreeMap::new();
+    for n in &before {
+        let name = s(&n["name"]);
+        let id = estate.container_of(&name).unwrap_or_else(|| panic!("{name}: no running container"));
+        let ins = container_faults::inspect(&id).unwrap_or_else(|e| panic!("{name}: {e}"));
+        containers_before.insert(name, (id, ins));
+    }
+    let admin_bases: BTreeMap<String, String> = before.iter().filter(|n| n["kind"] == "node_admin").map(|n| (s(&n["name"]), s(&n["admin_api_base"]))).collect();
+    let run_bases: BTreeSet<String> = admin_bases.values().cloned().collect();
+    assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
+    let survivors: Vec<String> = admin_bases.keys().filter(|n| n.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
+    let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| admin_bases[n].clone()).collect();
+    estate.admin = admin_bases[&survivors[0]].clone();
+    let fabric_id = estate.fabric_id.clone();
+
+    // Every survivor is asked, continuously through the loss, who holds the fabric, and the
+    // advertised endpoint is asked straight after.
+    let samples: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let sampler = {
+        let (samples, stop, fabric_id) = (samples.clone(), stop.clone(), fabric_id.clone());
+        let asked: Vec<String> = survivor_bases.iter().cloned().collect();
+        tokio::spawn(async move {
+            while !stop.load(Ordering::SeqCst) {
+                for from in &asked {
+                    let at = now_nanos();
+                    let row = match own_fabric_at(from, &fabric_id).await {
+                        None => json!({"at_unix_nano": at, "asked": from, "answered": false}),
+                        Some(f) => {
+                            let advertised = s(&f["admin_api_base"]);
+                            let holder = s(&f["fabric_primary"]);
+                            if advertised.is_empty() {
+                                json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": holder, "advertised": null})
+                            } else {
+                                let followed = own_fabric_at(&advertised, &fabric_id).await;
+                                json!({"at_unix_nano": at, "asked": from, "answered": true, "fabric_primary": holder, "advertised": advertised, "advertised_answers": followed.is_some()})
+                            }
+                        }
+                    };
+                    samples.lock().unwrap().push(row);
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+    };
+
+    // THE HAND-OFF AND LOSS, through the rectifier: one Build retiring the holder's mesh.
+    let started = now_nanos();
+    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh(&survivor_mesh)]})).await;
+    assert_eq!(status, 202, "{b}");
+    let build_id = s(&b["build_id"]);
+    estate.await_build(&build_id, Duration::from_secs(300)).await;
+    let build_complete = now_nanos();
+    // The former holder's containers: terminal at the daemon (not running, or removed).
+    let mut lost_terminal = BTreeMap::new();
+    for (name, (id, _)) in containers_before.iter().filter(|(n, _)| n.starts_with(&format!("{lost_mesh}."))) {
+        let id = id.clone();
+        let terminal = wait_for(&format!("{name}'s container is terminal at the daemon"), Duration::from_secs(60), || {
+            let id = id.clone();
+            async move {
+                match container_faults::inspect(&id) {
+                    Ok(i) if i.running => None,
+                    Ok(i) => Some(json!({"status": i.status, "exit_code": i.exit_code})),
+                    Err(e) if e.contains("No such") || e.contains("no such") => Some(json!({"removed": e})),
+                    Err(e) => panic!("{name}: the daemon could not be read: {e}"),
+                }
+            }
+        })
+        .await;
+        lost_terminal.insert(name.clone(), terminal);
+    }
+    let after = estate.settled_shape(&[(&survivor_mesh, 2, 3)], Duration::from_secs(60)).await;
+    let consistent = std::sync::atomic::AtomicUsize::new(0);
+    let agrees = || async {
+        for base in &survivor_bases {
+            let f = own_fabric_at(base, &fabric_id).await?;
+            let (h, advertised) = (s(&f["fabric_primary"]), s(&f["admin_api_base"]));
+            let own = own_fabric_at(&advertised, &fabric_id).await?;
+            if !h.starts_with(&format!("{survivor_mesh}.admin.")) || s(&own["fabric_primary"]) != h || !survivor_bases.contains(&advertised) {
+                return None;
+            }
+        }
+        Some(())
+    };
+    wait_for("every survivor advertises one live holder that agrees, ten samples running", Duration::from_secs(30), || async {
+        match agrees().await {
+            Some(()) => (consistent.fetch_add(1, Ordering::SeqCst) + 1 >= 10).then_some(()),
+            None => {
+                consistent.store(0, Ordering::SeqCst);
+                None
+            }
+        }
+    })
+    .await;
+    stop.store(true, Ordering::SeqCst);
+    sampler.await.unwrap();
+    let (_, fabric_now) = estate.get("/api/fabric").await;
+    let new_holder = s(&fabric_now["fabric_primary"]);
+    let new_base = s(&fabric_now["admin_api_base"]);
+    assert!(new_holder.starts_with(&format!("{survivor_mesh}.admin.")), "the new holder {new_holder} is an admin of {survivor_mesh}");
+    assert!(after.iter().any(|n| s(&n["name"]) == new_holder && s(&n["admin_api_base"]) == new_base), "the new holder {new_holder} is a ready admin of the surviving view and its advertised endpoint is its own: {after:#?}");
+    assert!(survivor_bases.contains(&new_base), "the authority endpoint belongs to a surviving birth of this run: {new_base}");
+    // Every surviving container is the one it was.
+    let mut survivors_inspected = BTreeMap::new();
+    for (name, (id, was)) in containers_before.iter().filter(|(n, _)| n.starts_with(&format!("{survivor_mesh}."))) {
+        let now = container_faults::inspect(id).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(now.running && now.pid == was.pid && now.started_at == was.started_at && now.restart_count == 0, "{name}: the surviving container is the one it was: {was:?} -> {now:?}");
+        assert_eq!(estate.container_of(name).as_deref(), Some(id.as_str()), "{name} still runs in container {id}");
+        survivors_inspected.insert(name.clone(), json!({"id": id, "pid": now.pid, "started_at": now.started_at}));
+    }
+
+    estate.admin = new_base.clone();
+    estate.stop().await;
+    let spans = estate.spans();
+    let rows = samples.lock().unwrap().clone();
+    let outside: Vec<&Value> = rows.iter().filter(|r| r["advertised"].as_str().is_some_and(|a| !run_bases.contains(a))).collect();
+    assert!(outside.is_empty(), "an advertised fabric endpoint is a port of no birth of this run: {outside:#?}");
+    let after_complete = rows.iter().filter(|r| r["at_unix_nano"].as_u64().unwrap() > build_complete && r["asked"].is_string()).count();
+    assert!(after_complete > 0, "the survivors were asked after the Build completed");
+    // The hand-off precedes the former holder's end: a surviving admin announced the new fabric
+    // primary before the retire pipeline's terminate step of the former holder ended.
+    let recompute = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
+    let handed_off: Vec<&&Value> = recompute.iter().filter(|sp| attr(sp, "election_level") == "fabric_primary" && attr(sp, "winner_mesh") == survivor_mesh && attr(sp, "previous").starts_with(&format!("{lost_mesh}."))).collect();
+    assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
+    let first_handoff = handed_off.iter().map(|sp| start(sp)).min().unwrap();
+    let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
+    let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == holder && attr(sp, "build_id") == build_id).collect();
+    assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {build_id}: {holder_terminate:?}");
+    assert_eq!(attr(holder_terminate[0], "outcome"), "complete");
+    let terminated_at = holder_terminate[0]["end_unix_nano"].as_u64().unwrap();
+    assert!(first_handoff < terminated_at, "fabric authority moved ({first_handoff}) before the former holder's runtime was gone ({terminated_at})");
+
+    let result = json!({
+        "cell": cell,
+        "provider": estate.owner.provider,
+        "build_id": build_id,
+        "former_holder": holder,
+        "lost_mesh": lost_mesh,
+        "survivor_mesh": survivor_mesh,
+        "new_holder": new_holder,
+        "authority_endpoint": new_base,
+        "started_unix_nano": started,
+        "build_complete_unix_nano": build_complete,
+        "first_handoff_announcement_unix_nano": first_handoff,
+        "former_holder_terminate_ended_unix_nano": terminated_at,
+        "lost_containers_terminal": lost_terminal,
+        "survivor_containers": survivors_inspected,
+        "samples": {"total": rows.len(), "after_complete": after_complete, "advertised_outside_run": outside.len()},
+        "refused_follow_ups": rows.iter().filter(|r| r["advertised"].as_str().is_some() && r["advertised_answers"] == false).count(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
