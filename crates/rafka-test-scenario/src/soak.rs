@@ -475,7 +475,8 @@ async fn gone_everywhere(estate: &Estate, path: &str) -> Result<(), String> {
 
 /// Until the view of an admin that answers marks every one of `paths` unheard (`dead`, or also
 /// `pending-reconnect` unless `true_offline`), within `within`. `Err` names what the views held.
-async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, within: Duration) -> Result<(), String> {
+async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, within: Duration) -> Result<Duration, String> {
+    let began = Instant::now();
     let until = Instant::now() + within;
     let mut last = String::new();
     while Instant::now() < until {
@@ -500,7 +501,7 @@ async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], 
                     })
                 };
                 if paths.iter().all(unheard) {
-                    return Ok(());
+                    return Ok(began.elapsed());
                 }
                 last = paths.iter().map(|p| format!("{p}:{:?}", nodes.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ");
             }
@@ -1058,9 +1059,20 @@ impl Driver {
             hold_rt = Some(rt);
         }
         let true_offline = self.rng.next() % 2 == 0;
+        // Control never waits on the held node's own control API: a held admin answers nothing.
+        let held_base = n["admin_api_base"].as_str().map(String::from);
+        self.known.retain(|b| Some(b) != held_base.as_ref());
+        if held_base.as_deref() == Some(self.estate.admin.as_str()) {
+            if let Some(other) = self.known.first() {
+                self.estate.admin = other.clone();
+            }
+        }
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
         let known = self.known.clone();
         let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, self.cfg.unheard_within(true_offline)).await;
+        if let Ok(after) = &marked {
+            entry["unheard_after_ms"] = json!(after.as_millis() as u64);
+        }
         let mut reads = Vec::new();
         let mut outcomes = Vec::new();
         if marked.is_ok() && is_rpc {
@@ -1141,10 +1153,12 @@ impl Driver {
         }
         // Seen from the other mesh: control is read through its admins.
         let others: Vec<String> = self.known.iter().filter(|b| !nodes.iter().any(|n| n["mesh"] == mesh && n["admin_api_base"] == b.as_str())).cloned().collect();
-        let within = self.cfg.unheard_within(false);
+        // The window the container cell for this fault (#2784) observes the same consequence in; the
+        // soak measures the time it took (`unheard_after_ms`).
+        let within = Duration::from_secs(90);
         self.silenced.insert(mesh.to_string(), sil);
-        until_unheard(&mut self.estate, &others, &members, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
-        entry["silenced"] = json!({"mesh": mesh, "members": members});
+        let after = until_unheard(&mut self.estate, &others, &members, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
+        entry["silenced"] = json!({"mesh": mesh, "members": members, "unheard_after_ms": after.as_millis() as u64});
         Ok(())
     }
 
