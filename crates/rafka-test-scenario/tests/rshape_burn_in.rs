@@ -3631,6 +3631,92 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
     }
 }
 
+/// The provider's action meets a held runtime: with the node's exact runtime held (acknowledged by the
+/// provider) the fabric-primary is asked to restart it. The Build's attempt cannot drain a runtime that
+/// does not answer; what it does is observed from the Build's own projection and the node's view, every
+/// 500 ms, for as long as the hold lasts (three staleness windows). Silence is never death: the node
+/// stays listed under its NodeId and no replacement is started. The hold is then released
+/// (acknowledged) and the Build must complete with the node ready under a new incarnation, within the
+/// 60 s a restart is given, as the same logical node.
+async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
+    let n = at(st, node).clone();
+    let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
+    let rt = exact_runtime(f, node).await;
+    let fabric_build = s(&st.fabric["build_id"]);
+    let (mut held, hold_ack) = Held::hold(node, &rt);
+    let hold_ns = now_ns();
+    let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].as_u64().unwrap());
+    let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", "POST", &format!("/api/nodes/{node}/restart"), &Value::Null).await;
+    assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
+    let window = 3 * std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    let until = Instant::now() + Duration::from_millis(window);
+    let mut seen: Vec<Value> = Vec::new();
+    let mut completed_while_held = false;
+    while Instant::now() < until {
+        let b = a.get(f, &format!("/api/builds?id={build_id}")).await.unwrap_or(Value::Null);
+        a.observe_build(&b);
+        let views = admin_views_of(a, f, node).await;
+        for v in &views {
+            assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the node under its NodeId while its restart waited on a held runtime: {v}");
+        }
+        seen.push(json!({"t_ns": now_ns(), "build_state": b["state"], "attempt": b["attempt"], "executor": b["executor"], "reason": b["reason"], "last_failure": b["last_failure"], "node_statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
+        if b["state"] == "complete" && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] != inc.as_str() && x["status"] == "ready-for-traffic") {
+            completed_while_held = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let observed_ns = now_ns();
+    // The provider's view of the held runtime at the end of the observation: alive and stopped, or gone.
+    let runtime_at_end = match &rt {
+        Rt::Process(r) => json!({"check": format!("{:?}", r.check()), "state": proc_state_of(r.pid)}),
+        Rt::Container(c) => json!(container_faults::inspect(&c.id).map(|i| json!({"status": i.status, "running": i.running})).unwrap_or_else(|e| json!({"gone": e}))),
+    };
+    let release_ack = if rt_alive(&rt) { held.release() } else { held.released = true; json!({"not_needed": "the held runtime was terminated by the provider during the restart", "runtime": runtime_at_end}) };
+    let release_ns = now_ns();
+    let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: inc.clone() }, "after-hold-release").await;
+    let after = f.estate.node(node).await;
+    assert_eq!(after["node_id"], n["node_id"], "{node}: the restart of a held runtime keeps the logical node");
+    assert_ne!(after["incarnation_id"], n["incarnation_id"], "{node}: the restart ends in a new exact birth");
+    let rt_new = exact_runtime(f, node).await;
+    let runtimes = live_and_distinct(node, &rt, &rt_new);
+    let terminal = terminal_proof(node, &rt);
+    let rec = json!({
+        "node": node, "node_id": node_id, "old_incarnation_id": inc, "new_incarnation_id": after["incarnation_id"], "build_id": build_id, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"],
+        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held,
+        "runtime_at_end_of_observation": runtime_at_end, "release_ack": release_ack, "release_ns": release_ns, "wall_after_release_ms": fin["wall_ms"], "runtimes": runtimes, "old_birth_terminal": terminal,
+    });
+    inv.holds(
+        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) kept the logical node listed under its NodeId in every admin's view; it completed {} and ended in a new exact birth of the same NodeId in a new runtime, the held one terminal", if completed_while_held { "while the hold was in force (the provider terminated the held runtime)" } else { "after the release" }),
+        true,
+        json!({"node_id": node_id, "restart_completed_while_held": completed_while_held, "wall_after_release_ms": fin["wall_ms"]}),
+    );
+    rec
+}
+
+/// The process state letter of `pid` for evidence.
+fn proc_state_of(pid: u32) -> Value {
+    json!(rafka_test_scenario::process_faults::proc_state(pid).map(String::from))
+}
+
+/// Whether the held runtime still exists (a process not exited, a container the daemon still runs or has paused).
+fn rt_alive(rt: &Rt) -> bool {
+    match rt {
+        Rt::Process(r) => r.check().is_ok(),
+        Rt::Container(c) => container_faults::inspect(&c.id).is_ok_and(|i| i.running || i.status == "paused"),
+    }
+}
+
+/// The typed refusal a draining node gives ordinary work: a proof-store reply of `Draining`, or a
+/// carrier that will not carry (`node is draining`). `None` for any other outcome.
+fn draining_refusal(out: &Value) -> Option<String> {
+    match out["outcome"].as_str() {
+        Some("Reply") => out["reply"]["result"]["refused"].as_str().filter(|r| r.to_lowercase().contains("draining")).map(|r| format!("Reply:{r}")),
+        Some("NotSent") => out["reason"].as_str().filter(|r| r.contains("draining")).map(|r| format!("NotSent:{r}")),
+        _ => None,
+    }
+}
+
 async fn drain_run(cell: &str, shape: Shape) {
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
@@ -3656,6 +3742,8 @@ async fn drain_run(cell: &str, shape: Shape) {
     // C17: a compute held by its exact runtime at a point the provider acknowledges: silence is not death.
     let compute = format!("mesh2.compute.{}", f.shape.compute);
     let hold = hold_phase(&mut f, &mut a, &st2, &compute, &mut inv).await;
+    let st_held = a.stable(&mut f, "C17: after the hold", &both(2), &mut inv).await;
+    let hold_restart = hold_restart(&mut f, &mut a, &st_held, &compute, &mut inv).await;
     let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
     let nodes_end = st.nodes.clone();
     let mut want_names = f.shape.names();
@@ -3696,11 +3784,28 @@ async fn drain_run(cell: &str, shape: Shape) {
         let applied = drain["apply_draining"].as_array().unwrap();
         assert!(!applied.is_empty(), "{node}: no ApplyNodeState(Draining) served by the retiring node: {drain}");
         assert!(applied.iter().all(|x| x["in_flight"].is_string() || x["in_flight"].is_number()), "{node}: the apply answered no in-flight count: {drain}");
-        // Work aimed at the node after its drain began is refused before its body is read: the reply is the
-        // typed refusal `Draining`, and no handler ran for it (account() checked the trace and the state).
-        let refused: Vec<&Value> = accounted.refusals.iter().filter(|x| x["target"] == node.as_str() && x["refusal"].as_str().is_some_and(|r| r.contains("Draining") || r.contains("draining"))).collect();
+        // Ordinary work that reaches a draining routable node is refused by name before its body is read:
+        // a broker answers the typed `Draining` reply, a gateway refuses to carry (`node is draining`).
+        // No handler ran for any of it and none of its values were stored (account() checked the trace
+        // and the final state). None was refused before the drain began.
         let t_apply = applied.iter().map(|x| x["start_ns"].as_u64().unwrap()).min().unwrap();
-        drains.push(json!({"node": node, "chain": chain, "drain": drain, "ordinary_work_refused_while_draining": refused.len(), "refusals": refused, "apply_started_ns": t_apply}));
+        let hits: Vec<Value> = a
+            .traffic
+            .ops
+            .iter()
+            .filter(|(o, _)| o.target == node || o.via.as_deref() == Some(node.as_str()))
+            .filter_map(|(o, c)| draining_refusal(&c.out).map(|why| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "refusal": why})))
+            .collect();
+        assert!(!hits.is_empty(), "{node}: no ordinary work was refused as draining while it retired: the window held no refusal ({drain})");
+        assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a draining refusal answered before the node applied Draining ({t_apply}): {hits:?}");
+        // The status family stays admissible while Draining: the node's own declarations (its Draining and
+        // its Leaving) made after the apply are decided by the authority, `applied`.
+        let decided: Vec<&Value> = drain["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied").collect();
+        assert!(decided.len() >= 2, "{node}: the authority decided fewer than two (Draining, Leaving) declarations from the draining node after the apply: {drain}");
+        // The caller's certainty: the admin's drain call is `Established` with the node's in-flight count.
+        let receipts = drain["drain_rpc_receipts"].as_array().unwrap();
+        assert!(receipts.iter().any(|r| s(&r["outcome"]).starts_with("Established { in_flight: ")), "{node}: the drain call was not Established with an in-flight count: {drain}");
+        drains.push(json!({"node": node, "chain": chain, "drain": drain, "ordinary_work_refused_while_draining": hits.len(), "refusals": hits, "declarations_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
     }
     inv.holds(
         "C15/C16: each retiring node applied ApplyNodeState(Draining) and answered its in-flight count; the retire steps ran MarkDraining, WaitForDrain, PublishLeaving, CloseRpcAdmission, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
@@ -3726,6 +3831,7 @@ async fn drain_run(cell: &str, shape: Shape) {
     runtime.push(json!({"phase": "retire", "node": rb["node"], "node_id": rb["node_id"], "runtime_before": rb["runtime_before"], "old_birth_terminal": rb["old_birth_terminal"]}));
     runtime.push(json!({"phase": "retire", "node": rg["node"], "node_id": rg["node_id"], "runtime_before": rg["runtime_before"], "old_birth_terminal": rg["old_birth_terminal"]}));
     runtime.push(json!({"phase": "hold", "hold": hold}));
+    runtime.push(json!({"phase": "restart-of-a-held-runtime", "hold_restart": hold_restart}));
     let index = copy_spans(&f.estate, &f.dir);
     let mut actions = std::mem::take(&mut f.actions);
     actions.extend(a.actions.iter().cloned());
@@ -3748,7 +3854,7 @@ async fn drain_run(cell: &str, shape: Shape) {
             inv,
             extra: json!({
                 "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
-                "retirements": [rb, rg], "drains": drains, "hold": hold, "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
+                "retirements": [rb, rg], "drains": drains, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
                 "final_launches": retired_runtimes, "scenarios": ["C15", "C16", "C17"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
                 "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)", "retired": [broker, gateway], "held": compute},
