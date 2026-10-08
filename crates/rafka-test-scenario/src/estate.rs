@@ -201,6 +201,33 @@ where
     }
 }
 
+/// The environment variable naming an external consumer's built executable directory. When it is
+/// set, every node-admin and node of a run launches from the consumer's executables through
+/// [`Estate::bootstrap_external`]; the built-in set is refused.
+pub const ENV_CONSUMER_BIN_DIR: &str = "RDM_RSHAPE_CONSUMER_BIN_DIR";
+
+fn refuse_built_ins_in_consumer_mode(what: &str) {
+    if let Ok(d) = std::env::var(ENV_CONSUMER_BIN_DIR) {
+        panic!("REFUSED {what}: {ENV_CONSUMER_BIN_DIR}={d} selects an external consumer's executables, which launch only through Estate::bootstrap_external with an explicit binding set; the built-in binaries are never a fallback");
+    }
+}
+
+/// The binding set of a consumer build: its build manifest (`executable_map` kind -> file name,
+/// `binaries` file name -> sha256, `candidate_sha`) resolved against `bin_dir`. `container` binds
+/// every executable to the provider's image.
+pub fn binding_set_from_build_manifest(manifest: &Path, bin_dir: &Path, container: bool) -> Result<BindingSet, String> {
+    let v: Value = serde_json::from_slice(&std::fs::read(manifest).map_err(|e| format!("consumer build manifest {}: {e}", manifest.display()))?).map_err(|e| format!("consumer build manifest {}: {e}", manifest.display()))?;
+    let sha = v["candidate_sha"].as_str().ok_or_else(|| format!("{}: no candidate_sha", manifest.display()))?.to_string();
+    let map = v["executable_map"].as_object().ok_or_else(|| format!("{}: no executable_map", manifest.display()))?;
+    let mut bindings = Vec::new();
+    for (kind, file) in map {
+        let file = file.as_str().ok_or_else(|| format!("{}: executable_map.{kind} is not a file name", manifest.display()))?;
+        let sha256 = v["binaries"][file].as_str().ok_or_else(|| format!("{}: binaries names no sha256 for {file}", manifest.display()))?.to_string();
+        bindings.push(rafka_mesh_entity::binding::Binding { launch_id: kind.clone(), executable: bin_dir.join(file), sha256, image: container.then(|| RUNTIME_IMAGE.to_string()) });
+    }
+    Ok(BindingSet { candidate: rafka_mesh_entity::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
+}
+
 /// The explicit executable bindings an estate launches from (the external-consumer seam): the
 /// validated set, the file node-admin reads it from, and the candidate it was validated against.
 #[derive(Debug, Clone)]
@@ -253,6 +280,7 @@ impl Estate {
     /// Start the first node-admin of `fabric` (bootstrap selects the provider)
     /// and wait for its advertised control API base.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
+        refuse_built_ins_in_consumer_mode("Estate::bootstrap");
         Self::born(owner, fabric, mesh, None).await
     }
 
@@ -733,7 +761,10 @@ impl Estate {
                 env.extend(x.env());
                 x.admin_exe()
             }
-            None => binary("rafka-node-admin"),
+            None => {
+                refuse_built_ins_in_consumer_mode("Estate::restart_admin");
+                binary("rafka-node-admin")
+            }
         };
         let (child, base) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);

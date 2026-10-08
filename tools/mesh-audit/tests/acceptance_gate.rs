@@ -118,12 +118,18 @@ fn a_passing_cell_leaves_its_receipt_with_every_artifact_hashed() {
 #[test]
 fn every_registered_command_names_its_own_cell_and_its_own_directory() {
     let reg: Value = serde_json::from_slice(&std::fs::read(root().join("tools/mesh-audit/i143-acceptance-jobs.json")).unwrap()).unwrap();
-    let jobs = reg["jobs"].as_object().expect("jobs");
-    assert!(!jobs.is_empty());
-    for (job, j) in jobs {
+    let mut all: Vec<(&String, &Value, bool)> = reg["jobs"].as_object().expect("jobs").iter().map(|(k, v)| (k, v, false)).collect();
+    // The R-shape qualification namespace (epic #2943) is run by the same runner.
+    all.extend(reg["rshape_jobs"].as_object().into_iter().flatten().filter(|(k, _)| !k.starts_with('_')).map(|(k, v)| (k, v, true)));
+    assert!(!all.is_empty());
+    for (job, j, rshape) in all {
         let issue = j["issue"].as_u64().expect("issue");
         let layer = j["layer"].as_str().expect("layer");
-        assert_eq!(job, &format!("i143-{issue}-{layer}"), "job id names its issue and layer");
+        if rshape {
+            assert!(job.starts_with("i143-rshape-"), "{job}: an R-shape job id is i143-rshape-<name>");
+        } else {
+            assert_eq!(job, &format!("i143-{issue}-{layer}"), "job id names its issue and layer");
+        }
         let cells = j["cells"].as_array().expect("cells");
         assert!(!cells.is_empty(), "{job} registers a cell");
         for c in cells {
@@ -131,18 +137,27 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
             let test = c["test"].as_str().unwrap_or(name);
             let command = c["command"].as_str().unwrap();
             let dir = c["dir"].as_str().unwrap();
-            assert_eq!(dir, format!("target/i143-acceptance/{issue}/{layer}/{name}"), "{job}/{name}");
-            assert!(command.ends_with(&format!(" {test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
-            assert!(command.contains(" --test "), "{job}/{name}: the command names its test target");
+            if rshape {
+                assert_eq!(dir, format!("target/i143-rshape/{job}/{name}"), "{job}/{name}");
+            } else {
+                assert_eq!(dir, format!("target/i143-acceptance/{issue}/{layer}/{name}"), "{job}/{name}");
+            }
+            if !c["source"].as_str().unwrap().ends_with(".sh") {
+                assert!(command.ends_with(&format!(" {test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
+                assert!(command.contains(" --test "), "{job}/{name}: the command names its test target");
+            }
             assert!(root().join(c["source"].as_str().unwrap()).parent().unwrap().is_dir(), "{job}/{name}: the source's crate exists");
             if let Some(e) = c.get("evidence") {
                 assert_eq!(e, "runner", "{job}/{name}: evidence is the cell's own or the runner's");
                 assert!(c.get("test").is_some(), "{job}/{name}: a runner-evidenced cell names the existing test it runs");
             }
+            for forbidden in ["runner", "receipt_writer", "receipt_schema"] {
+                assert!(c.get(forbidden).is_none() && j.get(forbidden).is_none(), "{job}/{name}: a second generic `{forbidden}` is declared; scripts/i143-acceptance-gate.sh is the one runner");
+            }
             match layer {
-                "unit" | "export" => assert!(!command.contains("RAFKA_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
-                "process" | "container" | "fast" => {
-                    let provider = if layer == "fast" { "process" } else { layer };
+                "unit" | "static" | "export" => assert!(!command.contains("RAFKA_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
+                "process" | "container" | "fast" | "fast-process" | "fast-container" => {
+                    let provider = match layer { "fast" | "fast-process" => "process", "fast-container" => "container", l => l };
                     assert!(command.contains(&format!("MESH_SPAWN_TYPE={provider} ")), "{job}/{name}: the estate runs on the job's provider: {command}");
                     assert!(command.contains(&format!("RAFKA_ARTIFACTS_DIR={dir}/estate ")), "{job}/{name}: the estate lands under the cell's dir: {command}");
                 }
