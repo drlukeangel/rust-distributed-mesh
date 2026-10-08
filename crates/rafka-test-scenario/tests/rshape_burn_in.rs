@@ -1095,6 +1095,7 @@ async fn restart_with_traffic(
     let (status, r) = e.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "{node}: {r}");
     let build_id = s(&r["build_id"]);
+    let attempt = Estate::attempt_of(&r);
     actions.push(json!({"t_ms": t0, "action": "node.restart", "via": format!("POST /api/nodes/{node}/restart"), "node": node, "status": status, "build_id": build_id, "old_incarnation_id": before["incarnation_id"]}));
     let started = Instant::now();
     let mut during = 0;
@@ -1103,7 +1104,7 @@ async fn restart_with_traffic(
         assert_ne!(b["state"], "failed", "{node}: restart Build failed: {b:#}");
         let now = e.node_opt(node).await;
         let reborn = now.as_ref().is_some_and(|n| n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]);
-        if b["state"] == "complete" && reborn {
+        if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && reborn {
             actions.push(json!({"t_ms": now_ms(), "action": "node.restart.complete", "node": node, "build_id": build_id, "new_incarnation_id": now.as_ref().map(|n| n["incarnation_id"].clone()), "node_id": now.as_ref().map(|n| n["node_id"].clone())}));
             break;
         }
@@ -1484,6 +1485,8 @@ struct Authority {
     roles: Option<BTreeSet<String>>,
     /// Topology writes the cell sent to an admin that is not the fabric-primary, to see them refused.
     refused_writes: Vec<Value>,
+    /// The attempt each accepted write opened, by Build: what `finish` waits for.
+    attempts: BTreeMap<String, u64>,
 }
 
 /// What `Authority::finish` waits for, observed from the view and the Build, never from elapsed time.
@@ -1504,7 +1507,7 @@ fn progress(msg: &str) {
 
 impl Authority {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new() }
+        Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known_bases: BTreeSet::new(), probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), attempts: BTreeMap::new() }
     }
 
     /// A GET on any live admin of this run: the entry admin first, then every admin base ever seen.
@@ -1677,6 +1680,9 @@ impl Authority {
         let (status, v) = if method == "DELETE" { f.estate.delete_at(&base, path).await } else { f.estate.http_post(&base, path, body).await };
         assert_eq!(status, 202, "{what}: the fabric-primary {} refused {method} {path}: {v}", st.fp_name());
         let build_id = s(&v["build_id"]);
+        // The 202 names the attempt the request opened (a retire or a spawn accepts a new Build: its first attempt).
+        let attempt = v["attempt"].as_u64().unwrap_or_else(|| if method == "DELETE" || path.ends_with("/spawn") { 1 } else { panic!("{what}: the 202 names the attempt it opened: {v}") });
+        self.attempts.insert(build_id.clone(), attempt);
         self.writes.push(json!({"what": what, "method": method, "path": path, "accepted_by": st.fp["name"], "accepted_by_node_id": st.fp["node_id"], "build_id": build_id, "t_ms": t0}));
         self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("{method} {path}"), "status": status, "build_id": build_id, "accepted_by": st.fp["name"]}));
         progress(&format!("{what}: {method} {path} accepted by {} as {build_id}", st.fp_name()));
@@ -1685,6 +1691,7 @@ impl Authority {
 
     /// Keep the seeded traffic going until the Build is complete and `until` holds in the view.
     async fn finish(&mut self, f: &mut Formed, build_id: &str, until: Until, window: &'static str) -> Value {
+        let attempt = *self.attempts.get(build_id).unwrap_or_else(|| panic!("REFUSED: finish({build_id}) without the attempt its opening 202 named; every wait is for the request's own attempt"));
         let started = Instant::now();
         let mut seen_failed = 0u32;
         loop {
@@ -1701,7 +1708,7 @@ impl Authority {
                 Until::Grew { mesh, before } => nodes.iter().any(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str() && n["status"] == "ready-for-traffic" && !before.contains(&s(&n["node_id"]))),
                 Until::Joined { node, not_node_id } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != not_node_id.as_str()),
             });
-            if b["state"] == "complete" && held {
+            if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= attempt && held {
                 return json!({"build": b, "wall_ms": started.elapsed().as_millis() as u64, "seen_failed_observations": seen_failed});
             }
             assert!(started.elapsed() < Duration::from_secs(120), "Build {build_id} did not complete with its effect visible within 120 s: build {b:#}; wanted {}", match &until {
@@ -3560,6 +3567,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let kill = kill_exact_runtime(&victim2, &rt2);
     let kill_ns = now_ns();
     progress(&format!("{victim2} exact runtime killed: {kill}"));
+    a.attempts.insert(drift_build.clone(), attempt_before + 1);
     let drift_fin = a.finish(&mut f, &drift_build, Until::Reborn { node: victim2.clone(), old_incarnation: inc2.clone() }, "during-drift").await;
     let st_drift = a.stable(&mut f, "C8 drift: the dead gateway is re-born", &both(2), &mut inv).await;
     let n3 = at(&st_drift, &victim2).clone();
@@ -3726,7 +3734,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
             assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the node under its NodeId while its restart waited on a held runtime: {v}");
         }
         seen.push(json!({"t_ns": now_ns(), "build_state": b["state"], "attempt": b["attempt"], "executor": b["executor"], "reason": b["reason"], "last_failure": b["last_failure"], "node_statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
-        if b["state"] == "complete" && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] != inc.as_str() && x["status"] == "ready-for-traffic") {
+        if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= a.attempts[&build_id] && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] != inc.as_str() && x["status"] == "ready-for-traffic") {
             completed_while_held = true;
             break;
         }
