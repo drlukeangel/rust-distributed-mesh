@@ -75,3 +75,44 @@ fn the_rdm_tree_configures_no_n0_lookup_and_keeps_canonical_crates_off_the_legac
     let v = check(&workspace_root());
     assert!(v.is_empty(), "{}", v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("\n"));
 }
+
+#[test]
+fn an_alpn_constant_beyond_node_rpc_is_refused() {
+    let t = Tree::new(&[("crates/a/src/lib.rs", "pub const ALPN: &[u8] = b\"rafka-mesh-v1\";\n"), ("crates/rafka-node-rpc/src/lib.rs", "pub const ALPN: &[u8] = b\"rafka-node-rpc/1\";\n")]);
+    let v = check(t.root());
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(matches!(&v[0], Violation::Alpn { file, line: 1, token, .. } if file == "crates/a/src/lib.rs" && token == "ALPN"), "{v:?}");
+}
+
+#[test]
+fn a_router_accepting_another_alpn_is_refused_and_node_rpc_and_gossip_pass() {
+    let t = Tree::new(&[(
+        "crates/a/src/lib.rs",
+        "let r = Router::builder(ep).accept(rafka_node_rpc::ALPN, s).accept(iroh_gossip::ALPN, g).accept(OTHER_ALPN, h).spawn();\nlet (c, _) = listener.accept().await;\n",
+    )]);
+    let v = check(t.root());
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(matches!(&v[0], Violation::Alpn { token, .. } if token == "OTHER_ALPN"), "{v:?}");
+}
+
+#[test]
+fn the_entry_alpn_is_allowed_by_name_until_op_0x1d_lands() {
+    let entry = ("crates/rafka-mesh-transport/src/entry.rs", "pub const ENTRY_ALPN: &[u8] = b\"rafka-mesh-entry/1\";\n");
+    let admin = ("crates/rafka-node-admin-core/src/admin.rs", "Router::builder(ep).accept(ENTRY_ALPN, e).spawn();\n");
+    let t = Tree::new(&[entry, admin]);
+    assert_eq!(check(t.root()), vec![], "R-J1 has not landed: ENTRY_ALPN is allowed");
+    let join = ("crates/rafka-node-rpc-contract/src/join.rs", "impl NodeProtocol for JoinNode { const OP: u8 = 0x1D; }\n");
+    let t = Tree::new(&[entry, admin, join]);
+    let v = check(t.root());
+    assert_eq!(v.len(), 2, "the constant and its acceptor are both refused once 0x1D exists: {v:?}");
+    assert!(v.iter().all(|x| matches!(x, Violation::Alpn { token, .. } if token == "ENTRY_ALPN")), "{v:?}");
+}
+
+#[test]
+fn test_code_may_define_and_accept_any_alpn() {
+    let t = Tree::new(&[
+        ("crates/a/tests/t.rs", "const X_ALPN: &[u8] = b\"x\";\nRouter::builder(ep).accept(X_ALPN, h);\n"),
+        ("crates/a/src/lib.rs", "pub fn f() {}\n#[cfg(test)]\nmod tests { const Y_ALPN: &[u8] = b\"y\"; }\n"),
+    ]);
+    assert_eq!(check(t.root()), vec![]);
+}
