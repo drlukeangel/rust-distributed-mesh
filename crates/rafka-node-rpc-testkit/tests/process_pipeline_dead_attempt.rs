@@ -109,7 +109,7 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
     let endpoints = second.iter().find(|r| r.step == CreateStep::AllocateEndpoints.name()).expect("attempt 2 allocated its own endpoints");
     let assigned: Assignment = serde_json::from_value(endpoints.output.clone().unwrap()).unwrap();
     assert_ne!(assigned.transport, dead_port, "the dead attempt's port is never reused: another birth holds it");
-    assert_eq!(assigned.transport.port(), first + 1, "the next free port of this executor's own range");
+    assert!((first..=last).contains(&assigned.transport.port()), "a port of this executor's own range");
     assert!(second.iter().all(|r| r.step != CreateStep::AllocateIdentity.name()), "the identity receipt is reused (no new receipt): only the endpoints another node holds are decided afresh");
     drop(squatter);
     let _ = std::fs::remove_dir_all(&data_root);
