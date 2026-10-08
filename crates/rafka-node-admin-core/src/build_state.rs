@@ -590,6 +590,10 @@ impl FileJournal {
     }
 
     fn append(&self, log: &mut FactLog, fact: BuildFact) -> Result<(), BuildStateError> {
+        crate::record_store::off_the_runtime(|| self.append_now(log, fact))
+    }
+
+    fn append_now(&self, log: &mut FactLog, fact: BuildFact) -> Result<(), BuildStateError> {
         let mut f = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

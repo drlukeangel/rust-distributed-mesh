@@ -249,6 +249,17 @@ impl FileConnectionsStorage {
         let records = FileRecords::open(own_data_dir, "connections")?;
         Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), Mutex::new(())))
     }
+
+    fn append_history_now(&self, fact: &NodeConnection) -> Result<(), StorageError> {
+        use std::io::Write as _;
+        let _g = self.2.lock().unwrap();
+        let io = |e: std::io::Error| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() };
+        let mut line = serde_json::to_vec(fact).map_err(|e| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() })?;
+        line.push(b'\n');
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.1).map_err(io)?;
+        f.write_all(&line).map_err(io)?;
+        f.sync_all().map_err(io)
+    }
 }
 
 #[async_trait]
@@ -263,14 +274,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.0.remove(&connection_key(index))
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
-        use std::io::Write as _;
-        let _g = self.2.lock().unwrap();
-        let io = |e: std::io::Error| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() };
-        let mut line = serde_json::to_vec(fact).map_err(|e| StorageError::Io { file: self.1.display().to_string(), reason: e.to_string() })?;
-        line.push(b'\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.1).map_err(io)?;
-        f.write_all(&line).map_err(io)?;
-        f.sync_all().map_err(io)
+        crate::record_store::off_the_runtime(|| self.append_history_now(fact))
     }
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
         match std::fs::read_to_string(&self.1) {

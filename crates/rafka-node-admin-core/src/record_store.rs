@@ -90,6 +90,10 @@ impl FileRecords {
 
     /// Store `record` under `key`, replacing what was there.
     pub fn write<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
+        off_the_runtime(|| self.write_now(key, format, record))
+    }
+
+    fn write_now<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<(), StorageError> {
         use std::io::Write as _;
         let _g = self.write.lock().unwrap();
         let path = self.path(key);
@@ -145,5 +149,16 @@ mod tests {
         again.remove("c").unwrap();
         again.remove("a").unwrap();
         assert_eq!(again.list::<String>("thing/1").unwrap(), ["two"]);
+    }
+}
+
+/// Run `f`, a blocking file write that ends in an fsync, without stalling the async runtime: on a
+/// multi-thread runtime the worker hands its other tasks to the rest of the runtime first
+/// (`block_in_place`), so a journal commit stalls only this caller, never the tasks queued behind
+/// it. Outside a runtime, or on a current-thread one, `f` runs as is.
+pub(crate) fn off_the_runtime<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
