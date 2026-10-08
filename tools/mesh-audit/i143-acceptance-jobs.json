@@ -402,7 +402,7 @@
       ]
     },
     "i143-rg2-chaos-process": {
-      "issue": 2902,
+      "issue": "rg2",
       "layer": "chaos-process",
       "cells": [
         {
