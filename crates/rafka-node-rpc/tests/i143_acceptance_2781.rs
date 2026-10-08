@@ -21,7 +21,6 @@ use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_test_scenario::sim::{plan, Cut, Mode, Scheduler, Tap};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::Instrument;
@@ -47,13 +46,18 @@ struct Capture {
 fn capture(cell: &str) -> Capture {
     use opentelemetry::trace::TracerProvider as _;
     use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer as _;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2781-{cell}");
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
         .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", service.clone())]))
         .build();
-    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("i143-2781"));
+    // Only this story's spans: the Node RPC runtime's own (`rdm.*`) and the cell's control calls.
+    // Iroh's transport internals are not part of it.
+    let layer = tracing_opentelemetry::layer()
+        .with_tracer(provider.tracer("i143-2781"))
+        .with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
     Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
@@ -251,14 +255,17 @@ fn serve_spans(spans: &[Value]) -> Vec<&Value> {
     spans.iter().filter(|s| s["name"] == "rdm.node_rpc.request.serve.via-direct").collect()
 }
 
-/// Every `control` call's serve span is a child of that call's own span, in the same trace.
+/// Every `control` call's serve span descends from that call's own span through the client's
+/// `request.update.via-call` span, in the same trace.
 fn assert_control_parentage(spans: &[Value], controls: usize) {
     let calls: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.call.create.via-control").collect();
     assert_eq!(calls.len(), controls, "one control call span per control invocation");
     for call in calls {
         let served = serve_spans(spans).into_iter().filter(|s| s["trace_id"] == call["trace_id"]).collect::<Vec<_>>();
         assert_eq!(served.len(), 1, "the control invocation's trace holds exactly one serve span: {call}");
-        assert_eq!(served[0]["parent_span_id"], call["span_id"], "the serve span's parent is the transmitted caller span");
+        let client = spans.iter().find(|s| s["name"] == "rdm.node_rpc.request.update.via-call" && s["span_id"] == served[0]["parent_span_id"]).expect("the serve span's parent is the client's call span (the transmitted traceparent)");
+        assert_eq!(client["trace_id"], call["trace_id"]);
+        assert_eq!(client["parent_span_id"], call["span_id"], "the client's call span is a child of the caller's own span");
         assert_eq!(served[0]["attributes"]["protocol"], "ping");
     }
 }
@@ -433,11 +440,9 @@ async fn supersession(seed: u64) -> Report {
     second.incarnation = IncarnationId::mint();
     c.resolver.insert(second.clone());
     r.s.record("resolver", "birth=2");
-    let mut slow_out = None;
     if release_first {
         n.hooks.open();
         r.s.record("slow", "released_before_stale_dial");
-        slow_out = Some(slow);
     }
     let fp = Arc::new(Failpoint::default());
     let opts = CallOptions { after_connect: Some(fp.clone()), ..Default::default() };
@@ -458,14 +463,10 @@ async fn supersession(seed: u64) -> Report {
     assert!(ev.is_none_or(|e| !e.committed));
     assert!(c.client.pooled().is_empty(), "nothing of a superseded birth is pooled: {:?}", c.client.pooled());
     assert_eq!(ServerStats::get(&n.stats.dispatched), 2, "the superseded call never dispatched (control and slow only)");
-    let slow = match slow_out {
-        Some(s) => s,
-        None => {
-            n.hooks.open();
-            r.s.record("slow", "released_after_stale_dial");
-            slow
-        }
-    };
+    if !release_first {
+        n.hooks.open();
+        r.s.record("slow", "released_after_stale_dial");
+    }
     let (o, _) = slow.await.unwrap();
     assert_eq!(r.saw("slow", &o), "Reply(Success)", "eviction never closes a connection a call is still using");
     // The healthy current sibling.
@@ -496,7 +497,7 @@ fn pool_scheduler_supersedes_birth_preserves_current_sibling() {
     let other_seed = (SEED + 1..).find(|s| Scheduler::new(*s).draw("release_before_stale_dial", 2) != Scheduler::new(SEED).draw("release_before_stale_dial", 2)).unwrap();
     let other = cap.run(supersession(other_seed));
     assert_ne!(a.counters["release_before_stale_dial"], other.counters["release_before_stale_dial"], "the seeds took opposite release orders");
-    assert_eq!(a.outcomes.iter().map(|o| o.split(": ").next_back().unwrap().to_string()).collect::<Vec<_>>(), other.outcomes.iter().map(|o| o.split(": ").next_back().unwrap().to_string()).collect::<Vec<_>>());
+    assert_eq!(a.outcomes.iter().map(|o| o.split(": ").last().unwrap().to_string()).collect::<Vec<_>>(), other.outcomes.iter().map(|o| o.split(": ").last().unwrap().to_string()).collect::<Vec<_>>());
     let spans = cap.finish(cell, json!({"cell": cell, "seed": SEED, "run": a.json(), "replay_equal": true, "other_order_seed": other_seed, "other_order_run": other.json()}));
     assert_control_parentage(&spans, 3);
     let evicts: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.connection.evict.via-incarnation-superseded").collect();

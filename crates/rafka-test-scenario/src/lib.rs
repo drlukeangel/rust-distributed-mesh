@@ -14,3 +14,4 @@ pub mod netfault;
 pub mod replay;
 pub mod runner;
 pub mod scenario;
+pub mod sim;
