@@ -651,6 +651,13 @@ impl Driver {
     /// The next executable action: drawn from the model, redrawn (and recorded) when the live
     /// estate refuses it.
     fn next_action(&mut self, nodes: &[Value]) -> Option<Action> {
+        // A silence is held for its observation and healed by the next row: a fabric that lives
+        // silenced is not the fabric the invariants describe.
+        if let Some((mesh, _)) = self.model.meshes.iter().find(|(_, m)| m.unheard) {
+            let a = Action::Heal { mesh: mesh.clone() };
+            self.sched.record("heal-after-silence", &a.to_string());
+            return Some(a);
+        }
         for _ in 0..64 {
             let seed = self.rng.next();
             let drawn = generate(seed, &self.model, 1);
