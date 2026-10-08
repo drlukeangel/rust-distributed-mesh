@@ -116,6 +116,15 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
         rafka_mesh_entity::runtime::ExitRecord::clear(&spec.data_dir);
         let mut cmd = std::process::Command::new(&spec.executable);
+        // The launcher's environment is the child's host environment (PATH, HOME, RUST_LOG, OTLP
+        // endpoint, ...) and nothing of its launch contract: every `RDM_*` variable and the trace
+        // context are removed, then the spec's env is applied. The child sees exactly what the
+        // spec names, as a container does (`-e` per spec entry, no inheritance).
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(|k| k.starts_with("RDM_") || k == "TRACEPARENT" || k == "TRACESTATE") {
+                cmd.env_remove(&k);
+            }
+        }
         cmd.args(&spec.args).envs(&spec.env).stdin(Stdio::null()).stdout(log("stdout.log")?).stderr(log("stderr.log")?);
         #[cfg(unix)]
         {

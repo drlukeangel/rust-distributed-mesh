@@ -102,15 +102,19 @@ impl Launch {
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
         m.insert(ENV_INCARNATION.into(), self.incarnation.0.clone());
-        // An absent optional is written EMPTY, never omitted: a child process inherits its
-        // launcher's environment, and an omitted variable would be the launcher's own value.
-        m.insert(ENV_SUPERSEDES.into(), self.supersedes.as_ref().map(|s| s.0.clone()).unwrap_or_default());
+        if let Some(s) = &self.supersedes {
+            m.insert(ENV_SUPERSEDES.into(), s.0.clone());
+        }
         m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
-        m.insert(ENV_LAUNCHER.into(), self.launcher.as_ref().map(|l| format!("{},{},{}", l.name, l.node_id, l.incarnation.0)).unwrap_or_default());
+        if let Some(l) = &self.launcher {
+            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation.0));
+        }
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
-        m.insert(ENV_MESH_ID.into(), self.mesh_id.as_ref().map(|id| id.to_string()).unwrap_or_default());
+        if let Some(id) = &self.mesh_id {
+            m.insert(ENV_MESH_ID.into(), id.to_string());
+        }
         m
     }
 
@@ -166,33 +170,5 @@ mod tests {
             let e = Launch::from_env(|x| bad.get(x).cloned()).unwrap_err();
             assert!(e.starts_with(k) && e.contains(says), "{e}");
         }
-    }
-
-    /// CONTRACT: a node launched by an admin that is itself a restart inherits that admin's
-    /// environment, `RDM_SUPERSEDES` among it. A launch that supersedes nothing (a birth or a
-    /// re-birth at a path.name) must read back as superseding nothing, whatever it inherited.
-    #[test]
-    fn a_launch_that_supersedes_nothing_reads_back_as_superseding_nothing_over_an_inherited_environment() {
-        let birth = Launch {
-            fabric: "fabric1".into(),
-            fabric_id: FabricId::mint(),
-            name: "mesh2.admin.1".parse().unwrap(),
-            node_id: NodeId::mint(),
-            incarnation: IncarnationId::mint(),
-            supersedes: None,
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
-            launcher: None,
-            seeds: vec![],
-            data_dir: "/tmp/x".into(),
-            mesh_id: None,
-        };
-        // What a child process sees: its parent's environment with the launch's variables laid over it.
-        let mut child: BTreeMap<String, String> = BTreeMap::new();
-        child.insert(ENV_SUPERSEDES.into(), IncarnationId::mint().0);
-        child.insert(ENV_MESH_ID.into(), MeshId::mint().to_string());
-        child.insert(ENV_LAUNCHER.into(), format!("mesh1.admin.1,{},{}", NodeId::mint(), IncarnationId::mint().0));
-        child.extend(birth.to_env());
-        assert_eq!(Launch::from_env(|k| child.get(k).cloned()).unwrap(), birth);
     }
 }
