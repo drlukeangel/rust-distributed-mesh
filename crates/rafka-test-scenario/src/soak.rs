@@ -1359,3 +1359,29 @@ pub fn summary(r: &Report) -> String {
         r.ledger.violations.len()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failure at the last row of a generated sequence shrinks to a legal sequence that ends in
+    /// the failing action, reaches the same topology before it and keeps the involved node's rows.
+    #[test]
+    fn a_failure_reports_the_seed_and_a_minimized_legal_reproduction() {
+        let cfg = Config::mm(1_432_787, 1, Duration::from_secs(3), Duration::from_millis(500), Duration::from_secs(30));
+        let initial = cfg.model("process");
+        let seq = generate(cfg.seed, &initial, 60);
+        let at = seq.iter().rposition(|a| matches!(a, Action::Restart { .. })).expect("a restart in 60 rows");
+        let Action::Restart { node } = &seq[at] else { unreachable!() };
+        let repro = reproduce(cfg.seed, &initial, &seq, "planted", at, "planted failure", BTreeSet::from([node.clone()]));
+        assert_eq!(repro.seed, cfg.seed);
+        assert_eq!(repro.minimized.last(), Some(&seq[at]));
+        assert!(repro.minimized.len() < at + 1, "{} -> {}", at + 1, repro.minimized.len());
+        replay(&initial, &repro.minimized).expect("the minimized sequence is legal");
+        let before = |rows: &[Action]| replay(&initial, &rows[..rows.len() - 1]).unwrap().shape();
+        assert_eq!(before(&repro.minimized), before(&seq[..=at]), "the same topology before the failing action");
+        let named: Vec<&Action> = seq[..=at].iter().filter(|a| node_of(a) == Some(node.as_str())).collect();
+        let kept: Vec<&Action> = repro.minimized.iter().filter(|a| node_of(a) == Some(node.as_str())).collect();
+        assert_eq!(named, kept, "every row naming the involved node is kept");
+    }
+}
