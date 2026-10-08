@@ -239,7 +239,7 @@ impl EndpointAllocator {
         }
     }
 
-    /// The next free port on `ip`: rafka-v2 node-admin's one port search ([`lease_port_block`])
+    /// The next free port on `ip`: rafka-v2 node-admin's one port search ([`find_free_port`])
     /// over this allocator's range, from its cursor, once around. Held = every socket this
     /// allocator holds and every socket the topology names on `ip`; free = not held, claimed on
     /// the host (a shared host's cross-admin reservation, the record other admins read) and
@@ -264,7 +264,7 @@ impl EndpointAllocator {
                 bindable
             }
         };
-        let port = lease_port_block(self.next, 1, self.last, &held, &free).or_else(|_| lease_port_block(self.first, 1, self.last, &held, &free));
+        let port = find_free_port(self.next, self.last, &held, &free).or_else(|_| find_free_port(self.first, self.last, &held, &free));
         match port {
             Ok(p) => {
                 self.next = if p == self.last { self.first } else { p + 1 };
@@ -409,81 +409,25 @@ fn claim_owner(path: &std::path::Path) -> Option<u32> {
     std::fs::read_to_string(path).ok().and_then(|s| s.split_whitespace().next().and_then(|p| p.parse().ok()))
 }
 
-/// The claim text of a port this process leased for its own cells ([`lease_block_for`]) and
-/// has not yet handed out: its own allocators may take it, every other process's skips it.
-fn own_lease_text() -> String {
-    format!("{} lease", std::process::id())
-}
-
-fn is_own_lease(path: &std::path::Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|s| s.trim() == own_lease_text())
-}
-
-/// Claim `addr` host-wide. `false` when a live process holds the claim or it
-/// cannot be written; a claim whose owner process is gone is taken over.
-/// rafka-v2 node-admin's one port search: the lowest block of `count` contiguous ports at or
-/// above `hint` (and at most `ceiling`) in which every port is not `held` (every port a record
-/// or the topology names) and is `bindable` on the system ([`port_bindable`]). `Err` names the
-/// searched range and how many ports each rule refused.
-pub fn lease_port_block(hint: u16, count: u16, ceiling: u16, held: &std::collections::BTreeSet<u16>, bindable: impl Fn(u16) -> bool) -> Result<u16, String> {
-    let count = count.max(1);
+/// rafka-v2 node-admin's one port search: the lowest port at or above `hint` (and at most
+/// `ceiling`) that is not `held` (every port a record or the topology names) and is `free` on the
+/// system ([`port_bindable`]). `Err` names the searched range and how many ports each rule refused.
+fn find_free_port(hint: u16, ceiling: u16, held: &std::collections::BTreeSet<u16>, free: impl Fn(u16) -> bool) -> Result<u16, String> {
     let floor = hint.max(1024);
     let (mut by_record, mut by_system) = (0u32, 0u32);
-    let mut base = floor;
-    while base <= ceiling.saturating_sub(count - 1) {
-        let blocked = (base..base + count).find(|p| {
-            if held.contains(p) {
-                by_record += 1;
-                true
-            } else if !bindable(*p) {
-                by_system += 1;
-                true
-            } else {
-                false
-            }
-        });
-        match blocked {
-            None => return Ok(base),
-            Some(p) => base = p + 1,
+    for p in floor..=ceiling {
+        if held.contains(&p) {
+            by_record += 1;
+        } else if !free(p) {
+            by_system += 1;
+        } else {
+            return Ok(p);
         }
     }
     Err(format!(
-        "no {count} free contiguous port(s) in {floor}..={ceiling}: \
+        "no free port in {floor}..={ceiling}: \
          {by_record} held by a spawn record or the topology, {by_system} not bindable over TCP and UDP"
     ))
-}
-
-/// A free block of `count` contiguous ports from this lane's range (`RAFKA_ENDPOINT_PORT_RANGE`)
-/// for a cell named `name`: [`lease_port_block`] with [`port_bindable`], searched from a point
-/// derived from the name so cells leasing at once start apart, then once around the range. A cell
-/// never names a host port of its own: the lane's block is the only range its ports come from.
-pub fn lease_block_for(name: &str, count: u16) -> (u16, u16) {
-    let (first, last) = port_range_from_env();
-    let span = (last - first).saturating_add(1).saturating_sub(count).max(1) as u64;
-    let offset = name.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211)) % span;
-    let hint = first + offset as u16;
-    // The record of every block this process leased (rafka-v2: the lease records what it handed
-    // out, and the record is an input to the next search): two cells of one process never get
-    // overlapping blocks, whether or not either has bound a port yet.
-    static LEASED: std::sync::Mutex<std::collections::BTreeSet<u16>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
-    let mut leased = LEASED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    // The lease is written into the host-wide claims every allocator reads, under their lock: a
-    // port another live process claims is not leased, and a leased port is never another
-    // process's to hand out (its allocators read a live owner), while this process's own
-    // allocators take it like a free one.
-    let base = with_claims_locked(|_| {
-        let unclaimed = |p: u16| !claim_owner(&reservation_path(SocketAddr::from(([127, 0, 0, 1], p)))).is_some_and(process_is_alive);
-        let free = |p: u16| unclaimed(p) && port_bindable(p);
-        let base = lease_port_block(hint, count, last, &leased, free).or_else(|_| lease_port_block(first, count, last, &leased, free))?;
-        for p in base..base + count {
-            let _ = std::fs::write(reservation_path(SocketAddr::from(([127, 0, 0, 1], p))), own_lease_text());
-        }
-        Ok::<u16, String>(base)
-    })
-    .unwrap_or_else(|| Err("the host-wide endpoint claims cannot be locked".to_string()))
-    .unwrap_or_else(|e| panic!("{name}: {e}"));
-    leased.extend(base..base + count);
-    (base, base + count - 1)
 }
 
 /// Whether `port` can be bound right now on every interface, over TCP AND UDP: a node binds
@@ -493,10 +437,12 @@ pub fn port_bindable(port: u16) -> bool {
     std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() && std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok()
 }
 
+/// Claim `addr` host-wide. `false` when a live process holds the claim or it
+/// cannot be written; a claim whose owner process is gone is taken over.
 fn reserve_on_host(addr: SocketAddr) -> bool {
     let path = reservation_path(addr);
     with_claims_locked(|_| {
-        if claim_owner(&path).is_some_and(process_is_alive) && !is_own_lease(&path) {
+        if claim_owner(&path).is_some_and(process_is_alive)  {
             return false;
         }
         match std::fs::write(&path, std::process::id().to_string()) {
@@ -736,16 +682,40 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn alloc(name: &str, ports: u16) -> EndpointAllocator {
-        // A block leased from the lane's range, as large as the cell uses: never a host range of
-        // the test's own.
-        let (first, last) = lease_block_for(name, ports);
+    /// An allocator over the lane's whole range: a port is taken one at a time, each checked
+    /// against the host-wide claims and bindable.
+    fn alloc() -> EndpointAllocator {
+        let (first, last) = port_range_from_env();
         EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last)
+    }
+
+    /// `n` distinct ports from the top of the lane's range that are unclaimed and bindable now,
+    /// for a test that needs a range of known size. Allocators scan upward from the bottom, so
+    /// these are not taken by a sibling test's allocator.
+    fn top_free_ports(n: usize) -> Vec<u16> {
+        // Ports this helper already handed to a sibling test are not handed again.
+        static HANDED: std::sync::Mutex<BTreeSet<u16>> = std::sync::Mutex::new(BTreeSet::new());
+        let mut handed = HANDED.lock().unwrap_or_else(|e| e.into_inner());
+        let (first, last) = port_range_from_env();
+        let got: Vec<u16> = (first..=last)
+            .rev()
+            .filter(|p| !handed.contains(p))
+            .filter(|p| !claim_owner(&reservation_path(SocketAddr::from(([127, 0, 0, 1], *p)))).is_some_and(process_is_alive) && port_bindable(*p))
+            .take(n)
+            .collect();
+        assert_eq!(got.len(), n, "the lane's range {first}-{last} has {n} free ports");
+        handed.extend(got.iter().copied());
+        got
+    }
+
+    fn one_port_allocator() -> (u16, EndpointAllocator) {
+        let p = top_free_ports(1)[0];
+        (p, EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), p, p))
     }
 
     #[test]
     fn no_collisions_across_a_large_allocation() {
-        let mut a = alloc("no_collisions_across_a_large_allocation", 400);
+        let mut a = alloc();
         let mut seen = BTreeSet::new();
         for i in 1..=400 {
             let got = a.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE).unwrap();
@@ -761,7 +731,7 @@ mod tests {
     /// never its recorded ones, and the recorded ones are released.
     #[test]
     fn a_respawn_is_handed_fresh_ports_never_the_recorded_ones() {
-        let mut a = alloc("a_respawn_is_handed_fresh_ports_never_the_recorded_ones", 8);
+        let mut a = alloc();
         let node = p("mesh1.rpc.2");
         let first = a.assign(&node, &RPC_NODE).unwrap();
         let again = a.assign(&node, &RPC_NODE).unwrap();
@@ -771,7 +741,7 @@ mod tests {
 
     #[test]
     fn a_listener_kind_gets_its_own_tcp_address_beside_the_transport() {
-        let mut a = alloc("a_listener_kind_gets_its_own_tcp_address_beside_the_transport", 8);
+        let mut a = alloc();
         let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN).unwrap();
         assert_eq!(got.listeners.len(), 1);
         assert_eq!(got.listeners[0].0, "control");
@@ -791,40 +761,32 @@ mod tests {
     /// never handed to a second spawn, though nothing has bound it yet.
     #[test]
     fn a_port_held_by_an_in_flight_placeholder_is_never_handed_out_again() {
-        assert_eq!(lease_port_block(24_006, 1, 60_000, &held_ports(&[24_006]), |_| true), Ok(24_007));
+        assert_eq!(find_free_port(24_006, 60_000, &held_ports(&[24_006]), |_| true), Ok(24_007));
     }
 
     /// CONTRACT (rafka-v2 node-admin port_lease): a port the system will not bind is skipped.
     #[test]
     fn a_port_the_system_will_not_bind_is_skipped() {
-        assert_eq!(lease_port_block(24_000, 1, 60_000, &held_ports(&[]), |p| p != 24_000 && p != 24_001), Ok(24_002));
-    }
-
-    /// CONTRACT (rafka-v2 node-admin port_lease): one held port moves the whole block past it.
-    #[test]
-    fn a_block_starts_past_any_held_port_inside_it() {
-        assert_eq!(lease_port_block(24_000, 4, 60_000, &held_ports(&[24_002]), |_| true), Ok(24_003));
+        assert_eq!(find_free_port(24_000, 60_000, &held_ports(&[]), |p| p != 24_000 && p != 24_001), Ok(24_002));
     }
 
     /// CONTRACT (rafka-v2 node-admin port_lease): an exhausted range is refused by name, with how
     /// many ports each rule refused, never answered with a port that may be taken.
     #[test]
     fn an_exhausted_range_is_refused_by_name() {
-        let err = lease_port_block(59_999, 1, 60_000, &held_ports(&[59_999]), |p| p != 60_000).expect_err("nothing free");
+        let err = find_free_port(59_999, 60_000, &held_ports(&[59_999]), |p| p != 60_000).expect_err("nothing free");
         assert!(err.contains("59999..=60000"), "{err}");
         assert!(err.contains("1 held by a spawn record or the topology") && err.contains("1 not bindable"), "{err}");
     }
 
     #[test]
     fn released_ports_return() {
-        let (first, last) = lease_block_for("released_ports_return", 2);
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
+        let (_, mut a) = one_port_allocator();
         a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
-        a.assign(&p("mesh1.rpc.2"), &RPC_NODE).unwrap();
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE), Err(AllocationError::Exhausted { .. })));
-        assert!(matches!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
+        assert!(matches!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE), Err(AllocationError::Exhausted { .. })));
+        assert!(matches!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE), Err(AllocationError::Exhausted { .. })), "a failed allocation leaks nothing");
         a.release(&p("mesh1.rpc.1"));
-        assert!(a.assign(&p("mesh1.rpc.3"), &RPC_NODE).is_ok());
+        assert!(a.assign(&p("mesh1.rpc.2"), &RPC_NODE).is_ok());
     }
 
     #[test]
@@ -852,8 +814,7 @@ mod tests {
 
     #[test]
     fn a_partial_listener_allocation_frees_what_it_took() {
-        let (first, last) = lease_block_for("a_partial_listener_allocation_frees_what_it_took", 1);
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
+        let (_, mut a) = one_port_allocator();
         assert!(matches!(a.assign(&p("mesh1.admin.1"), &NODE_ADMIN), Err(AllocationError::Exhausted { .. })));
         assert_eq!(a.in_use_count(), 0, "the transport taken before the listener failed was freed");
         assert!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).is_ok());
@@ -875,12 +836,14 @@ mod tests {
 
     #[test]
     fn a_port_bound_by_another_process_is_never_handed_out() {
-        let (first, last) = lease_block_for("a_port_bound_by_another_process_is_never_handed_out", 3);
-        let squatter = UdpSocket::bind(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), first)).unwrap();
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
-        let got = a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
-        assert_ne!(got.transport.port(), first);
+        // The squatter holds the port the allocator would try first; a squatter on a one-port
+        // range leaves nothing to hand out.
+        let squat = top_free_ports(1)[0];
+        let squatter = UdpSocket::bind(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), squat)).unwrap();
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), squat, squat);
+        assert!(matches!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE), Err(AllocationError::Exhausted { .. })), "the squatted port is never handed out");
         drop(squatter);
+        assert!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).is_ok(), "once the squatter lets go the port is free");
     }
 
     /// Two node-admins on one host (two fabrics, or two admins of one fabric)
@@ -888,30 +851,31 @@ mod tests {
     /// every port free, so only the host-wide reservation keeps them apart.
     #[test]
     fn two_allocators_on_one_host_never_hand_out_the_same_port() {
-        let (two_first, _) = lease_block_for("two_allocators_on_one_host_never_hand_out_the_same_port", 8);
-        let (mut a, mut b) = (
-            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), two_first, two_first + 7),
-            EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), two_first, two_first + 7),
-        );
-        let x = a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
-        let y = b.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap();
-        assert_ne!(x.transport, y.transport, "{} handed out twice", x.transport);
+        let (mut a, mut b) = (alloc(), alloc());
+        let mut seen = BTreeSet::new();
+        for i in 1..=100 {
+            for (who, al) in [("a", &mut a), ("b", &mut b)] {
+                let got = al.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE).unwrap();
+                assert!(seen.insert(got.transport), "{who} was handed {}, already handed out", got.transport);
+            }
+        }
+        assert_eq!(seen.len(), 200);
         // A released port is free to the other allocator again.
+        let freed = a.held.get(&p("mesh1.rpc.1")).unwrap().transport;
         a.release(&p("mesh1.rpc.1"));
-        b.release(&p("mesh1.rpc.1"));
-        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), two_first, two_first);
+        let mut c = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), freed.port(), freed.port());
         assert!(c.assign(&p("mesh1.rpc.1"), &RPC_NODE).is_ok(), "released reservations are gone");
     }
 
     /// The record check: a socket any node's record names is never handed out.
     #[test]
     fn a_socket_the_topology_names_is_never_handed_out() {
-        let (first, _) = lease_block_for("a_socket_the_topology_names_is_never_handed_out", 2);
+        let (first, last) = port_range_from_env();
         let theirs = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), first);
         let holder = p("mesh1.admin.2");
         let (h, s) = (holder.clone(), theirs);
-        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, first + 1).with_held_sockets(HeldSockets::new(move || vec![(h.clone(), s)]));
-        assert_eq!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap().transport.port(), first + 1, "the named port is skipped without a probe");
+        let mut a = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last).with_held_sockets(HeldSockets::new(move || vec![(h.clone(), s)]));
+        assert_ne!(a.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap().transport.port(), first, "the named port is skipped without a probe");
         a.release(&p("mesh1.rpc.1"));
     }
 
@@ -919,7 +883,8 @@ mod tests {
     /// reserved them leaves no dead-owner claim for another allocator to take over.
     #[test]
     fn a_runtime_holding_its_addresses_keeps_them_out_of_another_allocators_hands() {
-        let (block, _) = lease_block_for("a_runtime_holding_its_addresses_keeps_them_out_of_another_allocators_hands", 3);
+        let ports = top_free_ports(2);
+        let (block, spare) = (ports[0], ports[1]);
         let handed = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), block);
         let path = reservation_path(handed);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -930,23 +895,22 @@ mod tests {
         assert_eq!(claim_owner(&path), Some(std::process::id()));
         // A claim a live process holds (the admin, across this runtime's restarts) stays theirs.
         let mut live = std::process::Command::new("sleep").arg("30").stdout(std::process::Stdio::null()).spawn().unwrap();
-        let admins = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), block + 2);
+        let admins = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), spare);
         std::fs::write(reservation_path(admins), live.id().to_string()).unwrap();
         hold_as_runtime([admins]);
         assert_eq!(claim_owner(&reservation_path(admins)), Some(live.id()), "the admin's live claim is not overwritten");
         live.kill().ok();
         live.wait().ok();
         std::fs::remove_file(reservation_path(admins)).ok();
-        let mut other = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), block, block + 1);
-        assert_eq!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE).unwrap().transport.port(), block + 1, "the runtime's port is never handed out");
-        other.release(&p("mesh1.rpc.1"));
+        let mut other = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), block, block);
+        assert!(matches!(other.assign(&p("mesh1.rpc.1"), &RPC_NODE), Err(AllocationError::Exhausted { .. })), "the runtime's port is never handed out");
         std::fs::remove_file(&path).ok();
     }
 
     /// A reservation whose owner process is gone is stale and is taken over.
     #[test]
     fn a_reservation_left_by_a_dead_process_is_taken_over() {
-        let (one, _) = lease_block_for("a_reservation_left_by_a_dead_process_is_taken_over", 1);
+        let one = top_free_ports(1)[0];
         let addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), one);
         let path = reservation_path(addr);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

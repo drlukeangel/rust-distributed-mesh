@@ -221,8 +221,12 @@ struct Executor {
     allocator: Mutex<EndpointAllocator>,
 }
 
-fn executor(data_root: &std::path::Path, key: &str, ports: (u16, u16)) -> Executor {
-    let addr: SocketAddr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), ports.0);
+fn executor(data_root: &std::path::Path, key: &str) -> Executor {
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
+    // The seed address is one port of the lane's range; the executor's allocator holds its claim,
+    // so no birth is handed it.
+    let mut allocator = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
+    let addr: SocketAddr = allocator.assign(&"mesh1.rpc.99".parse().unwrap(), &RPC_NODE).expect("a seed port").transport;
     Executor {
         template: LaunchTemplate {
             fabric: "fabric1".into(),
@@ -232,7 +236,7 @@ fn executor(data_root: &std::path::Path, key: &str, ports: (u16, u16)) -> Execut
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
         },
-        allocator: Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), ports.0 + 1, ports.1)),
+        allocator: Mutex::new(allocator),
     }
 }
 
@@ -300,12 +304,11 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
     std::fs::create_dir_all(&dir).unwrap();
     let cap = capture(cell);
     let data_root = std::env::temp_dir().join(format!("i143-2892-{}", NodeId::mint()));
-    let (first, _) = rafka_node_admin_core::deployment::endpoint::lease_block_for("i143_acceptance_2892", 40);
     let result = cap.run(async {
         let fleet = Fleet::new();
         let builds = MemoryBuildStateAdapter::new();
-        let lost = executor(&data_root, "lostadminkey", (first, first + 9));
-        let successor = executor(&data_root, "successoradminkey", (first + 10, first + 19));
+        let lost = executor(&data_root, "lostadminkey");
+        let successor = executor(&data_root, "successoradminkey");
 
         // CONTROL: the same executor re-runs its own cut-short run: its birth is handed on.
         let own = "mesh1.rpc.1".parse::<PathName>().unwrap();

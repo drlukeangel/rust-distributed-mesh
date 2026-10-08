@@ -199,10 +199,10 @@ async fn killed_then_rerun(kill_at: KillAt, ports: (u16, u16)) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pipeline_killed_after_spawning_reruns_without_a_second_runtime() {
-    killed_then_rerun(KillAt::AfterSpawn, rafka_node_admin_core::deployment::endpoint::lease_block_for("pipeline_rerun-after-spawn", 100)).await;
+    killed_then_rerun(KillAt::AfterSpawn, rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pipeline_killed_while_waiting_for_the_join_reruns_from_that_step() {
-    killed_then_rerun(KillAt::InWaitForMeshJoin, rafka_node_admin_core::deployment::endpoint::lease_block_for("pipeline_rerun-in-wait-for-mesh-join", 100)).await;
+    killed_then_rerun(KillAt::InWaitForMeshJoin, rafka_node_admin_core::deployment::endpoint::port_range_from_env()).await;
 }

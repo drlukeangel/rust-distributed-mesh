@@ -112,7 +112,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("retire_admission-stubborn", 2);
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
@@ -175,7 +175,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("retire_admission-four", 4);
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
@@ -267,7 +267,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("retire_admission-third", 2);
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();
@@ -297,7 +297,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("retire_admission-fourth", 2);
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
     let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let process = ProcessDeploymentProvider::new();

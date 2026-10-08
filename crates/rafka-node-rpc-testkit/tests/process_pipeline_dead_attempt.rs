@@ -71,8 +71,10 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
     let operation = format!("create-node:{node}");
     // Attempt 1, by an executor that is gone: it allocated identity and endpoints (the block's first port) and
     // died before DeployRuntime. Its receipts are the only trace of it.
-    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("process_pipeline_dead_attempt", 10);
-    let dead_port: std::net::SocketAddr = std::net::SocketAddr::new(IpAddr::from([127, 0, 0, 1]), first);
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::port_range_from_env();
+    // The dead attempt's port: one port from the lane's range, taken as a port is taken everywhere.
+    let mut dead_attempt_allocator = EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last);
+    let dead_port = dead_attempt_allocator.assign(&"mesh1.rpc.9".parse().unwrap(), &RPC_NODE).unwrap().transport;
     let dead_assignment = Assignment { transport: dead_port, listeners: vec![] };
     for (step, output) in [
         (CreateStep::AllocateIdentity.name(), serde_json::json!({"node_id": NodeId::mint(), "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint()})),
@@ -86,6 +88,7 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
     // Meanwhile another executor's live birth, mesh1.admin.2, holds that port: its record in the
     // topology names it (the record check), and the process is bound on it.
     let squatter = std::net::UdpSocket::bind(dead_port).unwrap();
+    dead_attempt_allocator.release(&"mesh1.rpc.9".parse().unwrap());
     let other: rafka_node_admin_core::model::PathName = "mesh1.admin.2".parse().unwrap();
     let allocator = Mutex::new(
         EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last).with_held_sockets(HeldSockets::new(move || vec![(other.clone(), dead_port)])),
@@ -109,7 +112,7 @@ async fn an_attempt_that_died_before_its_runtime_leaves_no_endpoint_to_reuse() {
     let endpoints = second.iter().find(|r| r.step == CreateStep::AllocateEndpoints.name()).expect("attempt 2 allocated its own endpoints");
     let assigned: Assignment = serde_json::from_value(endpoints.output.clone().unwrap()).unwrap();
     assert_ne!(assigned.transport, dead_port, "the dead attempt's port is never reused: another birth holds it");
-    assert!((first..=last).contains(&assigned.transport.port()), "a port of this executor's own range");
+    assert!((first..=last).contains(&assigned.transport.port()), "a port of the lane's range");
     assert!(second.iter().all(|r| r.step != CreateStep::AllocateIdentity.name()), "the identity receipt is reused (no new receipt): only the endpoints another node holds are decided afresh");
     drop(squatter);
     let _ = std::fs::remove_dir_all(&data_root);
