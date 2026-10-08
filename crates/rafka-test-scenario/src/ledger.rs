@@ -230,10 +230,7 @@ impl Ledger {
                     o.classification = Some(class);
                     return Ok(());
                 }
-                Some(_) => {
-                    o.classification = Some(class);
-                    return Ok(());
-                }
+                Some(first) => Violation::AlreadyClassified { id, first: first.clone(), second: class },
             },
         };
         self.recorded.push(violation.clone());
@@ -291,9 +288,10 @@ impl Ledger {
     /// - a key in the final state that no Reply-success or Indeterminate mutation could have
     ///   written is `AppliedWithoutReceipt`.
     pub fn reconcile_state(&self, final_state: &BTreeMap<String, Vec<u8>>) -> Result<Reconciliation, Refusal> {
-        return Ok(Reconciliation { issued: self.ops.len(), buckets: self.buckets(), applied_mutations: 0, indeterminate_mutations: Vec::new() });
-        #[allow(unreachable_code)]
-        let mut found = Vec::new();
+        let mut found = match self.reconcile() {
+            Ok(_) => Vec::new(),
+            Err(Refusal(v)) => v,
+        };
         // Per key: the operations whose effect could be the final value.
         let mut may_explain: BTreeMap<&str, Vec<&Operation>> = BTreeMap::new();
         for o in &self.ops {

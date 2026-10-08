@@ -169,6 +169,26 @@
         }
       ]
     },
+    "i143-2786-unit": {
+      "issue": 2786,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "operation_ledger_classifies_every_operation_once",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2786.rs",
+          "evidence": "model",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2786 operation_ledger_classifies_every_operation_once -- --exact",
+          "dir": "target/i143-acceptance/2786/unit/operation_ledger_classifies_every_operation_once"
+        },
+        {
+          "name": "operation_reconciler_detects_lost_applied_mutation",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2786.rs",
+          "evidence": "model",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2786 operation_reconciler_detects_lost_applied_mutation -- --exact",
+          "dir": "target/i143-acceptance/2786/unit/operation_reconciler_detects_lost_applied_mutation"
+        }
+      ]
+    },
     "i143-2776-unit": {
       "issue": 2776,
       "layer": "unit",
