@@ -10,7 +10,7 @@
 //! `client_contract` test pins that every route decodes into them.
 
 use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
-/// The executable-binding contract an operator hands node-admin (`RAFKA_EXECUTABLE_BINDINGS`).
+/// The executable-binding contract an operator hands node-admin (`RDM_EXECUTABLE_BINDINGS`).
 pub use rafka_mesh_entity::binding;
 pub use rafka_mesh_entity::NodeKind as LaunchKind;
 use serde::{Deserialize, Serialize};
@@ -226,7 +226,7 @@ pub struct NodeAdminClient {
 }
 
 impl NodeAdminClient {
-    /// `base` is what node-admin advertises (`RAFKA_NODE_ADMIN_API_BASE`).
+    /// `base` is what node-admin advertises (`RDM_NODE_ADMIN_API_BASE`).
     pub fn new(base: impl Into<String>) -> Self {
         Self { base: base.into().trim_end_matches('/').to_string(), http: reqwest::Client::new() }
     }

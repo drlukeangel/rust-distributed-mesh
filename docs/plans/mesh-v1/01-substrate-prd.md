@@ -75,7 +75,7 @@ pub trait MeshTransport: Send + Sync {
 
 ## 6. Identity model
 
-- Each node has a permanent `EndpointId` (iroh's Ed25519 keypair) — generated at first boot, persisted in `${RAFKA_DATA_DIR}/node-identity.json`
+- Each node has a permanent `EndpointId` (iroh's Ed25519 keypair) — generated at first boot, persisted in `${RDM_DATA_DIR}/node-identity.json`
 - Node identity is NOT the same as rafka's `principal_id` (app-layer authz concept; comes back later)
 - `EndpointId` is used for:
   - Mesh-layer peer addressing
@@ -85,8 +85,8 @@ pub trait MeshTransport: Send + Sync {
 
 ## 7. Boot sequence (per node)
 
-1. Load or mint `EndpointId` from `${RAFKA_DATA_DIR}/node-identity.json`
-2. Construct `iroh::Endpoint` bound to `${RAFKA_NODE_BIND_ADDR}` (default `0.0.0.0:0` = ephemeral)
+1. Load or mint `EndpointId` from `${RDM_DATA_DIR}/node-identity.json`
+2. Construct `iroh::Endpoint` bound to `${RDM_NODE_BIND_ADDR}` (default `0.0.0.0:0` = ephemeral)
 3. Register ALPN `rafka-mesh-v1`
 4. Register discovery providers (mdns + dns + manual seed list)
 5. Tag gossip metadata: `{node_type: "broker", started_at_unix: 1234567890, version: "0.x.y"}`
@@ -101,13 +101,13 @@ Environment variables ONLY (no config files for substrate; CLAUDE.md KISS):
 
 | Var | Default | Purpose |
 |---|---|---|
-| `RAFKA_NODE_TYPE` | required | One of `gateway`, `broker`, `compute`, `schema` |
-| `RAFKA_NODE_BIND_ADDR` | `0.0.0.0:0` | iroh endpoint bind |
-| `RAFKA_DATA_DIR` | `./data/node-${random}` | Identity + persistent state |
-| `RAFKA_SEED_NODES` | empty | CSV of `<EndpointId>@<host>:<port>` for bootstrap discovery |
-| `RAFKA_RELAY_URLS` | empty | CSV of iroh-relay URLs (Sprint 2+) |
-| `RAFKA_GOSSIP_INTERVAL_MS` | `500` | Gossip heartbeat |
-| `RAFKA_OTLP_ENDPOINT` | empty | OTLP collector for spans |
+| `RDM_NODE_TYPE` | required | One of `gateway`, `broker`, `compute`, `schema` |
+| `RDM_NODE_BIND_ADDR` | `0.0.0.0:0` | iroh endpoint bind |
+| `RDM_DATA_DIR` | `./data/node-${random}` | Identity + persistent state |
+| `RDM_SEED_NODES` | empty | CSV of `<EndpointId>@<host>:<port>` for bootstrap discovery |
+| `RDM_RELAY_URLS` | empty | CSV of iroh-relay URLs (Sprint 2+) |
+| `RDM_GOSSIP_INTERVAL_MS` | `500` | Gossip heartbeat |
+| `RDM_OTLP_ENDPOINT` | empty | OTLP collector for spans |
 
 ## 9. Observability hooks (from day 1)
 
@@ -133,7 +133,7 @@ All spans carry `node_id` + `node_type` attributes. The topology UI subscribes t
 
 1. `cargo run -p rafka-gateway` boots, mints identity, joins mesh, emits `rafka.mesh.node.started`
 2. Running 3 nodes (gateway + broker + compute) on `localhost`: every pair discovers each other within 5s
-3. Killing one node: surviving nodes emit `rafka.mesh.peer.staleness_timeout` within `4 × RAFKA_GOSSIP_INTERVAL_MS`
+3. Killing one node: surviving nodes emit `rafka.mesh.peer.staleness_timeout` within `4 × RDM_GOSSIP_INTERVAL_MS`
 4. Restarting the killed node with the SAME identity: surviving nodes re-establish connection within 5s
 5. All 14 substrate spans land in `tests/artifacts/mesh-substrate/*.spans.jsonl`
 6. Zero `unwrap()` panics on every chaos-inject path during boot

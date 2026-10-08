@@ -3,8 +3,8 @@
 //! product=mesh, feature=fabric-soak, subfeature=seeded, rung=MM, provider=process.
 //!
 //! Shape: two meshes, two node-admins and three rpc nodes each: enough admins for real
-//! mesh-primary and fabric-primary movement. For `RAFKA_SOAK_SECS` (default 60; the 30-minute
-//! bar is `RAFKA_SOAK_SECS=1800`) a scheduler seeded by `RAFKA_SOAK_SEED` (default random; the
+//! mesh-primary and fabric-primary movement. For `RDM_SOAK_SECS` (default 60; the 30-minute
+//! bar is `RDM_SOAK_SECS=1800`) a scheduler seeded by `RDM_SOAK_SEED` (default random; the
 //! seed is printed and written to the artifacts so a run is exactly rerunnable) picks one
 //! operation per round:
 //!
@@ -312,11 +312,11 @@ async fn reachable(estate: &Estate, round: usize) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seeded_fault_schedule_holds_every_invariant() {
-    let secs: u64 = std::env::var("RAFKA_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-    let seed: u64 = std::env::var("RAFKA_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+    let secs: u64 = std::env::var("RDM_SOAK_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("RDM_SOAK_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1
     });
-    eprintln!("SOAK seed={seed} secs={secs}  (rerun: RAFKA_SOAK_SEED={seed} RAFKA_SOAK_SECS={secs})");
+    eprintln!("SOAK seed={seed} secs={secs}  (rerun: RDM_SOAK_SEED={seed} RDM_SOAK_SECS={secs})");
     let mut rng = Rng(seed);
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let absent: Vec<&str> = if estate.owner.provider == "container" { vec![] } else { vec!["network lost and peer mesh unheard: the process estate has no unprivileged network fault (container provider only)"] };
@@ -334,10 +334,10 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     if container {
         ops.extend(["network-lost", "peer-mesh-unheard"]);
     }
-    // `RAFKA_SOAK_OPS=a,b,...` runs only the named faults (an isolation run); every fault otherwise.
-    if let Ok(only) = std::env::var("RAFKA_SOAK_OPS") {
+    // `RDM_SOAK_OPS=a,b,...` runs only the named faults (an isolation run); every fault otherwise.
+    if let Ok(only) = std::env::var("RDM_SOAK_OPS") {
         let only: Vec<&str> = only.split(',').map(str::trim).filter(|o| !o.is_empty()).collect();
-        assert!(only.iter().all(|o| ops.contains(o)), "RAFKA_SOAK_OPS names a fault this provider does not run: {only:?} of {ops:?}");
+        assert!(only.iter().all(|o| ops.contains(o)), "RDM_SOAK_OPS names a fault this provider does not run: {only:?} of {ops:?}");
         ops.retain(|o| only.contains(o));
     }
     estate.artifact("soak-ops.json", &json!({"ops": ops}));

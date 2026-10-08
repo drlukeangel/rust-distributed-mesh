@@ -56,7 +56,7 @@ fn client(c: &Control) -> Result<&NodeAdminClient, Response> {
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "error": "no-node-admin",
-                "detail": "set RAFKA_NODE_ADMIN_API_BASE to the node-admin control API this UI drives",
+                "detail": "set RDM_NODE_ADMIN_API_BASE to the node-admin control API this UI drives",
             })),
         )
             .into_response()

@@ -2,7 +2,7 @@
 //! explicit executable-binding seam, its replay manifests and the acceptance runner's receipts.
 //! Run by `scripts/i143-acceptance-gate.sh i143-2776-{unit,process,container}`, which exports
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
-//! `RAFKA_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
+//! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
 use rafka_node_admin_client::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_IMAGE};

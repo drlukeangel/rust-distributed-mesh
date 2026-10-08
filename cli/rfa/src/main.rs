@@ -145,7 +145,7 @@ enum ChaosCmd {
         #[arg(long, default_value = "3000")]
         duration_ms: u64,
     },
-    /// Restart target with RAFKA_CLOCK_SKEW_MS env (default 30000ms)
+    /// Restart target with RDM_CLOCK_SKEW_MS env (default 30000ms)
     ClockSkew {
         #[arg(long)]
         target: Option<String>,
@@ -154,7 +154,7 @@ enum ChaosCmd {
         #[arg(long, default_value = "10000")]
         deadline_ms: u64,
     },
-    /// Restart target with new RAFKA_NODE_BIND_ADDR (random ephemeral port)
+    /// Restart target with new RDM_NODE_BIND_ADDR (random ephemeral port)
     NatShift {
         #[arg(long)]
         target: Option<String>,
@@ -490,9 +490,9 @@ const TEST_REGISTRY: &[(&str, &str, &str)] = &[
     ("burst-kill-5",            "chaos",      "BurstKill 5 random nodes back-to-back; verify all removed within 30s"),
     ("wedge-broker-2s",         "chaos",      "WedgeNode broker for 2s (NtSuspendProcess); peer_count drops then recovers"),
     ("wedge-gateway-5s",        "chaos",      "WedgeNode gateway for 5s; longer wedge tests stale-peer expiry"),
-    ("clock-skew-5s",           "chaos",      "ClockSkew target node by +5s; restart with RAFKA_CLOCK_SKEW_MS=5000"),
+    ("clock-skew-5s",           "chaos",      "ClockSkew target node by +5s; restart with RDM_CLOCK_SKEW_MS=5000"),
     ("clock-skew-60s",          "chaos",      "ClockSkew target node by +60s; bigger skew stresses heartbeat staleness logic"),
-    ("nat-shift",               "chaos",      "NatShift: restart target with new random RAFKA_NODE_BIND_ADDR (simulates NAT rebind)"),
+    ("nat-shift",               "chaos",      "NatShift: restart target with new random RDM_NODE_BIND_ADDR (simulates NAT rebind)"),
     // === Soak variants of increasing duration ===
     ("chaos-soak-9prim-2min",   "chaos",      "2-minute soak with 9-primitive pool; medium-duration substrate check"),
     ("chaos-soak-9prim-10min",  "chaos",      "10-minute soak with 9-primitive pool; long-duration steady-state"),
@@ -999,7 +999,7 @@ async fn run_gossip_mesh_to_mesh(api_url: &str) -> (&'static str, String) {
     for (t, mid) in [("gateway", "mesh-test-A"), ("broker", "mesh-test-B")] {
         let _ = client
             .post(format!("{api_url}/api/nodes/spawn"))
-            .json(&serde_json::json!({"node_type": t, "extra_env": {"RAFKA_MESH_ID": mid}}))
+            .json(&serde_json::json!({"node_type": t, "extra_env": {"RDM_MESH_ID": mid}}))
             .send()
             .await
             .ok();
@@ -1047,7 +1047,7 @@ async fn run_remove_resilience(api_url: &str) -> (&'static str, String) {
     let mut my_spawn_names: Vec<String> = Vec::new();
     // Red-team R7 fix part 2: was [gateway, broker x2, compute, registry,
     // bridge]. The bridge spawn requires mesh_id="bridge" AND
-    // RAFKA_BRIDGE_TARGET_MESHES env; spawning a bridge in mesh-a with no
+    // RDM_BRIDGE_TARGET_MESHES env; spawning a bridge in mesh-a with no
     // target meshes either fails validation or starts and immediately exits.
     // Use 6 non-bridge types in mesh-a so all 6 spawn cleanly.
     for t in ["gateway", "gateway", "broker", "broker", "compute", "registry"] {
@@ -1224,8 +1224,8 @@ async fn cmd_chaos_catalog() -> Result<()> {
         ("burst_kill",        false, "N back-to-back kills against random targets",      "rfa mesh chaos burst-kill --count 3"),
         ("disk_full",         false, "fill spawn data dir until writes fail",            "rfa mesh chaos disk-full --max-mb 4"),
         ("wedge_node",        false, "Suspend the OS process via NtSuspendProcess",      "rfa mesh chaos wedge --target-type broker"),
-        ("clock_skew",        false, "restart node with RAFKA_CLOCK_SKEW_MS env",        "rfa mesh chaos clock-skew --skew-ms 30000"),
-        ("nat_shift",         false, "restart with random RAFKA_NODE_BIND_ADDR port",    "rfa mesh chaos nat-shift"),
+        ("clock_skew",        false, "restart node with RDM_CLOCK_SKEW_MS env",        "rfa mesh chaos clock-skew --skew-ms 30000"),
+        ("nat_shift",         false, "restart with random RDM_NODE_BIND_ADDR port",    "rfa mesh chaos nat-shift"),
         ("partition_pair",    true,  "Windows firewall block outbound UDP for 2 progs",  "rfa mesh chaos partition-pair --a gateway --b broker"),
         ("partition_subset",  true,  "split node_type catalog: K types blocked from rest","rfa mesh chaos partition-subset --size 2"),
         ("flap_link",         true,  "create+delete firewall block N cycles",            "rfa mesh chaos flap-link --a gateway --b broker --cycles 5"),

@@ -96,8 +96,8 @@ GET  /api/nodes/{endpoint_id}/spans?since=...  # recent spans for a node
 ## 6. Subprocess management
 
 `rafka-topology-ui` spawns/kills node subprocesses using `tokio::process::Command`. Each spawned node:
-- Inherits `RAFKA_OTLP_ENDPOINT` so its spans flow back via the OTLP collector
-- Gets a unique `RAFKA_DATA_DIR` under `${TOPOLOGY_UI_WORK_DIR}/nodes/<endpoint_id>/`
+- Inherits `RDM_OTLP_ENDPOINT` so its spans flow back via the OTLP collector
+- Gets a unique `RDM_DATA_DIR` under `${TOPOLOGY_UI_WORK_DIR}/nodes/<endpoint_id>/`
 - Logs to `${TOPOLOGY_UI_WORK_DIR}/nodes/<endpoint_id>/stdout.log`
 
 This is a developer-experience tool. Production deployment uses k8s / systemd / docker-compose — the topology UI is for local development and chaos testing, not production node mgmt.

@@ -534,7 +534,7 @@ Forbidden: harness code that calls `std::env::var(...)` for test identity (name/
 
 ### Rule 3 — Telemetry mode is a type, not an env-var fork
 
-The gateway/broker/compute/registry binaries today install `BatchSpanProcessor` unconditionally via `rafka_telemetry::init_telemetry()`. **Do not** add a runtime fork that picks Simple vs Batch based on env state. If subprocess tests need synchronous flushing, add a `RAFKA_TELEMETRY_MODE=simple` env var the production binaries read AT STARTUP — but the test author sees the choice as a typed builder state (`OtlpCaptureSimple` vs `OtlpCaptureBatch`), and the harness sets the env var when spawning the subprocess. Mode is a NON-LOCAL fact only at the binary's startup; everywhere else it's a TYPE.
+The gateway/broker/compute/registry binaries today install `BatchSpanProcessor` unconditionally via `rafka_telemetry::init_telemetry()`. **Do not** add a runtime fork that picks Simple vs Batch based on env state. If subprocess tests need synchronous flushing, add a `RDM_TELEMETRY_MODE=simple` env var the production binaries read AT STARTUP — but the test author sees the choice as a typed builder state (`OtlpCaptureSimple` vs `OtlpCaptureBatch`), and the harness sets the env var when spawning the subprocess. Mode is a NON-LOCAL fact only at the binary's startup; everywhere else it's a TYPE.
 
 ### Rule 4 — No shared OnceLock<Runtime>; per-test runtime ownership
 
@@ -635,4 +635,4 @@ Sprint-09 originally scaffolded `crates/rfa/`; corrected mid-build to `cli/rfa/`
 - **D-XXX:** Choice of graph rendering lib for UI (`vis-network` vs `cytoscape.js`)
 - **D-XXX:** Whether topology-ui process binary lives in `topology-ui/` (sibling to gateway/broker) or `crates/rafka-topology-ui/`
 - **D-XXX:** OTLP collector deployment shape for local dev (sidecar process vs in-tree library)
-- **D-XXX:** Identity persistence format for `${RAFKA_DATA_DIR}/node-identity.json` (JSON, msgpack, postcard)
+- **D-XXX:** Identity persistence format for `${RDM_DATA_DIR}/node-identity.json` (JSON, msgpack, postcard)

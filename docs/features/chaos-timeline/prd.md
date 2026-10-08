@@ -82,9 +82,9 @@ Both spans share the same `trace_id` because both `execute()` and `detect()` are
 - 4× one-shot primitives fired against a 7-node pool, all detected, all rendered with descriptions:
   ```
   [3s ago] nat_shift    → resolved in 102ms
-    Restart target with new random RAFKA_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.
+    Restart target with new random RDM_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.
   [4s ago] clock_skew   → resolved in 73ms
-    Restart target with RAFKA_CLOCK_SKEW_MS env. node-base adds that offset to wall_time_ms on every heartbeat span.
+    Restart target with RDM_CLOCK_SKEW_MS env. node-base adds that offset to wall_time_ms on every heartbeat span.
   [4s ago] restart_node → resolved in 51ms
   [4s ago] kill_node    → resolved in 26ms
   ```

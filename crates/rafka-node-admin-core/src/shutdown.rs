@@ -172,7 +172,7 @@ pub fn drained_to_primaries(view: &Topology) -> Result<Vec<Node>, Vec<Node>> {
 
 /// How long a stopper waits for the runtimes it drains to disappear.
 pub fn drain_bound() -> Duration {
-    std::env::var("RAFKA_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse().ok()).map(Duration::from_millis).unwrap_or(Duration::from_secs(60))
+    std::env::var("RDM_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse().ok()).map(Duration::from_millis).unwrap_or(Duration::from_secs(60))
 }
 
 /// The admin-side seams the drain uses.

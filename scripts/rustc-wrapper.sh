@@ -3,7 +3,7 @@
 # rustc-wrapper.sh — Per-crate rustc wrapper: external crates through sccache (one cache for every
 # worktree), workspace crates through plain rustc. Shared with rafka-v2.
 #
-# Decision rule: Cargo invokes this wrapper as `<wrapper> <rustc> <args...>`. If RAFKA_RECOMPILE_VENDORS=1
+# Decision rule: Cargo invokes this wrapper as `<wrapper> <rustc> <args...>`. If RDM_RECOMPILE_VENDORS=1
 # is set, the wrapper exports SCCACHE_RECACHE=1 and executes plain rustc (`$@`) for everything to refresh the build.
 # Otherwise, it inspects ARGS for the crate's source file (the first argument ending in `.rs`). If the source file
 # resides under an external dependency tree ($CARGO_HOME/registry/src/, $CARGO_HOME/git/checkouts/, or any path
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # If forced recompile of vendors is requested, refresh cache and bypass wrapper
-if [ "${RAFKA_RECOMPILE_VENDORS:-0}" = "1" ]; then
+if [ "${RDM_RECOMPILE_VENDORS:-0}" = "1" ]; then
     export SCCACHE_RECACHE=1
     exec "$@"
 fi
@@ -90,7 +90,7 @@ fi
 # 112 leaf artifacts identical, 18 differing by exactly three 16-byte hashes each).
 #
 # Fix: hand rustc a PATH-STABLE OUT_DIR — an immutable, content-addressed copy of the
-# build script's output under $RAFKA_OUTDIR_STORE. Identical build-script output ⇒
+# build script's output under $RDM_OUTDIR_STORE. Identical build-script output ⇒
 # identical hash ⇒ identical literal in every lane ⇒ identical rlib ⇒ cache hit.
 # Different output (a build script that embeds its own path) ⇒ a different copy, never a
 # false hit. The copy is created once via temp+rename (a concurrent lane either sees the
@@ -99,7 +99,7 @@ fi
 # out dir stays where cargo put it (-L native= and downstream build scripts still see
 # it); only the rustc invocation's OUT_DIR moves.
 if [ -n "${OUT_DIR:-}" ] && [ -d "$OUT_DIR" ]; then
-    store="${RAFKA_OUTDIR_STORE:-$HOME/.cache/rafka-outdir}"
+    store="${RDM_OUTDIR_STORE:-$HOME/.cache/rafka-outdir}"
     if mkdir -p "$store" 2>/dev/null; then
         # Copy first, then hash the copy with the real out-dir prefix ABSTRACTED: a build
         # script may write its own absolute out-dir path into a generated file

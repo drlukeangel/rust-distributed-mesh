@@ -15,10 +15,10 @@ Pick a node from the dropdown. See the 5-span waterfall render below.
 ## Run all 4 mesh nodes + topology-ui together
 
 ```bash
-RAFKA_DATA_DIR=./data/g cargo run -p rafka-gateway &
-RAFKA_DATA_DIR=./data/b cargo run -p rafka-broker &
-RAFKA_DATA_DIR=./data/c cargo run -p rafka-compute &
-RAFKA_DATA_DIR=./data/r cargo run -p rafka-registry &
+RDM_DATA_DIR=./data/g cargo run -p rafka-gateway &
+RDM_DATA_DIR=./data/b cargo run -p rafka-broker &
+RDM_DATA_DIR=./data/c cargo run -p rafka-compute &
+RDM_DATA_DIR=./data/r cargo run -p rafka-registry &
 cargo run -p rafka-topology-ui &
 # wait 5s — UI dropdown auto-populates with [broker, compute, gateway, registry]
 ```

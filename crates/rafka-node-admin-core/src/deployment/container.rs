@@ -200,13 +200,13 @@ fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str
     }))
 }
 
-/// `RAFKA_CONTAINER_SUBNET_POOL` (default `10.231.0.0/16`): the IPv4 block
+/// `RDM_CONTAINER_SUBNET_POOL` (default `10.231.0.0/16`): the IPv4 block
 /// fabric networks are carved from, one `/24` each.
 pub fn subnet_pool_from_env() -> Result<(Ipv4Addr, u8), String> {
-    let raw = std::env::var("RAFKA_CONTAINER_SUBNET_POOL").unwrap_or_else(|_| "10.231.0.0/16".into());
+    let raw = std::env::var("RDM_CONTAINER_SUBNET_POOL").unwrap_or_else(|_| "10.231.0.0/16".into());
     match parse_cidr(&raw) {
         Some((base, prefix)) if prefix <= 24 => Ok((base, prefix)),
-        _ => Err(format!("RAFKA_CONTAINER_SUBNET_POOL={raw} is not an IPv4 block of /24 or wider")),
+        _ => Err(format!("RDM_CONTAINER_SUBNET_POOL={raw} is not an IPv4 block of /24 or wider")),
     }
 }
 
@@ -236,7 +236,7 @@ async fn create_fabric_network(fabric: &str, name: &str) -> Result<(), String> {
             Err(e) => return Err(format!("cannot create network {name} on {subnet}: {e}")),
         }
     }
-    Err(format!("cannot create network {name}: every /24 of RAFKA_CONTAINER_SUBNET_POOL is in use ({last})"))
+    Err(format!("cannot create network {name}: every /24 of RDM_CONTAINER_SUBNET_POOL is in use ({last})"))
 }
 
 impl ContainerDeploymentProvider {
@@ -392,7 +392,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             args.extend(["--pid".into(), "host".into()]);
             // The Docker client keeps its configuration under HOME; the node's data dir is its own.
             args.extend(["-e".into(), format!("HOME={data}")]);
-            if let Some(dir) = spec.env.get("RAFKA_BIN_DIR").filter(|d| Path::new(d).is_dir()) {
+            if let Some(dir) = spec.env.get("RDM_BIN_DIR").filter(|d| Path::new(d).is_dir()) {
                 args.extend(["-v".into(), format!("{dir}:{dir}:ro")]);
             }
             let data_root = spec.data_dir.parent().filter(|r| r.is_dir());
@@ -407,7 +407,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
                 if let Ok(set) = rafka_mesh_entity::binding::BindingSet::load(Path::new(file)) {
                     dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
                 }
-                let bin_dir = spec.env.get("RAFKA_BIN_DIR").map(PathBuf::from);
+                let bin_dir = spec.env.get("RDM_BIN_DIR").map(PathBuf::from);
                 for d in dirs.into_iter().filter(|d| d.is_dir() && Some(d) != bin_dir.as_ref() && !data_root.is_some_and(|r| d.starts_with(r))) {
                     args.extend(["-v".into(), format!("{}:{}:ro", d.display(), d.display())]);
                 }
@@ -415,7 +415,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         }
         // The span evidence directory the launch names, at the same path: a container's spans
         // land beside every process's.
-        if let Some(dir) = spec.env.get("RAFKA_EVIDENCE_DIR").filter(|d| Path::new(d).is_dir()) {
+        if let Some(dir) = spec.env.get("RDM_EVIDENCE_DIR").filter(|d| Path::new(d).is_dir()) {
             args.extend(["-v".into(), format!("{dir}:{dir}")]);
         }
         for (k, v) in &spec.env {

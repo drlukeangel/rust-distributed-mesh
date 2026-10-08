@@ -9,7 +9,7 @@
   "size": "small — 2 days (completed same-day as 3 baby chunks)",
   "design_reference": "docs/design/system-mesh-v1/ — long-term vision. Sprint 07 shipped ONLY the boot waterfall slice. Topology graph + alerts + heartbeat + type cards are explicitly deferred.",
   "in_scope": [
-    "topology-ui/ binary — axum server on http://localhost:19090 (RAFKA_TOPOLOGY_UI_BIND_ADDR env var)",
+    "topology-ui/ binary — axum server on http://localhost:19090 (RDM_TOPOLOGY_UI_BIND_ADDR env var)",
     "Single HTML page: header + waterfall canvas + node-selector dropdown",
     "GET /api/nodes — polls Jaeger /api/services, filters to D-019 locked node_type enum",
     "GET /api/boot-trace?service=X — polls Jaeger for rafka.mesh.node.ready traces, returns first trace",
@@ -48,7 +48,7 @@
     "NO SPA framework — vanilla HTML + CSS + JS only (Principle #10 KISS)",
     "NO topology graph in this sprint",
     "Polling, not WebSocket",
-    "All config via env vars (Principle #8): RAFKA_TOPOLOGY_UI_BIND_ADDR + JAEGER_QUERY_URL",
+    "All config via env vars (Principle #8): RDM_TOPOLOGY_UI_BIND_ADDR + JAEGER_QUERY_URL",
     "Closes with Jaeger URLs per Principle #7"
   ],
   "deliverable_url": "http://localhost:16686/search?service=topology-ui&operation=rafka.ui.http.request&lookback=1h",

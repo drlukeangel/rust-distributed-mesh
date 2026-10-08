@@ -5,7 +5,7 @@
 //!   cell leaves `result.json` (its direct observations) and `spans.json` (every span the
 //!   detector emitted, captured in process by the evidence exporter) there.
 //! - CHAOS-PROCESS `wedge_detector_proves_stall_and_stateful_recovery`: run by
-//!   `scripts/i143-acceptance-gate.sh i143-2782-process`, whose command sets `RAFKA_ARTIFACTS_DIR`
+//!   `scripts/i143-acceptance-gate.sh i143-2782-process`, whose command sets `RDM_ARTIFACTS_DIR`
 //!   (the estate's manifest and every process's spans land under it, feature `i143-2782`).
 //!
 //! The detectors are `rafka_test_scenario::wedge`: they judge a cut by the consequences it leaves,

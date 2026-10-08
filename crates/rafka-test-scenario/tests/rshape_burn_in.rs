@@ -7,7 +7,7 @@
 //! Run by `scripts/i143-acceptance-gate.sh i143-rshape-{composition,fast}-{process,container}`,
 //! which exports `I143_ACCEPTANCE_DIR` (each cell's `result.json` and evidence views go there) and
 //! whose command sets `RDM_RSHAPE_CONSUMER_BIN_DIR`, `RDM_RSHAPE_TIER`, `RDM_RSHAPE_SEED`,
-//! `MESH_SPAWN_TYPE` and `RAFKA_ARTIFACTS_DIR` (the estate's manifest, rpc ledger and every
+//! `MESH_SPAWN_TYPE` and `RDM_ARTIFACTS_DIR` (the estate's manifest, rpc ledger and every
 //! process's spans land under it).
 //!
 //! The harness provisions nothing but the Day-0 admin: every other node is born by a Build the
@@ -654,10 +654,10 @@ impl Views<'_> {
 /// from the process table. `Estate::stop` returns at its own 30 s bound whether or not the last
 /// admin has exited; the exit is awaited here, from observed state, up to the three drain bounds
 /// the architecture gives a fabric shutdown (members, admins, spine: `shutdown::drain_bound`,
-/// RAFKA_SHUTDOWN_DRAIN_BOUND_MS, 60 s each). The wall from the stop request to the last exit is
+/// RDM_SHUTDOWN_DRAIN_BOUND_MS, 60 s each). The wall from the stop request to the last exit is
 /// recorded: it is a measurement of the shutdown, not a tolerance.
 async fn provider_left(f: &Formed, stop_started: Instant, inv: &mut Invariants) -> Value {
-    let drain_bound = std::env::var("RAFKA_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
+    let drain_bound = std::env::var("RDM_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
     let deadline = Instant::now() + Duration::from_millis(drain_bound * 3);
     let (left, stop_returned_ms) = (|| async {
         let returned = stop_started.elapsed().as_millis() as u64;
@@ -1758,7 +1758,7 @@ async fn edge_report(f: &Formed, a: &mut Authority) -> Value {
 /// ready-for-traffic in every admin's own view, so no role node went silent toward its mesh's primary),
 /// and a fresh seeded burst of puts all stored. The role nodes' Direct facts are recorded beside it.
 async fn prove_path(f: &mut Formed, a: &mut Authority, want: &BTreeMap<String, usize>, label: &str, inv: &mut Invariants) -> Value {
-    let window = std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
+    let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = 0u32;
     while Instant::now() < until {

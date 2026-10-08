@@ -152,8 +152,8 @@ impl DeploymentProvider for Fleet {
         };
         self.spawned.lock().unwrap().push(Spawn {
             pid,
-            node_id: NodeId::parse(spec.env.get("RAFKA_NODE_ID").expect("the launch names its node")).unwrap(),
-            seeds: spec.env.get("RAFKA_SEEDS").cloned().unwrap_or_default(),
+            node_id: NodeId::parse(spec.env.get("RDM_NODE_ID").expect("the launch names its node")).unwrap(),
+            seeds: spec.env.get("RDM_SEEDS").cloned().unwrap_or_default(),
             data_dir: spec.data_dir.clone(),
             handle: handle.clone(),
         });

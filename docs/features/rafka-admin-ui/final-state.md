@@ -6,7 +6,7 @@ Date: 2026-05-21
 
 `admin-ui` (formerly `topology-ui`) is a **mesh node**, not a sidecar UI. It boots
 via the same `NodeRuntime` every other rafka binary uses, joins iroh-gossip on
-whatever mesh_id its `RAFKA_MESH_ID` env says, and receives every peer's
+whatever mesh_id its `RDM_MESH_ID` env says, and receives every peer's
 `GossipDigest` payload directly. Topology + heartbeat data come from the live
 mesh — zero Jaeger on the request path.
 

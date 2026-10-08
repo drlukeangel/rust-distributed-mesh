@@ -1,6 +1,6 @@
 //! i143.e8.s2 acceptance (rafka-v2 #2780, hardened 2026-10-07), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2780-process`, which exports `I143_ACCEPTANCE_DIR` (this
-//! cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the estate's
+//! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest and every process's spans land under it, feature `i143-2780`, test the cell's name).
 //!
 //! A real estate whose `node_admin` launch id is bound to the testkit's `faulted-node-admin`: the

@@ -20,7 +20,7 @@ Get-NetTCPConnection -LocalPort 19105 | Select-Object OwningProcess
 Stop-Process -Id <pid> -Force
 ```
 If no process matches the PID (true zombie), pick a different port via
-`$env:RAFKA_TOPOLOGY_UI_BIND_ADDR = "127.0.0.1:19106"` and relaunch.
+`$env:RDM_TOPOLOGY_UI_BIND_ADDR = "127.0.0.1:19106"` and relaunch.
 
 ## Subprocess won't die after kill
 

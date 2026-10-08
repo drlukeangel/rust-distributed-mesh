@@ -34,26 +34,26 @@ fn env_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default_ms))
 }
 
-/// The staleness floor, `RAFKA_STALENESS_MS` (default 30 s): how long a member stays heard without
+/// The staleness floor, `RDM_STALENESS_MS` (default 30 s): how long a member stays heard without
 /// a fresh word, local receipt age (fabric-node-lifecycle.md §7.3, i77 PRD row 18). Past it a
 /// member is `PendingReconnect`: soft and reversible, never death.
 pub fn staleness_floor() -> Duration {
     static FLOOR: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
-    *FLOOR.get_or_init(|| env_ms("RAFKA_STALENESS_MS", 30_000))
+    *FLOOR.get_or_init(|| env_ms("RDM_STALENESS_MS", 30_000))
 }
 
-/// The mesh channel's gossip interval, `RAFKA_GOSSIP_INTERVAL_MS` (default 2 s; never slower,
+/// The mesh channel's gossip interval, `RDM_GOSSIP_INTERVAL_MS` (default 2 s; never slower,
 /// gossip.md §3.2): how often a node publishes its digest. Each gossip topic has its own interval.
 pub fn gossip_interval() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
-    *EVERY.get_or_init(|| env_ms("RAFKA_GOSSIP_INTERVAL_MS", 2_000))
+    *EVERY.get_or_init(|| env_ms("RDM_GOSSIP_INTERVAL_MS", 2_000))
 }
 
-/// The backbone topic's gossip interval, `RAFKA_BACKBONE_INTERVAL_MS` (default 2 s,
+/// The backbone topic's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 2 s,
 /// fabric-node-lifecycle.md:355): how often a mesh's primary publishes its mesh on the backbone.
 pub fn backbone_gossip_interval() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
-    *EVERY.get_or_init(|| env_ms("RAFKA_BACKBONE_INTERVAL_MS", 2_000))
+    *EVERY.get_or_init(|| env_ms("RDM_BACKBONE_INTERVAL_MS", 2_000))
 }
 /// The largest encoded frame: iroh-gossip's default maximum message is 4096
 /// bytes; the rest is its own framing.
@@ -127,10 +127,10 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
     }
 }
 
-/// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
+/// `RDM_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
 /// announcing `Leaving` before it closes. Every node kind takes the same one.
 pub fn leave_linger_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RAFKA_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
+    Duration::from_millis(std::env::var("RDM_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
 }
 
 /// How often a leaving node repeats its `Leaving` during the linger.
@@ -1736,13 +1736,13 @@ mod tests {
     /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
     #[test]
     fn the_windows_default_to_the_documented_values() {
-        if std::env::var("RAFKA_STALENESS_MS").is_err() {
+        if std::env::var("RDM_STALENESS_MS").is_err() {
             assert_eq!(staleness_floor(), Duration::from_secs(30));
         }
-        if std::env::var("RAFKA_GOSSIP_INTERVAL_MS").is_err() {
+        if std::env::var("RDM_GOSSIP_INTERVAL_MS").is_err() {
             assert_eq!(gossip_interval(), Duration::from_secs(2));
         }
-        if std::env::var("RAFKA_BACKBONE_INTERVAL_MS").is_err() {
+        if std::env::var("RDM_BACKBONE_INTERVAL_MS").is_err() {
             assert_eq!(backbone_gossip_interval(), Duration::from_secs(2));
         }
     }

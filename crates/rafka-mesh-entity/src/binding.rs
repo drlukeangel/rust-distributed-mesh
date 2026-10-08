@@ -1,7 +1,7 @@
 //! Explicit executable bindings: the launch seam an external consumer uses to say which
 //! executable each launch template runs.
 //!
-//! A binding set is a file (`RAFKA_EXECUTABLE_BINDINGS` names it) mapping every declared launch id
+//! A binding set is a file (`RDM_EXECUTABLE_BINDINGS` names it) mapping every declared launch id
 //! (a [`crate::NodeKind`] label; the label carries no behaviour here) to one executable path, its
 //! expected sha256, and optionally the container image it must run in. The set names the candidate
 //! (the exact source and build) its executables were built from.
@@ -20,9 +20,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The environment variable naming the binding file.
-pub const ENV_EXECUTABLE_BINDINGS: &str = "RAFKA_EXECUTABLE_BINDINGS";
+pub const ENV_EXECUTABLE_BINDINGS: &str = "RDM_EXECUTABLE_BINDINGS";
 /// The environment variable carrying the candidate sha the runner expects the set to be built from.
-pub const ENV_EXECUTABLE_CANDIDATE: &str = "RAFKA_EXECUTABLE_CANDIDATE";
+pub const ENV_EXECUTABLE_CANDIDATE: &str = "RDM_EXECUTABLE_CANDIDATE";
 
 /// The exact source and build the bound executables were built from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -92,7 +92,7 @@ is sparse by design.
 
 **SpawnRequest body**: `{ node_type: <known>, mesh_id?: <safe>, extra_env?: { ... } }`
 where `mesh_id` matches `^[a-z0-9][a-z0-9-]{0,63}$` (slashes, spaces, unicode
-rejected with 400). `mesh_id` and `extra_env.RAFKA_MESH_ID` both work;
+rejected with 400). `mesh_id` and `extra_env.RDM_MESH_ID` both work;
 `mesh_id` wins if both present.
 
 Every Jaeger-backed endpoint MUST have a per-request reqwest timeout (4 s
@@ -128,7 +128,7 @@ aspirational, not measured.
 1. Snapshot non-bridge entries in `spawned_meta`
 2. Pick one at random
 3. `kill_one(state, name)` — graceful SIGTERM, escalate to KILL after 5 s
-4. `spawn_one(state, type, RAFKA_MESH_ID=same_mesh)` — same type, same mesh
+4. `spawn_one(state, type, RDM_MESH_ID=same_mesh)` — same type, same mesh
 5. Push `chaos.kill` + `chaos.respawn` events
 6. Increment `total_events`, update `last_event_ts_us`
 

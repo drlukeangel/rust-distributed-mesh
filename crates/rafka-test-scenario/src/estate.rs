@@ -23,24 +23,24 @@ pub struct Owner {
     pub test: String,
 }
 
-/// `RAFKA_ARTIFACTS_DIR`, else this crate's `tests/artifacts`. A relative `RAFKA_ARTIFACTS_DIR`
+/// `RDM_ARTIFACTS_DIR`, else this crate's `tests/artifacts`. A relative `RDM_ARTIFACTS_DIR`
 /// is taken from the workspace root, where every registered acceptance command is run from: a
 /// test binary itself runs in its crate's directory.
 pub fn artifacts_root() -> PathBuf {
-    match std::env::var("RAFKA_ARTIFACTS_DIR") {
+    match std::env::var("RDM_ARTIFACTS_DIR") {
         Ok(d) if Path::new(&d).is_absolute() => PathBuf::from(d),
         // Relative to the workspace root, resolved to its real path: the estate hands this path to
-        // every admin (RAFKA_EVIDENCE_DIR) and bind-mounts it into every container, where a path
+        // every admin (RDM_EVIDENCE_DIR) and bind-mounts it into every container, where a path
         // that walks `crates/rafka-test-scenario/../..` names nothing.
         Ok(d) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the workspace root exists").join(d),
         Err(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"),
     }
 }
 
-/// Directory holding the built binaries: `RAFKA_BIN_DIR`, else the cargo
+/// Directory holding the built binaries: `RDM_BIN_DIR`, else the cargo
 /// target dir's profile directory this test binary was built into.
 pub fn bin_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("RAFKA_BIN_DIR") {
+    if let Ok(d) = std::env::var("RDM_BIN_DIR") {
         return PathBuf::from(d);
     }
     // A test binary lives in target/<profile>/deps; a bin in target/<profile>.
@@ -64,7 +64,7 @@ fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RAFKA_NODE_ADMIN_API_BASE=") {
+            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
                 let _ = tx.send(base.trim().to_string());
             }
         }
@@ -74,7 +74,7 @@ fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String
         let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
         let _ = child.kill();
         let _ = child.wait();
-        panic!("{what} never advertised RAFKA_NODE_ADMIN_API_BASE within 30 s (pid {}, {status})", child.id());
+        panic!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s (pid {}, {status})", child.id());
     };
     (child, base)
 }
@@ -101,7 +101,7 @@ fn socket_group() -> String {
 
 /// A new Fabric id in its canonical form: 60 random bits as 12 lowercase Crockford characters.
 /// The harness mints it only for a container fabric, whose network must exist before its first
-/// admin; the admin takes it as given (`RAFKA_FABRIC_ID`) and validates it.
+/// admin; the admin takes it as given (`RDM_FABRIC_ID`) and validates it.
 fn mint_fabric_id() -> String {
     const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
     let mut bytes = [0u8; 8];
@@ -131,8 +131,8 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
     let (base, prefix) = subnet.split_once('/').map(|(b, p)| (b.parse::<std::net::Ipv4Addr>().unwrap(), p.parse::<u32>().unwrap())).unwrap_or_else(|| panic!("network {network} subnet {subnet}"));
     // The network's last node address: the provider allocates upward from the gateway.
     let ip = std::net::Ipv4Addr::from(u32::from(base) + (1u32 << (32 - prefix)) - 2);
-    env.push(("RAFKA_FABRIC_ID", fabric_id.clone()));
-    env.push(("RAFKA_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
+    env.push(("RDM_FABRIC_ID", fabric_id.clone()));
+    env.push(("RDM_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
     for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG"] {
         if let Ok(v) = std::env::var(k) {
             env.push((k, v));
@@ -170,7 +170,7 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RAFKA_NODE_ADMIN_API_BASE=") {
+            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
                 let _ = tx.send(base.trim().to_string());
             }
         }
@@ -184,7 +184,7 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
         let removed = docker(&["rm", "-f", &name]).map(|_| "removed".to_string()).unwrap_or_else(|e| format!("NOT removed: {e}"));
         let _ = child.kill();
         let _ = child.wait();
-        panic!("the containerised Day-0 node-admin {name} never advertised RAFKA_NODE_ADMIN_API_BASE within 30 s ({state}; container {removed}); last log lines:\n{logs}");
+        panic!("the containerised Day-0 node-admin {name} never advertised RDM_NODE_ADMIN_API_BASE within 30 s ({state}; container {removed}); last log lines:\n{logs}");
     };
     (child, base)
 }
@@ -261,7 +261,7 @@ impl ExternalLaunch {
             (ENV_EXECUTABLE_CANDIDATE, self.candidate.clone()),
             // Nothing is launched from a built-in directory in this mode: an empty one makes any
             // fallback fail rather than quietly run a built-in.
-            ("RAFKA_BIN_DIR", self.file.parent().expect("a file in the estate root").join("no-built-ins").display().to_string()),
+            ("RDM_BIN_DIR", self.file.parent().expect("a file in the estate root").join("no-built-ins").display().to_string()),
         ]
     }
 
@@ -331,15 +331,15 @@ impl Estate {
 
         let mut env = vec![
             ("MESH_SPAWN_TYPE", owner.provider.clone()),
-            ("RAFKA_FABRIC", fabric.into()),
-            ("RAFKA_MESH", mesh.into()),
-            ("RAFKA_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
-            ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-            ("RAFKA_EVIDENCE_DIR", evidence.display().to_string()),
+            ("RDM_FABRIC", fabric.into()),
+            ("RDM_MESH", mesh.into()),
+            ("RDM_DATA_DIR", root.join(format!("{mesh}.admin.1")).display().to_string()),
+            ("RDM_BIN_DIR", bin_dir().display().to_string()),
+            ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
         ];
         let admin_exe = match &external {
             Some(x) => {
-                env.retain(|(k, _)| *k != "RAFKA_BIN_DIR");
+                env.retain(|(k, _)| *k != "RDM_BIN_DIR");
                 env.extend(x.env());
                 x.admin_exe()
             }
@@ -626,11 +626,11 @@ impl Estate {
     /// Run one probe invocation and record it in the RPC ledger.
     pub fn probe(&self, args: &[&str]) -> Value {
         let mut cmd = Command::new(binary("rafka-rpc-probe"));
-        cmd.arg("--admin").arg(&self.admin).args(args).env("RAFKA_EVIDENCE_DIR", &self.evidence);
+        cmd.arg("--admin").arg(&self.admin).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         // A container fabric's nodes are reachable from the host through its network's gateway.
         if self.owner.provider == "container" {
             if let Ok(gw) = docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &format!("rafka-{}", self.fabric_id)]) {
-                cmd.env("RAFKA_PROBE_BIND", gw);
+                cmd.env("RDM_PROBE_BIND", gw);
             }
         }
         let out = cmd.output().expect("run rafka-rpc-probe");
@@ -781,13 +781,13 @@ impl Estate {
     pub fn restart_admin(&mut self, data_dir: &Path) -> String {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
-            ("RAFKA_DATA_DIR", data_dir.display().to_string()),
-            ("RAFKA_BIN_DIR", bin_dir().display().to_string()),
-            ("RAFKA_EVIDENCE_DIR", self.evidence.display().to_string()),
+            ("RDM_DATA_DIR", data_dir.display().to_string()),
+            ("RDM_BIN_DIR", bin_dir().display().to_string()),
+            ("RDM_EVIDENCE_DIR", self.evidence.display().to_string()),
         ];
         let exe = match &self.external {
             Some(x) => {
-                env.retain(|(k, _)| *k != "RAFKA_BIN_DIR");
+                env.retain(|(k, _)| *k != "RDM_BIN_DIR");
                 env.extend(x.env());
                 x.admin_exe()
             }
@@ -1017,7 +1017,7 @@ mod spawn_tests {
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let err = std::panic::catch_unwind(|| spawn_admin(&script, &[], "the silent admin")).expect_err("refused");
         let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
-        assert!(msg.contains("the silent admin never advertised RAFKA_NODE_ADMIN_API_BASE"), "{msg}");
+        assert!(msg.contains("the silent admin never advertised RDM_NODE_ADMIN_API_BASE"), "{msg}");
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         assert!(!Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.contains(") Z ")), "pid {pid} still runs after the refusal");
         let _ = std::fs::remove_dir_all(&dir);

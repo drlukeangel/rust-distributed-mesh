@@ -102,7 +102,7 @@ impl NodeObserver for Pausing<'_> {
 
 /// Live processes whose environment names `node_id`.
 fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
-    let needle = format!("RAFKA_NODE_ID={}", node_id.as_str());
+    let needle = format!("RDM_NODE_ID={}", node_id.as_str());
     std::fs::read_dir("/proc")
         .unwrap()
         .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())

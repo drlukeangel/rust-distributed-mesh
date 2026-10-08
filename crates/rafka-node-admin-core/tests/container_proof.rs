@@ -6,8 +6,8 @@
 //! `tail -f /dev/null` (the runtime image is empty; the host's `/usr` is mounted read-only), so
 //! a cell proves the provider, not a node.
 //!
-//! Opt-in: it runs only with `RAFKA_CONTAINER_PROOF=1` (the container-proof step); otherwise it
-//! skips by name and starts nothing. With `RAFKA_REQUIRE_CONTAINER=1` a host that cannot run
+//! Opt-in: it runs only with `RDM_CONTAINER_PROOF=1` (the container-proof step); otherwise it
+//! skips by name and starts nothing. With `RDM_REQUIRE_CONTAINER=1` a host that cannot run
 //! containers fails instead of skipping.
 
 use rafka_node_admin_core::deployment::container::ContainerDeploymentProvider;
@@ -19,19 +19,19 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 fn enabled() -> bool {
-    std::env::var("RAFKA_CONTAINER_PROOF").as_deref() == Ok("1") || std::env::var("RAFKA_REQUIRE_CONTAINER").as_deref() == Ok("1")
+    std::env::var("RDM_CONTAINER_PROOF").as_deref() == Ok("1") || std::env::var("RDM_REQUIRE_CONTAINER").as_deref() == Ok("1")
 }
 
 /// The container provider for `fabric`, or `None` (named) when the proof is not asked for or the
 /// host cannot run containers and the proof is not required.
 async fn provider(fabric: &str) -> Option<ContainerDeploymentProvider> {
     if !enabled() {
-        eprintln!("SKIP container proof: opt-in with RAFKA_CONTAINER_PROOF=1 (the container-proof step)");
+        eprintln!("SKIP container proof: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
         return None;
     }
     match ContainerDeploymentProvider::prepare(fabric).await {
         Ok(p) => Some(p),
-        Err(DeployError::Unsupported { reason, .. }) if std::env::var("RAFKA_REQUIRE_CONTAINER").as_deref() != Ok("1") => {
+        Err(DeployError::Unsupported { reason, .. }) if std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") => {
             eprintln!("SKIP container proof: this host cannot run containers: {reason}");
             None
         }

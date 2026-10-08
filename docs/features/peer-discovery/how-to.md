@@ -18,11 +18,11 @@ Output should show `peers=3` on every node (full mesh).
 
 ```bash
 # Launch broker first, capture its node_id from boot logs
-RAFKA_DATA_DIR=./data/broker rafka-broker
+RDM_DATA_DIR=./data/broker rafka-broker
 # stdout: identity ready node_id=<hex>
 
 # Launch other nodes with seed
-RAFKA_SEED_NODES=<broker_hex>@127.0.0.1:14820 rafka-gateway
+RDM_SEED_NODES=<broker_hex>@127.0.0.1:14820 rafka-gateway
 ```
 
 ## View pairwise handshakes in Jaeger

@@ -36,7 +36,7 @@ pub enum NodeStatus {
     ReadyForTraffic,
     Draining,
     Leaving,
-    /// Unheard past the staleness floor (`RAFKA_STALENESS_MS`, 30 s): this node's own pruner marks
+    /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
     /// the silent peer in place and keeps it; its next digest flips it back (fabric-node-lifecycle.md
     /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
     PendingReconnect,

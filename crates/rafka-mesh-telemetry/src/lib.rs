@@ -89,7 +89,7 @@ fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
         opentelemetry::KeyValue::new(opentelemetry_semantic_conventions::resource::SERVICE_NAME, service_name.to_string()),
         opentelemetry::KeyValue::new("process.pid", std::process::id() as i64),
     ];
-    for (env, key) in [("RAFKA_NODE_NAME", "rafka.node"), ("RAFKA_DATA_DIR", "rafka.data_dir"), ("RAFKA_EVIDENCE_DIR", "rafka.evidence_dir")] {
+    for (env, key) in [("RDM_NODE_NAME", "rafka.node"), ("RDM_DATA_DIR", "rafka.data_dir"), ("RDM_EVIDENCE_DIR", "rafka.evidence_dir")] {
         if let Ok(v) = std::env::var(env) {
             if !v.is_empty() {
                 attrs.push(opentelemetry::KeyValue::new(key, v));
@@ -241,7 +241,7 @@ pub fn current_tracestate() -> Option<String> {
 }
 
 /// Writes every finished span as one JSON line to
-/// `<RAFKA_EVIDENCE_DIR>/<service>.<pid>-<pid namespace inode>.spans.jsonl` (`docs/i143/design.md`
+/// `<RDM_EVIDENCE_DIR>/<service>.<pid>-<pid namespace inode>.spans.jsonl` (`docs/i143/design.md`
 /// §6): a pid names one process only within its pid namespace, and every container has its own.
 /// Causality is carried by `parent_span_id`; a consumer never infers it from
 /// timestamps.
@@ -351,7 +351,7 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
 }
 
 /// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when
-/// `RAFKA_EVIDENCE_DIR` is set and to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
+/// `RDM_EVIDENCE_DIR` is set and to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
 /// is set; with neither, only the fmt layer runs. Returns `None` when no
 /// exporter is configured.
 pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
@@ -360,13 +360,13 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
     let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
-    if let Ok(dir) = std::env::var("RAFKA_EVIDENCE_DIR") {
+    if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
             Ok(e) => {
                 builder = builder.with_span_processor(SimpleSpanProcessor::new(Box::new(e)));
                 any = true;
             }
-            Err(e) => eprintln!("telemetry: RAFKA_EVIDENCE_DIR={dir} is unusable: {e}"),
+            Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
         }
     }
     let mut logs = None;

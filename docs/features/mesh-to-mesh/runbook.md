@@ -16,7 +16,7 @@
 
 **Cause:** Both meshes running on same LAN; mdns is broadcast.
 
-**Recovery:** Either (a) put meshes on different subnets, or (b) set `RAFKA_MDNS_DISABLED=true` and rely on explicit seeds only. Bridge gateway then joins via seeds, not mdns.
+**Recovery:** Either (a) put meshes on different subnets, or (b) set `RDM_MDNS_DISABLED=true` and rely on explicit seeds only. Bridge gateway then joins via seeds, not mdns.
 
 ### Mode 3 — Cross-mesh edge in topology-ui shows but ping/pong frames don't flow
 

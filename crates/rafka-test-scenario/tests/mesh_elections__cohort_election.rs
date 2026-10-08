@@ -26,7 +26,7 @@
 //!
 //! The partition drops UDP between the two sides' endpoint ports on loopback
 //! (`iptables`, as root or through `sudo -n`). Where that is unavailable the
-//! partition case is a named skip; `RAFKA_REQUIRE_NETFAULT=1` (CI) makes it a
+//! partition case is a named skip; `RDM_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 
 use rafka_test_scenario::elections::{advertised_primaries, expected_fabric_primary, expected_primaries, seats_as_expected, Cohort};
@@ -259,8 +259,8 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let side_a = vec![admin_p.clone(), lone_rpc.clone()];
     let side_b: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| !side_a.contains(n)).collect();
     match Partition::start(&udp_ports(&nodes, &side_a), &udp_ports(&nodes, &side_b)) {
-        Err(why) if std::env::var("RAFKA_REQUIRE_NETFAULT").as_deref() == Ok("1") => {
-            panic!("RAFKA_REQUIRE_NETFAULT=1 but this host cannot partition: {why}")
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() == Ok("1") => {
+            panic!("RDM_REQUIRE_NETFAULT=1 but this host cannot partition: {why}")
         }
         Err(why) => eprintln!("SKIP partition case: {why}"),
         Ok(partition) => {

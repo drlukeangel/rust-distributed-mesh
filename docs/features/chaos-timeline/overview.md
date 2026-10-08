@@ -17,7 +17,7 @@ Response shape:
   {
     "when": "3s ago",
     "primitive": "nat_shift",
-    "description": "Restart target with new random RAFKA_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.",
+    "description": "Restart target with new random RDM_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.",
     "target": "bridge-6fde553d",
     "detection": "passed",
     "resolved_ms": 102

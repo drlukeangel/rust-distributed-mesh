@@ -1122,12 +1122,12 @@ impl ChaosPrimitive for FirewallInbound {
     }
 }
 
-/// `clock_skew` — restart a node with `RAFKA_CLOCK_SKEW_MS` env var set. Substrate
+/// `clock_skew` — restart a node with `RDM_CLOCK_SKEW_MS` env var set. Substrate
 /// requires `rafka-node-base` to read this env at boot and add the offset to all
 /// SystemTime::now() reads on the hot path (heartbeat ticker, frame timestamps).
 ///
 /// Implementation: kill the target subprocess, then POST to topology-ui /api/nodes/spawn
-/// with `extra_env: {"RAFKA_CLOCK_SKEW_MS": "<offset>"}`. The topology-ui spawn handler
+/// with `extra_env: {"RDM_CLOCK_SKEW_MS": "<offset>"}`. The topology-ui spawn handler
 /// merges extra_env into the child process env.
 pub struct ClockSkew {
     pub target: Option<String>,
@@ -1176,7 +1176,7 @@ impl ChaosPrimitive for ClockSkew {
             .json(&json!({
                 "node_type": node_type,
                 "mesh_id": "mesh-a",  // admin-ui post mesh-native pivot requires mesh_id
-                "extra_env": {"RAFKA_CLOCK_SKEW_MS": self.skew_ms.to_string()},
+                "extra_env": {"RDM_CLOCK_SKEW_MS": self.skew_ms.to_string()},
             }))
             .send()
             .await
@@ -1245,7 +1245,7 @@ impl ChaosPrimitive for ClockSkew {
     }
 }
 
-/// `nat_shift` — kill + respawn target with a different `RAFKA_NODE_BIND_ADDR`
+/// `nat_shift` — kill + respawn target with a different `RDM_NODE_BIND_ADDR`
 /// so the new iroh endpoint binds on a fresh port. Survivors must re-discover
 /// the NodeId on the new addr; iroh's magicsock will replace the cached
 /// connection type rather than duplicate it. Detection: new subprocess appears.
@@ -1262,13 +1262,13 @@ impl ChaosPrimitive for NatShift {
     async fn execute(&self, ctx: &ChaosContext) -> Result<ChaosOutcome, ChaosError> {
         use rand::Rng;
         // Choose a random ephemeral-range port. Reuse=0 lets the OS pick if our
-        // chosen one collides; node-base honors any RAFKA_NODE_BIND_ADDR.
+        // chosen one collides; node-base honors any RDM_NODE_BIND_ADDR.
         let port: u16 = {
             let mut rng = ctx.rng.lock().await;
             rng.gen_range(40000..60000)
         };
         respawn_with_env(ctx, self.target.as_deref(), "nat_shift", &[
-            ("RAFKA_NODE_BIND_ADDR", format!("0.0.0.0:{port}")),
+            ("RDM_NODE_BIND_ADDR", format!("0.0.0.0:{port}")),
         ]).await
     }
 
@@ -1323,7 +1323,7 @@ async fn respawn_with_env(
         .http
         .post(&spawn_url)
         // Inject mesh_id at top-level for the new admin-ui validation; extra_env
-        // also gets RAFKA_MESH_ID so the child env carries it.
+        // also gets RDM_MESH_ID so the child env carries it.
         .json(&json!({"node_type": node_type, "mesh_id": "mesh-a", "extra_env": env_map}))
         .send()
         .await

@@ -1,7 +1,7 @@
 //! Network faults for the process estate: UDP between loopback ports
 //! dropped with `iptables` (as root, or through `sudo -n`). Where the host
 //! cannot, [`Partition::start`] names why: a test skips by that name, or
-//! fails with it when `RAFKA_REQUIRE_NETFAULT=1` (CI).
+//! fails with it when `RDM_REQUIRE_NETFAULT=1` (CI).
 
 use serde_json::Value;
 use std::process::Command;

@@ -49,7 +49,7 @@ the test suite, and read the boot trace of any node — all in one page.
 Always visible above the tabs:
 - **Cluster summary line** — `N spawned · meshes: … · chaos: N/min · mean peers: F`
 - **Mesh dropdown** — mesh-a (primary) / mesh-b (secondary) / + new mesh… —
-  controls which mesh subsequent spawns join via `RAFKA_MESH_ID` env.
+  controls which mesh subsequent spawns join via `RDM_MESH_ID` env.
 - **+ {type}** buttons (gateway, broker, compute, registry, bridge) — manual spawn
 - **bootstrap 2-mesh** — POST /api/bootstrap, 18 children
 - **start chaos / stop chaos** — toggle auto-loop
@@ -69,7 +69,7 @@ chaos.start
         │     ├── remove from processes + spawned_meta
         │     └── push event "chaos.kill"
         │
-        └── spawn_one(victim.type, RAFKA_MESH_ID=victim.mesh_id)
+        └── spawn_one(victim.type, RDM_MESH_ID=victim.mesh_id)
               ├── new random suffix → new node_name
               ├── tokio::process::Command::spawn
               ├── insert into processes + spawned_meta

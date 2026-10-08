@@ -4,7 +4,7 @@
 
 ### Mode 1 — Nodes boot but don't see each other (peers=0 forever)
 
-**Cause:** mdns blocked at OS/firewall layer (Windows network profile = Public), OR all nodes have different `RAFKA_SEED_NODES` mismatched against actual node_ids.
+**Cause:** mdns blocked at OS/firewall layer (Windows network profile = Public), OR all nodes have different `RDM_SEED_NODES` mismatched against actual node_ids.
 
 **Detection:**
 ```bash

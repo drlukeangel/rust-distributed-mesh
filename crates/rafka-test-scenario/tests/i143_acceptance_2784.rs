@@ -1,6 +1,6 @@
 //! i143.e8.s6 acceptance (rafka-v2 #2784, hardened 2026-10-07), CHAOS-CONTAINER layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2784-chaos-container`, which exports `I143_ACCEPTANCE_DIR`
-//! (this cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the
+//! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest, rpc ledger and every process's spans land under it, feature `i143-2784`).
 //!
 //! The faults are `rafka_test_scenario::container_faults`: real `docker network disconnect` /

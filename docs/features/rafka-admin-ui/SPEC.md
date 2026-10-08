@@ -2,7 +2,7 @@
 
 **Branch**: i37-rafka-authz-create
 **Commit hash at handoff**: see `git log -1 --format=%h`
-**Service URL**: `http://127.0.0.1:19107` (default, override via `RAFKA_ADMIN_UI_BIND_ADDR`)
+**Service URL**: `http://127.0.0.1:19107` (default, override via `RDM_ADMIN_UI_BIND_ADDR`)
 **CLI binary**: `E:\dev\rafka-V2-new-mesh\target\debug\rfa.exe` (resolved from `cargo metadata --no-deps --format-version 1 | jq -r .target_directory`)
 **Admin-ui binary**: `E:\dev\rafka-V2-new-mesh\target\debug\rafka-admin-ui.exe`
 
@@ -17,21 +17,21 @@ you (QA) find that contradicts this doc is a real bug.
 admin-ui (rafka-admin-ui.exe)
   ├── NodeRuntime — joins the iroh mesh as Role::Observer (its own NodeId)
   │   ├── subscribes to: mesh-a, mesh-b, bridge gossip topics (via
-  │   │   RAFKA_OBSERVER_MESHES=mesh-a,mesh-b,bridge — default)
+  │   │   RDM_OBSERVER_MESHES=mesh-a,mesh-b,bridge — default)
   │   ├── receives every GossipDigest broadcast on those topics
   │   ├── populates process-global rafka_node_base::live_digests()
   │   │   (DashMap<node_id, GossipDigest>) and topic_membership()
   │   │   (DashMap<topic, HashSet<node_id>>)
   │   └── frame_reader pushes every received frame to message_ring()
   │       (VecDeque<MeshMessage>, cap 1000)
-  ├── axum HTTP server on $RAFKA_ADMIN_UI_BIND_ADDR (default 127.0.0.1:19090)
+  ├── axum HTTP server on $RDM_ADMIN_UI_BIND_ADDR (default 127.0.0.1:19090)
   │   ├── serves React UI from web/dist
   │   ├── /api/* endpoints — most read live_digests() / message_ring()
   │   │   directly (sub-millisecond, no Jaeger), boot-trace + alerts +
   │   │   timeline still query Jaeger for historical spans
   │   └── /api/bootstrap spawns 18 peer subprocesses (mesh-a: 4 of each
   │       type, mesh-b: 4 of each type, 2 bridges with
-  │       RAFKA_BRIDGE_TARGET_MESHES=mesh-a,mesh-b)
+  │       RDM_BRIDGE_TARGET_MESHES=mesh-a,mesh-b)
   ├── chaos_loop — OFF by default; activated via POST /api/chaos/start.
   │   When running, picks random non-bridge node every cadence_ms (default
   │   30000), kills + respawns in same mesh; bridges are protected.
@@ -43,9 +43,9 @@ Peer node binaries (rafka-{gateway,broker,compute,registry,bridge}.exe)
   │   node" with a label of Observer + axum on top)
   ├── iroh::Endpoint via rafka_mesh_transport::IrohMeshTransport::new()
   │   (mdns local discovery — every endpoint sees every other endpoint)
-  ├── iroh-gossip subscribes to blake3(RAFKA_MESH_ID) topic
-  │   PLUS any extras from RAFKA_OBSERVER_MESHES (admin-ui) /
-  │   RAFKA_BRIDGE_TARGET_MESHES (bridges)
+  ├── iroh-gossip subscribes to blake3(RDM_MESH_ID) topic
+  │   PLUS any extras from RDM_OBSERVER_MESHES (admin-ui) /
+  │   RDM_BRIDGE_TARGET_MESHES (bridges)
   ├── run_ping_sender (every 10s) — opens uni-stream to each peer in
   │   registry, sends InternalMeshFrame::Ping{org_id=0}
   ├── run_frame_reader — accepts uni-streams, decodes, increments
@@ -61,7 +61,7 @@ Peer node binaries (rafka-{gateway,broker,compute,registry,bridge}.exe)
 |---|---|---|
 | `body.node_type` | must be in {gateway, broker, compute, registry, bridge} | 400 otherwise |
 | `body.mesh_id` (required) | `^[a-z0-9][a-z0-9-]{0,63}$` | 400 otherwise |
-| `body.extra_env` keys | allow-list: RAFKA_MESH_ID, RAFKA_LINK_SLOW_MS, RAFKA_LINK_LOSS_PCT, RAFKA_CLOCK_SKEW_MS, RAFKA_NODE_BIND_ADDR, RAFKA_BRIDGE_TARGET_MESHES, RAFKA_AUTO_SHUTDOWN_SECS, RUST_LOG | 400 otherwise |
+| `body.extra_env` keys | allow-list: RDM_MESH_ID, RDM_LINK_SLOW_MS, RDM_LINK_LOSS_PCT, RDM_CLOCK_SKEW_MS, RDM_NODE_BIND_ADDR, RDM_BRIDGE_TARGET_MESHES, RDM_AUTO_SHUTDOWN_SECS, RUST_LOG | 400 otherwise |
 | `node_name` in path (DELETE) | `^(gateway\|broker\|compute\|registry\|bridge)-[0-9a-f]{8}$` | 400 otherwise |
 | Pool cap | total spawned_meta <= 50 | bootstrap returns 429 if exceeded |
 | Bootstrap concurrent | serialized via tokio::sync::Mutex | second concurrent caller queues |
@@ -251,7 +251,7 @@ mesh-grow-shrink
 11. ~~`remove-resilience` test flake (only 1/3 survivors fresh)~~ —
     **FIXED** (2026-05-21): two root causes — (a) test tried to spawn
     a bridge in `mesh-a` which fails because bridge requires
-    `mesh_id="bridge"` + `RAFKA_BRIDGE_TARGET_MESHES` env, so only
+    `mesh_id="bridge"` + `RDM_BRIDGE_TARGET_MESHES` env, so only
     5/6 spawned cleanly; (b) timing windows (5s settle + 15s
     post-kill + 10s age threshold) were too tight for iroh-gossip's
     spanning tree to re-form after losing 3 of 6 peers. Fix: spawn

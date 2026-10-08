@@ -1,6 +1,6 @@
 //! i143.e4.s18 acceptance (rafka-v2 #2942, hardened 2026-10-07), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2942-process`, which exports `I143_ACCEPTANCE_DIR`
-//! (this cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the
+//! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest and every process's spans land under it, feature `i143-2942`, test the
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// The unchanged linger (`RAFKA_LEAVE_LINGER_MS` default) and the unchanged observation bound.
+/// The unchanged linger (`RDM_LEAVE_LINGER_MS` default) and the unchanged observation bound.
 const LINGER_MS: u64 = 1000;
 const OBSERVE_BOUND_MS: u64 = 10_000;
 const ANNOUNCEMENTS: usize = 5;

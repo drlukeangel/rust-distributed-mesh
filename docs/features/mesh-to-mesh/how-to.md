@@ -5,28 +5,28 @@
 ## Plan two meshes
 
 Each mesh needs its own:
-- `mesh_id` (UUID, set via `RAFKA_MESH_ID` env var at every node's boot)
+- `mesh_id` (UUID, set via `RDM_MESH_ID` env var at every node's boot)
 - Distinct mdns scope OR distinct seed list (so nodes don't auto-discover across meshes)
 
 ## Boot two meshes
 
 ```bash
 # Mesh A
-RAFKA_MESH_ID=mesh-a RAFKA_DATA_DIR=./data/a-gw cargo run -p rafka-gateway &
-RAFKA_MESH_ID=mesh-a RAFKA_DATA_DIR=./data/a-br cargo run -p rafka-broker &
+RDM_MESH_ID=mesh-a RDM_DATA_DIR=./data/a-gw cargo run -p rafka-gateway &
+RDM_MESH_ID=mesh-a RDM_DATA_DIR=./data/a-br cargo run -p rafka-broker &
 
 # Mesh B
-RAFKA_MESH_ID=mesh-b RAFKA_DATA_DIR=./data/b-gw cargo run -p rafka-gateway &
-RAFKA_MESH_ID=mesh-b RAFKA_DATA_DIR=./data/b-br cargo run -p rafka-broker &
+RDM_MESH_ID=mesh-b RDM_DATA_DIR=./data/b-gw cargo run -p rafka-gateway &
+RDM_MESH_ID=mesh-b RDM_DATA_DIR=./data/b-br cargo run -p rafka-broker &
 ```
 
 ## Launch a bridge gateway joining both
 
 ```bash
-RAFKA_MESH_ID=mesh-bridge \
-RAFKA_BRIDGE_MESHES=mesh-a,mesh-b \
-RAFKA_SEED_NODES_MESH_A=<a-gw-node-id>@<a-gw-addr> \
-RAFKA_SEED_NODES_MESH_B=<b-gw-node-id>@<b-gw-addr> \
+RDM_MESH_ID=mesh-bridge \
+RDM_BRIDGE_MESHES=mesh-a,mesh-b \
+RDM_SEED_NODES_MESH_A=<a-gw-node-id>@<a-gw-addr> \
+RDM_SEED_NODES_MESH_B=<b-gw-node-id>@<b-gw-addr> \
 cargo run -p rafka-gateway
 ```
 

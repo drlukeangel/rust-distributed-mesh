@@ -157,11 +157,11 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
                 assert!(c.get(forbidden).is_none() && j.get(forbidden).is_none(), "{job}/{name}: a second generic `{forbidden}` is declared; scripts/i143-acceptance-gate.sh is the one runner");
             }
             match layer {
-                "unit" | "static" | "export" => assert!(!command.contains("RAFKA_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
+                "unit" | "static" | "export" => assert!(!command.contains("RDM_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
                 "process" | "container" | "fast" | "fast-process" | "fast-container" | "chaos-process" | "chaos-container" | "soak-process" | "soak-container" => {
                     let provider = if layer.ends_with("container") { "container" } else { "process" };
                     assert!(command.contains(&format!("MESH_SPAWN_TYPE={provider} ")), "{job}/{name}: the estate runs on the job's provider: {command}");
-                    assert!(command.contains(&format!("RAFKA_ARTIFACTS_DIR={dir}/estate ")), "{job}/{name}: the estate lands under the cell's dir: {command}");
+                    assert!(command.contains(&format!("RDM_ARTIFACTS_DIR={dir}/estate ")), "{job}/{name}: the estate lands under the cell's dir: {command}");
                 }
                 other => panic!("{job}: layer {other} is not registered"),
             }

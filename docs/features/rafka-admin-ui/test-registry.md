@@ -87,7 +87,7 @@ a digest from peer X" spans, the swarm hasn't formed and the topology is
 just isolated nodes.
 
 ### gossip-mesh-to-mesh
-**Asserts**: nodes spawned with `RAFKA_MESH_ID=mesh-A` only gossip with each
+**Asserts**: nodes spawned with `RDM_MESH_ID=mesh-A` only gossip with each
 other (separate topic_id derived from mesh_id), AND
 `rdm.mesh.peer.connected` spans fire for cross-mesh QUIC connections
 (via bridges).

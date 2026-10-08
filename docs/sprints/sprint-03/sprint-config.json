@@ -9,8 +9,8 @@
   "objective": "Gateway and broker discover each other via iroh mdns + seed list. Mutual peer.connected spans appear in Jaeger. Disconnect detection emits peer.disconnected.",
   "size": "tiny — 1-2 days",
   "in_scope": [
-    "Wire iroh MdnsDiscovery (discovery-local-network feature) into Endpoint::builder — passive LAN peer discovery without RAFKA_SEED_NODES",
-    "RAFKA_SEED_NODES env var: <node_id>@<host>:<port> comma-separated, dials on boot",
+    "Wire iroh MdnsDiscovery (discovery-local-network feature) into Endpoint::builder — passive LAN peer discovery without RDM_SEED_NODES",
+    "RDM_SEED_NODES env var: <node_id>@<host>:<port> comma-separated, dials on boot",
     "rafka.mesh.peer.discovered{node_id, peer_id, peer_node_type=unknown, source=seed|mdns}",
     "rafka.mesh.peer.connected{node_id, peer_id, peer_node_type=unknown, direction=inbound|outbound}",
     "rafka.mesh.peer.disconnected{node_id, peer_id, reason} via Connection::closed() on both inbound + outbound connections",
@@ -22,8 +22,8 @@
     "peer_node_type resolution — Sprint 04"
   ],
   "exit_criteria": [
-    "Run gateway + broker concurrently with RAFKA_SEED_NODES — both emit peer.discovered + peer.connected DONE",
-    "Run without RAFKA_SEED_NODES — mdns auto-discovery triggers peer.connected within ~5s DONE",
+    "Run gateway + broker concurrently with RDM_SEED_NODES — both emit peer.discovered + peer.connected DONE",
+    "Run without RDM_SEED_NODES — mdns auto-discovery triggers peer.connected within ~5s DONE",
     "Kill one process — surviving process emits peer.disconnected DONE",
     "Both direction=inbound and direction=outbound peer.connected spans verified in Jaeger DONE",
     "Workspace gate 0/0 DONE"

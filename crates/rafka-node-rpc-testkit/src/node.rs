@@ -59,7 +59,7 @@ pub struct RunningNode {
 
 /// The digest key carrying a node's in-flight handler count.
 
-/// `RAFKA_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
+/// `RDM_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
 /// for in-flight handlers. Strictly shorter than node-admin's stop grace.
 /// Drain deadline plus the leave linger
 /// ([`rafka_mesh_transport::membership::leave_linger_from_env`]) stay inside
@@ -67,7 +67,7 @@ pub struct RunningNode {
 pub use rafka_mesh_transport::membership::leave_linger_from_env;
 
 pub fn drain_deadline_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RAFKA_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
+    Duration::from_millis(std::env::var("RDM_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
 }
 
 impl RunningNode {

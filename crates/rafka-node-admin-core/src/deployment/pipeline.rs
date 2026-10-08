@@ -541,7 +541,7 @@ pub struct LaunchTemplate {
     pub executable: PathBuf,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
-    /// Passed through to every node (`RAFKA_EVIDENCE_DIR`, `RUST_LOG`, ...).
+    /// Passed through to every node (`RDM_EVIDENCE_DIR`, `RUST_LOG`, ...).
     pub env: BTreeMap<String, String>,
     pub data_root: PathBuf,
 }

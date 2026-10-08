@@ -13,7 +13,7 @@ In a cluster of 18 nodes, if every node discovers every other node via mDNS and 
 
 ### A. Explicit Seeds over mDNS (Production Standard)
 * **Best Practice**: Local broadcast discovery (mDNS) is excellent for zero-config developer setups but scales terribly in production. Industry mesh systems (like HashiCorp Serf/Consul, Libp2p) disable local broadcast in production. Instead, they use a small set of explicit seed nodes. The gossip protocol then disseminates peer information to form a scalable topology.
-* **Impact**: Disabling mDNS and relying on `RAFKA_SEED_NODES` will slash your QUIC connection count from $O(N)$ per node to a bounded constant.
+* **Impact**: Disabling mDNS and relying on `RDM_SEED_NODES` will slash your QUIC connection count from $O(N)$ per node to a bounded constant.
 
 ### B. Bounded Active Views (HyParView)
 * **Best Practice**: The HyParView protocol is designed to keep the active connection count small and constant (typically 4 to 7 peers) regardless of cluster size. 
@@ -30,7 +30,7 @@ In a cluster of 18 nodes, if every node discovers every other node via mDNS and 
 I recommend a 3-step approach:
 
 ### 1. Toggleable mDNS (Highest Impact)
-Introduce a new environment variable `RAFKA_MDNS_ENABLE` (defaulting to `true` for dev, but you will set it to `false` for your 18-node test).
+Introduce a new environment variable `RDM_MDNS_ENABLE` (defaulting to `true` for dev, but you will set it to `false` for your 18-node test).
 #### [MODIFY] [lib.rs](file:///E:/dev/rafka-V2-new-mesh/crates/rafka-node-base/src/lib.rs)
 * Add `mdns_enable` to the boot config.
 * Conditionally skip the mDNS address lookup and `mdns.subscribe()` loop in `rafka-mesh-transport` and `lib.rs` based on this flag.
@@ -44,6 +44,6 @@ We already committed this. It is a one-line change that will quarter the Plumtre
 ## User Review Required
 
 > [!IMPORTANT]
-> Does introducing `RAFKA_MDNS_ENABLE` to conditionally disable mDNS align with your deployment strategy? If you disable mDNS, you must ensure that all nodes are given at least one valid address in `RAFKA_SEED_NODES` to form the mesh.
+> Does introducing `RDM_MDNS_ENABLE` to conditionally disable mDNS align with your deployment strategy? If you disable mDNS, you must ensure that all nodes are given at least one valid address in `RDM_SEED_NODES` to form the mesh.
 > 
 > Let me know if you approve this approach and I will implement the mDNS toggle!

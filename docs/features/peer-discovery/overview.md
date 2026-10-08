@@ -7,12 +7,12 @@
 How nodes find each other on the mesh. Two simultaneous paths:
 
 1. **mdns** — iroh's `LocalSwarmDiscovery` announces NodeId + addresses on the local network; peers receive announcements and dial. No config needed.
-2. **Seed list** — `RAFKA_SEED_NODES` env var (CSV of `<node_id_hex>@<host>:<port>`) for explicit cross-network or first-boot bootstrap.
+2. **Seed list** — `RDM_SEED_NODES` env var (CSV of `<node_id_hex>@<host>:<port>`) for explicit cross-network or first-boot bootstrap.
 
 ## How it works
 
 `crates/rafka-node-base/src/lib.rs` spawns three tasks per boot:
-- `dial_seeds` — parses `RAFKA_SEED_NODES`, dials each via `endpoint.connect()`, emits `rdm.mesh.peer.discovered{source="seed"}` then `rdm.mesh.peer.connected{direction="outbound"}` on handshake.
+- `dial_seeds` — parses `RDM_SEED_NODES`, dials each via `endpoint.connect()`, emits `rdm.mesh.peer.discovered{source="seed"}` then `rdm.mesh.peer.connected{direction="outbound"}` on handshake.
 - `watch_mdns` — subscribes to iroh's mdns channel; for each newly-announced peer, dials + emits `peer.discovered{source="mdns"}` + `peer.connected{direction="outbound"}`. Skips if already in registry.
 - `start_accept_loop` — accepts inbound connections via `endpoint.accept()`, completes handshake, emits `peer.connected{direction="inbound"}`.
 

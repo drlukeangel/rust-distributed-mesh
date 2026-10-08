@@ -28,7 +28,7 @@
 //!
 //! The faults drop UDP on loopback (`iptables`, as root or `sudo -n`); where
 //! the host cannot, cells 6-7 are a named skip, a failure under
-//! `RAFKA_REQUIRE_NETFAULT=1` (CI).
+//! `RDM_REQUIRE_NETFAULT=1` (CI).
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
@@ -67,8 +67,8 @@ async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
 }
 
 fn netfault(why: String) -> Option<()> {
-    if std::env::var("RAFKA_REQUIRE_NETFAULT").as_deref() == Ok("1") {
-        panic!("RAFKA_REQUIRE_NETFAULT=1 but this host cannot drop traffic: {why}");
+    if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() == Ok("1") {
+        panic!("RDM_REQUIRE_NETFAULT=1 but this host cannot drop traffic: {why}");
     }
     eprintln!("SKIP fault cells: {why}");
     None

@@ -7,9 +7,9 @@
 > the next port up.
 
 ```powershell
-$env:RAFKA_TOPOLOGY_UI_BIND_ADDR = "127.0.0.1:19106"
+$env:RDM_TOPOLOGY_UI_BIND_ADDR = "127.0.0.1:19106"
 $env:JAEGER_QUERY_URL            = "http://localhost:16686"
-$env:RAFKA_UI_STATIC_DIR         = "E:\dev\rafka-V2-new-mesh\topology-ui\web\dist"
+$env:RDM_UI_STATIC_DIR         = "E:\dev\rafka-V2-new-mesh\topology-ui\web\dist"
 $env:CARGO_TARGET_DIR            = "E:\cargo-target-v2"
 
 Start-Process -FilePath "E:\cargo-target-v2\debug\rafka-topology-ui.exe" `
@@ -53,7 +53,7 @@ curl -XPOST -H 'Content-Type: application/json' \
 
 # Equivalent (env-nested form):
 curl -XPOST -H 'Content-Type: application/json' \
-  -d '{"node_type":"broker","extra_env":{"RAFKA_MESH_ID":"mesh-a"}}' \
+  -d '{"node_type":"broker","extra_env":{"RDM_MESH_ID":"mesh-a"}}' \
   http://localhost:19106/api/nodes/spawn
 
 # mesh_id must match ^[a-z0-9][a-z0-9-]{0,63}$ — slashes, spaces, unicode

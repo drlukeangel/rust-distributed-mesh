@@ -1,5 +1,5 @@
 {
-  "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RAFKA_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`. A cell with `evidence: runner` is an existing stem run as a regression: the runner writes its `result.json` itself from the test summary, the estate manifest and the spans files, since an existing stem is never edited to produce one.",
+  "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RDM_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`. A cell with `evidence: runner` is an existing stem run as a regression: the runner writes its `result.json` itself from the test summary, the estate manifest and the spans files, since an existing stem is never edited to produce one.",
   "jobs": {
     "i143-2938-process": {
       "issue": 2938,
@@ -8,13 +8,13 @@
         {
           "name": "source_restart_hydrates_proxy_routes_first_call_without_rediscovery",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
           "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
         },
         {
           "name": "source_accepts_inbound_direct_retires_proxy_before_cutback",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_accepts_inbound_direct_retires_proxy_before_cutback -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test i143_acceptance_2938 source_accepts_inbound_direct_retires_proxy_before_cutback -- --exact",
           "dir": "target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback"
         }
       ]
@@ -38,13 +38,13 @@
         {
           "name": "restarted_member_pulls_current_admin_within_staleness_window",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2941.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_pulls_current_admin_within_staleness_window -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_pulls_current_admin_within_staleness_window -- --exact",
           "dir": "target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window"
         },
         {
           "name": "restarted_member_joins_mesh_channel_within_gossip_interval",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2941.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rafka-test-scenario --test i143_acceptance_2941 restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
           "dir": "target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval"
         }
       ]
@@ -57,7 +57,7 @@
           "name": "run-1",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-1",
           "evidence": "runner"
         },
@@ -65,7 +65,7 @@
           "name": "run-2",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-2",
           "evidence": "runner"
         },
@@ -73,7 +73,7 @@
           "name": "run-3",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
           "source": "crates/rafka-test-scenario/tests/mesh_elections__late_authority.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rafka-test-scenario --test mesh_elections__late_authority a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-3",
           "evidence": "runner"
         }
@@ -86,7 +86,7 @@
         {
           "name": "retiring_admin_completes_five_leaving_announcements_within_linger",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 retiring_admin_completes_five_leaving_announcements_within_linger -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 retiring_admin_completes_five_leaving_announcements_within_linger -- --exact",
           "dir": "target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger"
         }
       ]
@@ -116,7 +116,7 @@
         {
           "name": "bootstrap_admin_receives_pending_before_own_mesh_attempt",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
           "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
         }
       ]
@@ -128,7 +128,7 @@
         {
           "name": "bootstrap_admin_repeats_status_contract_in_container_domain",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
-          "command": "MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_repeats_status_contract_in_container_domain -- --exact",
+          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_repeats_status_contract_in_container_domain -- --exact",
           "dir": "target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain"
         }
       ]
@@ -152,7 +152,7 @@
         {
           "name": "surviving_admins_reproduce_primary_loss_with_complete_evidence",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2892.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rafka-test-scenario --test i143_acceptance_2892 surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rafka-test-scenario --test i143_acceptance_2892 surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
           "dir": "target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
         }
       ]
@@ -214,13 +214,13 @@
         {
           "name": "scenario_runner_replays_manifest_preserves_semantic_outcomes",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_replays_manifest_preserves_semantic_outcomes -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_replays_manifest_preserves_semantic_outcomes -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes"
         },
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -232,7 +232,7 @@
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test i143_acceptance_2776 scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -256,13 +256,13 @@
         {
           "name": "proof_holder_restarts_preserves_same_node_store",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2775.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store/estate cargo test -p rafka-test-scenario --test i143_acceptance_2775 proof_holder_restarts_preserves_same_node_store -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store/estate cargo test -p rafka-test-scenario --test i143_acceptance_2775 proof_holder_restarts_preserves_same_node_store -- --exact",
           "dir": "target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store"
         },
         {
           "name": "proof_replacement_starts_fresh_exact_old_never_follows_path",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2775.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path/estate cargo test -p rafka-test-scenario --test i143_acceptance_2775 proof_replacement_starts_fresh_exact_old_never_follows_path -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path/estate cargo test -p rafka-test-scenario --test i143_acceptance_2775 proof_replacement_starts_fresh_exact_old_never_follows_path -- --exact",
           "dir": "target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path"
         }
       ]
@@ -336,7 +336,7 @@
         {
           "name": "failpoint_explorer_releases_build_and_hook_stalls_recovers",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2780.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers/estate cargo test -p rafka-test-scenario --test i143_acceptance_2780 failpoint_explorer_releases_build_and_hook_stalls_recovers -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers/estate cargo test -p rafka-test-scenario --test i143_acceptance_2780 failpoint_explorer_releases_build_and_hook_stalls_recovers -- --exact",
           "dir": "target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers"
         }
       ]
@@ -360,7 +360,7 @@
         {
           "name": "wedge_detector_proves_stall_and_stateful_recovery",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2782.rs",
-          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2782 wedge_detector_proves_stall_and_stateful_recovery -- --exact",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2782 wedge_detector_proves_stall_and_stateful_recovery -- --exact",
           "dir": "target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery"
         }
       ]
@@ -372,7 +372,7 @@
         {
           "name": "container_network_partitions_heals_preserves_live_runtimes",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_network_partitions_heals_preserves_live_runtimes -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_network_partitions_heals_preserves_live_runtimes -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes"
         }
       ]
@@ -384,13 +384,13 @@
         {
           "name": "process_fault_backend_kills_exact_runtime_recovers_current_birth",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
-          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
           "dir": "target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth"
         },
         {
           "name": "process_port_allocator_survives_seeded_collisions",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2783.rs",
-          "command": "RAFKA_COLLISION_SEED=2783 RAFKA_COLLISION_ROUNDS=60 RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_port_allocator_survives_seeded_collisions -- --exact",
+          "command": "RDM_COLLISION_SEED=2783 RDM_COLLISION_ROUNDS=60 RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions/estate cargo test -p rafka-test-scenario --test i143_acceptance_2783 process_port_allocator_survives_seeded_collisions -- --exact",
           "dir": "target/i143-acceptance/2783/chaos-process/process_port_allocator_survives_seeded_collisions"
         }
       ]
@@ -405,19 +405,19 @@
         {
           "name": "mock_estate_forms_twenty_distinct_nodes",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes"
         },
         {
           "name": "mock_roles_route_opaque_calls_to_exact_nodes",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes"
         },
         {
           "name": "mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay"
         }
       ]
@@ -429,19 +429,19 @@
         {
           "name": "mock_estate_forms_twenty_distinct_nodes",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes"
         },
         {
           "name": "mock_roles_route_opaque_calls_to_exact_nodes",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes"
         },
         {
           "name": "mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
           "dir": "target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay"
         }
       ]
@@ -453,7 +453,7 @@
         {
           "name": "mock_fast_estate_forms_and_routes_opaque_calls",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
           "dir": "target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls"
         }
       ]
@@ -465,7 +465,7 @@
         {
           "name": "mock_fast_estate_forms_and_routes_opaque_calls",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
           "dir": "target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls"
         }
       ]
@@ -513,13 +513,13 @@
         {
           "name": "mock_authority_handoffs_preserve_one_effective_writer",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer"
         },
         {
           "name": "mock_recovery_retains_build_and_advances_attempt",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt"
         }
       ]
@@ -531,13 +531,13 @@
         {
           "name": "mock_authority_handoffs_preserve_one_effective_writer",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer"
         },
         {
           "name": "mock_recovery_retains_build_and_advances_attempt",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
           "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt"
         }
       ]

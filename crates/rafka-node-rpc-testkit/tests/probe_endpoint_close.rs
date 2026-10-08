@@ -42,7 +42,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let ghost = NodeId::mint().to_string();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
         .args(["--admin", &admin, "put", "--target", &format!("exact:{ghost}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.1"])
-        .env("RAFKA_EVIDENCE_DIR", &evidence)
+        .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

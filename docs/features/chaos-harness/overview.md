@@ -19,10 +19,10 @@ Goal: every sprint after sprint-11 inherits the chaos-pass acceptance criterion 
 ## Phase 2 (shipped) — network + clock primitives
 
 - `partition_pair{a, b, duration_ms}` — Windows `New-NetFirewallRule` blocking outbound UDP for two named programs. **Requires elevated shell** (admin); fails clean with surfaced stderr otherwise. Revert removes the tagged rules.
-- `clock_skew{target, skew_ms}` — restart the target node with `RAFKA_CLOCK_SKEW_MS` env injected via topology-ui's `extra_env` field. `rafka-node-base` reads the var at boot and emits `clock_skew_ms` + `wall_time_ms` attributes on every `rdm.mesh.heartbeat` span. Detection verifies new subprocess appears; substrate detection (Jaeger query for skewed `wall_time_ms`) is a follow-up.
-- `slow_link{target, latency_ms}` — kill + respawn target with `RAFKA_LINK_SLOW_MS` env. `rafka-node-base.run_ping_sender` reads at boot and sleeps that many ms before each outbound `open_uni` so the link appears slow at the app layer.
-- `lossy_link{target, loss_pct}` — kill + respawn with `RAFKA_LINK_LOSS_PCT` env (0-100). Per outbound ping, node-base rolls a u8%100; if < loss_pct, emits a `rdm.mesh.frame.dropped_by_fault_inject` span and skips the write. Telemetry-visible drop signal.
-- `nat_shift{target}` — kill + respawn target with a different `RAFKA_NODE_BIND_ADDR` (random ephemeral port). iroh's magicsock re-discovers the NodeId at the new addr; the cached connection type updates rather than duplicates. Substrate signal: fresh `prepare_send/get_send_addrs` span with new `direct(<addr>:<port>)` for the same NodeId.
+- `clock_skew{target, skew_ms}` — restart the target node with `RDM_CLOCK_SKEW_MS` env injected via topology-ui's `extra_env` field. `rafka-node-base` reads the var at boot and emits `clock_skew_ms` + `wall_time_ms` attributes on every `rdm.mesh.heartbeat` span. Detection verifies new subprocess appears; substrate detection (Jaeger query for skewed `wall_time_ms`) is a follow-up.
+- `slow_link{target, latency_ms}` — kill + respawn target with `RDM_LINK_SLOW_MS` env. `rafka-node-base.run_ping_sender` reads at boot and sleeps that many ms before each outbound `open_uni` so the link appears slow at the app layer.
+- `lossy_link{target, loss_pct}` — kill + respawn with `RDM_LINK_LOSS_PCT` env (0-100). Per outbound ping, node-base rolls a u8%100; if < loss_pct, emits a `rdm.mesh.frame.dropped_by_fault_inject` span and skips the write. Telemetry-visible drop signal.
+- `nat_shift{target}` — kill + respawn target with a different `RDM_NODE_BIND_ADDR` (random ephemeral port). iroh's magicsock re-discovers the NodeId at the new addr; the cached connection type updates rather than duplicates. Substrate signal: fresh `prepare_send/get_send_addrs` span with new `direct(<addr>:<port>)` for the same NodeId.
 
 ## Phase 3 (queued) — extended network primitives
 

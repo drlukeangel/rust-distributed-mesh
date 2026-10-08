@@ -182,10 +182,10 @@ pub fn spawn() -> Option<()> {
                 match &mut stalled {
                     None if last > 0 && now.saturating_sub(last) > STALL.as_millis() as u64 => {
                         let states = thread_states();
-                        // Diagnosis runs only (RAFKA_STALL_PERF set): profile this process while
+                        // Diagnosis runs only (RDM_STALL_PERF set): profile this process while
                         // its workers are busy, once, into the evidence directory.
                         if states.contains(":R:") && !profiled {
-                            if let (Ok(_), Ok(dir)) = (std::env::var("RAFKA_STALL_PERF"), std::env::var("RAFKA_EVIDENCE_DIR")) {
+                            if let (Ok(_), Ok(dir)) = (std::env::var("RDM_STALL_PERF"), std::env::var("RDM_EVIDENCE_DIR")) {
                                 profiled = true;
                                 let out = format!("{dir}/stall-{}-{now}.perf.data", std::process::id());
                                 let r = std::process::Command::new("perf")

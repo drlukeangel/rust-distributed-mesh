@@ -1,6 +1,6 @@
 //! i143.e4.s11 acceptance (rafka-v2 #2805, hardened 2026-10-07), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2805-process`, which exports `I143_ACCEPTANCE_DIR` (this
-//! cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the estate's
+//! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2805`).
 //!
 //! A real two-mesh birth through the Build rectifier: `POST /api/build` adds mesh2; the fabric

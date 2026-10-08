@@ -11,7 +11,7 @@
 //! The node-admins stay host processes: a node-admin in a container would need the Docker daemon
 //! inside it. One node-admin drives the container fabric.
 //!
-//! Opt-in: it runs only with `RAFKA_CONTAINER_PROOF=1` (the container-proof step); otherwise it
+//! Opt-in: it runs only with `RDM_CONTAINER_PROOF=1` (the container-proof step); otherwise it
 //! skips by name and starts nothing.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
@@ -36,8 +36,8 @@ fn docker_state(id: &str) -> String {
 /// container id never is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it() {
-    if std::env::var("RAFKA_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RAFKA_REQUIRE_CONTAINER").as_deref() != Ok("1") {
-        eprintln!("SKIP container kill: opt-in with RAFKA_CONTAINER_PROOF=1 (the container-proof step)");
+    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container kill: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
         return;
     }
     let mut estate = Estate::bootstrap(

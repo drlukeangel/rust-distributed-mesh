@@ -335,10 +335,10 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     })
 }
 
-/// Where the probe binds its one socket: `RAFKA_PROBE_BIND` (an address on the fabric's network,
+/// Where the probe binds its one socket: `RDM_PROBE_BIND` (an address on the fabric's network,
 /// e.g. a container fabric's gateway), else loopback.
 fn probe_bind() -> std::net::SocketAddr {
-    let ip: std::net::IpAddr = std::env::var("RAFKA_PROBE_BIND").ok().and_then(|v| v.parse().ok()).unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
+    let ip: std::net::IpAddr = std::env::var("RDM_PROBE_BIND").ok().and_then(|v| v.parse().ok()).unwrap_or(std::net::IpAddr::from([127, 0, 0, 1]));
     std::net::SocketAddr::new(ip, 0)
 }
 

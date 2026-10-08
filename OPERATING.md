@@ -10,7 +10,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 | 16686 | Jaeger UI (`http://localhost:16686`) |
 | 4316  | OTLP/gRPC ingest |
 | 4317  | OTLP/HTTP ingest |
-| 0     | rafka-* iroh endpoint (random ephemeral; override with `RAFKA_NODE_BIND_ADDR`) |
+| 0     | rafka-* iroh endpoint (random ephemeral; override with `RDM_NODE_BIND_ADDR`) |
 
 ## Environment variables
 
@@ -18,15 +18,15 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RAFKA_DATA_DIR` | `./data/node-<rand>` | Where node-identity.json lives + chaos disk_full fills |
-| `RAFKA_NODE_BIND_ADDR` | `0.0.0.0:0` | iroh endpoint bind. Random ephemeral = `0`. `nat_shift` chaos sets a fresh port |
-| `RAFKA_MESH_ID` | `default` | Logical mesh tag on node.ready + heartbeat spans |
-| `RAFKA_SEED_NODES` | `` | Comma-list of `<node_id>@<addr>` for explicit dial (mdns is the default discovery) |
-| `RAFKA_GOSSIP_INTERVAL_MS` | `500` | (Reserved — gossip plane not yet implemented; ms placeholder for now) |
-| `RAFKA_CLOCK_SKEW_MS` | `0` | Adds offset to `wall_time_ms` on every heartbeat span. Chaos `clock_skew` sets this at respawn |
-| `RAFKA_LINK_SLOW_MS` | `0` | Sleep that many ms before each outbound ping `open_uni`. Chaos `slow_link` |
-| `RAFKA_LINK_LOSS_PCT` | `0` | Per outbound ping, roll u8%100; if `<` this, emit drop span + skip write. Chaos `lossy_link` |
-| `RAFKA_AUTO_SHUTDOWN_SECS` | unset (= wait for SIGINT) | Auto-exit after N seconds; used by e2e tests |
+| `RDM_DATA_DIR` | `./data/node-<rand>` | Where node-identity.json lives + chaos disk_full fills |
+| `RDM_NODE_BIND_ADDR` | `0.0.0.0:0` | iroh endpoint bind. Random ephemeral = `0`. `nat_shift` chaos sets a fresh port |
+| `RDM_MESH_ID` | `default` | Logical mesh tag on node.ready + heartbeat spans |
+| `RDM_SEED_NODES` | `` | Comma-list of `<node_id>@<addr>` for explicit dial (mdns is the default discovery) |
+| `RDM_GOSSIP_INTERVAL_MS` | `500` | (Reserved — gossip plane not yet implemented; ms placeholder for now) |
+| `RDM_CLOCK_SKEW_MS` | `0` | Adds offset to `wall_time_ms` on every heartbeat span. Chaos `clock_skew` sets this at respawn |
+| `RDM_LINK_SLOW_MS` | `0` | Sleep that many ms before each outbound ping `open_uni`. Chaos `slow_link` |
+| `RDM_LINK_LOSS_PCT` | `0` | Per outbound ping, roll u8%100; if `<` this, emit drop span + skip write. Chaos `lossy_link` |
+| `RDM_AUTO_SHUTDOWN_SECS` | unset (= wait for SIGINT) | Auto-exit after N seconds; used by e2e tests |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4316` | Where node-base + topology-ui ship spans |
 | `OTEL_SERVICE_NAME` | (set per binary) | Jaeger service tag |
 | `RUST_LOG` | `info` | tracing filter (e.g. `rafka_node_base=debug,info`) |
@@ -35,13 +35,13 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RAFKA_BRIDGE_TARGET_MESHES` | `` | Comma-list of mesh IDs this bridge announces it spans; surfaced on `rdm.mesh.bridge.boot_announced` |
+| `RDM_BRIDGE_TARGET_MESHES` | `` | Comma-list of mesh IDs this bridge announces it spans; surfaced on `rdm.mesh.bridge.boot_announced` |
 
 ### topology-ui reads:
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RAFKA_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
+| `RDM_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Where to ask "what's in the traces" |
 | `CARGO_TARGET_DIR` | derived from own exe path | Where spawned `rafka-*.exe` binaries live |
 
@@ -111,12 +111,12 @@ done
 # A bridge that announces it spans mesh-A + mesh-B
 curl -X POST http://localhost:19090/api/nodes/spawn \
   -H 'Content-Type: application/json' \
-  -d '{"node_type":"bridge","extra_env":{"RAFKA_BRIDGE_TARGET_MESHES":"mesh-A,mesh-B"}}'
+  -d '{"node_type":"bridge","extra_env":{"RDM_BRIDGE_TARGET_MESHES":"mesh-A,mesh-B"}}'
 
 # A node deliberately in a different mesh — should show as cross-mesh edge in topology
 curl -X POST http://localhost:19090/api/nodes/spawn \
   -H 'Content-Type: application/json' \
-  -d '{"node_type":"compute","extra_env":{"RAFKA_MESH_ID":"mesh-A"}}'
+  -d '{"node_type":"compute","extra_env":{"RDM_MESH_ID":"mesh-A"}}'
 ```
 
 ### Drain the spawned pool

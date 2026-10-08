@@ -45,7 +45,7 @@ WHAT YOU SHIP
 In order:
 1. Workspace skeleton — Cargo.toml workspace + 6 crates (rafka-mesh-transport, rfa, gateway, broker, compute, schema, topology-ui)
 2. `crates/rafka-mesh-transport/` — `MeshTransport` trait + `IrohMeshTransport` impl. Uses iroh::Endpoint, ALPN `rafka-mesh-v1`, gossip via iroh discovery. NO custom gossip protocol.
-3. 4 bare node binaries (rafka-gateway, rafka-broker, rafka-compute, rafka-schema) — each boots, mints `EndpointId` to $RAFKA_DATA_DIR/node-identity.json, joins mesh, emits substrate spans, accepts InternalMeshFrame on the mesh ALPN. Zero app logic. Zero HTTP routes.
+3. 4 bare node binaries (rafka-gateway, rafka-broker, rafka-compute, rafka-schema) — each boots, mints `EndpointId` to $RDM_DATA_DIR/node-identity.json, joins mesh, emits substrate spans, accepts InternalMeshFrame on the mesh ALPN. Zero app logic. Zero HTTP routes.
 4. `topology-ui/` binary — axum server on http://localhost:19090. Joins mesh as view-only participant on ALPN `rafka-topology-v1`. Serves plain HTML+JS page with vis-network graph + spawn/kill buttons. Subprocess management for spawned nodes. WebSocket for real-time delta updates.
 5. `crates/rfa/` CLI binary — thin REST client targeting http://localhost:19090. Commands: mesh node add/remove/list/describe/logs/spans, mesh topology show/watch, mesh status, mesh wait-converged. Every command supports --format json.
 6. OTLP wiring — all 14 substrate spans (listed in sprint-config.json::spans_to_emit) land in tests/artifacts/mesh-substrate/

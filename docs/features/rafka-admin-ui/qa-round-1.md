@@ -10,12 +10,12 @@ inline.
 ### F#1 — CRITICAL: `mesh_id` body field on `/api/nodes/spawn` is silently ignored
 **Severity**: critical · **Status**: fixed (see commit)
 
-`SpawnRequest` only accepts `extra_env.RAFKA_MESH_ID`. Sending a top-level
+`SpawnRequest` only accepts `extra_env.RDM_MESH_ID`. Sending a top-level
 `body.mesh_id` field falls through to "default". UI workaround was using
 the env-nested form, but the API contract was undocumented and confusing.
 
 **Fix**: Add `mesh_id: Option<String>` field to `SpawnRequest`. In
-`handle_spawn`, if present, inject it into `extra_env.RAFKA_MESH_ID` before
+`handle_spawn`, if present, inject it into `extra_env.RDM_MESH_ID` before
 calling `spawn_one`.
 
 ### F#2 — CRITICAL: `/api/nodes` had no per-request timeout
@@ -84,7 +84,7 @@ count depends on chaos cadence timing.
 ### F#8 — MEDIUM: `mesh_id` not sanitized — slashes, spaces, unicode silently accepted
 **Severity**: medium · **Status**: fixed
 
-`spawn_one` accepts any string in `RAFKA_MESH_ID`. Slashes break Jaeger
+`spawn_one` accepts any string in `RDM_MESH_ID`. Slashes break Jaeger
 query filtering; spaces break CSS class lookup on the React side. Note:
 this was masked by F#1 (mesh_id was ignored anyway).
 

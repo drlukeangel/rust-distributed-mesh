@@ -31,7 +31,7 @@
   ],
   "exit_criteria": [
     "cargo run -p rafka-gateway boots without panic and stays alive (idles emitting heartbeats)",
-    "$RAFKA_DATA_DIR/node-identity.json exists after first boot",
+    "$RDM_DATA_DIR/node-identity.json exists after first boot",
     "Second invocation of the binary reads the SAME identity (no re-mint)",
     "Jaeger UI search for service=gateway shows a trace with: rafka.mesh.node.ready (root) → rafka.mesh.boot.identity_loaded (or .minted) → rafka.mesh.boot.endpoint_created → rafka.mesh.boot.alpn_registered → rafka.mesh.boot.gossip_started → rafka.mesh.boot.accept_loop_started",
     "While idle, rafka.mesh.heartbeat span appears every ~5s in Jaeger",

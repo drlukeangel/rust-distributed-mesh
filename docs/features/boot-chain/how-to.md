@@ -4,7 +4,7 @@
 
 ```bash
 # Direct binary launch:
-RAFKA_DATA_DIR=./data/g1 cargo run -p rafka-gateway
+RDM_DATA_DIR=./data/g1 cargo run -p rafka-gateway
 
 # Or via topology-ui (auto-tracked):
 rfa mesh node add --type gateway

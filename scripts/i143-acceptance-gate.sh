@@ -9,7 +9,7 @@
 # cell: no spans.json; an estate cell: no estate manifest), ran on a provider other than the
 # job's layer, or the source SHA moved while it ran. A job with an estate layer (process,
 # container, fast) builds the estate binaries first so they match HEAD; a container job
-# requires a reachable Docker domain and sets RAFKA_REQUIRE_CONTAINER=1, so a host that cannot
+# requires a reachable Docker domain and sets RDM_REQUIRE_CONTAINER=1, so a host that cannot
 # run containers fails by name instead of substituting the process provider.
 #
 # Jobs live under the registry's `jobs` section or its `rshape_jobs` section (the R-shape
@@ -102,7 +102,7 @@ case "$LAYER" in
 esac
 case "$LAYER" in *container) ON_CONTAINER=1 ;; *) ON_CONTAINER= ;; esac
 if [ -n "$ON_CONTAINER" ]; then
-    export RAFKA_REQUIRE_CONTAINER=1
+    export RDM_REQUIRE_CONTAINER=1
     if ! docker info > /dev/null 2>&1; then
         refuse "$JOB: no reachable Docker domain (docker info failed; set DOCKER_HOST or start the daemon)"
         exit 1

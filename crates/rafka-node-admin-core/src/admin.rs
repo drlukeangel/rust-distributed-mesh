@@ -62,13 +62,13 @@ pub struct AdminConfig {
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
     pub spawn_type: Option<String>,
-    /// The HTTP bind of a bootstrap admin (`RAFKA_NODE_ADMIN_API_BIND`).
+    /// The HTTP bind of a bootstrap admin (`RDM_NODE_ADMIN_API_BIND`).
     pub api_bind: SocketAddr,
     /// Set when a deployment pipeline launched this admin.
     pub launch: Option<Launch>,
     /// Passed on to every runtime this admin launches.
     pub passthrough: BTreeMap<String, String>,
-    /// The explicit executable bindings this admin launches from (`RAFKA_EXECUTABLE_BINDINGS`),
+    /// The explicit executable bindings this admin launches from (`RDM_EXECUTABLE_BINDINGS`),
     /// validated before it opens a provider. `None` is the built-in mode: executables come from
     /// `bin_dir`. With bindings, nothing is launched from `bin_dir`.
     pub bindings: Option<rafka_mesh_entity::binding::Validated>,
@@ -79,9 +79,9 @@ pub struct AdminConfig {
 impl AdminConfig {
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
-        let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RAFKA_FABRIC")).unwrap_or_else(|| "fabric1".into());
+        let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RDM_FABRIC")).unwrap_or_else(|| "fabric1".into());
         // A launched node is handed its Fabric's id; the bootstrap admin takes
-        // `RAFKA_FABRIC_ID` when given, else its Fabric is new and it mints one.
+        // `RDM_FABRIC_ID` when given, else its Fabric is new and it mints one.
         let fabric_id = match &launch {
             Some(l) => l.fabric_id.clone(),
             None => match get(rafka_mesh_entity::launch::ENV_FABRIC_ID).filter(|v| !v.trim().is_empty()) {
@@ -89,20 +89,20 @@ impl AdminConfig {
                 None => FabricId::mint(),
             },
         };
-        let mesh = launch.as_ref().map(|l| l.name.mesh.clone()).or_else(|| get("RAFKA_MESH")).unwrap_or_else(|| "mesh1".into());
+        let mesh = launch.as_ref().map(|l| l.name.mesh.clone()).or_else(|| get("RDM_MESH")).unwrap_or_else(|| "mesh1".into());
         if !is_valid_mesh_name(&mesh) {
-            return Err(format!("RAFKA_MESH `{mesh}` is not a valid mesh name"));
+            return Err(format!("RDM_MESH `{mesh}` is not a valid mesh name"));
         }
         let data_dir = launch
             .as_ref()
             .map(|l| l.data_dir.clone())
-            .or_else(|| get("RAFKA_DATA_DIR").map(PathBuf::from))
+            .or_else(|| get("RDM_DATA_DIR").map(PathBuf::from))
             .unwrap_or_else(|| std::env::temp_dir().join(format!("rafka-node-admin-{}", rand::random::<u32>())));
-        let bin_dir = get("RAFKA_BIN_DIR").map(PathBuf::from).unwrap_or_else(|| {
+        let bin_dir = get("RDM_BIN_DIR").map(PathBuf::from).unwrap_or_else(|| {
             std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from("."))
         });
-        let api_bind = get("RAFKA_NODE_ADMIN_API_BIND")
-            .map(|b| b.parse().map_err(|e| format!("RAFKA_NODE_ADMIN_API_BIND `{b}`: {e}")))
+        let api_bind = get("RDM_NODE_ADMIN_API_BIND")
+            .map(|b| b.parse().map_err(|e| format!("RDM_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
         let bindings_env: BTreeMap<String, String> = [rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE]
@@ -120,7 +120,7 @@ impl AdminConfig {
                 Some(set.validate(&expect).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RAFKA_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RAFKA_ENDPOINT_PORT_RANGE", "RAFKA_CONTAINER_SUBNET_POOL", "RAFKA_STALENESS_MS", "RAFKA_GOSSIP_INTERVAL_MS", "RAFKA_BACKBONE_INTERVAL_MS", "RAFKA_LEAVE_LINGER_MS"]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_ENDPOINT_PORT_RANGE", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS"]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -132,7 +132,7 @@ impl AdminConfig {
                 .as_ref()
                 .and_then(|l| l.mesh_id.clone())
                 .map(Ok)
-                .or_else(|| get("RAFKA_MESH_ID").filter(|v| !v.trim().is_empty()).map(|v| MeshId::parse(&v).map_err(|e| format!("RAFKA_MESH_ID: {e}"))))
+                .or_else(|| get("RDM_MESH_ID").filter(|v| !v.trim().is_empty()).map(|v| MeshId::parse(&v).map_err(|e| format!("RDM_MESH_ID: {e}"))))
                 .transpose()?,
             data_dir,
             bin_dir,
@@ -1238,7 +1238,7 @@ pub struct Running {
 impl Running {
     /// Leave the fabric the way every node does (node-rpc §35): stop taking
     /// Build work and say `Draining`, then keep saying `Leaving` for the
-    /// leave linger (`RAFKA_LEAVE_LINGER_MS`), then close. iroh-gossip
+    /// leave linger (`RDM_LEAVE_LINGER_MS`), then close. iroh-gossip
     /// acknowledges nothing and closing drops what is unsent, so one
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
@@ -1719,7 +1719,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         None => crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?,
     };
     let mut admin_env = BTreeMap::new();
-    admin_env.insert("RAFKA_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
+    admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
     // A node-admin this admin launches honors the same explicit bindings: its own launches and
     // restarts run the bound executables too.
     admin_env.extend(cfg.bindings_env.clone());
@@ -2173,7 +2173,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let adapter = runner.builds.clone();
         // Provisional: the architecture measures this default from stripped-full sizes under the
         // scale and chaos proofs (rafka-v2 #2900); 10 rounds is a placeholder, not the answer.
-        let full_every: u32 = std::env::var("RAFKA_FULL_EVERY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let full_every: u32 = std::env::var("RDM_FULL_EVERY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
         hierarchy = tokio::spawn(async move {
             let mut last_overlays: Option<(Vec<rafka_mesh_entity::LifecycleOp>, Vec<rafka_mesh_entity::LifecycleOp>)> = None;
             let mut rounds: u32 = 0;

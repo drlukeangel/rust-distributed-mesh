@@ -13,7 +13,7 @@ use rafka_test_scenario::{runner, scenario::Scenario};
 #[ignore = "SECOND RED (i143.e7.s2): goes GREEN in i143.e7.s5 once Build, the providers, the RPC node and the probe exist"]
 async fn seed_scenario_applies_every_operation_over_real_node_rpc() {
     let scenario = Scenario::parse(include_str!("../scenarios/i143-node-rpc-seed.yaml")).expect("seed parses");
-    let provider = std::env::var("RAFKA_SCENARIO_PROVIDER").ok();
+    let provider = std::env::var("RDM_SCENARIO_PROVIDER").ok();
     let report = runner::run(&scenario, provider.as_deref(), "seed_scenario_applies_every_operation_over_real_node_rpc").await;
     assert!(report.failures.is_empty(), "seed failures: {:#?}", report.failures);
 }

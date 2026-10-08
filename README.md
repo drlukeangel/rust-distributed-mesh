@@ -21,7 +21,7 @@ podman compose -f E:/dev/rafka/deployment/dev/compose.test-otlp.yml up -d
 cargo build --workspace --release
 
 # 3. Launch admin-ui (substrate participant + browser UI + child spawner)
-CARGO_TARGET_DIR=$(pwd)/target RAFKA_CHILD_BUILD_PROFILE=release \
+CARGO_TARGET_DIR=$(pwd)/target RDM_CHILD_BUILD_PROFILE=release \
     ./target/release/rafka-admin-ui
 # → http://localhost:19090
 
@@ -61,14 +61,14 @@ RAM: ~0.05 GB per substrate node; admin-ui ~0.08 GB.
 
 ## Deployment artifact layout
 
-Binaries land under `$CARGO_TARGET_DIR/$RAFKA_CHILD_BUILD_PROFILE/`. Admin-ui spawns child nodes from that same path, using `std::env::consts::EXE_SUFFIX` so `.exe` is appended on Windows and omitted on Linux automatically.
+Binaries land under `$CARGO_TARGET_DIR/$RDM_CHILD_BUILD_PROFILE/`. Admin-ui spawns child nodes from that same path, using `std::env::consts::EXE_SUFFIX` so `.exe` is appended on Windows and omitted on Linux automatically.
 
 Required env to launch admin-ui:
 
 | Env var | Purpose |
 |---|---|
 | `CARGO_TARGET_DIR` | Workspace target directory (absolute path) |
-| `RAFKA_CHILD_BUILD_PROFILE` | `release` or `debug` — selects subdir for child spawn |
+| `RDM_CHILD_BUILD_PROFILE` | `release` or `debug` — selects subdir for child spawn |
 
 Both are validated at admin-ui startup via the preflight check — missing binaries fail loud rather than silently failing on first bootstrap.
 
@@ -79,8 +79,8 @@ A reference launcher is at `E:/tmp/soak-logs/launch-admin-ui-linux.sh` — pure 
 Admin-ui's `/api/alerts` (and the Alerts tab) emits warn-severity alerts for:
 
 1. Chaos primitive detections with non-`passed` result (read from Jaeger)
-2. **Any substrate node whose latest `GossipDigest.cpu_used` exceeds `RAFKA_CPU_ALERT_THRESHOLD`** (default **0.10 cores** — ~5× release baseline)
-3. **Any substrate node whose `ram_used` exceeds `RAFKA_RAM_ALERT_THRESHOLD_GB`** (default **0.5 GB** — ~8× release baseline)
+2. **Any substrate node whose latest `GossipDigest.cpu_used` exceeds `RDM_CPU_ALERT_THRESHOLD`** (default **0.10 cores** — ~5× release baseline)
+3. **Any substrate node whose `ram_used` exceeds `RDM_RAM_ALERT_THRESHOLD_GB`** (default **0.5 GB** — ~8× release baseline)
 
 Admin-ui itself is excluded from CPU/RAM threshold checks since it does extra HTTP/orchestration work beyond pure substrate participation and would otherwise flap near the threshold.
 
@@ -108,10 +108,10 @@ rfa mesh chaos soak --duration 1h --interval 20s --seed 42
 | disk_full | fill spawn data dir until writes fail |
 | wedge_node | Windows NtSuspendProcess + revert |
 | partition_pair | New-NetFirewallRule blocking outbound UDP (needs admin) |
-| clock_skew | restart with RAFKA_CLOCK_SKEW_MS env injected |
-| slow_link | restart with RAFKA_LINK_SLOW_MS env (per-frame sleep) |
-| lossy_link | restart with RAFKA_LINK_LOSS_PCT env (per-frame drop dice) |
-| nat_shift | restart with new RAFKA_NODE_BIND_ADDR (ephemeral port) |
+| clock_skew | restart with RDM_CLOCK_SKEW_MS env injected |
+| slow_link | restart with RDM_LINK_SLOW_MS env (per-frame sleep) |
+| lossy_link | restart with RDM_LINK_LOSS_PCT env (per-frame drop dice) |
+| nat_shift | restart with new RDM_NODE_BIND_ADDR (ephemeral port) |
 
 Queued: partition_subset, flap_link, firewall_inbound (all admin-required).
 

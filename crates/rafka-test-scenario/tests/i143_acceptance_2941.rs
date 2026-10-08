@@ -1,6 +1,6 @@
 //! i143.e4.s15 acceptance (rafka-v2 #2941, hardened 2026-10-07), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2941-process`, which exports `I143_ACCEPTANCE_DIR`
-//! (this cell's `result.json` goes there) and whose commands set `RAFKA_ARTIFACTS_DIR` (the
+//! (this cell's `result.json` goes there) and whose commands set `RDM_ARTIFACTS_DIR` (the
 //! estate's own manifest, rpc ledger and every process's spans land under it, feature
 //! `i143-2941`, test the cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
@@ -79,7 +79,7 @@ async fn restarted_member_pulls_current_admin_within_staleness_window() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
-    let staleness_ms: u64 = std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let staleness_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
 
     // The reborn birth's pull attempts, in order: the first is answered, by the launching admin,
     // within the staleness window; nothing failed.
@@ -124,7 +124,7 @@ async fn restarted_member_joins_mesh_channel_within_gossip_interval() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let (admin, before, after, restart_at, spans) = restart_one_member(cell).await;
-    let gossip_ms: u64 = std::env::var("RAFKA_GOSSIP_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+    let gossip_ms: u64 = std::env::var("RDM_GOSSIP_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
 
     let joined = named(&spans, "rdm.mesh.membership.update.via-subscribe")
         .into_iter()

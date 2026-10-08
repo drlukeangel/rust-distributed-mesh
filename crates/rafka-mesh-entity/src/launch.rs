@@ -7,17 +7,17 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-pub const ENV_FABRIC: &str = "RAFKA_FABRIC";
-pub const ENV_FABRIC_ID: &str = "RAFKA_FABRIC_ID";
-pub const ENV_NODE_NAME: &str = "RAFKA_NODE_NAME";
-pub const ENV_NODE_ID: &str = "RAFKA_NODE_ID";
-pub const ENV_INCARNATION: &str = "RAFKA_INCARNATION_ID";
-pub const ENV_SUPERSEDES: &str = "RAFKA_SUPERSEDES";
-pub const ENV_TRANSPORT_ADDR: &str = "RAFKA_TRANSPORT_ADDR";
-pub const ENV_LISTENERS: &str = "RAFKA_LISTENERS";
-pub const ENV_SEEDS: &str = "RAFKA_SEEDS";
-pub const ENV_DATA_DIR: &str = "RAFKA_DATA_DIR";
-pub const ENV_MESH_ID: &str = "RAFKA_MESH_ID";
+pub const ENV_FABRIC: &str = "RDM_FABRIC";
+pub const ENV_FABRIC_ID: &str = "RDM_FABRIC_ID";
+pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
+pub const ENV_NODE_ID: &str = "RDM_NODE_ID";
+pub const ENV_INCARNATION: &str = "RDM_INCARNATION_ID";
+pub const ENV_SUPERSEDES: &str = "RDM_SUPERSEDES";
+pub const ENV_TRANSPORT_ADDR: &str = "RDM_TRANSPORT_ADDR";
+pub const ENV_LISTENERS: &str = "RDM_LISTENERS";
+pub const ENV_SEEDS: &str = "RDM_SEEDS";
+pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
+pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,10 +127,10 @@ mod tests {
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
-        assert!(Launch::from_env(|_| None).unwrap_err().contains("RAFKA_FABRIC is required"));
+        assert!(Launch::from_env(|_| None).unwrap_err().contains("RDM_FABRIC is required"));
         let mut blank = env.clone();
         blank.insert(ENV_FABRIC.into(), " ".into());
-        assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RAFKA_FABRIC is required and must not be empty"));
+        assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RDM_FABRIC is required and must not be empty"));
         // A launched node's product ids are canonical or refused by name.
         for (k, v, says) in [(ENV_NODE_ID, "f".repeat(32), "node id"), (ENV_FABRIC_ID, "fabric1".into(), "fabric id"), (ENV_MESH_ID, "4f14".into(), "mesh id")] {
             let mut bad = env.clone();

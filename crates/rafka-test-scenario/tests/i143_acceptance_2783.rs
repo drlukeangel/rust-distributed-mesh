@@ -1,6 +1,6 @@
 //! i143.e8.s5 acceptance (rafka-v2 #2783, hardened 2026-10-07), CHAOS-PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2783-chaos-process`, which exports `I143_ACCEPTANCE_DIR`
-//! (each cell's `result.json` goes there) and whose commands set `RAFKA_ARTIFACTS_DIR` (the
+//! (each cell's `result.json` goes there) and whose commands set `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest, rpc ledger and every process's spans land under it, feature `i143-2783`).
 //!
 //! - `process_fault_backend_kills_exact_runtime_recovers_current_birth`: the process fault backend
@@ -463,14 +463,14 @@ fn schedule(seed: u64, rounds: u64) -> (Vec<Draws>, Vec<Value>) {
 /// The schedule is drawn from one seed with a fixed number of draws per round, so the same seed
 /// is the same schedule; the classified outcomes are recorded for comparison. What must NOT
 /// happen: a handed-out port that something holds, a duplicated allocation, a birth that does not
-/// bind, an orphan runtime, a failed replay. The story names no soak length: `RAFKA_COLLISION_ROUNDS`
-/// (default 60) sets the rounds, `RAFKA_COLLISION_SEED` (default 2783) the seed.
+/// bind, an orphan runtime, a failed replay. The story names no soak length: `RDM_COLLISION_ROUNDS`
+/// (default 60) sets the rounds, `RDM_COLLISION_SEED` (default 2783) the seed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn process_port_allocator_survives_seeded_collisions() {
     let dir = acceptance_dir(SOAK_CELL);
-    let rounds: u64 = std::env::var("RAFKA_COLLISION_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
-    let seed: u64 = std::env::var("RAFKA_COLLISION_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(2783);
-    let rerun = format!("RAFKA_COLLISION_SEED={seed} RAFKA_COLLISION_ROUNDS={rounds} cargo test -p rafka-test-scenario --test i143_acceptance_2783 {SOAK_CELL} -- --exact");
+    let rounds: u64 = std::env::var("RDM_COLLISION_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("RDM_COLLISION_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(2783);
+    let rerun = format!("RDM_COLLISION_SEED={seed} RDM_COLLISION_ROUNDS={rounds} cargo test -p rafka-test-scenario --test i143_acceptance_2783 {SOAK_CELL} -- --exact");
     eprintln!("COLLISION seed={seed} rounds={rounds}  (rerun: {rerun})");
     let (draws, events) = schedule(seed, rounds);
     assert_eq!((draws.clone(), events.clone()), schedule(seed, rounds), "one seed draws one schedule");

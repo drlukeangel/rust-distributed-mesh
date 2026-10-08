@@ -159,18 +159,18 @@ UPPERCASE (`MESH-A`) also rejected. Digit-only suffix (`mesh123`) correctly acce
 **Expected**: 400 — both keys are not in ALLOWED_EXTRA_ENV_KEYS.
 
 **Actual**: 400 for both. Allow-list enforcement works.
-`RUST_LOG` and `RAFKA_AUTO_SHUTDOWN_SECS` (both in allow-list) correctly return 201.
+`RUST_LOG` and `RDM_AUTO_SHUTDOWN_SECS` (both in allow-list) correctly return 201.
 
 **Severity**: PASS
 
 ---
 
-## A7 — RAFKA_BRIDGE_TARGET_MESHES Bomb (100 meshes)
+## A7 — RDM_BRIDGE_TARGET_MESHES Bomb (100 meshes)
 
-**Attack**: Spawn bridge node with `RAFKA_BRIDGE_TARGET_MESHES` set to 100 comma-separated
+**Attack**: Spawn bridge node with `RDM_BRIDGE_TARGET_MESHES` set to 100 comma-separated
 mesh names (878-byte value).
 
-**Expected**: Validator accepts (RAFKA_BRIDGE_TARGET_MESHES is in allow-list); spawned
+**Expected**: Validator accepts (RDM_BRIDGE_TARGET_MESHES is in allow-list); spawned
 process starts.
 
 **Actual**: 201 Created. Bridge process alive after 3s. The bridge binary attempts to
@@ -251,7 +251,7 @@ Total edges: 153. Cross edges: 97. Within edges: 56. Illegal non-bridge cross ed
 
 **Root cause**: The edge-building logic in `handle_topology` iterates
 `topic_membership()` — the set of nodes who have broadcast on each gossip topic.
-Admin-ui subscribes to `mesh-a`, `mesh-b`, AND `bridge` topics via `RAFKA_OBSERVER_MESHES`.
+Admin-ui subscribes to `mesh-a`, `mesh-b`, AND `bridge` topics via `RDM_OBSERVER_MESHES`.
 iroh-gossip's mdns discovery means ALL nodes see ALL other nodes regardless of topic.
 Nodes in mesh-a gossip to their own topic; nodes in mesh-b gossip to theirs. But if
 iroh-gossip topic membership reflects iroh's mdns discovery (not just gossip receipt),

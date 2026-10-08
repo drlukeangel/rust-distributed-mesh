@@ -101,7 +101,7 @@ pub trait ChaosPrimitive: Send + Sync {
 /// Build a default ChaosContext using env vars + a seeded RNG.
 pub fn default_context(seed: u64) -> ChaosContext {
     use rand::SeedableRng;
-    let topology_ui_url = std::env::var("RAFKA_TOPOLOGY_UI_URL")
+    let topology_ui_url = std::env::var("RDM_TOPOLOGY_UI_URL")
         .unwrap_or_else(|_| "http://localhost:19090".to_string());
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());

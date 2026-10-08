@@ -1,6 +1,6 @@
 //! i143 acceptance (rafka-v2 #2892, finding 2), CHAOS-PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2892-process`, which exports `I143_ACCEPTANCE_DIR`
-//! (this cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the
+//! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the
 //! estate's manifest and every process's spans land under it, feature `i143-2892`, test the
 //! cell's name).
 //!

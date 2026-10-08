@@ -60,7 +60,7 @@ async fn source_reconnect_failures_grow_log_keep_two_current_members() {
     let cell = "source_reconnect_failures_grow_log_keep_two_current_members";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RAFKA_EVIDENCE_DIR", &dir);
+    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-acceptance");
     let data_dir = std::env::temp_dir().join(format!("i143-2938-unit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);

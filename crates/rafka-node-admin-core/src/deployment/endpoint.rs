@@ -210,7 +210,7 @@ impl EndpointAllocator {
         }
     }
 
-    /// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>` (default `20000-29999`) on `127.0.0.1`.
+    /// `RDM_ENDPOINT_PORT_RANGE=<first>-<last>` (default `20000-29999`) on `127.0.0.1`.
     pub fn from_env() -> Self {
         let (first, last) = port_range_from_env();
         Self::new(IpAddr::from([127, 0, 0, 1]), first, last)
@@ -485,11 +485,11 @@ fn release_on_host(addr: SocketAddr) {
     });
 }
 
-/// `RAFKA_ENDPOINT_PORT_RANGE=<first>-<last>`, default `20000-29999`: below the kernel's ephemeral
+/// `RDM_ENDPOINT_PORT_RANGE=<first>-<last>`, default `20000-29999`: below the kernel's ephemeral
 /// range, so a port handed to a birth cannot be taken between its assignment and its bind by any
 /// process that binds port 0. A configured range that overlaps the ephemeral range is named.
 pub fn port_range_from_env() -> (u16, u16) {
-    let (first, last) = std::env::var("RAFKA_ENDPOINT_PORT_RANGE")
+    let (first, last) = std::env::var("RDM_ENDPOINT_PORT_RANGE")
         .ok()
         .and_then(|r| {
             let (a, b) = r.split_once('-')?;
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn the_default_range_lies_below_the_ephemeral_range() {
-        if std::env::var("RAFKA_ENDPOINT_PORT_RANGE").is_ok() {
+        if std::env::var("RDM_ENDPOINT_PORT_RANGE").is_ok() {
             return;
         }
         let (first, last) = port_range_from_env();

@@ -114,13 +114,13 @@ narrow, but defense-in-depth was missing.
 return 400 on mismatch. New helper `is_valid_node_name()`.
 
 ### F#2 — HIGH: Arbitrary env var injection via extra_env
-No allow-list. A caller could set `PATH`, `LD_PRELOAD`, `RAFKA_DATA_DIR`,
+No allow-list. A caller could set `PATH`, `LD_PRELOAD`, `RDM_DATA_DIR`,
 etc. to hijack the spawned child.
 
 **Fix** (`validate_extra_env` + `ALLOWED_EXTRA_ENV_KEYS`): allow only
-`RAFKA_MESH_ID`, `RAFKA_LINK_SLOW_MS`, `RAFKA_LINK_LOSS_PCT`,
-`RAFKA_CLOCK_SKEW_MS`, `RAFKA_NODE_BIND_ADDR`,
-`RAFKA_BRIDGE_TARGET_MESHES`, `RAFKA_AUTO_SHUTDOWN_SECS`, `RUST_LOG`.
+`RDM_MESH_ID`, `RDM_LINK_SLOW_MS`, `RDM_LINK_LOSS_PCT`,
+`RDM_CLOCK_SKEW_MS`, `RDM_NODE_BIND_ADDR`,
+`RDM_BRIDGE_TARGET_MESHES`, `RDM_AUTO_SHUTDOWN_SECS`, `RUST_LOG`.
 Validated at both `handle_spawn` AND inside `spawn_one` for
 defense-in-depth (covers bootstrap + chaos respawn paths).
 

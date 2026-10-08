@@ -56,7 +56,7 @@ async fn main() {
     };
     let _ = declare_client.set(running.node_rpc.clone());
     drop(boot);
-    println!("RAFKA_NODE_READY {}", launch.node_id);
+    println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal("rafka-rpc-node").await;
     let deadline = node::drain_deadline_from_env();
     let drain = tracing::info_span!(

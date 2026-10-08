@@ -54,7 +54,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     let served = running.server.catalog().entries().count();
     boot.in_scope(|| tracing::info!(served, kind = role.name(), originates, "role process serving on the imported substrate"));
     drop(boot);
-    println!("RAFKA_NODE_READY {}", launch.node_id);
+    println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal(binary).await;
     let deadline = drain_deadline_from_env();
     let drain = tracing::info_span!("rdm.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);

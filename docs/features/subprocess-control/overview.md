@@ -16,7 +16,7 @@
 1. Generate `node_name = format!("{type}-{8hex_random}")`.
 2. Create spawn dir `E:/tmp/rafka-ui-nodes/{node_name}/`.
 3. Locate binary via `CARGO_TARGET_DIR` env var (default `./target`); resolve `{cargo_target_dir}/debug/rafka-{type}.exe`.
-4. `tokio::process::Command::new(binary_path).envs([OTEL_*, RAFKA_DATA_DIR]).spawn()`.
+4. `tokio::process::Command::new(binary_path).envs([OTEL_*, RDM_DATA_DIR]).spawn()`.
 5. Insert Child into DashMap; emit `rdm.ui.subprocess.spawned{node_name, node_type, pid, otel.kind="internal"}`.
 
 `handle_kill`:

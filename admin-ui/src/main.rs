@@ -432,7 +432,7 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
 
   // Mesh dropdown — fixed presets per user spec: mesh-a (primary), mesh-b
   // (secondary), and "+ new mesh…" escape hatch for arbitrary mesh IDs.
-  // The chosen value gets sent as extra_env.RAFKA_MESH_ID on spawn.
+  // The chosen value gets sent as extra_env.RDM_MESH_ID on spawn.
   var meshSelect = document.getElementById('spawn-mesh-id');
   meshSelect.addEventListener('change', function() {
     if (meshSelect.value === '__new__') {
@@ -459,7 +459,7 @@ const _HTML_LEGACY_REMOVED: &str = r##"<!DOCTYPE html>
   function spawnNode(nodeType, btn) {
     btn.disabled = true;
     var meshId = (meshSelect && meshSelect.value !== '__new__') ? meshSelect.value : 'mesh-a';
-    var body = { node_type: nodeType, extra_env: { RAFKA_MESH_ID: meshId } };
+    var body = { node_type: nodeType, extra_env: { RDM_MESH_ID: meshId } };
     fetch('/api/nodes/spawn', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -1065,7 +1065,7 @@ struct AppState {
     http: reqwest::Client,
     jaeger_url: String,
     cargo_target_dir: String,
-    /// The node-admin this UI drives (`RAFKA_NODE_ADMIN_API_BASE`).
+    /// The node-admin this UI drives (`RDM_NODE_ADMIN_API_BASE`).
     admin: Option<NodeAdminClient>,
     /// Node-admin's nodes, by path.name (read-only projection of `GET /api/nodes`).
     known: Arc<DashMap<String, KnownNode>>,
@@ -1196,10 +1196,10 @@ fn primitive_description(name: &str) -> &'static str {
         "burst_kill"       => "Kill N random subprocesses back-to-back. Tests substrate-race conditions on the spawn registry.",
         "disk_full"        => "Fill the target's spawn data dir until writes fail (capped). Tests disk-pressure path.",
         "wedge_node"       => "Suspend the OS process via Windows NtSuspendProcess. Process exists but doesn't respond; revert resumes it.",
-        "clock_skew"       => "Restart target with RAFKA_CLOCK_SKEW_MS env. node-base adds that offset to wall_time_ms on every heartbeat span.",
-        "slow_link"        => "Restart target with RAFKA_LINK_SLOW_MS env. node-base sleeps that many ms before each outbound frame send.",
-        "lossy_link"       => "Restart target with RAFKA_LINK_LOSS_PCT env. Per outbound frame, dice roll <pct ⇒ emit drop span and skip the send.",
-        "nat_shift"        => "Restart target with new random RAFKA_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.",
+        "clock_skew"       => "Restart target with RDM_CLOCK_SKEW_MS env. node-base adds that offset to wall_time_ms on every heartbeat span.",
+        "slow_link"        => "Restart target with RDM_LINK_SLOW_MS env. node-base sleeps that many ms before each outbound frame send.",
+        "lossy_link"       => "Restart target with RDM_LINK_LOSS_PCT env. Per outbound frame, dice roll <pct ⇒ emit drop span and skip the send.",
+        "nat_shift"        => "Restart target with new random RDM_NODE_BIND_ADDR. iroh must re-discover the NodeId at the new ephemeral port.",
         "partition_pair"   => "ADMIN: Windows firewall block outbound UDP between two named programs. Survivors should detect the partition.",
         "partition_subset" => "ADMIN: Pick K random node_types as the subset; firewall-block every (subset, complement) pair. Tests split-brain.",
         "flap_link"        => "ADMIN: Create+delete partition_pair-style firewall block N times with on/off duty. Tests substrate against churn.",
@@ -2009,8 +2009,8 @@ async fn handle_test_run(
 
     // Pass through whichever bind addr admin-ui is actually serving on so
     // rfa hits THIS instance, not a stale port.
-    let bind_addr = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
-        .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
+    let bind_addr = std::env::var("RDM_ADMIN_UI_BIND_ADDR")
+        .or_else(|_| std::env::var("RDM_TOPOLOGY_UI_BIND_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
     let api_url = format!("http://{bind_addr}");
     let mut cmd = tokio::process::Command::new(&rfa_bin);
@@ -2289,7 +2289,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     tracing::info!(panic_log = %panic_log_path.display(), "panic hook installed (pre-runtime)");
     #[cfg(feature = "dhat-heap")]
     {
-        let secs: u64 = std::env::var("RAFKA_DHAT_DUMP_SECS")
+        let secs: u64 = std::env::var("RDM_DHAT_DUMP_SECS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(360);
@@ -2301,8 +2301,8 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         });
     }
     // Accept either env var name during the topology-ui → admin-ui rename.
-    let bind_addr = std::env::var("RAFKA_ADMIN_UI_BIND_ADDR")
-        .or_else(|_| std::env::var("RAFKA_TOPOLOGY_UI_BIND_ADDR"))
+    let bind_addr = std::env::var("RDM_ADMIN_UI_BIND_ADDR")
+        .or_else(|_| std::env::var("RDM_TOPOLOGY_UI_BIND_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
 
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
@@ -2336,7 +2336,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         http,
         jaeger_url,
         cargo_target_dir,
-        admin: std::env::var("RAFKA_NODE_ADMIN_API_BASE").ok().filter(|b| !b.trim().is_empty()).map(NodeAdminClient::new),
+        admin: std::env::var("RDM_NODE_ADMIN_API_BASE").ok().filter(|b| !b.trim().is_empty()).map(NodeAdminClient::new),
         known: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
@@ -2378,7 +2378,7 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     // Resolve where the React build lives. CARGO_MANIFEST_DIR points at the
     // crate dir at compile time; at runtime we prefer an env override so the
     // packaged binary can sit anywhere.
-    let static_dir = std::env::var("RAFKA_UI_STATIC_DIR").unwrap_or_else(|_| {
+    let static_dir = std::env::var("RDM_UI_STATIC_DIR").unwrap_or_else(|_| {
         let manifest = env!("CARGO_MANIFEST_DIR");
         format!("{manifest}/web/dist")
     });

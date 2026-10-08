@@ -2,7 +2,7 @@
 
 > **Status:** Phase 1 SHIPPED — `mesh_id` tagging in node.ready + heartbeat spans (defaults to "default" so single-mesh deployments work uninstrumented).
 > **Status:** Phase 2a SHIPPED — `Hello` wire frame exchanged at peer-connect time; `rdm.mesh.peer.hello_received` span carries `peer_mesh_id` + `peer_node_type`; mismatched meshes additionally emit `rdm.mesh.cross.peer_connected` with `own_mesh_id` + `peer_mesh_id`.
-> **Status:** Phase 2b SHIPPED — `rafka-bridge` binary uses `Role::Bridge`. Bridge reads `RAFKA_BRIDGE_TARGET_MESHES` (comma-separated), emits `rdm.mesh.bridge.boot_announced` at boot, and `rdm.mesh.bridge.per_mesh_heartbeat` every 5s with one span per observed peer mesh_id (peer_count grouped by `target_mesh_id`). `MeshIdRegistry` (parallel to peer connection registry) is populated from received `Hello` frames.
+> **Status:** Phase 2b SHIPPED — `rafka-bridge` binary uses `Role::Bridge`. Bridge reads `RDM_BRIDGE_TARGET_MESHES` (comma-separated), emits `rdm.mesh.bridge.boot_announced` at boot, and `rdm.mesh.bridge.per_mesh_heartbeat` every 5s with one span per observed peer mesh_id (peer_count grouped by `target_mesh_id`). `MeshIdRegistry` (parallel to peer connection registry) is populated from received `Hello` frames.
 > **Status:** Phase 2c PENDING — selective gossip-topic forwarding across meshes. Blocked on an actual gossip protocol (today the boot span exists but no gossip plane is implemented).
 > **Source:** Cross-mesh peering substrate. Per v1's `i35-cross-mesh-peering` feature; ports forward into v2's iroh substrate.
 
@@ -17,7 +17,7 @@ Use cases:
 
 ## How it will work (design)
 
-A bridge gateway is identified by `RAFKA_BRIDGE_MESHES=<mesh_id_a>,<mesh_id_b>` env var. On boot it:
+A bridge gateway is identified by `RDM_BRIDGE_MESHES=<mesh_id_a>,<mesh_id_b>` env var. On boot it:
 
 1. Connects to both meshes via separate `IrohMeshTransport` instances (one per mesh's seed list or mdns scope).
 2. Maintains `Arc<DashMap<MeshId, PeerRegistry>>` — one peer registry per mesh.
@@ -37,7 +37,7 @@ Each mesh has its own `mesh_id` (a UUID assigned at cluster creation, propagated
 - `rdm.mesh.cross.peer_connected{node_id, peer_id, own_mesh_id, peer_mesh_id, peer_node_type}` — emitted only when peer_mesh_id != own_mesh_id. The signal for cross-mesh telemetry filtering and Role::Bridge detection.
 
 **Phase 2b (shipped):**
-- `rdm.mesh.bridge.boot_announced{node_id, mesh_id, target_meshes}` — boot-time listing of meshes this bridge is configured to span (parsed from `RAFKA_BRIDGE_TARGET_MESHES`).
+- `rdm.mesh.bridge.boot_announced{node_id, mesh_id, target_meshes}` — boot-time listing of meshes this bridge is configured to span (parsed from `RDM_BRIDGE_TARGET_MESHES`).
 - `rdm.mesh.bridge.per_mesh_heartbeat{node_id, mesh_id, target_mesh_id, peer_count, wall_time_ms}` — emitted every 5s, one span per observed peer mesh_id. Bridge nodes still emit the aggregate `rdm.mesh.heartbeat` too, preserving the existing contract.
 
 **Phase 2c (pending — needs actual gossip plane first):**

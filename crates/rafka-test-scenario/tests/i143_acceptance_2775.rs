@@ -1,6 +1,6 @@
 //! i143.e7.s3 acceptance (rafka-v2 #2775), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2775-process`, which exports `I143_ACCEPTANCE_DIR` (each
-//! cell's `result.json` goes there) and whose command sets `RAFKA_ARTIFACTS_DIR` (the estate's
+//! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2775`).
 //!
 //! The testkit proof store (op 0x70) on a real estate, driven only through the node-admin control
