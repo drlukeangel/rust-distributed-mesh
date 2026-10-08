@@ -6,6 +6,7 @@
 //! rafka-rpc-probe --admin <base> put    --target ... --key <k> --value <v>
 //! rafka-rpc-probe --admin <base> delete --target ... --key <k>
 //! rafka-rpc-probe --admin <base> cas    --target ... --key <k> [--expected <v>] [--value <v>]
+//! rafka-rpc-probe --admin <base> topology --target ... [--mesh <name>] [--since <node>|<incarnation>|<version>]
 //! ```
 //!
 //! The target is resolved from the admin's node view at the dial cut:
@@ -53,6 +54,9 @@ struct Args {
     /// `record-proxy`: the carrier path, and how many Direct Failed observations precede the Proxy.
     carrier: Option<String>,
     failed_attempts: u32,
+    /// `topology`: the one mesh asked for, and the source version already held for it.
+    mesh: Option<String>,
+    since: Option<String>,
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -63,6 +67,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let (mut destination, mut refuse_index, mut refuse_history, mut release) = (None, 0u32, 0u32, false);
     let mut pass_history = 0u32;
     let (mut carrier, mut failed_attempts) = (None, 0u32);
+    let (mut mesh, mut since) = (None, None);
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
@@ -84,13 +89,15 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--refuse-history" => refuse_history = take("--refuse-history")?.parse().map_err(|e| format!("--refuse-history: {e}"))?,
             "--pass-history" => pass_history = take("--pass-history")?.parse().map_err(|e| format!("--pass-history: {e}"))?,
             "--release" => release = true,
+            "--mesh" => mesh = Some(take("--mesh")?),
+            "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" | "topology" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    let is_declare = op.as_deref() == Some("declare");
+    let is_declare = matches!(op.as_deref(), Some("declare" | "topology"));
     Ok(Args {
         admin: admin.ok_or("--admin is required")?,
         op: op.ok_or("an op (get, put, delete, cas, resolve, declare) is required")?,
@@ -112,6 +119,8 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         release,
         carrier,
         failed_attempts,
+        mesh,
+        since,
     })
 }
 
@@ -239,6 +248,9 @@ async fn run(a: Args) -> Result<Value, String> {
     }
     if a.op == "declare" {
         return run_declare(&a, &target).await;
+    }
+    if a.op == "topology" {
+        return run_topology(&a, &target).await;
     }
     if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport") {
         return run_originate(&a, &target).await;
@@ -459,4 +471,58 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "reason": format!("{u:?}")}),
         RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "target_node_id": r.target_node_id()}),
     })
+}
+
+/// `topology --target <node> [--mesh <name>] [--since <node>|<incarnation>|<version>]`: one
+/// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
+/// nothing: it has no membership.
+async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
+    use rafka_node_rpc::stream::StreamItem;
+    use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+    let since = match &a.since {
+        None => None,
+        Some(s) => {
+            let parts: Vec<&str> = s.split('|').collect();
+            let [node, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<incarnation>|<version>")) };
+            Some(SourceVersion {
+                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId(incarnation.to_string()) },
+                topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
+            })
+        }
+    };
+    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
+    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let resolver = Arc::new(StaticResolver::new());
+    for n in resolved(&view) {
+        resolver.insert(n);
+    }
+    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
+    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let req = TopologyRequest::GetTopology { mesh: a.mesh.clone(), since };
+    let started = client.call_stream::<Topology>(target, &req, &CallOptions::default()).await;
+    let mut frames = Vec::new();
+    let result = match started {
+        Err((out, _)) => json!({"outcome": out.name()}),
+        Ok((mut stream, _)) => {
+            while let Some(item) = stream.next().await {
+                match item {
+                    StreamItem::Frame(_, f) => frames.push(match f {
+                        TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
+                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version,
+                            "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
+                            "members": digests.into_iter().map(|d| rafka_mesh_entity::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
+                            "in_flight": in_flight.len(), "departed": departed.len(),
+                        }),
+                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version}),
+                        TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
+                        other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
+                    }),
+                    StreamItem::Failed(f) => frames.push(json!({"frame": "failed", "detail": format!("{f:?}")})),
+                }
+            }
+            json!({"outcome": "Reply", "frames": frames})
+        }
+    };
+    client.endpoint().close().await;
+    Ok(result)
 }
