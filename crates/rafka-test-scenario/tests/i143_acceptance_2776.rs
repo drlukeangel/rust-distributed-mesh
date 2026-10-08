@@ -5,7 +5,7 @@
 //! `RAFKA_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
 use rafka_mesh_entity::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
-use rafka_test_scenario::estate::{Estate, Owner, RUNTIME_IMAGE};
+use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_IMAGE};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -173,8 +173,18 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
         let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
         let path = inspect["Path"].as_str().unwrap().to_string();
-        let mount = inspect["Mounts"].as_array().unwrap().iter().find(|m| m["Destination"] == path.as_str()).unwrap_or_else(|| panic!("{node}: no mount at its entry point {path}: {inspect}")).clone();
-        let source = mount["Source"].as_str().unwrap().to_string();
+        // The mount that supplies the entry point: the executable itself (a node), or its directory
+        // (the Day-0 admin, which also reads the bound files).
+        let mount = inspect["Mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| Path::new(&path).starts_with(m["Destination"].as_str().unwrap()))
+            .max_by_key(|m| m["Destination"].as_str().unwrap().len())
+            .unwrap_or_else(|| panic!("{node}: no mount supplies its entry point {path}: {}", inspect["Mounts"]))
+            .clone();
+        let rest = Path::new(&path).strip_prefix(mount["Destination"].as_str().unwrap()).unwrap();
+        let source = if rest.as_os_str().is_empty() { mount["Source"].as_str().unwrap().to_string() } else { Path::new(mount["Source"].as_str().unwrap()).join(rest).display().to_string() };
         json!({
             "node": node, "node_id": n["node_id"], "incarnation_id": n["incarnation_id"], "kind": n["kind"],
             "container": id, "image": inspect["Config"]["Image"], "entry_point": path, "mount_source": source, "mount_read_only": mount["RW"] == false,
@@ -296,6 +306,22 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let services: BTreeSet<String> = spans.iter().filter_map(|s| s["service"].as_str().map(String::from)).collect();
     assert!(services.contains("consumer-node-admin"), "the consumer admin ran: {services:?}");
     assert!(!services.contains("rafka-node-admin"), "no built-in node-admin ran: {services:?}");
+    // Every restart was an operation of the Build rectifier: the REST call that opened the attempt,
+    // the executor's reconcile of that attempt, the node's update under the reconcile and the
+    // deployment steps under that. (The reconcile parents to the Build's accepting span, executor.rs:162,
+    // so it shares the accepting call's trace, not the restart call's: recorded as `reconcile_parent`.)
+    let mut chains = Vec::new();
+    for r in &restarts {
+        let node = r["node"].as_str().unwrap();
+        let rest = named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-rest span for the restart call"));
+        let op = format!("restart-node:{node}");
+        let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op))).cloned().unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
+        let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node"] == node && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the reconcile"));
+        let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();
+        assert!(!steps.is_empty(), "{node}: deployment steps ran under its node update");
+        assert_eq!(rest["attributes"]["build_id"], reconcile["attributes"]["build_id"], "{node}: the restart call and the reconcile are of one Build");
+        chains.push(json!({ "node": node, "rest": {"trace_id": rest["trace_id"], "span_id": rest["span_id"]}, "reconcile": {"trace_id": reconcile["trace_id"], "span_id": reconcile["span_id"], "parent_span_id": reconcile["parent_span_id"], "attempt": reconcile["attributes"]["attempt"]}, "update": update["span_id"], "steps": steps.len(), "reconcile_trace_is_restart_calls_trace": reconcile["trace_id"] == rest["trace_id"] }));
+    }
     let leftover = provider_actions(&bound);
 
     write_result(
@@ -305,7 +331,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
             "bindings": manifest["executable_bindings"]["receipt"],
             "refusals": refusals,
             "provider_actions_before_any_launch": before,
-            "launches": launches, "restarts": restarts,
+            "launches": launches, "restarts": restarts, "restart_span_chains": chains,
             "proof_round_trip": { "put": put, "get": get },
             "span_services": services,
             "provider_actions_after_stop": leftover,
