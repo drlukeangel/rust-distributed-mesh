@@ -478,7 +478,7 @@
     },
     "i143-rshape-authority-chaos-process": {
       "issue": 2945,
-      "layer": "process",
+      "layer": "chaos-process",
       "cells": [
         {
           "name": "mock_authority_handoffs_preserve_one_effective_writer",
@@ -496,7 +496,7 @@
     },
     "i143-rshape-authority-chaos-container": {
       "issue": 2945,
-      "layer": "container",
+      "layer": "chaos-container",
       "cells": [
         {
           "name": "mock_authority_handoffs_preserve_one_effective_writer",
