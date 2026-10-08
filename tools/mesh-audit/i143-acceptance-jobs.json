@@ -1028,6 +1028,78 @@
           "dir": "target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat"
         }
       ]
+    },
+    "i143-rshape-adv-replace-race-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_replace_racing_proven_drift_births_the_path_once",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_replace_racing_proven_drift_births_the_path_once -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once"
+        }
+      ]
+    },
+    "i143-rshape-adv-cut-ops-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own"
+        }
+      ]
+    },
+    "i143-rshape-adv-primary-victim-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-primary-victim-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-primary-victim-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin"
+        }
+      ]
+    },
+    "i143-rshape-adv-two-victims-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-two-victims-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-two-victims-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer"
+        }
+      ]
+    },
+    "i143-rshape-adv-direct-edge-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death"
+        }
+      ]
+    },
+    "i143-rshape-adv-cutback-restart-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once"
+        }
+      ]
     }
   }
 }

@@ -487,6 +487,49 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
         }
     }
 
+    // Adversarial cells: extra probes of the scenarios beyond the qualifying matrix. Process provider only, one
+    // job each (release gate), on the reduced fixture, each naming the scenarios it probes and the canon its
+    // assertions come from; a cell declared red names the fork that owns it.
+    let scenario_ids: BTreeSet<String> = (1..=20).map(|n| format!("C{n}")).collect();
+    let mut adversarial_jobs: BTreeMap<&str, usize> = BTreeMap::new();
+    for c in cells.iter().filter(|c| s(c, "tier") == "adversarial") {
+        let (test, provider, job, cmd) = (s(c, "test"), s(c, "provider"), s(c, "job"), s(c, "command"));
+        *adversarial_jobs.entry(job).or_default() += 1;
+        if provider != "process" || !job.starts_with("i143-rshape-adv-") || !job.ends_with("-process") {
+            v.push(format!("rshape-definition-adversarial-cell: {job}/{test} must be a process cell in a job named i143-rshape-adv-<name>-process (provider {provider})"));
+        }
+        let want_env = [
+            "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin".to_string(),
+            "MESH_SPAWN_TYPE=process ".to_string(),
+            "RDM_RSHAPE_TIER=fast ".to_string(),
+            format!("RDM_RSHAPE_SEED={seed} "),
+            format!("RDM_ARTIFACTS_DIR=target/i143-rshape/{job}/{test}/estate "),
+        ];
+        for w in want_env {
+            if !cmd.contains(&w) {
+                v.push(format!("rshape-definition-adversarial-cell: {job}/{test} command lacks `{}`", w.trim()));
+            }
+        }
+        if !cmd.ends_with(&format!(" --test rshape_burn_in {test} -- --exact")) {
+            v.push(format!("rshape-definition-adversarial-cell: {job}/{test} does not name exactly its own test"));
+        }
+        let covers: Vec<&str> = c["covers"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        if covers.is_empty() || covers.iter().any(|x| !scenario_ids.contains(*x)) {
+            v.push(format!("rshape-definition-adversarial-cell: {job}/{test} covers no scenario, or one that is not C1-C20: {covers:?}"));
+        }
+        if s(c, "canon").is_empty() {
+            v.push(format!("rshape-definition-adversarial-cell: {job}/{test} cites no canon its assertions come from"));
+        }
+        if c.get("red").is_some_and(|r| r.as_str().is_none_or(str::is_empty)) {
+            v.push(format!("rshape-definition-adversarial-cell: {job}/{test} is declared red and names no fork that owns it"));
+        }
+    }
+    for (job, n) in adversarial_jobs {
+        if n != 1 {
+            v.push(format!("rshape-definition-adversarial-cell: job {job} holds {n} cells; an adversarial job holds one"));
+        }
+    }
+
     // Registry: every job of the matrix that the registry owns matches it cell for cell, and no
     // registered rshape job is absent from the matrix.
     let matrix_jobs: BTreeSet<&str> = cells.iter().map(|c| s(c, "job")).collect();
@@ -535,7 +578,7 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
         if !row {
             v.push(format!("rshape-definition-unregistered-cell: {job}/{test} is in the matrix but has no registry row"));
         }
-        if matches!(s(c, "tier"), "canonical" | "fast") && !has_fn {
+        if matches!(s(c, "tier"), "canonical" | "fast" | "adversarial") && !has_fn {
             v.push(format!("rshape-definition-cell-without-test: {job}/{test} has a registry row or matrix cell but no `fn {test}(` in {source}"));
         }
     }
@@ -610,6 +653,39 @@ fn rshape_definition_covers_every_scenario_without_business_dependencies() {
     m["cells"].as_array_mut().unwrap().push(json!({"test": "mock_unowned_cell", "issue": 2945, "provider": "process", "tier": "canonical", "job": "i143-rshape-x-process",
         "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-x-process/mock_unowned_cell/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_unowned_cell -- --exact"}));
     plant("rshape-definition-orphan-cell", "a cell that proves no scenario", &m, &reg);
+
+    let first_adv = |m: &mut Value| -> usize { m["cells"].as_array().unwrap().iter().position(|c| s(c, "tier") == "adversarial").expect("the matrix holds an adversarial cell") };
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    m["cells"][i]["provider"] = json!("container");
+    plant("rshape-definition-adversarial-cell", "an adversarial cell on the container provider", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    m["cells"][i]["covers"] = json!(["C99"]);
+    plant("rshape-definition-adversarial-cell", "an adversarial cell covering a scenario that does not exist", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    m["cells"][i]["canon"] = json!("");
+    plant("rshape-definition-adversarial-cell", "an adversarial cell citing no canon", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    m["cells"][i]["red"] = json!("");
+    plant("rshape-definition-adversarial-cell", "a red adversarial cell naming no fork", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    let cmd = s(&m["cells"][i], "command").replace("RDM_RSHAPE_TIER=fast ", "");
+    m["cells"][i]["command"] = json!(cmd);
+    plant("rshape-definition-adversarial-cell", "an adversarial command that does not pin the reduced fixture", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    let mut twin = m["cells"][i].clone();
+    twin["test"] = json!("mock_twin_cell");
+    m["cells"].as_array_mut().unwrap().push(twin);
+    plant("rshape-definition-adversarial-cell", "two adversarial cells in one job", &m, &reg);
+    let mut m = matrix.clone();
+    let i = first_adv(&mut m);
+    m["cells"][i]["test"] = json!("mock_no_such_adversarial_cell");
+    plant("rshape-definition-cell-without-test", "an adversarial cell naming a test no source holds", &m, &reg);
 
     write_result(
         "definition",

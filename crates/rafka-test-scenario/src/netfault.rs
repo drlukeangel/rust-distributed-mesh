@@ -5,6 +5,10 @@
 
 use serde_json::Value;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// One chain per cut of this process: a cell may hold several cuts at once.
+static CUTS: AtomicUsize = AtomicUsize::new(0);
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
@@ -32,7 +36,7 @@ impl Partition {
 
     /// `Err` names why the host cannot partition (a skip, or a CI failure).
     pub fn start(a: &[u16], b: &[u16]) -> Result<Self, String> {
-        let chain = format!("RAFKA-PART-{}", std::process::id());
+        let chain = format!("RAFKA-PART-{}-{}", std::process::id(), CUTS.fetch_add(1, Ordering::SeqCst));
         let sudo = Self::iptables(false, &["-L", "INPUT", "-n"]).is_err();
         Self::iptables(sudo, &["-N", &chain]).map_err(|e| format!("iptables unavailable: {e}"))?;
         let p = Self { chain, sudo };
