@@ -250,6 +250,11 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         let own: Vec<String> = side(&mesh_of(name));
         assert!(holds_all(&view, &own), "{name} still holds its own mesh ready during the cut: {view:#?}");
     }
+    // Ordinary nodes hold the peer mesh as topology (R-G2): nothing they hear is liveness, so no
+    // rpc node ever marks a mesh silent, in the cut or before it.
+    let ordinary: BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
+    let ordinary_silent: Vec<&(String, String)> = silent.iter().filter(|(o, _)| ordinary.contains(o)).collect();
+    assert!(ordinary_silent.is_empty(), "an ordinary node never marks a mesh silent for want of forwarded frames: {ordinary_silent:?}");
     // Interrupted coverage: the peer mesh is unheard by every admin.
     let unheard: BTreeSet<String> = silent.iter().map(|(o, _)| o.clone()).collect();
     for (name, _) in &admins {
@@ -289,11 +294,12 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         assert_eq!(advertised_fabric_primaries(v), advertised_fabric_primaries(&views[0].1), "{name} and {} name the same fabric primary", views[0].0);
     }
     assert_eq!(advertised_fabric_primaries(&views[0].1), vec![expected_fabric_primary(&views[0].1).unwrap()], "the fabric primary is the computed one");
-    // Every node hears the peer mesh again: its membership watcher reports the mesh learned.
-    let learned: BTreeSet<(String, String)> = wait_for("every node reports the peer mesh learned again", Duration::from_secs(30), || async {
+    // Every node-admin hears the peer mesh again on the backbone: its membership watcher reports
+    // the mesh learned. An ordinary node held it as topology through the cut and reports nothing.
+    let learned: BTreeSet<(String, String)> = wait_for("every node-admin reports the peer mesh learned again", Duration::from_secs(30), || async {
         let spans = estate.spans();
         let learned: BTreeSet<(String, String)> = named(&spans, "rdm.mesh.membership.update.via-mesh-learned").into_iter().filter(|sp| at(sp) >= healed_at).map(|sp| (attr(sp, "node"), attr(sp, "mesh"))).collect();
-        everyone.iter().all(|n| learned.contains(&(n.clone(), (if mesh1.contains(n) { "mesh2" } else { "mesh1" }).to_string()))).then_some(learned)
+        admins.iter().map(|(n, _)| n).all(|n| learned.contains(&(n.clone(), (if mesh1.contains(n) { "mesh2" } else { "mesh1" }).to_string()))).then_some(learned)
     })
     .await;
     let spans = estate.spans();

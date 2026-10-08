@@ -401,6 +401,18 @@
         }
       ]
     },
+    "i143-rg2-chaos-process": {
+      "issue": 2902,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_rg2.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_REQUIRE_NETFAULT=1 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rg2/chaos-process/ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut/estate cargo test -p rafka-test-scenario --test i143_acceptance_rg2 ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut -- --exact",
+          "dir": "target/i143-acceptance/rg2/chaos-process/ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut"
+        }
+      ]
+    },
     "i143-2901-unit": {
       "issue": 2901,
       "layer": "unit",
