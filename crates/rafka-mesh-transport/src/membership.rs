@@ -1962,7 +1962,8 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, extra: Duration, now: Instant) -> Duration {
     let age = now.saturating_duration_since(*at);
     match heard {
-        Heard::Topology => Duration::ZERO,
+        // A terminal `Leaving` is a proven departure, not silence: it ages from its receipt.
+        Heard::Topology if d.status != rafka_mesh_entity::MemberStatus::Leaving => Duration::ZERO,
         Heard::Forwarded if d.status != rafka_mesh_entity::MemberStatus::Leaving => age.saturating_sub(extra),
         _ => age,
     }
