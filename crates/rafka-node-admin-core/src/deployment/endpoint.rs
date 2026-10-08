@@ -452,10 +452,15 @@ pub fn lease_block_for(name: &str, count: u16) -> (u16, u16) {
     let span = (last - first).saturating_add(1).saturating_sub(count).max(1) as u64;
     let offset = name.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211)) % span;
     let hint = first + offset as u16;
-    let none = std::collections::BTreeSet::new();
-    let base = lease_port_block(hint, count, last, &none, port_bindable)
-        .or_else(|_| lease_port_block(first, count, last, &none, port_bindable))
+    // The record of every block this process leased (rafka-v2: the lease records what it handed
+    // out, and the record is an input to the next search): two cells of one process never get
+    // overlapping blocks, whether or not either has bound a port yet.
+    static LEASED: std::sync::Mutex<std::collections::BTreeSet<u16>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let mut leased = LEASED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let base = lease_port_block(hint, count, last, &leased, port_bindable)
+        .or_else(|_| lease_port_block(first, count, last, &leased, port_bindable))
         .unwrap_or_else(|e| panic!("{name}: {e}"));
+    leased.extend(base..base + count);
     (base, base + count - 1)
 }
 
@@ -709,15 +714,16 @@ mod tests {
         s.parse().unwrap()
     }
 
-    fn alloc() -> EndpointAllocator {
-        // A block leased from the lane's range: never a host range of the test's own.
-        let (first, last) = lease_block_for("endpoint-tests-alloc", 400);
+    fn alloc(name: &str, ports: u16) -> EndpointAllocator {
+        // A block leased from the lane's range, as large as the cell uses: never a host range of
+        // the test's own.
+        let (first, last) = lease_block_for(name, ports);
         EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last)
     }
 
     #[test]
     fn no_collisions_across_a_large_allocation() {
-        let mut a = alloc();
+        let mut a = alloc("no_collisions_across_a_large_allocation", 400);
         let mut seen = BTreeSet::new();
         for i in 1..=400 {
             let got = a.assign(&p(&format!("mesh1.rpc.{i}")), &RPC_NODE).unwrap();
@@ -733,7 +739,7 @@ mod tests {
     /// never its recorded ones, and the recorded ones are released.
     #[test]
     fn a_respawn_is_handed_fresh_ports_never_the_recorded_ones() {
-        let mut a = alloc();
+        let mut a = alloc("a_respawn_is_handed_fresh_ports_never_the_recorded_ones", 8);
         let node = p("mesh1.rpc.2");
         let first = a.assign(&node, &RPC_NODE).unwrap();
         let again = a.assign(&node, &RPC_NODE).unwrap();
@@ -743,7 +749,7 @@ mod tests {
 
     #[test]
     fn a_listener_kind_gets_its_own_tcp_address_beside_the_transport() {
-        let mut a = alloc();
+        let mut a = alloc("a_listener_kind_gets_its_own_tcp_address_beside_the_transport", 8);
         let got = a.assign(&p("mesh1.admin.1"), &NODE_ADMIN).unwrap();
         assert_eq!(got.listeners.len(), 1);
         assert_eq!(got.listeners[0].0, "control");
