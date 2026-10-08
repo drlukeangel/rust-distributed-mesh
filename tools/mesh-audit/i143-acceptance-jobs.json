@@ -310,6 +310,36 @@
           "dir": "target/i143-acceptance/2781/unit/pool_scheduler_supersedes_birth_preserves_current_sibling"
         }
       ]
+    },
+    "i143-2780-unit": {
+      "issue": 2780,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "failpoint_explorer_before_apply_proves_not_sent_or_unapplied",
+          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
+          "command": "cargo test -p rafka-node-rpc --test i143_acceptance_2780 failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
+          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_proves_not_sent_or_unapplied"
+        },
+        {
+          "name": "failpoint_explorer_after_apply_lost_reply_proves_indeterminate",
+          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
+          "command": "cargo test -p rafka-node-rpc --test i143_acceptance_2780 failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
+          "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_proves_indeterminate"
+        }
+      ]
+    },
+    "i143-2780-process": {
+      "issue": 2780,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "failpoint_explorer_releases_build_and_hook_stalls_recovers",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2780.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers/estate cargo test -p rafka-test-scenario --test i143_acceptance_2780 failpoint_explorer_releases_build_and_hook_stalls_recovers -- --exact",
+          "dir": "target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers"
+        }
+      ]
     }
   },
   "rshape_jobs": {
