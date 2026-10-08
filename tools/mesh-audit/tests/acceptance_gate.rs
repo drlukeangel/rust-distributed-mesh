@@ -158,8 +158,8 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
             }
             match layer {
                 "unit" | "static" | "export" => assert!(!command.contains("RAFKA_ARTIFACTS_DIR"), "{job}/{name}: a unit cell has no estate"),
-                "process" | "container" | "fast" | "fast-process" | "fast-container" => {
-                    let provider = match layer { "fast" | "fast-process" => "process", "fast-container" => "container", l => l };
+                "process" | "container" | "fast" | "fast-process" | "fast-container" | "chaos-process" | "chaos-container" | "soak-process" | "soak-container" => {
+                    let provider = if layer.ends_with("container") { "container" } else { "process" };
                     assert!(command.contains(&format!("MESH_SPAWN_TYPE={provider} ")), "{job}/{name}: the estate runs on the job's provider: {command}");
                     assert!(command.contains(&format!("RAFKA_ARTIFACTS_DIR={dir}/estate ")), "{job}/{name}: the estate lands under the cell's dir: {command}");
                 }

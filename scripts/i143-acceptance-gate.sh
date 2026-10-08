@@ -14,7 +14,8 @@
 #
 # Jobs live under the registry's `jobs` section or its `rshape_jobs` section (the R-shape
 # qualification namespace, target/i143-rshape/...); one runner and one receipt schema serve both.
-# Layers: unit, static and export (no estate), process, container and fast (an estate). A cell
+# Layers: unit, static and export (no estate); process, container, fast(-process|-container),
+# chaos-(process|container) and soak-(process|container) (an estate on the named provider). A cell
 # whose command sets RDM_RSHAPE_CONSUMER_BIN_DIR runs an external consumer's executables: the
 # runner first re-hashes every binary of the consumer build manifest
 # (target/i143-rshape/consumer-build/manifest.json, or the cell's `consumer_manifest`) and refuses
@@ -88,7 +89,7 @@ now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 
 # The estate binaries, built once per job so every launched admin and node is this SHA.
 case "$LAYER" in
-    process|container|fast|fast-process|fast-container)
+    process|container|fast|fast-process|fast-container|chaos-process|chaos-container|soak-process|soak-container)
         if [ -z "${I143_ACCEPTANCE_SKIP_BUILD:-}" ]; then
             if ! cargo build -p rafka-node-admin-core -p rafka-node-rpc-testkit -p rafka-consumer-fixture --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
                 refuse "$JOB: the estate binaries did not build (see $JOBS_DIR/$JOB.build.log)"
@@ -97,9 +98,10 @@ case "$LAYER" in
         fi
         ;;
     unit|static|export) ;;
-    *) refuse "$JOB: layer $LAYER is not unit, static, export, process, container, fast, fast-process or fast-container"; exit 2 ;;
+    *) refuse "$JOB: layer $LAYER is not unit, static, export, process, container, fast, fast-process, fast-container, chaos-process, chaos-container, soak-process or soak-container"; exit 2 ;;
 esac
-if [ "$LAYER" = container ] || [ "$LAYER" = fast-container ]; then
+case "$LAYER" in *container) ON_CONTAINER=1 ;; *) ON_CONTAINER= ;; esac
+if [ -n "$ON_CONTAINER" ]; then
     export RAFKA_REQUIRE_CONTAINER=1
     if ! docker info > /dev/null 2>&1; then
         refuse "$JOB: no reachable Docker domain (docker info failed; set DOCKER_HOST or start the daemon)"
@@ -206,13 +208,13 @@ for i in $(seq 0 $((NCELLS - 1))); do
                     reason="the UNIT cell left no spans.json in $dir"
                 fi
                 ;;
-            process|container|fast|fast-process|fast-container)
+            process|container|fast|fast-process|fast-container|chaos-process|chaos-container|soak-process|soak-container)
                 estate_manifest=$(find "$dir/estate" -name manifest.json 2>/dev/null | head -1)
                 if [ -z "$estate_manifest" ]; then
                     reason="the cell left no estate manifest under $dir/estate"
                 else
                     provider=$(jq -r '.provider // empty' "$estate_manifest")
-                    want=$LAYER; case "$want" in fast|fast-process) want=process ;; fast-container) want=container ;; esac
+                    want=$LAYER; case "$want" in *container) want=container ;; *) want=process ;; esac
                     if [ "$provider" != "$want" ]; then
                         reason="provider substitution: the estate ran on '${provider:-none}', the job's layer is $want"
                     elif [ "$consumer" = 1 ] && [ "$(jq -r '.executable_bindings.mode // empty' "$estate_manifest")" != explicit ]; then

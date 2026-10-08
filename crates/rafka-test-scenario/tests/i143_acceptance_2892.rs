@@ -35,7 +35,7 @@ fn owner() -> Owner {
 fn acceptance_dir() -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
         Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2892/process").join(CELL),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2892/chaos-process").join(CELL),
     }
 }
 
