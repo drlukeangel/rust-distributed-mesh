@@ -148,6 +148,31 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// §13 G: a connection the destination dialled in, accepted by this node, is Direct Connected from
+/// this node to it and creates the same retirement obligation as a dial of its own: the Proxy's
+/// retirement lands durably once the accepted fact's write lands, and the route cuts back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_accepted_inbound_direct_connected_retires_the_proxy_like_a_dial() {
+    let dir = data_dir("accepted");
+    let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&dir).unwrap());
+    let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+    let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+    writer.hydrate().await.unwrap();
+    writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11)).await.unwrap();
+    writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)).await.unwrap();
+    writer.direct_accepted(&resolved(&dest));
+    writer.drain().await;
+    let history = storage.history().await.unwrap();
+    let accepted = history.iter().find(|r| r.source.name == me.name && r.kind == ConnectionKind::Direct).expect("the accepted connection is a Direct row of this node");
+    assert_eq!((accepted.destination.name.clone(), accepted.state), (dest.name.clone(), ConnectionState::Connected));
+    let retired = history.last().unwrap();
+    assert_eq!((retired.kind, retired.state, retired.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")), "the accepted Direct settled the owed retirement");
+    assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
+    assert_eq!(writer.retire_owed().await.unwrap(), 0, "nothing owed once the retirement landed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A storage that refuses the next N index writes by name: the writer's reconciliation of an
 /// owed retirement (connections.md §10) is proven against it.
 struct RefusingIndex {
