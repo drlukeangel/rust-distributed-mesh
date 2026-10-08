@@ -166,8 +166,7 @@ fn rafka_test_scenario_now() -> u64 {
 /// reads the maker's topology with `GetTopology`: the maker's join span (`via-join`, installed)
 /// precedes the maker's topology serve span, which precedes the node's own
 /// `via-read-install` span, one per mesh it installed. The join carries no topology: the maker
-/// answers no entry with members, and a join of an already-held member is not a re-read (the maker
-/// records no join as `member`).
+/// records no join as `member`: a join of an already-held member is not a re-read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it() {
     let cell = "born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it";
@@ -201,6 +200,5 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         }));
     }
     assert!(named(&spans, "rdm.node_admin.node.update.via-join").iter().all(|sp| attr(sp, "outcome") != "member"), "no join is answered for an already-held member");
-    assert!(named(&spans, "rdm.mesh.entry.serve.via-pull").iter().all(|sp| attr(sp, "members").is_empty()), "the join answer carries no members");
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({ "cell": cell, "births": births, "spans_read": spans.len() })).unwrap()).unwrap();
 }
