@@ -458,11 +458,17 @@ pub async fn reconcile_drift(
         // Proof is the exact runtime's own terminal status, in this
         // provider's control domain; anything else proves nothing.
         let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
-        let status = crate::deployment::provider::exit_proof(provider.inspect(&handle).await, &fact, dg.data_dir.as_deref().map(std::path::Path::new), &dg.node.incarnation.0);
+        let inspected = provider.inspect(&handle).await;
+        let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, dg.data_dir.as_deref().map(std::path::Path::new), &dg.node.incarnation.0);
         if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
+            let source = match (&inspected, code) {
+                (_, None) => "none",
+                (crate::deployment::provider::DeploymentStatus::Exited { code: Some(_) }, _) => "provider",
+                _ => "exit-record",
+            };
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
             exited.insert(incarnation.clone());
-            proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code });
+            proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
         }
     }
     let short = crate::drift::shortfall(&current.topology, t, &exited);
@@ -508,6 +514,7 @@ pub async fn reconcile_drift(
         reason = "proven-drift",
         action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
+        exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
     let opened = crate::build_state::AttemptOpened {
         build_id: current.build_id.clone(),

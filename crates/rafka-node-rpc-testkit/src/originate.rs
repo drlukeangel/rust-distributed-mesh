@@ -52,6 +52,10 @@ pub enum OriginateRequest {
     /// destination's writer as Direct Connected from the destination's side (accepted) and to
     /// this node's writer as its own dial.
     Dial { destination: String },
+    /// Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription
+    /// does (`membership::mark_transport_stopped`): the node exits through the one transport-stopped
+    /// exit, recording its reason in its data dir. The reply is sent before the mark.
+    StopTransport { reason: String },
 }
 
 /// Who answered.
@@ -92,6 +96,8 @@ pub enum OriginateReply {
     ProxyRecorded { by: AnsweredBy, destination_node_id: String, destination_incarnation: String, carrier_node_id: String, carrier_incarnation: String, failed_attempts: u32 },
     /// The answer of a `Dial`: the typed outcome name of the one Ping.
     Dialed { by: AnsweredBy, destination_node_id: String, outcome: String },
+    /// The transport stop is marked; the process is exiting.
+    TransportStopMarked { by: AnsweredBy, reason: String },
 }
 
 impl NodeProtocol for Originate {
@@ -100,8 +106,8 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 6;
-    const REPLY_VARIANTS: u32 = 13;
+    const REQUEST_VARIANTS: u32 = 7;
+    const REPLY_VARIANTS: u32 = 14;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
@@ -111,7 +117,8 @@ impl NodeProtocol for Originate {
             | OriginateReply::FaultReleased { .. }
             | OriginateReply::Snapshot { .. }
             | OriginateReply::ProxyRecorded { .. }
-            | OriginateReply::Dialed { .. } => ReplyKind::Success,
+            | OriginateReply::Dialed { .. }
+            | OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
             OriginateReply::BadDestination { .. } => ReplyKind::ProtocolRefusal,
             OriginateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             OriginateReply::NotReady { .. } => ReplyKind::NotReady,
@@ -166,6 +173,15 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
                 OriginateRequest::ReleaseFault => OriginateReply::FaultReleased { by, refused: seams.fault.release() },
                 OriginateRequest::RecordProxy { destination, carrier, failed_attempts } => record_proxy(&by, &seams, &destination, &carrier, failed_attempts).await,
                 OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
+                OriginateRequest::StopTransport { reason } => {
+                    // The mark runs after this reply is on its way: the exit it causes is the real one.
+                    let marked = reason.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        rafka_mesh_transport::membership::mark_transport_stopped(marked);
+                    });
+                    OriginateReply::TransportStopMarked { by, reason }
+                }
                 OriginateRequest::Snapshot => {
                     let held = seams.connections.held();
                     let held = held.lock().unwrap();

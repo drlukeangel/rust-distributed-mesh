@@ -79,7 +79,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--release" => release = true,
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -231,7 +231,7 @@ async fn run(a: Args) -> Result<Value, String> {
     if a.op == "declare" {
         return run_declare(&a, &target).await;
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport") {
         return run_originate(&a, &target).await;
     }
     let req = request(&a)?;
@@ -377,6 +377,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             };
             OriginateRequest::RecordProxy { destination: path("--destination", &a.destination)?, carrier: path("--carrier", &a.carrier)?, failed_attempts: a.failed_attempts }
         }
+        "stop-transport" => OriginateRequest::StopTransport { reason: "testkit stop-transport".to_string() },
         "fault" if a.release => OriginateRequest::ReleaseFault,
         "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history },
         _ => OriginateRequest::Snapshot,
@@ -408,6 +409,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 "outcome": "Reply", "by": by.node, "own_active_proxies": own_active_proxies, "own_latest_directs": own_latest_directs,
                 "active_len": active_len, "owed": owed, "fault_refused": fault_refused,
             }),
+            OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "transport_stop_marked": reason}),
             OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "dialed": outcome, "destination_node_id": destination_node_id}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
                 "outcome": "Reply", "by": by.node, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,

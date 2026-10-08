@@ -71,6 +71,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
                 .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
             eprintln!("{service}: the mesh transport stopped: {reason}");
+            rafka_mesh_telemetry::flush_before_exit();
             rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
         }
     };

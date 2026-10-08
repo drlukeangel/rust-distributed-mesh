@@ -25,6 +25,9 @@ pub struct ExitedBirth {
     pub node_id: crate::model::NodeId,
     pub incarnation: IncarnationId,
     pub code: Option<i32>,
+    /// Where the code came from: the provider's own status (`provider`), the runtime's exit record
+    /// in its data dir (`exit-record`), or nothing provable (`none`).
+    pub source: &'static str,
 }
 
 impl ExitedBirth {

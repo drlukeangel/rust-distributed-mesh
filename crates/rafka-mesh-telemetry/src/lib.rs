@@ -14,6 +14,23 @@ pub struct TelemetryGuard {
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
 }
 
+/// What an intentional `process::exit` flushes: the exporters the guard owns, which `exit` never drops.
+static EXIT_FLUSH: std::sync::OnceLock<(TracerProvider, Option<opentelemetry_sdk::logs::LoggerProvider>)> = std::sync::OnceLock::new();
+
+/// Flush and shut down the exporters before a deliberate `process::exit`, which skips the guard's
+/// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
+/// collector. A process that never initialised telemetry has nothing to flush.
+pub fn flush_before_exit() {
+    if let Some((provider, logs)) = EXIT_FLUSH.get() {
+        let _ = provider.force_flush();
+        let _ = provider.shutdown();
+        if let Some(logs) = logs {
+            let _ = logs.force_flush();
+            let _ = logs.shutdown();
+        }
+    }
+}
+
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         for result in self.provider.force_flush() {
@@ -414,5 +431,6 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .with(log_layer)
         .try_init();
     let _ = watchdog::spawn();
+    let _ = EXIT_FLUSH.set((provider.clone(), logs.clone()));
     Some(TelemetryGuard { provider, logs })
 }

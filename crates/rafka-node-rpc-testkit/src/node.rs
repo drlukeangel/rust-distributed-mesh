@@ -148,6 +148,7 @@ pub async fn wait_for_signal(binary: &str) {
         tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
             .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
         eprintln!("{binary}: the mesh transport stopped: {reason}");
+        rafka_mesh_telemetry::flush_before_exit();
         rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
     };
     #[cfg(unix)]
