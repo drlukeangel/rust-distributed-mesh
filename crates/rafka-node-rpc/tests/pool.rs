@@ -17,7 +17,7 @@ use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 fn echo(p: &[u8]) -> PingRequest {
@@ -277,4 +277,59 @@ async fn a_caller_joining_a_dial_is_not_ended_by_the_starters_shorter_budget() {
     assert!(matches!(&starter, RpcOutcome::NotSent(x) if *x.reason() == NotSentReason::Deadline), "the starter ends at its own deadline: {starter:?}");
     assert!(starter_ended_ms >= 300, "the starter waited its whole budget: {starter_ended_ms} ms");
     assert!(joiner.reply().is_some(), "the joiner holds a 10 s budget; the starter's 300 ms does not end it (ended after {joiner_ended_ms} ms): {joiner:?} tap to_server (forwarded, held, dropped) = {:?}", tap.stats().to_server.snapshot());
+}
+
+/// What the client told its source-owned connections writer, in order.
+#[derive(Default)]
+struct Told(Mutex<Vec<String>>);
+
+impl rafka_node_rpc::ConnectionObserver for Told {
+    fn direct_connected(&self, n: &ResolvedNode) {
+        self.0.lock().unwrap().push(format!("connected {}", n.incarnation.0));
+    }
+    fn direct_failed(&self, n: &ResolvedNode, reason: &str) {
+        self.0.lock().unwrap().push(format!("failed {} ({reason})", n.incarnation.0));
+    }
+    fn direct_broken(&self, n: &ResolvedNode, reason: &str) {
+        self.0.lock().unwrap().push(format!("broken {} ({reason})", n.incarnation.0));
+    }
+}
+
+async fn observed_rig(record: ResolvedNode) -> (Rig, Arc<Told>) {
+    let told = Arc::new(Told::default());
+    let mut r = rig(record).await;
+    let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    r.client = NodeRpcClient::new(cep, r.resolver.clone()).with_connection_observer(told.clone());
+    (r, told)
+}
+
+/// CONTRACT: the connections writer is told a Direct connection is Connected by the dial that opened
+/// it, exactly once, whether or not a caller is still waiting for it. A caller whose deadline ends
+/// while the dial is in flight is told `failed`; the dial runs on (it is bounded by no caller's
+/// budget); when it connects and enters the pool the writer hears `connected`, once; later calls
+/// ride the pooled connection and report nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dial_that_outlives_its_callers_deadline_reports_connected_once_when_it_opens() {
+    let n = node().await;
+    let (r, told) = observed_rig(n.resolved.clone()).await;
+    let fp = Arc::new(Failpoint::default());
+    let opts = CallOptions { budget: Budget::Overall(Duration::from_millis(400)), after_connect: Some(fp.clone()), ..Default::default() };
+    let (out, _) = r.client.call::<Ping>(&r.target, &echo(b"x"), &opts).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Deadline), "the caller's deadline ended while the dial was held: {out:?}");
+    assert_eq!(told.0.lock().unwrap().len(), 1, "only the failure so far: {:?}", told.0.lock().unwrap());
+    // The dial is released: the connection enters the pool with nobody waiting.
+    fp.release.notify_one();
+    let until = Instant::now() + Duration::from_secs(5);
+    while r.client.pooled().is_empty() && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(r.client.pooled().len(), 1, "the late dial pooled its connection");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let told_open = told.0.lock().unwrap().clone();
+    assert_eq!(told_open.iter().filter(|e| e.starts_with("connected")).count(), 1, "the dial that opened the connection reported it once: {told_open:?}");
+    // A later call rides the pooled connection and reports nothing.
+    let (out, ev) = r.client.call::<Ping>(&r.target, &echo(b"y"), &CallOptions::default()).await;
+    assert!(out.reply().is_some() && ev.unwrap().reused, "{out:?}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(told.0.lock().unwrap().clone(), told_open, "reuse is not a new fact");
 }
