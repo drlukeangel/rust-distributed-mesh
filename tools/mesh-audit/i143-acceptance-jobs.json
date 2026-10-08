@@ -466,10 +466,10 @@
           "dir": "target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth"
         },
         {
-          "name": "container_primary_mesh_lost_after_hand_off_recovers_same_topology",
+          "name": "container_peer_mesh_lost_recovers_under_same_mesh_id",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_lost_after_hand_off_recovers_same_topology/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_primary_mesh_lost_after_hand_off_recovers_same_topology -- --exact",
-          "dir": "target/i143-acceptance/2784/chaos-container/container_primary_mesh_lost_after_hand_off_recovers_same_topology"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_peer_mesh_lost_recovers_under_same_mesh_id -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id"
         }
       ]
     },

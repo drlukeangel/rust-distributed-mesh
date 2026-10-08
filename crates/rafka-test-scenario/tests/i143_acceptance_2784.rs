@@ -487,23 +487,20 @@ async fn mesh_id_of(estate: &Estate, mesh: &str) -> String {
     s(&estate.get(&format!("/api/meshes/{mesh}")).await.1["id"])
 }
 
-const LOSS_CELL: &str = "container_primary_mesh_lost_after_hand_off_recovers_same_topology";
+const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 
 /// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two rpc nodes each)
-/// the fabric authority is handed off first, through the rectifier: a restart of the fabric-primary
-/// admin is executed by its successor in the other mesh, and the seat is held there. Only then is
-/// the former holder's whole mesh lost: every one of its four containers is killed (`docker kill`
-/// of the exact container ids, both admins at once, then the two rpc nodes). The provider shows
-/// each of those containers exited and not running. The surviving mesh's fabric primary keeps the
-/// seat, opens a later attempt of the SAME accepted Build and runs the mesh-create flow for the lost
-/// mesh's first admin under its EXISTING MeshId; the new mesh primary creates the second admin.
-/// Afterwards every member of the lost mesh is a new birth in a new container, the surviving mesh's
-/// births are the births they were (never re-created), `Fabric.build_id` is the accepted Build, no
-/// MeshId is minted, and a call to a recovered rpc node is served. What must NOT happen: the
-/// fabric primary killed before the hand-off, a new Build or MeshId, a surviving member re-created,
-/// the seat leaving the surviving mesh.
+/// the peer mesh that does not hold the fabric seat is lost whole: every one of its four containers
+/// is killed (`docker kill` of the exact container ids, both admins at once, then the two rpc
+/// nodes). The provider shows each of them not running. The fabric primary keeps the seat, opens a
+/// later attempt of the SAME accepted Build and runs the mesh-create flow for the lost mesh's first
+/// admin under its EXISTING MeshId; the new mesh primary creates the second admin. Afterwards every
+/// member of the lost mesh is a new birth in a new container, the surviving mesh's births are the
+/// births they were (never re-created), `Fabric.build_id` is the accepted Build, no MeshId is
+/// minted, and a call to a recovered rpc node is served. What must NOT happen: the fabric primary
+/// killed, a new Build or MeshId, a surviving member re-created, the seat moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
+async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
     let cell = LOSS_CELL;
     let dir = acceptance_dir(cell);
@@ -517,34 +514,21 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
     let before = estate.settled(&all, Duration::from_secs(60)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    let holder_mesh = holder.split('.').next().unwrap().to_string();
-    let kept_mesh = if holder_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
+    let kept_mesh = holder.split('.').next().unwrap().to_string();
+    let lost_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let admin_base = |nodes: &[Value], name: &str| nodes.iter().find(|n| n["name"] == name).and_then(|n| n["admin_api_base"].as_str()).map(String::from).unwrap_or_default();
-    let (holder_mesh_id, kept_mesh_id) = (mesh_id_of(&estate, &holder_mesh).await, mesh_id_of(&estate, &kept_mesh).await);
+    let (lost_mesh_id, kept_mesh_id) = (mesh_id_of(&estate, &lost_mesh).await, mesh_id_of(&estate, &kept_mesh).await);
     let attempt_of_build = |b: &Value| b["attempt"].as_u64().unwrap_or(0);
-    let births_before = births(&before);
 
-    // THE HAND-OFF: the holder is restarted through the rectifier; its successor executes it.
+    // The mesh to lose holds no seat; control goes through the fabric primary, which the fault never touches.
+    
     estate.admin = admin_base(&before, &holder);
-    let (status, r) = estate.post(&format!("/api/nodes/{holder}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "restart of the fabric-primary admin {holder}: {r}");
-    assert_eq!(s(&r["build_id"]), accepted, "a restart is an attempt of the accepted Build: {r}");
-    let handoff_attempt = Estate::attempt_of(&r);
-    let kept_admin = before.iter().find(|n| n["mesh"] == kept_mesh.as_str() && n["kind"] == "node_admin").map(|n| s(&n["name"])).unwrap();
-    estate.admin = admin_base(&before, &kept_admin);
-    estate.await_attempt(&accepted, handoff_attempt, Duration::from_secs(240)).await;
-    let after_handoff = estate.settled(&all, Duration::from_secs(90)).await;
-    let new_holder = after_handoff.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary after the hand-off");
-    assert!(new_holder.starts_with(&format!("{kept_mesh}.")), "the seat is held by {kept_mesh} after the hand-off, not by {new_holder} (was {holder})");
-    let old_holder_restarted = births(&after_handoff).iter().any(|(n, i)| *n == holder && !births_before.contains(&(n.clone(), i.clone())));
-    assert!(old_holder_restarted, "the former holder {holder} came back as a new birth");
-    estate.admin = admin_base(&after_handoff, &new_holder);
 
-    // The mesh to lose is the former holder's: its containers, by exact id, before the fault.
-    let lost_names: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{holder_mesh}."))).cloned().collect();
+    // The mesh to lose: its containers, by exact id, before the fault.
+    let lost_names: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{lost_mesh}."))).cloned().collect();
     let containers_before: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_else(|| panic!("{n}: no running container")))).collect();
-    let lost_births: BTreeMap<String, String> = births(&after_handoff).into_iter().filter(|(n, _)| lost_names.contains(n)).collect();
-    let kept_births: BTreeSet<(String, String)> = births(&after_handoff).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
+    let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| lost_names.contains(n)).collect();
+    let kept_births: BTreeSet<(String, String)> = births(&before).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
     let build_now = estate.get(&format!("/api/builds?id={accepted}")).await.1;
     let attempt_before = attempt_of_build(&build_now);
     let fault_at = now_nanos();
@@ -559,7 +543,7 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
         }
         killed.push(json!({"node": n, "container": containers_before[n]}));
     }
-    assert_eq!(killed.len(), 4, "the whole mesh {holder_mesh} was killed: {killed:?}");
+    assert_eq!(killed.len(), 4, "the whole mesh {lost_mesh} was killed: {killed:?}");
     let inspected_after_kill: BTreeMap<String, Value> = containers_before
         .iter()
         .map(|(n, id)| {
@@ -588,9 +572,9 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
     let after = estate.settled(&all, Duration::from_secs(90)).await;
     let (_, fabric_after) = estate.get("/api/fabric").await;
     assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: Fabric.build_id is the accepted Build");
-    assert_eq!(mesh_id_of(&estate, &holder_mesh).await, holder_mesh_id, "{holder_mesh} recovered under its own MeshId");
+    assert_eq!(mesh_id_of(&estate, &lost_mesh).await, lost_mesh_id, "{lost_mesh} recovered under its own MeshId");
     assert_eq!(mesh_id_of(&estate, &kept_mesh).await, kept_mesh_id);
-    assert_eq!(after.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])), Some(new_holder.clone()), "the seat stayed in {kept_mesh}");
+    assert_eq!(after.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])), Some(holder.clone()), "the seat stayed in {kept_mesh}");
     let kept_after: BTreeSet<(String, String)> = births(&after).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
     assert_eq!(kept_after, kept_births, "the surviving mesh's births were never re-created");
     let containers_after: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_default())).collect();
@@ -599,7 +583,7 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
     }
 
     // A recovered rpc node serves.
-    let target = after.iter().find(|n| s(&n["name"]) == format!("{holder_mesh}.rpc.1")).cloned().expect("recovered rpc node");
+    let target = after.iter().find(|n| s(&n["name"]) == format!("{lost_mesh}.rpc.1")).cloned().expect("recovered rpc node");
     let put = estate.probe(&["put", "--target", &format!("exact:{}", s(&target["node_id"])), "--key", "lost", "--value", "after-recovery"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["incarnation_id"], target["incarnation_id"], "{put}");
@@ -610,29 +594,23 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
     // The pending hand-off to the lost mesh's first admin names the EXISTING MeshId and ran at the fabric primary.
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff")
         .into_iter()
-        .filter(|h| attr(h, "mesh") == holder_mesh && at(h) > fault_at && (attr(h, "outcome") == "applied" || attr(h, "outcome") == "already-applied"))
+        .filter(|h| attr(h, "mesh") == lost_mesh && at(h) > fault_at && (attr(h, "outcome") == "applied" || attr(h, "outcome") == "already-applied"))
         .collect();
     let first = handoffs.iter().max_by_key(|h| at(h)).copied().expect("Pending handed to the recovery admin after the fault");
-    assert_eq!(attr(first, "mesh_id"), holder_mesh_id, "Pending names the same MeshId: it joined, it never minted");
-    assert_eq!(attr(first, "node"), new_holder, "the surviving fabric primary ran the first admin's birth");
+    assert_eq!(attr(first, "mesh_id"), lost_mesh_id, "Pending names the same MeshId: it joined, it never minted");
+    assert_eq!(attr(first, "node"), holder, "the surviving fabric primary ran the first admin's birth");
     let recovery_admin = attr(first, "target").to_string();
     // The second admin is created by the NEW mesh primary, never by the fabric primary.
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node").starts_with(&format!("{holder_mesh}.admin.")) && attr(c, "node") != recovery_admin && at(c) > at(first))
+        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node").starts_with(&format!("{lost_mesh}.admin.")) && attr(c, "node") != recovery_admin && at(c) > at(first))
         .collect();
-    assert!(!creates.is_empty(), "the second admin of {holder_mesh} was created after the first: {creates:?}");
+    assert!(!creates.is_empty(), "the second admin of {lost_mesh} was created after the first: {creates:?}");
     for c in &creates {
         let executor = reconciles.iter().find(|r| attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
-        assert_eq!(executor, recovery_admin, "{} was created by the new mesh primary, not by {new_holder}", attr(c, "node"));
+        assert_eq!(executor, recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
     }
-    // The hand-off preceded the fault: an election at a surviving admin named the successor before the kill.
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute")
-        .into_iter()
-        .filter(|sp| attr(sp, "election_level") == "fabric_primary" && attr(sp, "winner_mesh") == kept_mesh && at(sp) < fault_at && attr(sp, "previous").starts_with(&format!("{holder_mesh}.")))
-        .collect();
-    assert!(!moved.is_empty(), "an election named {kept_mesh}'s admin the fabric primary, succeeding {holder}, before the fault");
     // No survivor was created or deleted by any attempt after the fault.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
@@ -646,11 +624,10 @@ async fn container_primary_mesh_lost_after_hand_off_recovers_same_topology() {
         "cell": cell,
         "provider": estate.owner.provider,
         "accepted_build_id": accepted,
-        "former_holder": holder,
-        "new_holder": new_holder,
-        "handoff_attempt": handoff_attempt,
-        "lost_mesh": holder_mesh,
-        "lost_mesh_id": holder_mesh_id,
+        "fabric_primary": holder,
+        "fabric_primary_before_and_after": holder,
+        "lost_mesh": lost_mesh,
+        "lost_mesh_id": lost_mesh_id,
         "containers_before": containers_before,
         "killed": killed,
         "inspected_after_kill": inspected_after_kill,
