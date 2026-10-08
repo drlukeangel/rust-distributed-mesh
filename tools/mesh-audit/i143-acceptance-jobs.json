@@ -430,6 +430,30 @@
           "dir": "target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat"
         }
       ]
+    },
+    "i143-2899-unit": {
+      "issue": 2899,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock",
+          "source": "crates/rafka-mesh-entity/tests/i143_acceptance_2899.rs",
+          "command": "cargo test -p rafka-mesh-entity --test i143_acceptance_2899 digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
+          "dir": "target/i143-acceptance/2899/unit/digest_receiver_orders_same_birth_by_sequence_with_stalled_clock"
+        }
+      ]
+    },
+    "i143-2899-process": {
+      "issue": 2899,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "mesh_composition_uses_supplied_clock_keeps_silence_monotonic",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2899.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic/estate cargo test -p rafka-test-scenario --test i143_acceptance_2899 mesh_composition_uses_supplied_clock_keeps_silence_monotonic -- --exact",
+          "dir": "target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic"
+        }
+      ]
     }
   },
   "rshape_jobs": {
