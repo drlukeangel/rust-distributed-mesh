@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
         assert_eq!(r.retire, None);
         let d = resolve(&held, &own.name, &dest.name, POLICY);
-        assert_eq!(d.route, EffectiveRoute::NoActiveRoute, "the gateway-carried Proxy is not the route under the rpc_node policy");
+        assert_eq!(d.route, EffectiveRoute::Direct { known: false }, "the gateway-carried Proxy is not the route under the rpc_node policy: with no Direct fact the pair dials directly");
         assert_eq!(d.retire, None, "a Proxy through a kind the policy does not name is skipped, never retired");
     }
 }
