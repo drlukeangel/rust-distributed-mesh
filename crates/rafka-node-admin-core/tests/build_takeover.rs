@@ -177,8 +177,20 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // A accepts the Build through its control plane: grow mesh1 to 3 rpc nodes.
     // A holds a settled accepted Build of what is observed: the one the change compiles against.
-    let seeded = AcceptedStore::seeded(&*a.builds, fabric1(), FabricTopology::of_observed(&observed()), "mesh1.admin.1").await.unwrap();
-    let mut cp = ControlPlane::new(a.builds.clone(), seeded, "mesh1.admin.1".parse().unwrap(), observed());
+    // The settled Build A's pointer names is seeded into A's own fabric.storage, the store its
+    // Build topic adapter serves to a neighbour and its control plane moves.
+    let seed = rafka_node_admin_core::build::BuildId::mint();
+    a.builds
+        .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, traceparent: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    a.builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: seed.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.builds
+        .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: seed.clone(), attempt: 1, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
+        .await
+        .unwrap();
+    a.accepted.point(&seed, "seeded").await.unwrap();
+    let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed());
     cp.topology = topology.clone();
     let build_id = cp
         .submit("POST /api/build", TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) })
@@ -212,9 +224,13 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // B takes over: the same build id, the next attempt, only what is left.
     let b_runner = Arc::new(Runner { topology: topology.clone(), ran: Mutex::new(vec![]), die_at: None, died: Arc::new(Notify::new()) });
-    // B holds the Fabric record the accepting admin broadcast (build_catch_up.rs proves that
-    // delivery): its pointer names the Build, so B may execute it.
-    b.accepted.point(&build_id, "takeover: the Fabric record the accepting admin broadcast").await.unwrap();
+    // B's pointer names the Build through its Build topic, never set by hand: the successor may
+    // execute only what Fabric.build_id names.
+    eventually("B's Fabric.build_id names the Build", || {
+        let (accepted, id) = (b.accepted.clone(), build_id.clone());
+        async move { accepted.build_id().await == Some(id) }
+    })
+    .await;
     let b_exec = BuildExecutor { executor: "mesh1.admin.2".into(), accepted: b.accepted.clone(), builds: b.builds.clone(), topology: topology.clone(), runner: b_runner.clone() };
     let done = b_exec.reconcile_active().await;
     let ours: Vec<_> = done.iter().filter(|(id, _)| *id == build_id).collect();
