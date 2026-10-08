@@ -477,7 +477,10 @@ async fn gone_everywhere(estate: &Estate, path: &str) -> Result<(), String> {
 
 /// Until the view of an admin that answers marks every one of `paths` unheard (`dead`, or also
 /// `pending-reconnect` unless `true_offline`), within `within`. `Err` names what the views held.
-async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, within: Duration) -> Result<Duration, String> {
+///
+/// `direct`: the paths are judged by the admins of their own mesh (the direct observers of a held
+/// node), any one of them marking every path; otherwise by the admin that answers for the Fabric.
+async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, direct: bool, within: Duration) -> Result<Duration, String> {
     let began = Instant::now();
     let until = Instant::now() + within;
     let mut last = String::new();
@@ -493,7 +496,17 @@ async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], 
                     }
                 }
             }
-            if let Some(v) = try_get(&judge, "/api/nodes").await {
+            let mut judges = vec![judge.clone()];
+            if direct && !true_offline {
+                if let (Some(v), Some(mesh)) = (try_get(&estate.admin, "/api/nodes").await, paths.first().and_then(|p| p.split('.').next())) {
+                    let own: Vec<String> = v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)).filter(|b| known.contains(b)).collect();
+                    if !own.is_empty() {
+                        judges = own;
+                    }
+                }
+            }
+            for judge in judges {
+              if let Some(v) = try_get(&judge, "/api/nodes").await {
                 let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
                 let unheard = |p: &String| {
                     nodes.iter().filter(|n| n["name"] == p.as_str()).all(|n| match n["status"].as_str() {
@@ -506,11 +519,21 @@ async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], 
                     return Ok(began.elapsed());
                 }
                 last = paths.iter().map(|p| format!("{p}:{:?}", nodes.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" ");
+              }
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    Err(format!("not marked unheard within {}s: {last}", within.as_secs()))
+    // What every admin that answers holds, so the refusal says who did not mark it.
+    let mut views = Vec::new();
+    for base in known.iter().chain(std::iter::once(&estate.admin)) {
+        let held = match try_get(base, "/api/nodes").await {
+            Some(v) => paths.iter().map(|p| format!("{p}:{:?}", v["nodes"].as_array().into_iter().flatten().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" "),
+            None => "unanswered".into(),
+        };
+        views.push(format!("{base} -> {held}"));
+    }
+    Err(format!("not marked unheard within {}s: {last}; every admin's view: {views:?}", within.as_secs()))
 }
 
 fn seats(nodes: &[Value]) -> (bool, String) {
@@ -1087,7 +1110,7 @@ impl Driver {
         // the i143-2787-soak-container runs); the container cell for the silence (#2784) observes
         // the same consequence within 90 s, and so does the soak there.
         let within = if container { Duration::from_secs(90) } else { self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members.len()).sum::<usize>()) };
-        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, within).await;
+        let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, true, within).await;
         if let Ok(after) = &marked {
             entry["unheard_after_ms"] = json!(after.as_millis() as u64);
         }
@@ -1175,7 +1198,7 @@ impl Driver {
         // soak measures the time it took (`unheard_after_ms`).
         let within = Duration::from_secs(90);
         self.silenced.insert(mesh.to_string(), sil);
-        let after = until_unheard(&mut self.estate, &others, &members, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
+        let after = until_unheard(&mut self.estate, &others, &members, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
         entry["silenced"] = json!({"mesh": mesh, "members": members, "unheard_after_ms": after.as_millis() as u64});
         Ok(())
     }
