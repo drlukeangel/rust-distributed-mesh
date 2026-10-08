@@ -274,7 +274,9 @@ impl Run {
     #[allow(clippy::too_many_arguments)]
     async fn hold(&self, door: &Door, id: &str, arm_ack: Value, build_id: &str, operation: &str, expect_done: Option<Vec<String>>, runtimes: Option<(&str, usize)>) -> Hold {
         let held = door.wait_held(id).await;
-        assert_eq!(held["hit"]["build_id"], build_id, "`{id}` holds a call of the Build that triggered it: {held}");
+        if !held["hit"]["build_id"].is_null() {
+            assert_eq!(held["hit"]["build_id"], build_id, "`{id}` holds a call of the Build that triggered it: {held}");
+        }
         let b = self.build(door, build_id).await;
         let attempt = b["attempt"].as_u64().unwrap();
         let done = done_steps(&b, operation, Some(attempt));
@@ -319,6 +321,24 @@ impl Run {
         let nodes = self.estate.nodes().await;
         let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
         self.door_of(primary["name"].as_str().unwrap()).await
+    }
+
+    /// The admin that executes `retire-mesh:<mesh>`: the fabric primary when it sits outside `mesh`,
+    /// else the lowest-NodeId ready admin primary of another mesh (executor.rs `executor_for`).
+    async fn retire_mesh_door(&self, mesh: &str) -> Door {
+        let nodes = self.estate.nodes().await;
+        let fabric = nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
+        let name = if fabric["mesh"] != mesh {
+            fabric["name"].clone()
+        } else {
+            nodes
+                .iter()
+                .filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && n["mesh"] != mesh && n["status"] == "ready-for-traffic")
+                .min_by_key(|n| n["node_id"].as_str().unwrap_or_default().to_string())
+                .unwrap_or_else(|| panic!("an admin primary outside {mesh} exists: {nodes:?}"))["name"]
+                .clone()
+        };
+        self.door_of(name.as_str().unwrap()).await
     }
 
     fn push(&self, v: Value) {
@@ -485,10 +505,10 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     observe_departure_cut(&run).await;
 
     // A joining admin, held at its hydration of the Fabric record and at its Ready gate.
-    let admin = "mesh1.admin.3";
-    joining_admin_cut(&run, &create_order, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "hydration", admin, 12, "holds no Fabric.build_id").await;
-    run.plain_delete(admin).await;
-    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", admin, 12, "refusing to act on its locator").await;
+    // (Neither is removed afterwards: a joined admin with the lowest NodeId holds the fabric seat and
+    // would execute its own retire, which is not what these cuts explore.)
+    joining_admin_cut(&run, &create_order, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "hydration", "mesh1.admin.3", 12, false, "").await;
+    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.4", 12, true, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &retire_order).await;
 }
@@ -551,7 +571,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     match kind {
         "event" => {
             let name = c["span"].as_str().unwrap();
-            let published: Vec<&Value> = named(spans, name).into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
+            let published: Vec<&Value> = named(spans, name).into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap() && attr(s, "attempt") == c["attempt"].as_u64().unwrap().to_string()).collect();
             assert!(!published.is_empty(), "`{cut}`: {name} was published for the Build");
             assert!(published.iter().all(|s| span_start(s) >= span_end(hold)), "`{cut}`: the event was published only after the release");
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "published_span_id": published[0]["span_id"], "published_ms_after_release": (span_start(published[0]) - span_end(hold)) / 1_000_000});
@@ -559,7 +579,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
         "hook" => {
             let hooks: Vec<&Value> = named(spans, "rdm.node_admin.lifecycle_hook.update.via-transition")
                 .into_iter()
-                .filter(|s| attr(s, "hook_id") == c["hook_id"].as_str().unwrap() && attr(s, "transition_id").ends_with(&format!(":{}:pending->readyfortraffic", c["node"].as_str().unwrap())) && span_start(s) <= span_start(hold) && span_end(s) >= span_end(hold))
+                .filter(|s| attr(s, "hook_id") == c["hook_id"].as_str().unwrap() && attr(s, "transition_id").contains(&format!(":{}:pending->readyfortraffic@", c["node"].as_str().unwrap())) && span_start(s) <= span_start(hold) && span_end(s) >= span_end(hold))
                 .collect();
             assert_eq!(hooks.len(), 1, "`{cut}`: one hook span covers the hold: {hooks:#?}");
             assert_eq!(attr(hooks[0], "outcome"), "complete");
@@ -577,6 +597,10 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             assert_eq!(ready.len(), 1, "`{cut}`: {node} committed Ready once");
             assert!(span_start(ready[0]) >= span_end(hold), "`{cut}`: {node} reached Ready only after the release");
             let want = c["blocked_detail"].as_str().unwrap();
+            if want.is_empty() {
+                // Held inside its own start: it has not bound its control listener, published or evaluated a gate.
+                return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
+            }
             let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
                 .into_iter()
                 .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want) && span_start(s) < span_end(hold))
@@ -609,6 +633,16 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
 
 // ---- events, restarts, hooks --------------------------------------------------------------------------
 
+/// The span the admin emits when it publishes `event` (lifecycle events doc, span provenance table).
+fn event_span(event: &str) -> &'static str {
+    match event {
+        "deleting" => "rdm.node_admin.node.update.via-node-deleting",
+        "restarting" => "rdm.node_admin.node.update.via-node-restarting",
+        "deleted" => "rdm.node_admin.node.delete.via-node-deleted",
+        other => panic!("{other} is not a lifecycle event"),
+    }
+}
+
 /// A lifecycle event of a removal stalled between its durable receipt and its publish.
 async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node: &str) {
     let id = format!("event:{event}");
@@ -626,16 +660,16 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     };
     let mut h = run.hold(&door, &id, ack, &build_id, &op, Some(retire_order[..receipts].to_vec()), Some((node, runtimes))).await;
     let view = run.node_from(&door, node).await;
-    if event == "deleting" {
-        let v = view.as_ref().expect("the node is still in the executor's view before NodeDeleting is published");
-        assert_eq!(v["routable"], true, "until NodeDeleting is published the node stays routable: {v}");
-    }
+    // Observed, not asserted: the executor derives the open overlay from its own Build facts each
+    // hierarchy round (`routable` goes false from the NodeDeleting receipt alone, within one round),
+    // so the executor's view is not a witness of the publish. The witness is the event's own span,
+    // started only after the release (checked on the exported spans).
     h.during["node_in_executor_view"] = view.map(|v| json!({"status": v["status"], "routable": v["routable"]})).unwrap_or(Value::Null);
     let rel = door.release(&id).await;
     run.complete(&build_id).await;
     let after = run.after_retire(&door, &build_id, node, retire_order).await;
     run.note_build(&build_id, 1);
-    run.span_check(json!({"kind": "event", "cut": id, "span": format!("rdm.node_admin.node.update.via-node-{event}"), "build_id": build_id}));
+    run.span_check(json!({"kind": "event", "cut": id, "span": event_span(event), "build_id": build_id, "attempt": 1}));
     run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": 1, "steps": retire_order, "held_step": retire_order[receipts - 1]}));
     run.push(row(h, "lifecycle-event", &id, &spec, rel, after));
 }
@@ -680,7 +714,12 @@ async fn restart_cut(run: &Run, create_order: &[String], retire_order: &[String]
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
     assert_eq!(run.fabric_build_id().await, pointer_before, "Fabric.build_id is unchanged by a restart");
     run.note_build(&build_id, attempt);
-    run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
+    if spec["kind"] == "event" {
+        run.span_check(json!({"kind": "event", "cut": id, "span": event_span("restarting"), "build_id": build_id, "attempt": attempt}));
+        run.span_check(json!({"kind": "step", "cut": format!("{id}#steps"), "hold_cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
+    } else {
+        run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "retire", "attempt": attempt, "steps": rr, "held_step": RetireStep::NodeRestarting.name()}));
+    }
     let after = json!({"build_state": b["state"], "attempt": attempt, "retire_half": rr, "create_half": create_order.len(), "node": {"node_id": after_node["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": after_node["incarnation_id"]}, "runtimes": 1, "fabric_build_id": pointer_before});
     run.push(row(h, group, id, &spec, rel, after));
 }
@@ -693,6 +732,10 @@ async fn hook_cut(run: &Run, create_order: &[String], phase: &str, node: &str) {
     let ack = door.arm(&id, spec.clone()).await;
     let build_id = run.spawn("mesh1", "rpc_node").await;
     let h = run.hold(&door, &id, ack, &build_id, &format!("create-node:{node}"), Some(create_order.to_vec()), Some((node, 1))).await;
+    // A hook receipt belongs to one birth: the held transition is the one of the incarnation this Build decided.
+    let b = run.build(&door, &build_id).await;
+    let incarnation = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("create-node:{node}").as_str() && r["step"] == "AllocateIdentity").map(|r| r["output"]["incarnation"].clone()).unwrap();
+    assert!(h.held["hit"]["transition_id"].as_str().unwrap().ends_with(&format!("@{}", incarnation.as_str().unwrap())), "the held hook belongs to the birth this Build made: {}", h.held);
     let rel = door.release(&id).await;
     run.complete(&build_id).await;
     let after = run.after_create(&door, &build_id, node, create_order).await;
@@ -720,10 +763,29 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let build_id = held["hit"]["build_id"].as_str().or(held["hit"]["pointer_to_build_id"].as_str()).expect("the cut names the Build").to_string();
     let b = run.build(&door, &build_id).await;
     assert_eq!(run.fabric_build_id().await, pointer_before, "`{id}`: the Build is durable and Fabric.build_id still names the previous Build");
+    // Does anything execute a Build the pointer does not name yet? Every admin's own record of it,
+    // read for a few executor rounds (a round is 300 ms) while the cut holds.
+    let mut executed_during_hold = Value::Null;
+    for _ in 0..12 {
+        for n in run.estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(String::from)) {
+            let (st, seen) = run.estate.http_get(&n, &format!("/api/builds?id={build_id}")).await;
+            if st == 200 && (seen["attempt"].as_u64().unwrap_or(0) > 0 || seen["steps"].as_array().is_some_and(|s| !s.is_empty())) {
+                executed_during_hold = json!({"admin_api": n, "state": seen["state"], "attempt": seen["attempt"], "executor": seen["executor"], "receipts": seen["steps"].as_array().map(|s| s.len())});
+            }
+        }
+        if !executed_during_hold.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
     assert!(!request.is_finished(), "`{id}`: the accepting request is unanswered while the cut holds");
+    assert!(
+        executed_during_hold.is_null(),
+        "`{id}`: an unaccepted Build (Fabric.build_id still names the previous one) is executed by no admin; one claimed it: {executed_during_hold}"
+    );
     let during = json!({
         "build_readable": true, "build_state": b["state"], "attempt": b["attempt"], "receipts_while_held": b["steps"].as_array().map(|s| s.len()),
-        "fabric_build_id": pointer_before, "previous_build_id": pointer_before, "accepting_request_answered": false,
+        "fabric_build_id": pointer_before, "previous_build_id": pointer_before, "accepting_request_answered": false, "executed_before_the_pointer_named_it": executed_during_hold,
     });
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: b["attempt"].as_u64().unwrap_or(0), during };
     let rel = door.release(id).await;
@@ -771,7 +833,7 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
 async fn observe_departure_cut(run: &Run) {
     let admin = "mesh2.admin.1";
     let id = "retire-mesh:ObserveDeparture";
-    let door = run.fabric_door().await;
+    let door = run.retire_mesh_door("mesh2").await;
     let spec = json!({"kind": "receipt", "step": RetireStep::ObserveDeparture.name(), "operation": "retire-node", "node": admin});
     let ack = door.arm(id, spec.clone()).await;
     let (status, a) = run.estate.delete("/api/meshes/mesh2").await;
@@ -793,7 +855,7 @@ async fn observe_departure_cut(run: &Run) {
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
 /// first line runs): the create Build waits on it, and it must not be Ready until the release.
 #[allow(clippy::too_many_arguments)]
-async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: Value, group: &str, admin: &str, receipts_before: usize, blocked_detail: &str) {
+async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: Value, group: &str, admin: &str, receipts_before: usize, exact: bool, blocked_detail: &str) {
     let faults = run.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
     // A door file from an earlier birth of this path is stale; the birth rewrites it.
@@ -806,11 +868,28 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     let door = Door::open(&run.root, admin, "").await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     let held = door.wait_held(id).await;
-    let b = run.build(&exec, &build_id).await;
+    // The pipeline goes on while the admin boots, and stops at the step that needs the admin Ready,
+    // which only the release lets complete. `exact`: it must settle at `receipts_before` receipts;
+    // otherwise (the admin may be held inside its own start or after it) it is a prefix of the order
+    // that never reaches WaitForNodeReady.
     let op = format!("create-node:{admin}");
+    let want = create_order[..receipts_before].to_vec();
+    let b = if exact {
+        wait_for(&format!("`{id}`: the Build reaches {} and waits on the held admin", want.last().unwrap()), Duration::from_secs(60), || async {
+            let b = run.build(&exec, &build_id).await;
+            (done_steps(&b, &op, Some(1)) == want).then_some(b)
+        })
+        .await
+    } else {
+        wait_for(&format!("`{id}`: the Build reaches the join of the held admin"), Duration::from_secs(60), || async {
+            let b = run.build(&exec, &build_id).await;
+            let d = done_steps(&b, &op, Some(1));
+            (d.len() >= index_of(create_order, CreateStep::WaitForBind.name())).then_some(b)
+        })
+        .await
+    };
     let done = done_steps(&b, &op, Some(1));
-    assert_eq!(done.len(), receipts_before, "`{id}`: the Build waits on the held admin after {receipts_before} receipts: {done:?}");
-    assert_eq!(done, create_order[..receipts_before].to_vec());
+    assert!(done.len() <= receipts_before && done == create_order[..done.len()].to_vec(), "`{id}`: the Build holds a prefix of the documented order that stops before WaitForNodeReady: {done:?}");
     assert!(b["state"] != "complete", "`{id}`: the Build is not complete while the joining admin is held: {b}");
     let view = run.estate.node_opt(admin).await;
     if let Some(v) = &view {

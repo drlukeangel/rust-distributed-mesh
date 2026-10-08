@@ -114,6 +114,8 @@ struct Armed {
     held_ms: Option<u64>,
     /// Calls of the cut's own kind seen while it was held (a parked call's own operation makes none).
     seen_while_held: u64,
+    /// For a condition (nothing parks): its hold span, open from the first consultation until the release.
+    condition_span: Option<tracing::Span>,
 }
 
 /// The armed cuts of one node-admin process.
@@ -137,7 +139,7 @@ impl AdminFaults {
         }
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.name, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
-        cuts.insert(id.to_string(), Armed { spec: spec.clone(), hit: None, held: false, released: false, release: Arc::new(Notify::new()), held_since: None, held_ms: None, seen_while_held: 0 });
+        cuts.insert(id.to_string(), Armed { spec: spec.clone(), hit: None, held: false, released: false, release: Arc::new(Notify::new()), held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
         Ok(json!({"armed": id, "node": self.name, "spec": spec}))
     }
 
@@ -154,6 +156,8 @@ impl AdminFaults {
         if matches!(c.spec, CutSpec::ProviderDomain) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
+            // Dropping the span ends it: the hold span lasts from the first consultation to here.
+            c.condition_span = None;
         }
         let held_ms = c.held_ms.or(held_so_far);
         tracing::info_span!("rdm.testkit.fault.update.via-release", node = %self.name, cut = id, was_held)
@@ -211,12 +215,13 @@ impl AdminFaults {
     pub fn in_force(&self, probe: Probe) -> bool {
         let mut cuts = self.cuts.lock().unwrap();
         let mut any = false;
-        for c in cuts.values_mut().filter(|c| !c.released && c.spec.matches(&probe)) {
+        for (id, c) in cuts.iter_mut().filter(|(_, c)| !c.released && c.spec.matches(&probe)) {
             any = true;
             c.held = true;
             c.held_since.get_or_insert_with(Instant::now);
             c.hit.get_or_insert_with(|| probe.detail());
             c.seen_while_held += 1;
+            c.condition_span.get_or_insert_with(|| tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.detail()));
         }
         any
     }
