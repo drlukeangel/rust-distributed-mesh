@@ -36,7 +36,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::Notify;
 use tracing::Instrument;
 
 /// Where one armed cut parks a call.
@@ -105,14 +104,17 @@ impl Probe {
 
 struct Armed {
     spec: CutSpec,
-    /// What parked, once something has.
+    /// The first call that parked here.
     hit: Option<Value>,
     held: bool,
     released: bool,
-    release: Arc<Notify>,
+    /// Flips to `true` on release; every parked call waits on it.
+    release: tokio::sync::watch::Sender<bool>,
+    /// Calls parked here now.
+    parked: u64,
     held_since: Option<Instant>,
     held_ms: Option<u64>,
-    /// Calls of the cut's own kind seen while it was held (a parked call's own operation makes none).
+    /// Matching calls that arrived while another was already parked here (they park too).
     seen_while_held: u64,
     /// For a condition (nothing parks): its hold span, open from the first consultation until the release.
     condition_span: Option<tracing::Span>,
@@ -139,7 +141,7 @@ impl AdminFaults {
         }
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.name, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
-        cuts.insert(id.to_string(), Armed { spec: spec.clone(), hit: None, held: false, released: false, release: Arc::new(Notify::new()), held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
+        cuts.insert(id.to_string(), Armed { spec: spec.clone(), hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, parked: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
         Ok(json!({"armed": id, "node": self.name, "spec": spec}))
     }
 
@@ -149,7 +151,7 @@ impl AdminFaults {
         let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.name))?;
         let was_held = c.held;
         let held_so_far = c.held_since.map(|t| t.elapsed().as_millis() as u64);
-        c.release.notify_one();
+        c.release.send_replace(true);
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
         // A condition (not a parked call) has no parked caller to clear it.
@@ -183,30 +185,34 @@ impl AdminFaults {
         json!({"node": self.name, "cuts": rows, "receipts_seen": self.receipts_seen.load(Ordering::SeqCst)})
     }
 
-    /// Park the caller if an armed, unspent cut matches `probe`; returns when released.
+    /// Park the caller if an armed cut matches `probe`; returns when the cut is released. Every
+    /// matching call parks until the release (a second writer of the same thing cannot slip past a
+    /// cut the first one is parked at).
     pub async fn hold(&self, probe: Probe) {
         let parked = {
             let mut cuts = self.cuts.lock().unwrap();
-            // A call that arrives while another is parked at a cut of the same kind is counted.
-            for c in cuts.values_mut().filter(|c| c.held && c.spec.matches(&probe)) {
-                c.seen_while_held += 1;
-            }
-            let found = cuts.iter_mut().find(|(_, c)| !c.released && !c.held && c.hit.is_none() && c.spec.matches(&probe));
-            found.map(|(id, c)| {
-                c.hit = Some(probe.detail());
+            cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(&probe)).map(|(id, c)| {
+                if c.parked > 0 {
+                    c.seen_while_held += 1;
+                }
+                c.hit.get_or_insert_with(|| probe.detail());
+                c.parked += 1;
                 c.held = true;
-                c.held_since = Some(Instant::now());
-                (id.clone(), c.release.clone())
+                c.held_since.get_or_insert_with(Instant::now);
+                (id.clone(), c.release.subscribe())
             })
         };
-        let Some((id, release)) = parked else { return };
+        let Some((id, mut release)) = parked else { return };
         let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.detail());
         span.in_scope(|| tracing::info!("cut holds"));
-        release.notified().instrument(span).await;
+        let _ = release.wait_for(|released| *released).instrument(span).await;
         let mut cuts = self.cuts.lock().unwrap();
         if let Some(c) = cuts.get_mut(&id) {
-            c.held = false;
-            c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
+            c.parked -= 1;
+            if c.parked == 0 {
+                c.held = false;
+                c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
+            }
         }
     }
 

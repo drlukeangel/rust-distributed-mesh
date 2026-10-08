@@ -126,10 +126,6 @@ impl Door {
 
 // ---- reading the estate -----------------------------------------------------------------------------
 
-fn strs(v: &[&str]) -> Vec<String> {
-    v.iter().map(|s| s.to_string()).collect()
-}
-
 /// The steps of `operation` (at `attempt`, when given) the Build holds a `complete` receipt for, in order.
 fn done_steps(build: &Value, operation: &str, attempt: Option<u64>) -> Vec<String> {
     build["steps"]
@@ -170,6 +166,7 @@ fn row(h: Hold, group: &str, id: &str, spec: &Value, release_ack: Value, after: 
 
 struct Run {
     estate: Estate,
+    /// The directory holding every node's data dir and the faults' doors.
     root: PathBuf,
     doors: std::sync::Mutex<BTreeMap<String, Door>>,
     rows: std::sync::Mutex<Vec<Value>>,
@@ -196,13 +193,6 @@ impl Run {
     /// Runtimes of `node` the provider holds alive now (process provider: its `deployment.json`).
     fn runtimes(&self, node: &str) -> usize {
         self.estate.live_runtimes().iter().filter(|(dir, _)| dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{node}-")))).count()
-    }
-
-    async fn view(&self, node: &str) -> Value {
-        match self.estate.node_opt(node).await {
-            Some(n) => json!({"present": true, "status": n["status"], "routable": n["routable"], "incarnation_id": n["incarnation_id"], "node_id": n["node_id"]}),
-            None => json!({"present": false}),
-        }
     }
 
     async fn spawn(&self, mesh: &str, kind: &str) -> String {
@@ -429,6 +419,20 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     run.push(row(h, "retire-step", &id, &spec, rel, after));
 }
 
+/// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook, accepted-Build
+/// persist-before-pointer cut, runtime publication/hydration cut and Pending gate of a real
+/// node-admin is held independently at its one point and released. For each cut: the testkit door
+/// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
+/// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
+/// and is not complete, the later steps have not begun, no admin executes an unaccepted Build, and
+/// the runtime count is the one the cut position implies; release alone completes the Build with
+/// each step's receipt exactly once, one runtime (none after a retire), `Fabric.build_id` on the
+/// Build that was accepted (a restart on the same Build, one attempt later) and no other Build or
+/// attempt. The exported spans put the held step's span before the hold and the next step's span
+/// after the release, and each witness event (a lifecycle event, the pointer move, a node's Ready)
+/// after the release. What must NOT happen: a step receipt recorded twice, a second runtime born by
+/// the release, a new unchanged-topology Build, a Build that completes while its cut holds, a
+/// Build executed before `Fabric.build_id` names it, or a hook skipped for a re-born node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let dir = acceptance_dir();
@@ -532,7 +536,32 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
     for c in span_checks.into_inner().unwrap() {
         checked.push(check_spans(&spans, &c));
     }
-    let unreachable = json!([]);
+    // Exhaustive by construction: every step of the product's documented orders has its cut row.
+    let explored: std::collections::BTreeSet<String> = rows.iter().filter_map(|r| r["cut"].as_str().map(String::from)).collect();
+    let mut documented: Vec<String> = create_order.iter().map(|s| format!("create:{s}")).collect();
+    documented.extend(retire_order.iter().map(|s| format!("retire:{s}")));
+    documented.push(format!("restart:{}", RetireStep::NodeRestarting.name()));
+    documented.push("retire-mesh:ObserveDeparture".into());
+    for want in &documented {
+        assert!(explored.contains(want), "no cut row for the documented step `{want}`; explored: {explored:?}");
+    }
+    let unreachable = json!([
+        {
+            "cuts": AdoptStep::ORDER.iter().map(|s| format!("adopt-current:{}", s.name())).collect::<Vec<_>>(),
+            "where": "crates/rafka-node-admin-core/src/deployment/pipeline.rs:252 (CurrentRuntimeAdoption::begin_in), :297 (publish), :306 (step); run at crates/rafka-node-admin-core/src/admin.rs:1812",
+            "why": "the Day-0 adoption steps are synchronous closures that write runtime-adoption.json with std::fs::write and call no trait object; they run inside start() before any decorator is consulted. A stall needs fault code in the product."
+        },
+        {
+            "cuts": ["hook:before_drain", "hook:after_drain"],
+            "where": "crates/rafka-node-admin-core/src/lifecycle.rs:354 (drain phases run only when a transition enters Draining); the only Transition the admin builds is crates/rafka-node-admin-core/src/admin.rs:923-929 (Node Pending -> ReadyForTraffic)",
+            "why": "no admin path runs a transition into Draining, so no hook of the drain phases can be reached; building one would be a new transition, not a stall."
+        },
+        {
+            "cuts": ["day-0 first Build acceptance and first pointer at boot"],
+            "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
+            "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rafka-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
+        }
+    ]);
     let result = json!({
         "cell": CELL,
         "cuts_explored": rows.iter().filter_map(|r| r["cut"].as_str()).collect::<Vec<_>>(),
@@ -563,9 +592,14 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     let cut = c["cut"].as_str().unwrap();
     let hold_cut = c["hold_cut"].as_str().unwrap_or(cut);
     let holds: Vec<&Value> = named(spans, "rdm.testkit.fault.update.via-hold").into_iter().filter(|s| attr(s, "cut") == hold_cut).collect();
-    assert_eq!(holds.len(), 1, "`{cut}`: one hold span was exported for the cut");
-    let hold = holds[0];
+    assert!(!holds.is_empty(), "`{cut}`: a hold span was exported for the cut");
+    // Every call a cut parks has its own hold span (a pointer cut may park two writers): the hold is
+    // from the first one's start to the last one's end.
+    let first = holds.iter().min_by_key(|s| span_start(s)).unwrap();
+    let last = holds.iter().max_by_key(|s| span_end(s)).unwrap();
+    let hold = &json!({"span_id": first["span_id"], "start_unix_nano": span_start(first), "end_unix_nano": span_end(last), "service": first["service"]});
     assert!(span_end(hold) > span_start(hold));
+    let parked_calls = holds.len();
     let kind = c["kind"].as_str().unwrap();
     let hold_ms = (span_end(hold) - span_start(hold)) / 1_000_000;
     match kind {
@@ -574,7 +608,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             let published: Vec<&Value> = named(spans, name).into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap() && attr(s, "attempt") == c["attempt"].as_u64().unwrap().to_string()).collect();
             assert!(!published.is_empty(), "`{cut}`: {name} was published for the Build");
             assert!(published.iter().all(|s| span_start(s) >= span_end(hold)), "`{cut}`: the event was published only after the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "published_span_id": published[0]["span_id"], "published_ms_after_release": (span_start(published[0]) - span_end(hold)) / 1_000_000});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "published_span_id": published[0]["span_id"], "published_ms_after_release": (span_start(published[0]) - span_end(hold)) / 1_000_000});
         }
         "hook" => {
             let hooks: Vec<&Value> = named(spans, "rdm.node_admin.lifecycle_hook.update.via-transition")
@@ -589,7 +623,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             let moved: Vec<&Value> = named(spans, "rdm.node_admin.fabric.update.via-build-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
             assert!(!moved.is_empty(), "`{cut}`: Fabric.build_id moved to the Build");
             assert!(moved.iter().all(|s| span_start(s) >= span_end(hold)), "`{cut}`: the pointer moved only after the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moved_ms_after_release": (span_start(moved[0]) - span_end(hold)) / 1_000_000});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moved_ms_after_release": (span_start(moved[0]) - span_end(hold)) / 1_000_000});
         }
         "ready-after" => {
             let node = c["node"].as_str().unwrap();
@@ -599,14 +633,14 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             let want = c["blocked_detail"].as_str().unwrap();
             if want.is_empty() {
                 // Held inside its own start: it has not bound its control listener, published or evaluated a gate.
-                return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
+                return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000});
             }
             let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
                 .into_iter()
                 .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want) && span_start(s) < span_end(hold))
                 .collect();
             assert!(!blocked.is_empty(), "`{cut}`: {node} named its blocker (\"{want}\") before the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
         }
         _ => {}
     }
