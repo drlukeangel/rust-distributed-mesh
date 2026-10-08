@@ -65,8 +65,17 @@ pub fn spawn() -> Option<()> {
         .spawn(move || {
             let mut stalled: Option<(u64, u64, Vec<String>)> = None;
             let mut profiled = false;
+            let mut frozen_ms = 0u64;
             loop {
+                let slept_from = Instant::now();
                 std::thread::sleep(BEAT);
+                // This thread runs outside the runtime: if its own short sleep overran by more than
+                // the stall threshold, the whole process was not running (SIGSTOP, a frozen
+                // cgroup, a suspended host), and the window belongs to that, not to the runtime.
+                let overran = slept_from.elapsed().saturating_sub(BEAT);
+                if overran > STALL {
+                    frozen_ms += overran.as_millis() as u64;
+                }
                 let last = beat.load(Ordering::Acquire);
                 let now = now_ms(origin);
                 match &mut stalled {
@@ -95,16 +104,26 @@ pub fn spawn() -> Option<()> {
                     }
                     Some((from, rq0, samples)) => {
                         let stall_ms = last.saturating_sub(*from);
-                        tracing::warn!(
-                            step = "runtime-stall",
-                            stall_ms,
-                            runqueue_wait_ms = runqueue_wait_ms().saturating_sub(*rq0),
-                            threads = %samples.join(" | "),
-                            "the async runtime ran nothing for {stall_ms} ms"
-                        );
+                        if frozen_ms > 0 {
+                            tracing::info!(
+                                step = "process-frozen",
+                                stall_ms,
+                                frozen_ms,
+                                "the whole process was not running for {frozen_ms} ms (stopped from outside); the runtime itself did not stall"
+                            );
+                        } else {
+                            tracing::warn!(
+                                step = "runtime-stall",
+                                stall_ms,
+                                runqueue_wait_ms = runqueue_wait_ms().saturating_sub(*rq0),
+                                threads = %samples.join(" | "),
+                                "the async runtime ran nothing for {stall_ms} ms"
+                            );
+                        }
                         stalled = None;
+                        frozen_ms = 0;
                     }
-                    None => {}
+                    None => frozen_ms = 0,
                 }
             }
         })
