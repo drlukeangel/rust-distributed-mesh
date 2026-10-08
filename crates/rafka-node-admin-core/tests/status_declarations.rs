@@ -196,8 +196,8 @@ async fn mesh_and_fabric_declarations_follow_the_same_rules() {
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
     assert_eq!(reply(&call(&rig, m2admin, &m2(MeshState::Pending)).await), StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic });
     // Not mesh2's primary (an ordinary node; a non-primary admin of another mesh): refused.
-    assert!(matches!(reply(&call(&rig, rpc1, &m2(MeshState::Draining)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
-    assert!(matches!(reply(&call(&rig, admin2, &m2(MeshState::Draining)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
+    assert!(matches!(reply(&call(&rig, rpc1, &m2(MeshState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
+    assert!(matches!(reply(&call(&rig, admin2, &m2(MeshState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } }));
     // A fabric event applied here must come from the fabric-primary: while this admin holds the
     // fabric seat, mesh2's primary is not it. Then the seat moves to mesh2's primary (the view
     // says so), and its events and Pending hand-offs apply here, each once.

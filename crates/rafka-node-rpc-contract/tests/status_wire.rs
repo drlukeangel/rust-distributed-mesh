@@ -23,7 +23,7 @@ fn requests_match_the_frozen_six_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
-        (DeclareMeshState { mesh_id: mesh(), state: MeshState::Draining }, "010c31313233343536373839616202"),
+        (DeclareMeshState { mesh_id: mesh(), state: MeshState::Leaving }, "010c31313233343536373839616202"),
         (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::Draining }, "020c30313233343536373839616205626972746802"),
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c303132333435363738396162056269727468"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending }, "040c313132333435363738396162056d6573683100"),
@@ -50,7 +50,7 @@ fn replies_match_the_frozen_sixteen_variant_wire_schema() {
         (RejectedStaleFabric { held: fabric() }, "060c323132333435363738396162"),
         (RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "peer-path".into() } }, "070109706565722d70617468"),
         (RejectedInvalidNodeTransition { current: NodeState::Leaving }, "0803"),
-        (RejectedInvalidMeshTransition { current: MeshState::Retired }, "0903"),
+        (RejectedInvalidMeshTransition { current: MeshState::Dead }, "0903"),
         (PeerUnresolved { reason: "p".into() }, "0a0170"),
         (NotReady { reason: "n".into() }, "0b016e"),
         (Busy { reason: "b".into() }, "0c0162"),
@@ -78,7 +78,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     ] { golden(state, expected); }
     for (state, expected) in [
         (MeshState::Pending, "00"), (MeshState::ReadyForTraffic, "01"),
-        (MeshState::Draining, "02"), (MeshState::Retired, "03"),
+        (MeshState::Leaving, "02"), (MeshState::Dead, "03"),
     ] { golden(state, expected); }
     golden(FabricEvent::ReadyForTraffic, "00");
     golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");

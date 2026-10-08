@@ -611,7 +611,7 @@ fn status_authority_refuses_every_backward_move_by_name() {
     let capture = capture(cell);
     capture.run(async {
         let nodes = [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving];
-        let meshes = [MeshState::Pending, MeshState::ReadyForTraffic, MeshState::Draining, MeshState::Retired];
+        let meshes = [MeshState::Pending, MeshState::ReadyForTraffic, MeshState::Leaving, MeshState::Dead];
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let senders: Vec<Birth> = (0..4).map(|i| birth(&format!("mesh1.rpc.{}", i + 1), NodeKind::RpcNode, "mesh1", false, false)).collect();
         let fabric_primary = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
@@ -653,8 +653,8 @@ fn status_authority_refuses_every_backward_move_by_name() {
         }
         // A skip forward is a forward move.
         let skip = MeshId::mint();
-        let to_retired = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Retired };
-        assert_eq!(reply(&call(&mesh_rig, &fp, &to_retired, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Retired: a skip is forward");
+        let to_dead = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Dead };
+        assert_eq!(reply(&call(&mesh_rig, &fp, &to_dead, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Dead: a skip is forward");
 
         let spans = finish(&capture, &dir, json!({"cell": cell, "refused_node_moves": refused_node, "refused_mesh_moves": refused_mesh, "repeats_already_applied": repeats}));
         assert_eq!(refused_node, 6, "0+1+2+3 backward pairs");

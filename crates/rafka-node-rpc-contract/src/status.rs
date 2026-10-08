@@ -19,7 +19,7 @@
 //! ```
 //!
 //! Legal moves run forward along `Pending -> ReadyForTraffic -> Draining -> Leaving` (and
-//! `Pending -> ReadyForTraffic -> Draining -> Retired` for a Mesh), skips included; the same
+//! `Pending -> ReadyForTraffic -> Leaving -> Dead` for a Mesh), skips included; the same
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
 //! for a birth the receiver holds a newer incarnation of, or holds as departed, is
 //! `RejectedStaleIncarnation`. A receiver that is not the authority, or a sender that is not the
@@ -46,8 +46,8 @@ pub enum NodeState {
 pub enum MeshState {
     Pending,
     ReadyForTraffic,
-    Draining,
-    Retired,
+    Leaving,
+    Dead,
 }
 
 /// A Fabric event the fabric-primary applies at a mesh primary.
@@ -257,7 +257,7 @@ mod tests {
             (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::ProtocolRefusal),
             (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Retired }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::ProtocolRefusal),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
             (Status::busy("b".into()), ReplyKind::Busy),
@@ -293,6 +293,6 @@ mod tests {
         assert_eq!(transition(Some(Pending), Leaving), Transition::Apply, "a skip is a forward move");
         assert_eq!(transition(Some(ReadyForTraffic), ReadyForTraffic), Transition::AlreadyApplied);
         assert_eq!(transition(Some(Draining), ReadyForTraffic), Transition::Backward { current: Draining });
-        assert_eq!(transition(Some(MeshState::Retired), MeshState::Pending), Transition::Backward { current: MeshState::Retired });
+        assert_eq!(transition(Some(MeshState::Dead), MeshState::Pending), Transition::Backward { current: MeshState::Dead });
     }
 }
