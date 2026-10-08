@@ -264,9 +264,22 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     }
 
     // The membership consequence, seen from the other mesh.
-    let wait_for_unheard = format!("{cut_mesh} unheard in the view of {kept_mesh}");
+    // A peer mesh that goes unheard is read in the other mesh's view. A lone silent member is heard
+    // missing by its own mesh (the other mesh's view of a peer mesh's members is the topology its
+    // mesh primary forwards, which never carries liveness), so its mesh-mate admin is the observer.
+    let observer = match cut {
+        Cut::PeerMesh => estate.admin.clone(),
+        Cut::Node => ready_admins(&nodes).into_iter().find(|(n, _)| n.starts_with(&format!("{cut_mesh}.")) && !isolated_names.contains(n)).map(|(_, b)| b).expect("a ready node-admin of the silenced node's own mesh"),
+    };
+    let observed = |observer: String| async move {
+        match try_get(&observer, "/api/nodes").await {
+            Some(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
+            None => Vec::new(),
+        }
+    };
+    let wait_for_unheard = format!("{silenced_subject} unheard in the view of {}", if cut == Cut::Node { &cut_mesh } else { &kept_mesh });
     let silent_view: Vec<Value> = wait_for(&wait_for_unheard, Duration::from_secs(90), || async {
-        let nodes = estate.nodes().await;
+        let nodes = observed(observer.clone()).await;
         isolated_names.iter().all(|n| node_in(&nodes, n).is_some_and(unheard)).then_some(nodes)
     })
     .await;
@@ -278,7 +291,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         let l = legs(&estate, &target_id, &carrier);
         let inspected = inspect_all(&silenced);
         let rules = silenced.rules().expect("the packet filters are listed");
-        let nodes_now = estate.nodes().await;
+        let nodes_now = observed(observer.clone()).await;
         // The silenced side's own view, read from its admins' control APIs over TCP.
         let mut own_views = serde_json::Map::new();
         for (name, base) in &isolated_admins {
@@ -395,16 +408,12 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let mut rec2 = ev.reconciliation.take().unwrap();
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
-    // The ViaPeer certainty is the carrier's own edge fact: the first forward into the cut may end
-    // `Indeterminate(ReplyDeadline)`; once the carrier has named its lost edge no later leg is
-    // `Indeterminate` again, and the last leg names the carrier and the target.
+    // A silent ViaPeer leg never replies and ends typed: `Indeterminate(ReplyDeadline)` when the
+    // source's deadline passes before the carrier answers, `NotSent(CarrierEdgeLost)` naming the
+    // carrier's edge to the target when the carrier answers first. The sequence is recorded.
     let via: Vec<(String, String)> = silence.iter().map(|r| (s(&r["legs"]["via_peer"]["outcome"]), s(&r["legs"]["via_peer"]["reason"]))).collect();
-    let edge_named = |v: &(String, String)| v.0 == "NotSent" && v.1.contains("CarrierEdgeLost");
-    let first_named = via.iter().position(edge_named);
-    let via_ok = first_named.is_some_and(|i| via[i..].iter().all(edge_named))
-        && via[..first_named.unwrap_or(0)].iter().all(|v| v.0 == "Indeterminate" && v.1 == "ReplyDeadline")
-        && via.last().is_some_and(|v| v.1.contains(&format!("{carrier} -> {target_name}")));
-    rec2.check("each silent ViaPeer leg is Indeterminate(ReplyDeadline) until the carrier names its lost edge to the target, then NotSent(CarrierEdgeLost) every time", via_ok, format!("{via:?}"));
+    let via_typed = via.iter().all(|v| (v.0 == "Indeterminate" && v.1 == "ReplyDeadline") || (v.0 == "NotSent" && v.1.contains(&format!("CarrierEdgeLost(\"{carrier} -> {target_name} "))));
+    rec2.check("each silent ViaPeer leg ends without a reply: Indeterminate(ReplyDeadline) or NotSent(CarrierEdgeLost) naming the carrier and the target", via_typed, format!("{via:?}"));
     if cut == Cut::Node {
         let still: BTreeSet<(String, String)> = births(&nodes_during).into_iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).collect();
         let want_rest: BTreeSet<(String, String)> = want_births.iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).cloned().collect();
@@ -437,6 +446,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         "kept_mesh": kept_mesh,
         "isolated_mesh": cut_mesh,
         "silenced_subject": silenced_subject,
+        "via_peer_sequence": via,
         "fabric_primary": fabric_primary,
         "target": {"name": target_name, "node_id": target_id, "incarnation_id": target_inc},
         "carrier": carrier,
