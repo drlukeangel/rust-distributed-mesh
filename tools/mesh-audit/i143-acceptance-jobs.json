@@ -365,6 +365,18 @@
         }
       ]
     },
+    "i143-2784-chaos-container": {
+      "issue": 2784,
+      "layer": "chaos-container",
+      "cells": [
+        {
+          "name": "container_network_partitions_heals_preserves_live_runtimes",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_network_partitions_heals_preserves_live_runtimes -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes"
+        }
+      ]
+    },
     "i143-2783-chaos-process": {
       "issue": 2783,
       "layer": "chaos-process",

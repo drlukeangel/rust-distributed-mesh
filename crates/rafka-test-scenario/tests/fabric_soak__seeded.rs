@@ -36,6 +36,7 @@
 //! lost; every surviving path reachable over real Node RPC and current. The final topology is
 //! the accepted one.
 
+use rafka_test_scenario::container_faults;
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -156,19 +157,10 @@ enum Frozen {
     Container(String),
 }
 
-fn docker(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("docker").args(args).output().map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(format!("docker {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
-    }
-}
-
 async fn freeze(estate: &Estate, node: &str) -> Frozen {
     if estate.owner.provider == "container" {
         let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
-        docker(&["pause", &id]).unwrap();
+        container_faults::pause(&id).unwrap();
         return Frozen::Container(id);
     }
     let pid = match estate.bootstrap_pid() {
@@ -185,27 +177,9 @@ fn thaw(f: &Frozen) {
             let _ = std::process::Command::new("kill").args(["-CONT", &pid.to_string()]).status();
         }
         Frozen::Container(id) => {
-            let _ = docker(&["unpause", id]);
+            let _ = container_faults::unpause(id);
         }
     }
-}
-
-/// A container disconnected from the fabric network, to be reconnected at the same address.
-struct Unplugged {
-    id: String,
-    ip: String,
-}
-
-fn unplug(estate: &Estate, node: &str) -> Unplugged {
-    let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
-    let net = format!("rafka-{}", estate.fabric_id);
-    let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{net}\").IPAddress}}}}"), &id]).unwrap();
-    docker(&["network", "disconnect", "-f", &net, &id]).unwrap();
-    Unplugged { id, ip }
-}
-
-fn replug(estate: &Estate, u: &Unplugged) -> Result<(), String> {
-    docker(&["network", "connect", "--ip", &u.ip, &format!("rafka-{}", estate.fabric_id), &u.id]).map(|_| ())
 }
 
 /// Until the view of an admin that answers marks every one of `paths` unheard (`dead`, or also
@@ -496,9 +470,9 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 let n = rng.pick(&pool).clone();
                 let path = s(&n["name"]);
                 entry["target"] = json!(path);
-                let u = unplug(&estate, &path);
+                let u = container_faults::unplug(&estate, &path).unwrap();
                 let marked = until_unheard(&mut estate, &known, &[path.clone()], false, unheard_within).await;
-                if let Err(e) = replug(&estate, &u) {
+                if let Err(e) = container_faults::replug(&u) {
                     fault_failure = Some(format!("{path} could not be reconnected: {e}"));
                 }
                 if let Err(e) = marked {
@@ -511,12 +485,12 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
                 entry["target"] = json!(mesh);
                 let members: Vec<Value> = nodes.iter().filter(|n| n["mesh"] == mesh.as_str() && n["status"] == "ready-for-traffic").cloned().collect();
                 let paths: Vec<String> = members.iter().map(|n| s(&n["name"])).collect();
-                let unplugged: Vec<Unplugged> = paths.iter().map(|p| unplug(&estate, p)).collect();
+                let unplugged: Vec<container_faults::Unplugged> = paths.iter().map(|p| container_faults::unplug(&estate, p).unwrap()).collect();
                 // Seen from the other mesh: control is read through its admins.
                 let others: Vec<String> = known.iter().filter(|b| !members.iter().any(|m| m["admin_api_base"] == b.as_str())).cloned().collect();
                 let marked = until_unheard(&mut estate, &others, &paths, false, unheard_within).await;
                 for u in &unplugged {
-                    if let Err(e) = replug(&estate, u) {
+                    if let Err(e) = container_faults::replug(u) {
                         fault_failure = Some(format!("{mesh}: {e}"));
                     }
                 }
@@ -617,7 +591,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
         }
         for (path, inc, container) in &unplugged_births {
             let same = now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic");
-            let state = docker(&["inspect", "--format", "{{.State.Status}}", container]).unwrap_or_else(|_| "removed".into());
+            let state = container_faults::inspect(container).map(|i| i.status).unwrap_or_else(|_| "removed".into());
             let reborn = now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] != inc.as_str() && n["status"] == "ready-for-traffic");
             let outcome = if same { "same-birth" } else if reborn && state != "running" { "exited-and-reborn" } else { "" };
             entry["network_outcome"].as_object_mut().map(|o| o.insert(path.clone(), json!(outcome))).or_else(|| {
