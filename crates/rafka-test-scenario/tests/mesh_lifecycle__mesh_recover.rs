@@ -14,7 +14,7 @@
 //! Evidence: a reconcile of B by a mesh2 admin names mesh1's admin primary
 //! as the previous executor and descends from B's accepting request.
 
-use rafka_test_scenario::estate::{descends_from, named, own_fabric_at, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, own_fabric_at, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -147,7 +147,16 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         })
         .unwrap_or_else(|| panic!("no takeover of {b} by a mesh2 admin"))
         .clone();
-    assert!(descends_from(&spans, &takeover, &accepted), "the takeover descends from B's request");
+    // The attempt context lives with the fabric-primary that accepted B: a takeover attempt that
+    // admin decided descends from B's request; one decided after the seat moved starts its own
+    // trace (ruling R-X1: the context is the accepting primary's local record).
+    let accepting = claim_decider(&spans, b.as_str(), "1").expect("attempt 1 of B was claimed");
+    let attempt = takeover["attributes"]["attempt"].as_str().map(String::from).unwrap_or_else(|| takeover["attributes"]["attempt"].to_string());
+    if claim_decider(&spans, b.as_str(), &attempt).is_none_or(|d| d == accepting) {
+        assert!(descends_from(&spans, &takeover, &accepted), "a takeover the accepting fabric-primary decided descends from B's request");
+    } else {
+        assert_eq!(takeover["parent_span_id"].as_str().unwrap_or(""), "", "a takeover decided after the seat moved starts its own trace: {takeover}");
+    }
     // Each recovered admin held every surviving member's runtime before it
     // committed Ready (i143.e4.s16): mesh2's five births at least.
     for admin in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin") {
