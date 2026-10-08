@@ -16,13 +16,13 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 [workspace]
 
 [dependencies]
-rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "833dc39e556d55582dacf872103bc7958b3e010d" }
-rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "833dc39e556d55582dacf872103bc7958b3e010d" }
-rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "833dc39e556d55582dacf872103bc7958b3e010d" }
-rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "833dc39e556d55582dacf872103bc7958b3e010d" }
+rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "407a4ae23c94ba50cbb4af1dbbf557b7260a110d" }
+rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "407a4ae23c94ba50cbb4af1dbbf557b7260a110d" }
+rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "407a4ae23c94ba50cbb4af1dbbf557b7260a110d" }
+rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "407a4ae23c94ba50cbb4af1dbbf557b7260a110d" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "833dc39e556d55582dacf872103bc7958b3e010d" }
+rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "407a4ae23c94ba50cbb4af1dbbf557b7260a110d" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
