@@ -2749,7 +2749,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| ladder.lock().unwrap().defers_rebirth(mesh)).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh)).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {

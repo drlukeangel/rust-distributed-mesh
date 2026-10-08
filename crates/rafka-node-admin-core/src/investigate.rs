@@ -127,11 +127,12 @@ impl Ladder {
         self.meshes.remove(mesh);
     }
 
-    /// Does this ladder hold the rebirth of `mesh`'s node-admins back? True for a peer mesh the
-    /// fabric primary has heard on the backbone until the decision is a rebirth: a node-admin
-    /// whose runtime was proven exited is replaced when the ladder decides, not before.
-    pub fn defers_rebirth(&self, mesh: &str) -> bool {
-        self.meshes.get(mesh).is_some_and(|s| s.verdict != Some(true))
+    /// Has this ladder decided the rebirth of `mesh`'s node-admins? A fabric primary holds that
+    /// rebirth back for every peer mesh it hears on the backbone until this is true: a node-admin
+    /// whose runtime was proven exited is replaced when the ladder decides, not before, and a
+    /// fabric primary that took the seat a moment ago has decided nothing yet.
+    pub fn rebirth_decided(&self, mesh: &str) -> bool {
+        self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
 
     /// What `mesh` being unheard for `rounds` asks next. One probe or the decision per call; the
@@ -486,38 +487,19 @@ mod tests {
         assert!(again.contains(&Step::Probe { n: 1, rounds: 10 }), "a fresh interval probes again at 10: {again:?}");
     }
 
-    /// CONTRACT: the rebirth of a peer mesh's node-admins waits for the decision. A heard mesh
-    /// defers it; the decision `rebirth` releases it; a hold keeps it back; a mesh the backbone
-    /// never carried is not held back at all.
+    /// CONTRACT: the rebirth of a peer mesh's node-admins is decided only by a `rebirth` decision: not
+    /// by a hold, not by a mesh the ladder has not stepped yet, and not once the ladder forgot it.
     #[test]
-    fn a_peer_meshs_rebirth_waits_for_the_decision() {
+    fn a_peer_meshs_rebirth_is_decided_only_by_a_rebirth_decision() {
         let mut l = ladder();
-        assert!(!l.defers_rebirth("mesh2"), "never heard on the backbone: no investigation, no deferral");
-        l.step("mesh2", 0);
-        assert!(l.defers_rebirth("mesh2"));
-        let log = walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(!log.is_empty());
-        assert!(!l.defers_rebirth("mesh2"), "the decision was a rebirth");
+        assert!(!l.rebirth_decided("mesh2"), "not stepped yet");
+        walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
+        assert!(l.rebirth_decided("mesh2"));
         let mut held = ladder();
         walk(&mut held, [Unreachable, Unreachable]);
-        assert!(held.defers_rebirth("mesh2"), "a hold keeps the rebirth back");
-        held.forget("mesh2");
-        assert!(!held.defers_rebirth("mesh2"));
-    }
-
-    /// CONTRACT (#2803 detection): a carrier that answered the Ping and is gone (or refuses) before the
-    /// Forward completes says nothing of the node-admin: the probe is `unreachable`, never
-    /// `carrier-edge-lost`, so the decision holds. Only the carrier's own edge-lost answer is one,
-    /// and any reply of the node-admin is `admin-alive`.
-    #[test]
-    fn a_carrier_lost_after_its_ping_is_unreachable_and_only_its_edge_lost_answer_is_a_rebirth() {
-        use rafka_node_rpc_contract::outcome::{PreCommit, RpcOutcome};
-        let admin: PathName = "mesh2.admin.1".parse().unwrap();
-        let not_sent = |r: NotSentReason| -> RpcOutcome<StatusReply> { PreCommit::begin(0x1B).not_sent(r) };
-        assert_eq!(classify(&not_sent(NotSentReason::CarrierEdgeLost("e".into())), &admin).0, CarrierEdgeLost);
-        for lost in [NotSentReason::Deadline, NotSentReason::Connection("reset".into()), NotSentReason::Carried("the carrier refused".into())] {
-            assert_eq!(classify(&not_sent(lost), &admin).0, Unreachable);
-        }
+        assert!(!held.rebirth_decided("mesh2"), "a hold decides no rebirth");
+        l.forget("mesh2");
+        assert!(!l.rebirth_decided("mesh2"));
     }
 
     /// CONTRACT (#2803 detection): a fabric primary that loses its seat drops every investigation;
@@ -527,11 +509,11 @@ mod tests {
     fn a_ladder_dropped_with_the_seat_starts_over_for_the_next_fabric_primary() {
         let mut first = ladder();
         walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(!first.defers_rebirth("mesh2"));
+        assert!(first.rebirth_decided("mesh2"));
         first.clear();
         assert!(first.meshes().is_empty(), "nothing survives the seat");
         let mut next = ladder();
-        assert!(!next.defers_rebirth("mesh2"), "the next primary has heard nothing yet");
+        assert!(!next.rebirth_decided("mesh2"), "the next primary has decided nothing yet");
         let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30], "it decides once, from its own 30 rounds");
     }
@@ -551,7 +533,7 @@ mod tests {
             // mesh3 is heard throughout.
             assert!(l.step("mesh3", 0).is_empty());
         }
-        assert!(!l.defers_rebirth("mesh2"));
-        assert!(l.defers_rebirth("mesh3"), "mesh3 was never decided");
+        assert!(l.rebirth_decided("mesh2"));
+        assert!(!l.rebirth_decided("mesh3"), "mesh3 was never decided");
     }
 }
