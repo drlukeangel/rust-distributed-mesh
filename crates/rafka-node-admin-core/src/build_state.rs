@@ -326,21 +326,26 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 }
 
 /// The lifecycle operations open in `builds`: every `NodeDeleting` step a retire operation
-/// completed with no `NodeDeleted` step of the same operation after it. Derived from the Build
-/// facts on every round, never stored: a successor primary publishes the same overlays from the
-/// same facts.
+/// completed with no `NodeDeleted` step of the same operation after it, and every
+/// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no
+/// `Complete` step yet. Derived from the Build facts on every round, never stored: a successor
+/// primary publishes the same overlays from the same facts.
 pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> Vec<rafka_mesh_entity::LifecycleOp> {
     let mut out = Vec::new();
     for p in builds.values() {
         for s in &p.steps {
-            if s.step != "NodeDeleting" || s.outcome != StepOutcome::Complete {
+            if s.outcome != StepOutcome::Complete || (s.step != "NodeDeleting" && s.step != "NodeRestarting") {
                 continue;
             }
-            let deleted = p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete);
-            if deleted {
+            let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) else {
                 continue;
-            }
-            if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) {
+            };
+            let closed = if s.step == "NodeDeleting" {
+                p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
+            } else {
+                p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
+            };
+            if !closed {
                 out.push(op);
             }
         }
@@ -750,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn open_overlays_are_derived_from_the_node_deleting_and_node_deleted_steps() {
+    fn open_retire_and_restart_overlays_are_derived_from_the_build_facts() {
         let op = |node: &str| rafka_mesh_entity::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
@@ -779,7 +784,17 @@ mod tests {
             with(&b.operation, "MarkDraining", &b),
         ];
         let open = in_flight_ops(&fold(&facts));
-        assert_eq!(open, vec![b], "a retire with its pre-notice and no departure is open; a completed one is not");
+        assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
+
+        // A restart's pre-event is a step of its retire half; the restart is open until its
+        // create half (`restart-node:<path>`) completes, whoever reads the facts.
+        let c = rafka_mesh_entity::LifecycleOp { operation: "restart-node:mesh1.rpc.3".into(), name: "mesh1.rpc.3".parse().unwrap(), ..op("mesh1.rpc.3") };
+        let mut facts = facts;
+        facts.push(with("retire-node:mesh1.rpc.3", "NodeRestarting", &c));
+        facts.push(with("retire-node:mesh1.rpc.3", "TerminateRuntime", &c));
+        assert_eq!(in_flight_ops(&fold(&facts)), vec![b.clone(), c.clone()], "a successor holds the restart from the Build facts alone");
+        facts.push(with("restart-node:mesh1.rpc.3", "Complete", &c));
+        assert_eq!(in_flight_ops(&fold(&facts)), vec![b], "the restart's create half completing closes it");
     }
 
     #[tokio::test]
