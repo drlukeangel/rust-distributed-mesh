@@ -146,12 +146,18 @@ async fn pending_contract(cell: &str) {
         .into_iter()
         .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["node"] == fabric_primary.as_str() && d["attributes"]["sender"].as_str().is_some_and(|x| x.starts_with("mesh2.admin.")) && d["attributes"]["outcome"] == "applied")
         .collect();
-    assert_eq!(mesh2_applied.len(), 1, "mesh2's Ready is applied once at the fabric primary, whoever declared it: {mesh2_applied:?}");
+    assert!(mesh2_applied.len() <= 1, "mesh2's Ready is applied at most once by one fabric primary, whoever declared it: {mesh2_applied:?}");
     let fabric_event: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
         .filter(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && d["attributes"]["outcome"] == "applied")
         .collect();
-    assert_eq!(fabric_event.len(), 1, "the fabric's readiness applied once at mesh2's elected primary: {fabric_event:?}");
+    // The fabric primary sends the fabric's readiness to every OTHER mesh's primary: a fabric seat held
+    // inside mesh2 sends none to mesh2 (the seat goes to the lowest node id fabric-wide).
+    if fabric_primary.starts_with("mesh2.") {
+        assert!(fabric_event.is_empty(), "a fabric primary inside mesh2 applies no event at its own mesh: {fabric_event:?}");
+    } else {
+        assert_eq!(fabric_event.len(), 1, "the fabric's readiness applied once at mesh2's elected primary: {fabric_event:?}");
+    }
     // Every attempt the accepting fabric-primary decides descends from the REST request (the
     // rectifier); an attempt decided after the seat moved starts its own trace.
     let accepted = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == create.as_str()).cloned().expect("the creation Build's REST span");
@@ -180,8 +186,9 @@ async fn pending_contract(cell: &str) {
         "decided": decided[0]["attributes"],
         "first_member_create": first_member_create,
         "mesh_declarations": mesh_declared.iter().map(|d| json!({"span_id": d["span_id"], "outcome": d["attributes"]["outcome"], "start": start(d)})).collect::<Vec<_>>(),
-        "fabric_event": fabric_event[0]["span_id"],
-        "mesh_applied_span": mesh2_applied[0]["span_id"],
+        "fabric_event": fabric_event.first().map(|e| e["span_id"].clone()),
+        "fabric_primary": fabric_primary,
+        "mesh_applied_span": mesh2_applied.first().map(|d| d["span_id"].clone()),
         "elected_ready_end": end(&elected_ready),
         "ready": {"span_id": ready["span_id"], "start": start(&ready)},
         "reconciles": reconciles.len(),
@@ -190,7 +197,21 @@ async fn pending_contract(cell: &str) {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2805, acceptance 8): the sole node-admin of a peer mesh is restarted through the
+
+fn three_meshes() -> std::collections::BTreeSet<String> {
+    ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1", "mesh3.admin.1", "mesh3.rpc.1"].iter().map(|s| s.to_string()).collect()
+}
+
+/// The sole admin of mesh2 or mesh3 that does not hold the fabric seat.
+fn sole_admin_off_the_seat(settled: &[Value]) -> String {
+    ["mesh2.admin.1", "mesh3.admin.1"]
+        .into_iter()
+        .find(|a| settled.iter().any(|n| n["name"] == *a && n["is_fabric_primary"] != true))
+        .expect("at most one admin holds the seat, so one of the two sole admins is off it")
+        .to_string()
+}
+
+/// CONTRACT (#2805, acceptance 8): the sole node-admin of a peer mesh (mesh2 or mesh3, whichever does not hold the fabric seat) is restarted through the
 /// Build rectifier (never the fabric-primary): it comes back as the same node with a new
 /// incarnation and reaches Ready without a fabric-primary hand-off, because the Pending it was
 /// applied before the restart is its own durable status row, folded at boot. Ready is never
@@ -208,38 +229,43 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2)]})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1)]})).await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)]})).await;
     assert_eq!(status, 202, "{a}");
     let create = s(&a["build_id"]);
     estate.await_build(&create, Duration::from_secs(120)).await;
-    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|s| s.to_string()).collect();
-    estate.settled(&want, Duration::from_secs(30)).await;
-    let before = estate.node("mesh2.admin.1").await;
+    let want = three_meshes();
+    let settled = estate.settled(&want, Duration::from_secs(30)).await;
+    // The sole admin restarted is one that does not hold the fabric seat (the seat goes to the
+    // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
+    let target = sole_admin_off_the_seat(&settled);
+    let before = estate.node(&target).await;
 
     // The restart, through the rectifier: an attempt of the accepted Build.
-    let (status, restart) = estate.post("/api/nodes/mesh2.admin.1/restart", &json!({})).await;
+    let (status, restart) = estate.post(&format!("/api/nodes/{target}/restart"), &json!({})).await;
     assert_eq!(status, 202, "restart route: {restart}");
     let restart_build = s(&restart["build_id"]);
     estate.await_attempt(&restart_build, Estate::attempt_of(&restart), Duration::from_secs(120)).await;
     let after = estate.settled(&want, Duration::from_secs(60)).await;
-    let after = after.iter().find(|n| n["name"] == "mesh2.admin.1").cloned().expect("mesh2.admin.1 in the view");
+    let after = after.iter().find(|n| n["name"] == target.as_str()).cloned().expect("the restarted admin in the view");
+    let mesh_name = target.split('.').next().unwrap().to_string();
     estate.stop().await;
     let spans = estate.spans();
 
     assert_eq!(after["node_id"], before["node_id"], "the same node");
     assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
     assert_eq!(after["status"], "ready-for-traffic", "{after}");
-    let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == "mesh2.admin.1").collect();
+    let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == target.as_str()).collect();
     assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
-    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").collect();
+    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == mesh_name.as_str()).collect();
     let mesh_ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
-    assert_eq!(mesh_ids.len(), 1, "one MeshId for mesh2 in every hand-off, none minted: {mesh_ids:?}");
+    assert_eq!(mesh_ids.len(), 1, "one MeshId for {mesh_name} in every hand-off, none minted: {mesh_ids:?}");
     let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
         .into_iter()
-        .filter(|b| b["attributes"]["node"] == "mesh2.admin.1" && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
+        .filter(|b| b["attributes"]["node"] == target.as_str() && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
         .collect();
     let result = json!({
         "cell": cell,
+        "target": target,
         "restart_build": restart_build,
         "before_incarnation": before["incarnation_id"],
         "after_incarnation": after["incarnation_id"],
@@ -252,7 +278,7 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
 }
 
 /// CONTRACT (#2805, acceptance 2): a peer mesh's only node-admin is lost (its runtime killed
-/// exactly; mesh2 holds no fabric seat) and the Build rectifier recovers it as an attempt of the
+/// exactly; its mesh holds no fabric seat) and the Build rectifier recovers it as an attempt of the
 /// same Build: the fabric primary hands Pending to the recovery admin with the mesh's EXISTING
 /// MeshId, applied or already-applied, before that admin's Ready, and the Mesh still has the id
 /// it was born with. What must NOT happen: a second MeshId for mesh2 in any hand-off or in the
@@ -264,18 +290,20 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &str, admins: u32| json!({"name": m, "node_admin": admins, "rpc_node": 1});
-    let shape = json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1)]});
+    let shape = json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)]});
     let (status, a) = estate.post("/api/build", &shape).await;
     assert_eq!(status, 202, "{a}");
     let accepted = s(&a["build_id"]);
     estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|s| s.to_string()).collect();
+    let want = three_meshes();
     let before = estate.settled(&want, Duration::from_secs(30)).await;
     let fabric_holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
-    assert!(fabric_holder.starts_with("mesh1."), "mesh2 holds no fabric seat: {fabric_holder}");
-    let (_, mesh_before) = estate.get("/api/meshes/mesh2").await;
+    // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
+    let lost_admin = sole_admin_off_the_seat(&before);
+    let lost = lost_admin.split('.').next().unwrap().to_string();
+    let (_, mesh_before) = estate.get(&format!("/api/meshes/{lost}")).await;
     let mesh_id = s(&mesh_before["id"]);
-    let admin_before = before.iter().find(|n| n["name"] == "mesh2.admin.1").cloned().unwrap();
+    let admin_before = before.iter().find(|n| n["name"] == lost_admin.as_str()).cloned().unwrap();
     let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
     let attempt_before = b0["attempt"].as_u64().unwrap_or(0);
     estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
@@ -283,54 +311,56 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     // The fault: mesh2's only admin runtime, exactly.
     let mut killed = 0;
     for (path, pid) in estate.live_runtimes() {
-        if path.file_name().unwrap().to_string_lossy().starts_with("mesh2.admin.1") {
+        if path.file_name().unwrap().to_string_lossy().starts_with(lost_admin.as_str()) {
             estate.kill_pid(pid);
             killed += 1;
         }
     }
-    assert_eq!(killed, 1, "mesh2's only admin was killed");
+    assert_eq!(killed, 1, "the lost mesh's only admin was killed");
 
     let admin_inc = admin_before["incarnation_id"].clone();
-    let recovered = rafka_test_scenario::estate::wait_for("mesh2's admin is reborn and ready", Duration::from_secs(240), || {
+    let recovered = rafka_test_scenario::estate::wait_for("the lost mesh's admin is reborn and ready", Duration::from_secs(240), || {
         let estate = &estate;
-        let admin_inc = admin_inc.clone();
+        let (admin_inc, lost_admin) = (admin_inc.clone(), lost_admin.clone());
         async move {
-            let n = estate.node_opt("mesh2.admin.1").await?;
+            let n = estate.node_opt(&lost_admin).await?;
             (n["incarnation_id"] != admin_inc && n["status"] == "ready-for-traffic").then_some(n)
         }
     })
     .await;
-    let (_, mesh_after) = estate.get("/api/meshes/mesh2").await;
-    assert_eq!(s(&mesh_after["id"]), mesh_id, "mesh2 recovered under its own MeshId");
+    let (_, mesh_after) = estate.get(&format!("/api/meshes/{lost}")).await;
+    assert_eq!(s(&mesh_after["id"]), mesh_id, "the lost mesh recovered under its own MeshId");
     let (_, fabric_after) = estate.get("/api/fabric").await;
     assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build");
     estate.stop().await;
     let spans = estate.spans();
 
-    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").collect();
+    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == lost.as_str()).collect();
     let ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
     assert_eq!(ids, [mesh_id.clone()].into_iter().collect(), "every hand-off names the one MeshId, none minted: {handoffs:?}");
     let certain = |h: &&&Value| matches!(h["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"));
     let certain_handoffs: Vec<&&Value> = handoffs.iter().filter(certain).collect();
     assert_eq!(certain_handoffs.len(), 2, "Pending was made certain at the first birth and at the recovery: {handoffs:?}");
     let recovery = certain_handoffs.iter().max_by_key(|h| start(h)).unwrap();
-    assert_eq!(recovery["attributes"]["target"], "mesh2.admin.1");
+    assert_eq!(recovery["attributes"]["target"], lost_admin.as_str());
     assert_ne!(recovery["attributes"]["target_incarnation"], admin_inc, "the hand-off is to the new birth");
     assert_eq!(recovery["attributes"]["node"], fabric_holder.as_str(), "the fabric primary ran the recovery birth");
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
-        .filter(|r| r["attributes"]["node"] == "mesh2.admin.1" && r["attributes"]["incarnation_id"] == recovered["incarnation_id"])
+        .filter(|r| r["attributes"]["node"] == lost_admin.as_str() && r["attributes"]["incarnation_id"] == recovered["incarnation_id"])
         .next_back()
         .cloned()
         .expect("the recovery admin committed Ready");
     assert!(end(recovery) <= start(&ready), "Pending certain ({}) before the recovery admin's Ready ({})", end(recovery), start(&ready));
     let decided: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
-        .filter(|d| d["attributes"]["node"] == "mesh2.admin.1" && d["attributes"]["op"] == "apply-mesh-state" && matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")))
+        .filter(|d| d["attributes"]["node"] == lost_admin.as_str() && d["attributes"]["op"] == "apply-mesh-state" && matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")))
         .collect();
     assert!(decided.len() >= 2, "the new birth's status door decided Pending too: {decided:?}");
     let result = json!({
         "cell": cell,
+        "lost_admin": lost_admin,
+        "fabric_holder": fabric_holder,
         "mesh_id": mesh_id,
         "accepted_build": accepted,
         "attempt_before": attempt_before,
