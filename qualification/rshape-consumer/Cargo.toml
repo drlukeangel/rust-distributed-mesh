@@ -1,0 +1,48 @@
+# The i143 R-shape qualification consumer: a fresh, business-empty application that imports the
+# candidate RDM crates the way Rafka does, by git dependency pinned to one exact commit. It is
+# EXCLUDED from the RDM root workspace (root Cargo.toml `exclude`) and is its own workspace
+# root (the empty [workspace] table below), with its own lockfile.
+#
+# Rules the static ratchet enforces (tools/mesh-audit/tests/rshape_definition.rs): every RDM
+# dependency is a git dependency on the RDM repository at ONE exact 40-hex rev; no path
+# dependency, no [patch], no [replace], no branch/tag, no Rafka business crate.
+[package]
+name = "rshape-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Business-empty R-shape consumer: four node entry points composed through RDM's public seams"
+
+[workspace]
+
+[dependencies]
+rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "5532aabd535753ef37dace974af8b4de84203e3e" }
+rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "5532aabd535753ef37dace974af8b4de84203e3e" }
+rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "5532aabd535753ef37dace974af8b4de84203e3e" }
+rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "5532aabd535753ef37dace974af8b4de84203e3e" }
+# Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
+# originate) the mock roles serve, and the process bring-up they act through.
+rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "5532aabd535753ef37dace974af8b4de84203e3e" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+anyhow = "1"
+
+[lib]
+name = "rshape_consumer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rshape-node-admin"
+path = "src/bin/rshape_node_admin.rs"
+
+[[bin]]
+name = "rshape-compute"
+path = "src/bin/rshape_compute.rs"
+
+[[bin]]
+name = "rshape-gateway"
+path = "src/bin/rshape_gateway.rs"
+
+[[bin]]
+name = "rshape-broker"
+path = "src/bin/rshape_broker.rs"

@@ -21,6 +21,9 @@ members = [
     "tools/mesh-audit",
     "crates/scratch-json-dumper",
 ]
+# The R-shape qualification consumer is an independent customer: its own workspace root and
+# lockfile, importing RDM by git rev (scripts/i143-rshape-build-consumer.sh).
+exclude = ["qualification/rshape-consumer"]
 resolver = "2"
 
 [workspace.dependencies]
