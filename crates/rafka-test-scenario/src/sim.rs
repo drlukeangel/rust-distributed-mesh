@@ -121,9 +121,33 @@ pub enum Mode {
 /// Dropped with the test: its tasks end with it.
 pub struct Tap {
     addr: SocketAddr,
+    stats: std::sync::Arc<TapStats>,
+    latency: std::sync::Arc<std::sync::atomic::AtomicU64>,
     to_server: watch::Sender<Mode>,
     to_client: watch::Sender<Mode>,
     tasks: Vec<JoinHandle<()>>,
+}
+
+/// What the tap did, per direction: datagrams forwarded, queued and dropped.
+#[derive(Debug, Default)]
+pub struct TapStats {
+    pub to_server: DirStats,
+    pub to_client: DirStats,
+}
+
+#[derive(Debug, Default)]
+pub struct DirStats {
+    pub forwarded: std::sync::atomic::AtomicU64,
+    pub held: std::sync::atomic::AtomicU64,
+    pub dropped: std::sync::atomic::AtomicU64,
+}
+
+impl DirStats {
+    /// `(forwarded, held, dropped)`.
+    pub fn snapshot(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.forwarded.load(Relaxed), self.held.load(Relaxed), self.dropped.load(Relaxed))
+    }
 }
 
 impl Tap {
@@ -136,32 +160,62 @@ impl Tap {
         let client: std::sync::Arc<std::sync::Mutex<Option<SocketAddr>>> = Default::default();
         let (to_server, server_mode) = watch::channel(Mode::Pass);
         let (to_client, client_mode) = watch::channel(Mode::Pass);
+        let stats = std::sync::Arc::new(TapStats::default());
+        let latency: std::sync::Arc<std::sync::atomic::AtomicU64> = Default::default();
+        let (up_tx, up_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (down_tx, down_rx) = tokio::sync::mpsc::unbounded_channel();
+        let up_out = {
+            let back = back.clone();
+            tokio::spawn(deliver(up_rx, move |d| {
+                let back = back.clone();
+                async move { let _ = back.send(&d).await; }
+            }))
+        };
+        let down_out = {
+            let (front, client) = (front.clone(), client.clone());
+            tokio::spawn(deliver(down_rx, move |d| {
+                let (front, client) = (front.clone(), client.clone());
+                async move {
+                    let to = *client.lock().unwrap();
+                    if let Some(to) = to {
+                        let _ = front.send_to(&d, to).await;
+                    }
+                }
+            }))
+        };
         let up = {
-            let (front, back, client) = (front.clone(), back.clone(), client.clone());
+            let (stats, latency) = (stats.clone(), latency.clone());
+            let (front, client) = (front.clone(), client.clone());
             tokio::spawn(async move {
-                pump(server_mode, || async { recv(&front).await.map(|(d, from)| { *client.lock().unwrap() = Some(from); d }) }, |d| {
-                    let back = back.clone();
-                    async move { let _ = back.send(&d).await; }
+                pump(server_mode, stats, |s| &s.to_server, || async { recv(&front).await.map(|(d, from)| { *client.lock().unwrap() = Some(from); d }) }, |d| {
+                    let _ = up_tx.send((due(&latency), d));
+                    async {}
                 })
                 .await
             })
         };
         let down = {
-            let (front, back, client) = (front.clone(), back.clone(), client.clone());
+            let (stats, latency) = (stats.clone(), latency.clone());
+            let back = back.clone();
             tokio::spawn(async move {
-                pump(client_mode, || async { recv(&back).await.map(|(d, _)| d) }, |d| {
-                    let (front, client) = (front.clone(), client.clone());
-                    async move {
-                        let to = *client.lock().unwrap();
-                        if let Some(to) = to {
-                            let _ = front.send_to(&d, to).await;
-                        }
-                    }
+                pump(client_mode, stats, |s| &s.to_client, || async { recv(&back).await.map(|(d, _)| d) }, |d| {
+                    let _ = down_tx.send((due(&latency), d));
+                    async {}
                 })
                 .await
             })
         };
-        Ok(Self { addr, to_server, to_client, tasks: vec![up, down] })
+        Ok(Self { addr, stats, latency, to_server, to_client, tasks: vec![up, down, up_out, down_out] })
+    }
+
+    /// Datagram counts per direction.
+    pub fn stats(&self) -> &TapStats {
+        &self.stats
+    }
+
+    /// Every forwarded datagram, in both directions, is delivered `d` after it is read (order kept).
+    pub fn set_latency(&self, d: std::time::Duration) {
+        self.latency.store(d.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The address a caller dials.
@@ -188,6 +242,22 @@ impl Drop for Tap {
     }
 }
 
+fn due(latency: &std::sync::atomic::AtomicU64) -> tokio::time::Instant {
+    tokio::time::Instant::now() + std::time::Duration::from_micros(latency.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Deliver each datagram at its due time, in the order read.
+async fn deliver<S, SF>(mut rx: tokio::sync::mpsc::UnboundedReceiver<(tokio::time::Instant, Vec<u8>)>, send: S)
+where
+    S: Fn(Vec<u8>) -> SF,
+    SF: std::future::Future<Output = ()>,
+{
+    while let Some((at, d)) = rx.recv().await {
+        tokio::time::sleep_until(at).await;
+        send(d).await;
+    }
+}
+
 async fn recv(s: &UdpSocket) -> Option<(Vec<u8>, SocketAddr)> {
     let mut buf = vec![0u8; 65536];
     let (n, from) = s.recv_from(&mut buf).await.ok()?;
@@ -197,29 +267,30 @@ async fn recv(s: &UdpSocket) -> Option<(Vec<u8>, SocketAddr)> {
 
 /// One direction: read a datagram, then pass it, queue it or drop it by the current mode; a switch
 /// back to pass delivers the queue first.
-async fn pump<R, RF, S, SF>(mut mode: watch::Receiver<Mode>, read: R, send: S)
+async fn pump<R, RF, S, SF>(mut mode: watch::Receiver<Mode>, stats: std::sync::Arc<TapStats>, dir: fn(&TapStats) -> &DirStats, read: R, send: S)
 where
     R: Fn() -> RF,
     RF: std::future::Future<Output = Option<Vec<u8>>>,
     S: Fn(Vec<u8>) -> SF,
     SF: std::future::Future<Output = ()>,
 {
+    use std::sync::atomic::Ordering::Relaxed;
     let mut held: std::collections::VecDeque<Vec<u8>> = Default::default();
     loop {
         tokio::select! {
             changed = mode.changed() => {
                 if changed.is_err() { return; }
                 if *mode.borrow() == Mode::Pass {
-                    while let Some(d) = held.pop_front() { send(d).await; }
+                    while let Some(d) = held.pop_front() { dir(&stats).forwarded.fetch_add(1, Relaxed); send(d).await; }
                 }
             }
             got = read() => {
                 let Some(d) = got else { return };
                 let m = *mode.borrow();
                 match m {
-                    Mode::Pass => send(d).await,
-                    Mode::Hold => held.push_back(d),
-                    Mode::Drop => {}
+                    Mode::Pass => { dir(&stats).forwarded.fetch_add(1, Relaxed); send(d).await }
+                    Mode::Hold => { dir(&stats).held.fetch_add(1, Relaxed); held.push_back(d) }
+                    Mode::Drop => { dir(&stats).dropped.fetch_add(1, Relaxed); }
                 }
             }
         }

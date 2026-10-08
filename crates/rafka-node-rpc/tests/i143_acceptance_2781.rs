@@ -11,8 +11,10 @@
 //! its whole scenario twice from one seed: the recorded events and typed outcomes must be equal.
 //! Every cut is preceded by a completed healthy invocation in the same capture.
 
+use iroh::endpoint::presets;
+use iroh::endpoint::transports::{PathSelection, PathSelectionContext, PathSelector};
 use iroh::protocol::Router;
-use iroh::SecretKey;
+use iroh::{Endpoint, RelayMode, SecretKey};
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallEvidence, CallOptions, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -26,6 +28,45 @@ use std::time::Duration;
 use tracing::Instrument;
 
 const SEED: u64 = 0x2781;
+
+/// The network seam owns every path between a caller and a node. Iroh's QUIC NAT traversal makes
+/// each side advertise its bound loopback address; the peer validates a direct path to it, and its
+/// default selector moves the connection onto that path as soon as it measures a lower RTT than
+/// the tap's (observed: the caller selected the direct path, abandoned the tap's, and the held or
+/// lost reply never crossed the tap). This selector keeps the first path a connection has, the one
+/// the caller dialled (the tap's address, the node's side of it being the tap's back socket), so a
+/// direct path stays a backup that the dialling side closes, and every datagram of the invocation
+/// crosses the tap.
+#[derive(Debug)]
+struct FirstPathOnly;
+
+impl PathSelector for FirstPathOnly {
+    fn select(&self, ctx: &PathSelectionContext<'_>) -> PathSelection {
+        let mut selection = PathSelection::none();
+        if ctx.current().is_none() {
+            if let Some(first) = ctx.paths().next() {
+                selection.set(&first);
+            }
+        }
+        selection
+    }
+}
+
+/// `rafka_node_rpc::endpoint::bind`'s configuration with [`FirstPathOnly`].
+async fn bind_behind_tap() -> Endpoint {
+    Endpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::generate())
+        .alpns(vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+        .relay_mode(RelayMode::Disabled)
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .clear_ip_transports()
+        .bind_addr("127.0.0.1:0")
+        .unwrap()
+        .path_selector(std::sync::Arc::new(FirstPathOnly))
+        .bind()
+        .await
+        .unwrap()
+}
 
 fn acceptance_dir(cell: &str) -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
@@ -134,9 +175,9 @@ struct Node {
 }
 
 async fn node() -> Node {
-    let key = SecretKey::generate();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = bind_behind_tap().await;
+    let key = ep.secret_key().clone();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let (gate, gated) = tokio::sync::watch::channel(false);
     let hooks = Arc::new(Hooks { handled: Mutex::default(), store: Mutex::default(), reached: tokio::sync::Notify::new(), gate });
@@ -179,7 +220,7 @@ async fn caller(record: ResolvedNode) -> Caller {
     let resolver = Arc::new(StaticResolver::new());
     let target = NodeTarget::ExactNode(record.node_id.clone());
     resolver.insert(record);
-    let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let cep = bind_behind_tap().await;
     Caller { client: Arc::new(NodeRpcClient::new(cep, resolver.clone())), resolver, target }
 }
 
@@ -360,6 +401,8 @@ async fn reply_cut(seed: u64) -> Report {
         r.s.record("cut", cut.name());
         let n = node().await;
         let tap = Tap::start(n.record.transport_addr).await.unwrap();
+        // A tap path slower than a direct loopback path by more than iroh's switching margin.
+        tap.set_latency(Duration::from_millis(15));
         let mut behind = n.record.clone();
         behind.transport_addr = tap.addr();
         let c = caller(behind).await;
@@ -383,6 +426,9 @@ async fn reply_cut(seed: u64) -> Report {
         assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline));
         assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was cut");
         assert!(!o.proves_not_dispatched());
+        // The reply crossed the tap and was cut there: nothing reached the caller another way.
+        let (_, held, dropped) = tap.stats().to_client.snapshot();
+        assert!(if cut == Cut::ReplyLost { dropped > 0 } else { held > 0 }, "the cut reply datagrams were seen by the tap: held {held}, dropped {dropped}");
         tap.set_to_client(Mode::Pass);
         r.s.record("tap", "to_client=pass");
         // The stored mutation reconciles with what the node holds, read by a new invocation.

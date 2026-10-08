@@ -27,3 +27,6 @@ rafka-test-scenario = { path = "../rafka-test-scenario" }
 serde_json = { workspace = true }
 # i143_acceptance_2780: the proof store and its apply failpoints are the testkit seam the UNIT cells serve over real Node RPC.
 rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }
+# i143_acceptance_2781: the tap cells pin each connection to the path the caller dialled, through
+# iroh's PathSelector (gated behind this feature; test builds only).
+iroh = { workspace = true, features = ["unstable-custom-transports"] }
