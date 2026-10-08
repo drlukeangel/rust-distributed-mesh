@@ -207,7 +207,7 @@ struct Runner {
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
     async fn run(&self, _: &BuildId, _attempt: u32, op: &BuildOperation) -> Result<(), String> {
-        let BuildOperation::CreateNode { node: path } = op else { return Err(format!("unexpected {op:?}")) };
+        let BuildOperation::CreateNode { node: path, .. } = op else { return Err(format!("unexpected {op:?}")) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));

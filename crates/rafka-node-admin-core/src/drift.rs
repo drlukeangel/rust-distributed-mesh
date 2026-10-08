@@ -18,6 +18,23 @@ use crate::model::{IncarnationId, NodeKind, NodeStatus};
 use crate::topology::Topology;
 use std::collections::HashSet;
 
+/// One birth whose exact runtime the provider proved exited, and the exit code that proof carries
+/// (`None` when no code is provable: the exit is then unplanned and unexplained).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitedBirth {
+    pub node_id: crate::model::NodeId,
+    pub incarnation: IncarnationId,
+    pub code: Option<i32>,
+}
+
+impl ExitedBirth {
+    /// The proof names `TRANSPORT_STOPPED`: exactly the reserved exit code, never inferred from a
+    /// network symptom. Every other exit, and an unknown reason, is a replacement.
+    pub fn transport_stopped(&self) -> bool {
+        self.code == Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE)
+    }
+}
+
 /// One cohort below what the topology names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortfall {

@@ -350,3 +350,95 @@ mod container_id_tests {
         assert_eq!(container_id_in_mountinfo("2 1 259:2 /var/lib/docker/containers/ABC/hostname /etc/hostname rw\n"), None, "never a short or malformed id");
     }
 }
+
+/// The exit code of a runtime whose mesh transport stopped for good (`TRANSPORT_STOPPED`): a
+/// named terminal reason, reserved. No other exit uses it, and no code is ever inferred as this
+/// one from a network symptom.
+pub const TRANSPORT_STOPPED_EXIT_CODE: i32 = 4;
+
+/// The record a process runtime writes into its own data dir before it exits on purpose.
+pub const EXIT_FILE: &str = "exit.json";
+
+/// A runtime's own statement of why it ended, keyed to the one deployment and incarnation that
+/// wrote it. It is the proof a successor admin reads for a process it did not launch, whose exit
+/// code its provider cannot see.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitRecord {
+    pub deployment_id: String,
+    pub incarnation: String,
+    pub code: i32,
+    pub reason: String,
+}
+
+impl ExitRecord {
+    /// Write this record as `dir`'s exit record (atomically).
+    pub fn write(&self, dir: &Path) -> Result<(), String> {
+        let tmp = dir.join(format!("{EXIT_FILE}.tmp"));
+        let body = serde_json::to_vec(self).map_err(|e| e.to_string())?;
+        std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, dir.join(EXIT_FILE)).map_err(|e| format!("{EXIT_FILE}: {e}"))
+    }
+
+    /// The exit code `dir` proves for exactly this `deployment_id` and `incarnation`: `None` when
+    /// no record is written or the record is another birth's.
+    pub fn proven_code(dir: &Path, deployment_id: &str, incarnation: &str) -> Option<i32> {
+        let raw = std::fs::read(dir.join(EXIT_FILE)).ok()?;
+        let r: Self = serde_json::from_slice(&raw).ok()?;
+        (r.deployment_id == deployment_id && r.incarnation == incarnation).then_some(r.code)
+    }
+
+    /// Remove `dir`'s exit record (a new birth in the data dir starts without its predecessor's).
+    pub fn clear(dir: &Path) {
+        let _ = std::fs::remove_file(dir.join(EXIT_FILE));
+    }
+}
+
+/// The identity this process exits under: its data dir, deployment and incarnation.
+#[derive(Debug, Clone)]
+pub struct OwnExit {
+    pub data_dir: std::path::PathBuf,
+    pub deployment_id: String,
+    pub incarnation: String,
+}
+
+static OWN_EXIT: std::sync::OnceLock<OwnExit> = std::sync::OnceLock::new();
+
+/// Name the identity this process records its intentional exit under. Set once, at boot.
+pub fn set_own_exit(own: OwnExit) {
+    let _ = OWN_EXIT.set(own);
+}
+
+/// The process's mesh transport stopped for good: record why, durably, in the data dir, then
+/// exit with [`TRANSPORT_STOPPED_EXIT_CODE`]. The record is what lets a successor admin prove the
+/// reason for a process it did not launch.
+pub fn exit_transport_stopped(reason: &str) -> ! {
+    match OWN_EXIT.get() {
+        Some(own) => {
+            let record = ExitRecord { deployment_id: own.deployment_id.clone(), incarnation: own.incarnation.clone(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: reason.to_string() };
+            if let Err(e) = record.write(&own.data_dir) {
+                eprintln!("the exit record could not be written to {}: {e}", own.data_dir.display());
+            }
+        }
+        None => eprintln!("this process named no exit identity; no exit record is written"),
+    }
+    std::process::exit(TRANSPORT_STOPPED_EXIT_CODE)
+}
+
+#[cfg(test)]
+mod exit_record_tests {
+    use super::*;
+
+    #[test]
+    fn an_exit_record_proves_its_own_birth_and_no_other() {
+        let dir = std::env::temp_dir().join(format!("rafka-exit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "gossip refused".into() }.write(&dir).unwrap();
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), Some(4));
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-b", "inc-a"), None, "another deployment's record proves nothing");
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-b"), None, "another incarnation's record proves nothing");
+        ExitRecord::clear(&dir);
+        assert_eq!(ExitRecord::proven_code(&dir, "dep-a", "inc-a"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

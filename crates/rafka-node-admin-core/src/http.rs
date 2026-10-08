@@ -365,6 +365,11 @@ async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Res
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, false).await?))
 }
 
+async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+    let node = parse_path(&name)?;
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, true).await?))
+}
+
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
     let t = cp.topology.read().await;
     Json(json!({ "nodes": t.nodes }))
@@ -450,6 +455,7 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/spawn", post(spawn_node))
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
+        .route("/api/nodes/{name}/replace", post(replace_node))
         .route("/api/meshes", post(create_mesh))
         .route("/api/meshes/{id}", get(get_mesh).delete(delete_mesh))
         .route("/api/fabric", get(get_fabric))

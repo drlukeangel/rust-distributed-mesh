@@ -285,6 +285,13 @@ impl NodeAdminClient {
         Ok(a.build_id)
     }
 
+    /// `POST /api/nodes/{name}/replace`: the next attempt of the accepted Build retires the live
+    /// birth and creates a new node at the path.
+    pub async fn replace(&self, node: &PathName) -> Result<BuildId, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/replace"), None).await?;
+        Ok(a.build_id)
+    }
+
     /// `POST /api/build`: reconcile the whole fabric to `desired`.
     pub async fn build(&self, desired: &FabricDesired) -> Result<BuildId, ClientError> {
         let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;

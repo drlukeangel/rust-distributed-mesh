@@ -148,7 +148,7 @@ pub async fn wait_for_signal(binary: &str) {
         tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
             .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
         eprintln!("{binary}: the mesh transport stopped: {reason}");
-        std::process::exit(4);
+        rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
     };
     #[cfg(unix)]
     {
@@ -192,6 +192,12 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
+    // The identity this process records its intentional exit under (a transport that stopped).
+    rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
+        data_dir: launch.data_dir.clone(),
+        deployment_id: runtime.deployment_id.clone(),
+        incarnation: launch.incarnation.0.clone(),
+    });
     // This runtime holds the claims of its handed addresses as itself before binding them: the
     // admin that reserved them may die while this node lives on them.
     rafka_node_admin_core::deployment::endpoint::hold_as_runtime(std::iter::once(launch.transport_addr).chain(launch.listeners.iter().map(|(_, a)| *a)));

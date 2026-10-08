@@ -448,21 +448,30 @@ pub async fn reconcile_drift(
     if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
         return None;
     }
+    // Every unheard birth whose exact runtime the provider proves exited, with the exit code the
+    // proof carries (the provider's own, or the process runtime's record in its data dir).
     let mut exited = HashSet::new();
+    let mut proven: std::collections::BTreeMap<PathName, crate::drift::ExitedBirth> = Default::default();
     for n in crate::drift::unheard(t) {
-        let Some(fact) = book.get(n.node_id.as_str()).map(|(dg, _)| dg).filter(|dg| Some(&dg.node.incarnation) == n.incarnation_id.as_ref()).and_then(|dg| dg.node.runtime) else {
-            continue;
-        };
+        let Some((dg, _)) = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref()) else { continue };
+        let Some(fact) = dg.node.runtime.clone() else { continue };
         // Proof is the exact runtime's own terminal status, in this
         // provider's control domain; anything else proves nothing.
         let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
-        if matches!(provider.inspect(&handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
-            exited.insert(n.incarnation_id.clone().expect("filtered on it"));
+        let status = crate::deployment::provider::exit_proof(provider.inspect(&handle).await, &fact, dg.data_dir.as_deref().map(std::path::Path::new), &dg.node.incarnation.0);
+        if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
+            let incarnation = n.incarnation_id.clone().expect("filtered on it");
+            exited.insert(incarnation.clone());
+            proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code });
         }
     }
     let short = crate::drift::shortfall(&current.topology, t, &exited);
+    // One exited birth per attempt, in path.name order; the next pass takes the next remaining one.
+    let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
+        proven.iter().find(|(p, _)| short.iter().any(|s| s.exited.iter().any(|e| *e == p.to_string())));
     // Surplus: a live birth of a kept Mesh the accepted topology does not name (a removal the
-    // executing view had not heard yet when the Build closed).
+    // executing view had not heard yet when the Build closed). Its retirement is its own attempt,
+    // taken only once no exited birth is left to repair.
     let mut surplus: Vec<String> = t
         .nodes
         .iter()
@@ -470,20 +479,25 @@ pub async fn reconcile_drift(
         .map(|n| n.name.to_string())
         .collect();
     surplus.sort();
-    if short.is_empty() && surplus.is_empty() {
+    if first_exited.is_none() && surplus.is_empty() {
         return None;
     }
     let attempt = current.attempt + 1;
-    let mut key: Vec<String> = short.iter().flat_map(|s| s.exited.iter().cloned()).chain(surplus.iter().cloned()).collect();
-    key.sort();
+    let (key, scope, action) = match first_exited {
+        Some((path, birth)) => {
+            let action = if birth.transport_stopped() {
+                crate::accepted::AttemptAction::Restart { path: path.clone(), from_incarnation: birth.incarnation.clone() }
+            } else {
+                crate::accepted::AttemptAction::Replace { path: path.clone(), from_incarnation: birth.incarnation.clone() }
+            };
+            let scope = short.iter().filter(|s| s.exited.iter().any(|e| *e == path.to_string())).map(ToString::to_string).collect::<Vec<_>>().join("; ");
+            (vec![path.to_string()], scope, Some(action))
+        }
+        None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
+    };
     if !started.insert((current.build_id.clone(), attempt, key)) {
         return None;
     }
-    let mut scope: Vec<String> = short.iter().map(ToString::to_string).collect();
-    if !surplus.is_empty() {
-        scope.push(format!("surplus: {}", surplus.join(" ")));
-    }
-    let scope = scope.join("; ");
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-proven-drift",
         build_id = %current.build_id,
@@ -492,12 +506,14 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace" }).unwrap_or("none"),
+        exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
     );
     let opened = crate::build_state::AttemptOpened {
         build_id: current.build_id.clone(),
         attempt,
         reason: crate::build_state::AttemptReason::ProvenDrift,
-        action: None,
+        action,
         opened_by: me.to_string(),
         opened_at_ms: now_ms(),
     };
@@ -975,13 +991,19 @@ impl AdminRunner {
         }
     }
 
-    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
+    async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, replaces: Option<&IncarnationId>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
         if restart_of.is_none() {
             match self.fence_predecessor(node).await {
                 // The member is alive (it answers) or held (its exact runtime still runs):
                 // nothing to create. Silence never authorizes a replacement.
                 FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
-                FenceOutcome::Clear { gone: Some(prev) } => self.publish_proven_departure(build_id, attempt, node, &prev).await,
+                FenceOutcome::Clear { gone: Some(prev) } => {
+                    // A Replace is fenced to the exact birth it was opened for; the proof is that birth's.
+                    if let Some(inc) = replaces.filter(|inc| prev.incarnation_id.as_ref() != Some(*inc)) {
+                        return Err(format!("{node}: the attempt replaces birth {} but the provider proved birth {} exited at this path", inc.0, prev.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("(none)")));
+                    }
+                    self.publish_proven_departure(build_id, attempt, node, &prev).await
+                }
                 FenceOutcome::Clear { gone: None } => {}
             }
         }
@@ -1118,7 +1140,7 @@ impl AdminRunner {
                 self.records.meshes.lock().unwrap().entry(mesh.clone()).or_insert_with(MeshId::mint);
                 Ok(())
             }
-            BuildOperation::CreateNode { node } => {
+            BuildOperation::CreateNode { node, replaces } => {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt);
                 async {
                     // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it
@@ -1127,7 +1149,7 @@ impl AdminRunner {
                     // proceed (e4.s11).
                     let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).all(|n| !n.status.is_live());
                     let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
-                    self.create(build_id, attempt, node, None, before_ready).await
+                    self.create(build_id, attempt, node, None, replaces.as_ref(), before_ready).await
                 }
                 .instrument(span)
                 .await
@@ -1136,7 +1158,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 async {
                     let prior = self.retire_for_restart(build_id, attempt, node).await?;
-                    self.create(build_id, attempt, node, prior, None).await
+                    self.create(build_id, attempt, node, prior, None, None).await
                 }
                 .instrument(span)
                 .await
@@ -1871,6 +1893,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             f
         }
     };
+    // The identity this process records its intentional exit under (a transport that stopped).
+    rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
+        data_dir: cfg.data_dir.clone(),
+        deployment_id: runtime.deployment_id.clone(),
+        incarnation: incarnation.0.clone(),
+    });
     // Own digest, published on the membership cadence.
     let digest = Arc::new(Mutex::new(MeshDigest {
         fabric_id: cfg.fabric_id.clone(),

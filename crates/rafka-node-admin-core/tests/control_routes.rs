@@ -179,6 +179,30 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert_eq!(*h.cp.topology.read().await, before, "no route touched the observed topology");
 }
 
+/// CONTRACT: `POST /api/nodes/{name}/replace` mints no Build. It opens the next attempt of the
+/// accepted Build, reason `replace`, fenced to the exact birth the view holds at the path, and
+/// leaves `Fabric.build_id` and the topology alone. An unknown path is refused by name.
+#[tokio::test]
+async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_live_birth() {
+    let h = harness(Router::new()).await;
+    let b0 = h.cp.accepted.build_id().await.unwrap().0;
+    let seed = h.facts().await.len();
+    let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/replace", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "{v}");
+    let birth = h.cp.topology.read().await.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
+    let (status, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.2/replace", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
+    assert_eq!(v["build_id"], b0.as_str(), "no Build is minted: {v}");
+    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
+    assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("replace"), Some("replace"), Some("mesh1.rpc.2")), "{b}");
+    assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the held birth: {b}");
+    assert_eq!(h.facts().await.len(), seed + 1, "exactly one fact: the opened attempt");
+    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b0 && o.attempt == 2));
+    assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b0));
+    let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
+    assert_eq!(f["build_id"], b0.as_str(), "Fabric.build_id is unchanged by a replace");
+}
+
 #[tokio::test]
 async fn post_build_and_mesh_routes_submit_build() {
     let h = harness(Router::new()).await;
@@ -331,6 +355,7 @@ async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_chan
         ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))),
         ("POST", "/api/meshes", Some(json!({"name": "mesh2", "node_admin": 1, "rpc_node": 1}))),
         ("POST", "/api/nodes/mesh1.rpc.1/restart", None),
+        ("POST", "/api/nodes/mesh1.rpc.1/replace", None),
     ] {
         let (s, v) = call(&app, method, uri, body).await;
         assert_eq!(s, StatusCode::CONFLICT, "{method} {uri}: {v}");

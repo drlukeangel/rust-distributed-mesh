@@ -114,6 +114,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         // A record left by an earlier birth in this data dir is not this one's:
         // the birth waits for the one the pipeline makes available.
         let _ = std::fs::remove_file(spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE));
+        rafka_mesh_entity::runtime::ExitRecord::clear(&spec.data_dir);
         let mut cmd = std::process::Command::new(&spec.executable);
         cmd.args(&spec.args).envs(&spec.env).stdin(Stdio::null()).stdout(log("stdout.log")?).stderr(log("stderr.log")?);
         #[cfg(unix)]

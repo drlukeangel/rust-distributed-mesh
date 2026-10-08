@@ -142,7 +142,14 @@ pub enum BuildIntent {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BuildOperation {
     CreateMesh { mesh: String },
-    CreateNode { node: PathName },
+    /// Create a node at `node`. `replaces` names the birth at the path an accepted Replace
+    /// attempt proved exited: its departure (NodeDeleted) is published from the provider's proof
+    /// of that exact birth before the new one is born.
+    CreateNode {
+        node: PathName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<IncarnationId>,
+    },
     RestartNode { node: PathName },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
@@ -155,7 +162,7 @@ impl BuildOperation {
     pub fn key(&self) -> String {
         match self {
             Self::CreateMesh { mesh } => format!("create-mesh:{mesh}"),
-            Self::CreateNode { node } => format!("create-node:{node}"),
+            Self::CreateNode { node, .. } => format!("create-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::RetireMesh { mesh } => format!("retire-mesh:{mesh}"),
@@ -268,10 +275,10 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
             let taken: BTreeSet<u32> = members.iter().map(|n| n.name.ordinal).collect();
             let mut ord = 1;
             for _ in have..want {
-                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) }) {
+                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None }) {
                     ord += 1;
                 }
-                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
+                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None });
                 ord += 1;
             }
         } else if have > want {
@@ -289,7 +296,7 @@ fn create_mesh(desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     ops.push(BuildOperation::CreateMesh { mesh: desired.name.clone() });
     for (kind, want) in desired.counts() {
         for ord in 1..=want {
-            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
+            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None });
         }
     }
 }
@@ -349,7 +356,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
                 return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
             }
             if !observed.node(target).is_some_and(|n| n.status.is_live()) {
-                ops.push(BuildOperation::CreateNode { node: target.clone() });
+                ops.push(BuildOperation::CreateNode { node: target.clone(), replaces: None });
             }
         }
         BuildIntent::AddNode { mesh, node_kind, target: None } => {
@@ -387,7 +394,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
         BuildIntent::ReplaceNode { node } => {
             find_live(observed, node)?;
             ops.push(BuildOperation::RetireNode { node: node.clone() });
-            ops.push(BuildOperation::CreateNode { node: node.clone() });
+            ops.push(BuildOperation::CreateNode { node: node.clone(), replaces: None });
         }
         BuildIntent::CreateMesh { desired } => {
             validate_mesh(desired)?;
@@ -417,7 +424,7 @@ pub fn pin(intent: BuildIntent, observed: &Topology) -> Result<BuildIntent, Buil
     Ok(match intent {
         BuildIntent::AddNode { mesh, node_kind, target: None } => {
             let target = planned.operations.iter().find_map(|op| match op {
-                BuildOperation::CreateNode { node } if node.kind == node_kind => Some(node.clone()),
+                BuildOperation::CreateNode { node, .. } if node.kind == node_kind => Some(node.clone()),
                 _ => None,
             });
             BuildIntent::AddNode { mesh, node_kind, target }
@@ -477,7 +484,7 @@ mod tests {
     }
 
     fn create(s: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: p(s) }
+        BuildOperation::CreateNode { node: p(s), replaces: None }
     }
 
     fn with_incarnations(mut t: Topology) -> Topology {

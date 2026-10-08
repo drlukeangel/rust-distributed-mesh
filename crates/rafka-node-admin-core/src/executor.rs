@@ -38,7 +38,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A member node of any kind is born, restarted and retired by its own mesh's primary
         // admin (the fabric primary when the mesh has none): the rule names no role, so a
         // product's kinds get the same executor as the proof product's rpc node.
-        BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node }
+        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node }
             if node.kind != NodeKind::NodeAdmin =>
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
@@ -301,7 +301,7 @@ mod tests {
     }
 
     fn create(n: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: n.parse().unwrap() }
+        BuildOperation::CreateNode { node: n.parse().unwrap(), replaces: None }
     }
 
     fn who(op: &BuildOperation, t: &Topology) -> String {

@@ -205,6 +205,19 @@ pub enum TerminationMode {
     Immediate,
 }
 
+/// `status` of `fact`'s runtime with the exit code its own record proves. A process this admin did
+/// not launch and found dead reads `Exited { code: None }`: the process runtime recorded a
+/// deliberate exit in its data dir, keyed to its deployment and incarnation, and only that exact
+/// record turns the unknown code into the recorded one. A container's code is Docker's own.
+pub fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option<&std::path::Path>, incarnation: &str) -> DeploymentStatus {
+    match (status, fact.provider, data_dir) {
+        (DeploymentStatus::Exited { code: None }, RuntimeProvider::Process, Some(dir)) => {
+            DeploymentStatus::Exited { code: rafka_mesh_entity::runtime::ExitRecord::proven_code(dir, &fact.deployment_id, incarnation) }
+        }
+        (other, _, _) => other,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentStatus {
     Running,

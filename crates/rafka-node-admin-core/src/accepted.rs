@@ -296,6 +296,13 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
     let mut ops = Vec::new();
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
+    // The birth the attempt's action is fenced to, when the view still holds exactly it and it is
+    // not already leaving (a leaving birth keeps the path to its departure). The action owns its
+    // path: the generic create below never plans it a second time.
+    let acted: Option<(&PathName, &IncarnationId)> = action.and_then(|a| {
+        let (AttemptAction::Restart { path, from_incarnation } | AttemptAction::Replace { path, from_incarnation }) = a;
+        observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| (path, from_incarnation))
+    });
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone() });
@@ -304,25 +311,28 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::fence_predecessor`).
+            if acted.is_some_and(|(a, _)| a == p) {
+                continue;
+            }
             if !observed.node(p).is_some_and(|n| n.status.is_live()) {
-                ops.push(BuildOperation::CreateNode { node: p.clone() });
+                ops.push(BuildOperation::CreateNode { node: p.clone(), replaces: None });
             }
         }
     }
-    if let Some(a) = action {
+    if let (Some(a), Some((path, _))) = (action, acted) {
+        let birth = observed.node(path).expect("acted names a held birth");
         match a {
-            AttemptAction::Restart { path, from_incarnation } => {
-                // Done once the path runs a birth other than the one replaced.
-                if observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving) {
-                    ops.push(BuildOperation::RestartNode { node: path.clone() });
-                }
+            // The birth is live (a requested restart) or proven exited (a drift restart): either
+            // way the same identity is re-created.
+            AttemptAction::Restart { .. } => ops.push(BuildOperation::RestartNode { node: path.clone() }),
+            // A live birth is retired, then a new one is created at the path.
+            AttemptAction::Replace { .. } if birth.status.is_live() => {
+                ops.push(BuildOperation::RetireNode { node: path.clone() });
+                ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
             }
-            AttemptAction::Replace { path, from_incarnation } => {
-                if observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status.is_live()) {
-                    ops.push(BuildOperation::RetireNode { node: path.clone() });
-                    ops.push(BuildOperation::CreateNode { node: path.clone() });
-                }
-            }
+            // An exited birth needs no retirement: the create publishes its departure from the
+            // provider's proof of that exact birth, then births the new node.
+            AttemptAction::Replace { from_incarnation, .. } => ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: Some(from_incarnation.clone()) }),
         }
     }
     // A live node of a kept mesh that the topology no longer names is retired; a mesh the
@@ -562,7 +572,7 @@ mod tests {
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         assert_eq!(
             plan(&cur, &o, None).operations,
-            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]
+            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), replaces: None }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]
         );
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
@@ -581,7 +591,7 @@ mod tests {
         let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(
             plan(&cur, &o, Some(&replace)).operations,
-            vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone() }]
+            vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }]
         );
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();
@@ -593,6 +603,34 @@ mod tests {
         let mut bad = cur.clone();
         bad.meshes.get_mut("mesh1").unwrap().nodes.retain(|p| p.kind == NodeKind::RpcNode);
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
+    }
+
+    /// CONTRACT: an action fenced to a birth the view holds exited plans that path exactly once, as
+    /// the action says: a Restart re-creates the SAME identity (no fresh create beside it); a Replace
+    /// creates the next node and names the exact birth whose departure the create publishes from the
+    /// provider's proof. A birth already leaving keeps its path to its departure.
+    #[test]
+    fn an_action_on_an_exited_birth_plans_its_path_once() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        for dead in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
+            let mut o = mn();
+            o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = dead;
+            let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
+            let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
+            assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
+            let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+            assert_eq!(plan(&cur, &o, Some(&replace)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
+            // Another birth at the path: the action is satisfied; the generic create decides alone.
+            let other = AttemptAction::Replace { path: path.clone(), from_incarnation: IncarnationId::mint() };
+            assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }], "{dead:?}");
+        }
+        let mut leaving = mn();
+        leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;
+        let from = leaving.node(&path).unwrap().incarnation_id.clone().unwrap();
+        for a in [AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() }, AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }] {
+            assert_eq!(plan(&cur, &leaving, Some(&a)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
+        }
     }
 
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's
