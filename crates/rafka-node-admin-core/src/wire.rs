@@ -615,3 +615,125 @@ impl WireMessage {
         })
     }
 }
+
+// ---- the join answer -----------------------------------------------------------------------
+
+/// What a join's `Joined` reply carries: the admin's entry answer as one postcard frame
+/// (`JoinNode`, op `0x1D`). Its topology projection is the typed [`Topology`], its control state
+/// is [`WireControl`], its members and source snapshots carry `WireDigest`s, and its status
+/// frames are the gossip `Frame`s they already are. The in-memory [`EntryAnswer`] keeps the JSON
+/// values its consumers read; they are converted here and nowhere else.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireEntryAnswer {
+    served_by: String,
+    topology: crate::topology::Topology,
+    members: Vec<rafka_mesh_entity::wire::WireDigest>,
+    control: WireControl,
+    statuses: Vec<rafka_mesh_transport::membership::Frame>,
+    sources: Vec<WireSource>,
+}
+
+/// The fabric control state an admin hands a joiner.
+#[derive(Serialize, Deserialize, Default)]
+pub(crate) struct WireControl {
+    fabric: Option<WireFabric>,
+    shutdown: Option<FabricShutdown>,
+    build: Option<WireBuildFloor>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireBuildFloor {
+    build_id: BuildId,
+    attempt: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireSource {
+    mesh: String,
+    publisher: rafka_mesh_transport::snapshot::PublisherId,
+    topology_version: u64,
+    digests: Vec<rafka_mesh_entity::wire::WireDigest>,
+    in_flight: Vec<LifecycleOp>,
+    departed: Vec<LifecycleOp>,
+}
+
+/// The JSON shape the answer's control value has in memory (`admin.rs` writes and reads it).
+#[derive(Deserialize)]
+struct ControlJson {
+    #[serde(default)]
+    fabric: Option<FabricRecord>,
+    #[serde(default)]
+    shutdown: Option<FabricShutdown>,
+    #[serde(default)]
+    build: Option<WireBuildFloorJson>,
+}
+
+#[derive(Deserialize)]
+struct WireBuildFloorJson {
+    build_id: BuildId,
+    attempt: u32,
+}
+
+/// `answer` as one postcard frame, or the reason a part of it has no wire shape.
+pub fn answer_to_wire(answer: &rafka_mesh_transport::entry::EntryAnswer) -> Result<Vec<u8>, String> {
+    let topology: crate::topology::Topology = serde_json::from_value(answer.topology.clone()).map_err(|e| format!("the answer's topology is not a Topology: {e}"))?;
+    let control = if answer.control.is_null() {
+        WireControl::default()
+    } else {
+        let c: ControlJson = serde_json::from_value(answer.control.clone()).map_err(|e| format!("the answer's control state does not decode: {e}"))?;
+        WireControl {
+            fabric: c.fabric.map(|r| WireFabric { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+            shutdown: c.shutdown,
+            build: c.build.map(|b| WireBuildFloor { build_id: b.build_id, attempt: b.attempt }),
+        }
+    };
+    let wire = WireEntryAnswer {
+        served_by: answer.served_by.clone(),
+        topology,
+        members: answer.members.iter().map(Into::into).collect(),
+        control,
+        statuses: answer.statuses.clone(),
+        sources: answer
+            .sources
+            .iter()
+            .map(|s| WireSource {
+                mesh: s.mesh.clone(),
+                publisher: s.publisher.clone(),
+                topology_version: s.topology_version,
+                digests: s.digests.iter().map(Into::into).collect(),
+                in_flight: s.in_flight.clone(),
+                departed: s.departed.clone(),
+            })
+            .collect(),
+    };
+    rafka_mesh_transport::wire::encode(&wire).map_err(|e| e.to_string())
+}
+
+/// The entry answer one postcard frame carries.
+pub fn answer_from_wire(bytes: &[u8]) -> Result<rafka_mesh_transport::entry::EntryAnswer, String> {
+    let w: WireEntryAnswer = rafka_mesh_transport::wire::decode(bytes).map_err(|e| e.to_string())?;
+    let control = serde_json::json!({
+        "fabric": w.control.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+        "shutdown": w.control.shutdown,
+        "build": w.control.build.map(|b| serde_json::json!({ "build_id": b.build_id, "attempt": b.attempt })),
+    });
+    Ok(rafka_mesh_transport::entry::EntryAnswer {
+        served_by: w.served_by,
+        topology: serde_json::to_value(&w.topology).map_err(|e| e.to_string())?,
+        members: w.members.into_iter().map(Into::into).collect(),
+        control,
+        statuses: w.statuses,
+        sources: w
+            .sources
+            .into_iter()
+            .map(|s| rafka_mesh_transport::snapshot::SourceSnapshot {
+                mesh: s.mesh,
+                publisher: s.publisher,
+                topology_version: s.topology_version,
+                digests: s.digests.into_iter().map(Into::into).collect(),
+                in_flight: s.in_flight,
+                departed: s.departed,
+            })
+            .collect(),
+    })
+}

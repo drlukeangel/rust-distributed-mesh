@@ -10,12 +10,13 @@
 //! refused by name with both values.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
+use rafka_mesh_entity::wire::WireDigest;
 use rafka_mesh_entity::{MeshDigest, RuntimeFact};
 use rafka_mesh_transport::entry::EntryAnswer;
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
-use rafka_node_rpc_contract::outcome::{MalformedKind, RpcOutcome};
+use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::collections::HashMap;
 use tracing::Instrument as _;
 use std::future::Future;
@@ -146,9 +147,7 @@ pub type JoinSlot = Arc<OnceLock<Arc<JoinDoor>>>;
 impl JoinDoor {
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
         let JoinRequest::JoinNode { digest } = req;
-        let Some(d) = MeshDigest::decode(&digest) else {
-            return JoinReply::Malformed { kind: MalformedKind::Corrupt };
-        };
+        let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-join",
             node = %d.node.name,
@@ -201,7 +200,7 @@ impl JoinDoor {
         }
         tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, members = answer.members.len(), sources = answer.sources.len())
             .in_scope(|| tracing::info!("entry answered"));
-        match serde_json::to_vec(&answer) {
+        match crate::wire::answer_to_wire(&answer) {
             Ok(bytes) => JoinReply::Joined { answer: bytes },
             Err(e) => JoinReply::NotReady { reason: format!("{}: its answer does not encode: {e}", self.me) },
         }
@@ -242,7 +241,7 @@ impl std::fmt::Display for JoinFailure {
 /// `JoinNode` to `target` (the admin whose endpoint reads `anchor` in short form) with `digest`,
 /// within `attempts` of five seconds each. A refusal by name ends it at once.
 pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str, digest: &MeshDigest, attempts: u32) -> Result<EntryAnswer, JoinFailure> {
-    let req = JoinRequest::JoinNode { digest: digest.encode() };
+    let req = JoinRequest::JoinNode { digest: WireDigest::from(digest) };
     let node = digest.node.name.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
@@ -252,7 +251,7 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
         let (out, _) = client.call::<Join>(target, &req, &opts).await;
         let (step, result): (&str, Result<EntryAnswer, JoinFailure>) = match out {
             RpcOutcome::Reply(r) => match r.value().clone() {
-                JoinReply::Joined { answer } => match serde_json::from_slice::<EntryAnswer>(&answer) {
+                JoinReply::Joined { answer } => match crate::wire::answer_from_wire(&answer) {
                     Ok(a) => ("answered", Ok(a)),
                     Err(e) => ("answered", Err(JoinFailure::Refused(format!("the answer does not decode: {e}")))),
                 },

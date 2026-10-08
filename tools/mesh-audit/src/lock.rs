@@ -191,6 +191,8 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rafka-mesh-transport/src/wire.rs",
     "crates/rafka-node-admin-core/src/fabric_builds.rs",
     "crates/rafka-node-admin-core/src/wire.rs",
+    "crates/rafka-node-admin-core/src/join.rs",
+    "crates/rafka-mesh-entity/src/wire.rs",
     "crates/rafka-node-rpc-contract/src",
     "crates/rafka-node-rpc/src",
 ];
@@ -218,6 +220,9 @@ pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
 pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "admin-ui/", "cli/", "gateway/", "broker/", "compute/", "registry/", "qualification/", "tools/"];
+/// The join (`JoinNode`, 0x1D): its serve and call sites, and the cell that proves its postcard shape.
+pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
+pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -569,6 +574,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
             require(root, "crates/rafka-mesh-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame"], ratchet, &mut out);
             require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rafka_mesh_transport::wire::encode", "rafka_mesh_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
+            require(root, JOIN_SOURCE, &["WireDigest::from", "crate::wire::answer_to_wire", "crate::wire::answer_from_wire"], ratchet, &mut out);
+            require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {

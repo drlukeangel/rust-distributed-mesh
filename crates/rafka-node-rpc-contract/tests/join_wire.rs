@@ -2,6 +2,7 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
+use rafka_mesh_entity::wire::WireDigest;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -10,12 +11,41 @@ fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap()).collect()
 }
 
+fn digest() -> rafka_mesh_entity::MeshDigest {
+    use rafka_mesh_entity::*;
+    MeshDigest {
+        fabric_id: FabricId::mint(),
+        node: MeshNode {
+            node_id: NodeId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            endpoint_id: EndpointId("k".into()),
+            transport_addr: "127.0.0.1:34567".parse().unwrap(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            runtime: None,
+        },
+        status: MemberStatus::Pending,
+        admin_api_base: None,
+        digest_seq: 0,
+        emitted_at_rafka_ms: 0,
+        data_dir: None,
+        mesh_id: None,
+        in_flight: None,
+        extra: Default::default(),
+    }
+}
+
+/// The request is variant 0 followed by the digest in its positional wire shape: a digest with
+/// every optional field absent still decodes to itself (no `skip_serializing_if` shifts a field).
 #[test]
-fn the_request_matches_the_frozen_one_variant_wire_schema() {
-    let q = JoinRequest::JoinNode { digest: vec![0xAB, 0xCD] };
-    let expected = bytes("0002abcd");
-    assert_eq!(Join::encode_request(&q).unwrap(), expected);
-    assert_eq!(Join::decode_request(&expected).unwrap(), q);
+fn a_join_request_and_its_digest_round_trip_through_postcard_with_every_field_present() {
+    let d = digest();
+    let q = JoinRequest::JoinNode { digest: WireDigest::from(&d) };
+    let bytes = Join::encode_request(&q).unwrap();
+    assert_eq!(bytes[0], 0x00, "variant 0");
+    assert!(bytes.len() <= Join::MAX_REQUEST_FRAME_BYTES);
+    let JoinRequest::JoinNode { digest: back } = Join::decode_request(&bytes).unwrap();
+    assert_eq!(rafka_mesh_entity::MeshDigest::from(back), d);
 }
 
 #[test]

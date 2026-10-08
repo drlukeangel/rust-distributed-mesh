@@ -142,7 +142,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         };
         let dep = deployed();
         let reported = joins.expect(dep.clone());
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.encode() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into() };
         let peer = dep.endpoint_id.clone();
 
         let mut wrong_incarnation = digest_of(&dep, "127.0.0.1:34567");

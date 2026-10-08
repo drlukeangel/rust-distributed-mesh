@@ -13,12 +13,16 @@
 //! NotAuthority          the receiver did not deploy this birth and holds no member of that name
 //! ```
 //!
-//! `digest` and `answer` are carried as the bytes their own types encode to (a `MeshDigest` and
-//! an `EntryAnswer` hold self-describing members that the positional codec of this envelope
-//! cannot carry). The family is not forwardable: the deploying admin decides its own joins.
+//! The request carries the digest typed, as `WireDigest` (`rafka_mesh_entity::wire`, the same
+//! positional shape a gossip frame carries). The answer is the postcard of the admin's entry
+//! answer (`rafka-node-admin-core` `wire::WireEntryAnswer`): its topology projection, its
+//! membership frames and its source snapshots are types of crates this contract does not depend
+//! on, so they travel as one postcard frame of their own, never JSON. The family is not
+//! forwardable: the deploying admin decides its own joins.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
+use rafka_mesh_entity::wire::WireDigest;
 use serde::{Deserialize, Serialize};
 
 pub struct Join;
@@ -26,7 +30,7 @@ pub struct Join;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinRequest {
     /// The node reports its full digest, with the address it really bound.
-    JoinNode { digest: Vec<u8> },
+    JoinNode { digest: WireDigest },
 }
 
 impl JoinRequest {
@@ -40,6 +44,7 @@ impl JoinRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinReply {
     /// The join is taken. `answer` is what the admin holds now.
+    /// `answer` is one postcard frame of the admin's `WireEntryAnswer`.
     Joined { answer: Vec<u8> },
     /// The reported digest disagrees with what the admin deployed.
     JoinMismatch { field: String, deployed: String, reported: String },
@@ -138,8 +143,7 @@ mod tests {
             assert_eq!(back, r);
             assert_eq!(Join::classify_reply(&back), kind);
         }
-        let q = JoinRequest::JoinNode { digest: vec![7; 100] };
-        assert_eq!(Join::decode_request(&Join::encode_request(&q).unwrap()).unwrap(), q);
+        
     }
 
     #[test]

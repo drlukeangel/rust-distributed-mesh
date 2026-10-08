@@ -15,6 +15,7 @@ pub mod lifecycle;
 pub mod path;
 pub mod reconnect;
 pub mod runtime;
+pub mod wire;
 
 pub use connections::{
     CarrierChoice, CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery,
