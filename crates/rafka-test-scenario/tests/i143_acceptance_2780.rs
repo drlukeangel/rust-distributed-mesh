@@ -622,8 +622,12 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
         "pointer" => {
             let moved: Vec<&Value> = named(spans, "rdm.node_admin.fabric.update.via-build-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
             assert!(!moved.is_empty(), "`{cut}`: Fabric.build_id moved to the Build");
-            assert!(moved.iter().all(|s| span_start(s) >= span_end(hold)), "`{cut}`: the pointer moved only after the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moved_ms_after_release": (span_start(moved[0]) - span_end(hold)) / 1_000_000});
+            // The accepting admin's move spans its own write (so it began inside the hold and ends after
+            // the release); every other admin moves its pointer only on hearing the record, which the
+            // accepting admin broadcasts after its write.
+            assert!(moved.iter().all(|s| span_end(s) >= span_end(hold)), "`{cut}`: no pointer move completed before the release");
+            assert!(moved.iter().filter(|s| attr(s, "via").starts_with("gossip")).all(|s| span_start(s) >= span_end(hold)), "`{cut}`: no other admin heard the record before the release");
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moves": moved.iter().map(|s| json!({"node": attr(s, "node"), "via": attr(s, "via").chars().take(8).collect::<String>(), "ended_ms_after_release": (span_end(s) as i64 - span_end(hold) as i64) / 1_000_000})).collect::<Vec<_>>()});
         }
         "ready-after" => {
             let node = c["node"].as_str().unwrap();
