@@ -208,6 +208,9 @@ pub enum BuildStateError {
     Unencodable(String),
     /// A journal line that does not decode, named with its line number.
     CorruptJournal { line: usize, reason: String },
+    /// The attempt number is held by another opener's action: `held` is what the number carries,
+    /// `wanted` what this open asked for. The number is never shared by two actions.
+    AttemptTaken { build_id: BuildId, attempt: u32, held: String, wanted: String },
 }
 
 impl std::fmt::Display for BuildStateError {
@@ -218,6 +221,9 @@ impl std::fmt::Display for BuildStateError {
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
             Self::CorruptJournal { line, reason } => write!(f, "build journal line {line} does not decode: {reason}"),
+            Self::AttemptTaken { build_id, attempt, held, wanted } => {
+                write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
+            }
         }
     }
 }
@@ -395,8 +401,10 @@ pub struct UnrecognisedStep {
 pub trait BuildStateAdapter: Send + Sync {
     /// Record an accepted Build. Insert-and-fail on its id.
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError>;
-    /// Open an attempt of a Build. Insert-and-fail on `(build_id, attempt)`: the first opener wins,
-    /// a second open of the same attempt changes nothing.
+    /// Open an attempt of a Build. Insert-and-fail on `(build_id, attempt)`: the first opener wins.
+    /// A second open of the same attempt that asks for the same action (two authorities proving the
+    /// same drift) changes nothing and succeeds; one that asks for another action is refused
+    /// `AttemptTaken`, so no caller is told an attempt is open for an action it does not carry.
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
     /// Tell the fabric `Fabric.build_id` moved (the record it names). A local-only adapter has no
     /// fabric to tell.
@@ -419,6 +427,16 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
+}
+
+/// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
+fn describe_open(o: &AttemptOpened) -> String {
+    let action = match &o.action {
+        Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Replace { path, from_incarnation }) => format!("replace of {path} from {from_incarnation}"),
+        None => "no fenced action".to_string(),
+    };
+    format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
 }
 
 /// The shared append-and-fold core of both RDM adapters.
@@ -454,14 +472,32 @@ impl FactLog {
     fn is_new(&self, f: &BuildFact) -> bool {
         match f {
             BuildFact::Accepted(i) => !self.known(&i.build_id),
-            BuildFact::Opened(o) => !self.is_opened(&o.build_id, o.attempt),
+            BuildFact::Opened(o) => self.opened(&o.build_id, o.attempt).is_none(),
             BuildFact::Claim(c) => self.claim_holder(&c.build_id, c.attempt).is_none(),
             _ => !self.facts.contains(f),
         }
     }
 
-    fn is_opened(&self, build_id: &BuildId, attempt: u32) -> bool {
-        self.facts.iter().any(|f| matches!(f, BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt))
+    fn opened(&self, build_id: &BuildId, attempt: u32) -> Option<&AttemptOpened> {
+        self.facts.iter().find_map(|f| match f {
+            BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt => Some(o),
+            _ => None,
+        })
+    }
+
+    /// Whether `wanted` may be recorded: `Ok(true)` the number is free, `Ok(false)` it is held for the
+    /// same action (nothing to record), `Err(AttemptTaken)` it is held for another.
+    fn admit_open(&self, wanted: &AttemptOpened) -> Result<bool, BuildStateError> {
+        match self.opened(&wanted.build_id, wanted.attempt) {
+            None => Ok(true),
+            Some(held) if held.action == wanted.action => Ok(false),
+            Some(held) => Err(BuildStateError::AttemptTaken {
+                build_id: wanted.build_id.clone(),
+                attempt: wanted.attempt,
+                held: describe_open(held),
+                wanted: describe_open(wanted),
+            }),
+        }
     }
 
     fn claim_holder(&self, build_id: &BuildId, attempt: u32) -> Option<String> {
@@ -555,7 +591,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         if !log.known(&opened.build_id) {
             return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
         }
-        if !log.is_opened(&opened.build_id, opened.attempt) {
+        if log.admit_open(opened)? {
             log.facts.push(BuildFact::Opened(opened.clone()));
         }
         Ok(())
@@ -678,14 +714,14 @@ impl BuildStateAdapter for FileJournal {
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         let _w = self.writer.lock().await;
-        let opened_already = {
+        let free = {
             let log = self.log.lock().unwrap();
             if !log.known(&opened.build_id) {
                 return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
             }
-            log.is_opened(&opened.build_id, opened.attempt)
+            log.admit_open(opened)?
         };
-        if !opened_already {
+        if free {
             self.append(BuildFact::Opened(opened.clone())).await?;
         }
         Ok(())
@@ -953,6 +989,41 @@ mod tests {
         let b = m.read_build(&BuildId("b1".into())).await.unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Running, 2, Some("b")));
         assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId("b9".into()))));
+    }
+
+    /// Two openers that computed one attempt number from one settled Build: the first append holds it.
+    /// The second asking for the same action is the same attempt (two authorities proving one drift);
+    /// asking for another action it is refused by name, naming what holds the number, and appends nothing.
+    #[tokio::test]
+    async fn an_attempt_number_held_for_one_action_is_refused_to_another() {
+        use crate::accepted::AttemptAction;
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
+        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Replace { path: path.parse().unwrap(), from_incarnation: from.clone() });
+        let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
+        first.action = act("mesh1.rpc.2", &inc);
+        m.open_attempt(&first).await.unwrap();
+        let mut same = opened("b1", 2, AttemptReason::Replace);
+        same.action = act("mesh1.rpc.2", &inc);
+        same.opened_by = "mesh2.admin.1".into();
+        m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
+        let mut other_node = opened("b1", 2, AttemptReason::Restart);
+        other_node.action = Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: other.clone() });
+        let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
+        match &err {
+            BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
+                assert_eq!((build_id.0.as_str(), *attempt), ("b1", 2));
+                assert!(held.contains("replace of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
+                assert!(wanted.contains("restart of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
+            }
+            other => panic!("not AttemptTaken: {other:?}"),
+        }
+        let mut other_birth = opened("b1", 2, AttemptReason::Replace);
+        other_birth.action = act("mesh1.rpc.2", &other);
+        assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path fenced to another birth is another action");
+        assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
     }
 
     #[tokio::test]

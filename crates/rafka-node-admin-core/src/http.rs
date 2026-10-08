@@ -196,6 +196,7 @@ impl ControlPlane {
                     None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
                 }
             };
+            let node_name = path.to_string();
             let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
             let opened = AttemptOpened {
                 build_id: current.build_id.clone(),
@@ -212,7 +213,18 @@ impl ControlPlane {
                 .put(&opened.build_id, opened.attempt, &crate::build_claim::current_context())
                 .await
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
-            self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
+            if let Err(e) = self.builds.open_attempt(&opened).await {
+                return Err(match e {
+                    BuildStateError::AttemptTaken { .. } => {
+                        outer.in_scope(|| {
+                            tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id, attempt = opened.attempt, node = %node_name, detail = %e)
+                                .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
+                        });
+                        Refusal::AttemptTaken(e.to_string())
+                    }
+                    e => Refusal::State(e),
+                });
+            }
             tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
             self.build_submitted.notify_waiters();
             Ok::<Opened, Refusal>(Opened { build_id: current.build_id, attempt: opened.attempt })
@@ -277,6 +289,8 @@ pub enum Refusal {
     BuildInProgress(BuildId),
     /// This admin is not the fabric-primary (named when known).
     NotAuthority(Option<String>),
+    /// The attempt number this request computed was opened first by another action.
+    AttemptTaken(String),
     /// The admin cannot decide the request yet (not hydrated).
     Unavailable(String),
     State(BuildStateError),
@@ -303,6 +317,7 @@ impl IntoResponse for Refusal {
                 )
                     .into_response()
             }
+            Refusal::AttemptTaken(d) => (StatusCode::CONFLICT, "attempt-taken".into(), d.clone()),
             Refusal::Unavailable(d) => (StatusCode::SERVICE_UNAVAILABLE, "accepted-build-unavailable".into(), d.clone()),
             Refusal::State(e) => (StatusCode::SERVICE_UNAVAILABLE, "build-state-unavailable".into(), e.to_string()),
         };

@@ -615,6 +615,12 @@ pub async fn reconcile_drift(
             span.in_scope(|| tracing::info!("a birth the accepted topology names is proven gone: the next attempt of the same Build is open"));
             Some((current.build_id.clone(), attempt))
         }
+        Err(e @ crate::build_state::BuildStateError::AttemptTaken { .. }) => {
+            // Another action holds the number: nothing was opened, and there is no attempt to execute.
+            tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, detail = %e)
+                .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"));
+            None
+        }
         Err(e) => {
             span.in_scope(|| tracing::info!(error = %e, "the attempt could not be opened"));
             None
