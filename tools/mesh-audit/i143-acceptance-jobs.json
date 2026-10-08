@@ -120,6 +120,18 @@
           "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
         }
       ]
+    },
+    "i143-2805-container": {
+      "issue": 2805,
+      "layer": "container",
+      "cells": [
+        {
+          "name": "bootstrap_admin_repeats_status_contract_in_container_domain",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
+          "command": "MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_repeats_status_contract_in_container_domain -- --exact",
+          "dir": "target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain"
+        }
+      ]
     }
   },
   "rshape_jobs": {

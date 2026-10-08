@@ -52,7 +52,19 @@ fn end(sp: &Value) -> u64 {
 /// bootstrap admin taking a seat by accepting Pending.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bootstrap_admin_receives_pending_before_own_mesh_attempt() {
-    let cell = "bootstrap_admin_receives_pending_before_own_mesh_attempt";
+    pending_contract("bootstrap_admin_receives_pending_before_own_mesh_attempt").await;
+}
+
+/// CONTRACT (#2805): the same Pending contract as the PROCESS cell, on a real same-Docker-domain
+/// estate: every node runs in a container of the fabric's one Docker domain, and the boundaries
+/// hold exactly as on processes. Refused by name unless the estate really runs on containers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bootstrap_admin_repeats_status_contract_in_container_domain() {
+    assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
+    pending_contract("bootstrap_admin_repeats_status_contract_in_container_domain").await;
+}
+
+async fn pending_contract(cell: &str) {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -69,6 +81,20 @@ async fn bootstrap_admin_receives_pending_before_own_mesh_attempt() {
         ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
     let nodes = estate.settled(&want, Duration::from_secs(30)).await;
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("mesh2 elects a primary");
+    // The provider every mesh2 member actually ran on, from the view (and, on containers, its
+    // immutable container id).
+    let provider = estate.owner.provider.clone();
+    let mesh2_runtimes: Vec<Value> = nodes
+        .iter()
+        .filter(|n| n["mesh"] == "mesh2" && n["kind"] != "node_admin")
+        .map(|n| json!({"node": n["name"], "provider": n["provider"], "container": estate.container_of(&s(&n["name"]))}))
+        .collect();
+    for r in &mesh2_runtimes {
+        assert_eq!(r["provider"], provider.as_str(), "{r}");
+        if provider == "container" {
+            assert_eq!(r["container"].as_str().map(str::len), Some(64), "an immutable container id: {r}");
+        }
+    }
     estate.stop().await;
     let spans = estate.spans();
 
@@ -114,6 +140,8 @@ async fn bootstrap_admin_receives_pending_before_own_mesh_attempt() {
         "attempt": build["attempt"],
         "executor": build["executor"],
         "mesh2_primary": mesh2_primary,
+        "provider": provider,
+        "mesh2_runtimes": mesh2_runtimes,
         "joined": {"span_id": joined["span_id"], "end": end(&joined), "served_by": joined["attributes"]["joined"]},
         "handoff": {"span_id": handoff["span_id"], "trace_id": handoff["trace_id"], "start": start(handoff), "end": end(handoff), "attributes": handoff["attributes"]},
         "handoffs_seen": handoffs.len(),

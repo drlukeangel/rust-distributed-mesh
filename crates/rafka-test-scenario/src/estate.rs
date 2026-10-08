@@ -27,7 +27,10 @@ pub struct Owner {
 pub fn artifacts_root() -> PathBuf {
     match std::env::var("RAFKA_ARTIFACTS_DIR") {
         Ok(d) if Path::new(&d).is_absolute() => PathBuf::from(d),
-        Ok(d) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d),
+        // Relative to the workspace root, resolved to its real path: the estate hands this path to
+        // every admin (RAFKA_EVIDENCE_DIR) and bind-mounts it into every container, where a path
+        // that walks `crates/rafka-test-scenario/../..` names nothing.
+        Ok(d) => Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the workspace root exists").join(d),
         Err(_) => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/artifacts"),
     }
 }
