@@ -266,6 +266,26 @@
           "dir": "target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path"
         }
       ]
+    },
+    "i143-2779-unit": {
+      "issue": 2779,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "action_generator_replays_seed_preserves_legal_sequence",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2779.rs",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2779 action_generator_replays_seed_preserves_legal_sequence -- --exact",
+          "dir": "target/i143-acceptance/2779/unit/action_generator_replays_seed_preserves_legal_sequence",
+          "evidence": "model"
+        },
+        {
+          "name": "action_shrinker_preserves_failure_returns_minimal_legal_sequence",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2779.rs",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2779 action_shrinker_preserves_failure_returns_minimal_legal_sequence -- --exact",
+          "dir": "target/i143-acceptance/2779/unit/action_shrinker_preserves_failure_returns_minimal_legal_sequence",
+          "evidence": "model"
+        }
+      ]
     }
   },
   "rshape_jobs": {
