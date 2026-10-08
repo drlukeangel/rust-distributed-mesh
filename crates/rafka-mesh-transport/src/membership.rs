@@ -1476,6 +1476,11 @@ impl Membership {
     /// no topology yet.
     pub fn held_topology(&self, own: &MeshDigest) -> Result<Vec<SourceSnapshot>, String> {
         let mut held = self.held_sources();
+        // A source's members are served only while this node still hears them: a held source
+        // outlives a primary that stopped publishing, and its dead members are not live because a
+        // reader asked (a read must never refresh a member's liveness).
+        let current = self.book.current(self.book.staleness_floor());
+        held = held.into_iter().map(|s| only_live_members(s, &current)).collect();
         let mesh = &self.view.mesh;
         let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) else {
             return Err(format!("{}: holds no source version of its own mesh {mesh} yet (its mesh primary has not put one into the mesh)", self.view.node));
@@ -1601,6 +1606,13 @@ impl Membership {
     pub async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
         self.mesh.join_peers(peers).await
     }
+}
+
+/// `source` without the members `current` (the digests the book still hears) does not hold at the
+/// same birth.
+pub fn only_live_members(mut source: SourceSnapshot, current: &[MeshDigest]) -> SourceSnapshot {
+    source.digests.retain(|d| current.iter().any(|c| c.node.node_id == d.node.node_id && c.node.incarnation == d.node.incarnation));
+    source
 }
 
 /// What a top-up read installed.
@@ -2638,6 +2650,34 @@ mod tests {
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         assert!(!book.deleting(op(&id, &inc, "retire-node:mesh1.rpc.1")), "no overlay on a departed node");
+    }
+
+    #[test]
+    fn a_held_source_serves_only_the_members_the_book_still_hears() {
+        let now = Instant::now();
+        let book = DigestBook::with_floor(Duration::from_secs(600), Duration::from_secs(3), Duration::from_millis(500));
+        let (live, dead) = ((NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()));
+        let (d_live, d_dead) = (digest(&live.0, &live.1, None, MemberStatus::ReadyForTraffic, 1), digest(&dead.0, &dead.1, None, MemberStatus::ReadyForTraffic, 1));
+        assert!(book.record_at(d_live.clone(), now));
+        assert!(book.record_at(d_dead.clone(), now - Duration::from_secs(20)));
+        let source = SourceSnapshot {
+            mesh: "mesh1".into(),
+            publisher: PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId("old".into()) },
+            topology_version: 4,
+            digests: vec![d_live.clone(), d_dead],
+            in_flight: vec![],
+            departed: vec![],
+        };
+        let served = only_live_members(source, &book.current_at(book.staleness_floor(), now));
+        assert_eq!(served.digests.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>(), vec![live.0.clone()], "the member unheard past the floor is not served");
+        assert_eq!(served.topology_version, 4, "the source keeps its publisher and version");
+        let reborn = {
+            let mut d = d_live;
+            d.node.incarnation = IncarnationId::mint();
+            d
+        };
+        let again = only_live_members(SourceSnapshot { digests: vec![reborn], ..served }, &book.current_at(book.staleness_floor(), now));
+        assert!(again.digests.is_empty(), "another birth of the same node is not the birth the book hears");
     }
 
     #[test]
