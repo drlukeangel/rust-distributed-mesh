@@ -13,6 +13,7 @@ use rafka_node_admin_client::binding::{sha256_file, Binding, BindingSet, Candida
 use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
 use rafka_test_scenario::estate::{bin_dir, named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::Door;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -64,65 +65,7 @@ fn binding_set(sha: &str) -> BindingSet {
     }
 }
 
-// ---- the door ------------------------------------------------------------------------------------
-
-/// One faulted admin's door (`rafka_node_rpc_testkit::admin_faults::router`), found by the path
-/// the admin recorded it at.
-#[derive(Clone)]
-struct Door {
-    name: String,
-    /// The fault door.
-    base: String,
-    /// The admin's control API: the Build state it holds is the one it wrote.
-    api: String,
-    http: reqwest::Client,
-}
-
-impl Door {
-    async fn open(root: &Path, name: &str, api: &str) -> Door {
-        let file = root.join("faults").join(format!("{name}.door"));
-        let base = wait_for(&format!("{name} records its fault door at {}", file.display()), Duration::from_secs(60), || async { std::fs::read_to_string(&file).ok().filter(|b| !b.is_empty()) }).await;
-        Door { name: name.into(), base, api: api.into(), http: reqwest::Client::new() }
-    }
-
-    async fn arm(&self, id: &str, spec: Value) -> Value {
-        let mut body = spec;
-        body["id"] = json!(id);
-        let r = self.http.post(format!("{}/faults/arm", self.base)).json(&body).send().await.unwrap_or_else(|e| panic!("{}: arm {id}: {e}", self.name));
-        let status = r.status().as_u16();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        assert_eq!(status, 200, "{}: arming `{id}` is acknowledged: {v}", self.name);
-        assert_eq!(v["armed"], id, "{v}");
-        v
-    }
-
-    async fn state(&self) -> Value {
-        let r = self.http.get(format!("{}/faults", self.base)).send().await.unwrap_or_else(|e| panic!("{}: fault state: {e}", self.name));
-        r.json().await.unwrap()
-    }
-
-    async fn cut(&self, id: &str) -> Value {
-        self.state().await["cuts"][id].clone()
-    }
-
-    /// The acknowledgement that the injection is active: the cut holds a call, and which.
-    async fn wait_held(&self, id: &str) -> Value {
-        wait_for(&format!("{}: cut `{id}` holds a call", self.name), Duration::from_secs(90), || async {
-            let c = self.cut(id).await;
-            (c["held"] == true && !c["hit"].is_null()).then_some(c)
-        })
-        .await
-    }
-
-    async fn release(&self, id: &str) -> Value {
-        let r = self.http.post(format!("{}/faults/release", self.base)).json(&json!({"id": id})).send().await.unwrap_or_else(|e| panic!("{}: release {id}: {e}", self.name));
-        let status = r.status().as_u16();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        assert_eq!(status, 200, "{}: releasing `{id}` is acknowledged: {v}", self.name);
-        assert_eq!(v["released"], id, "{v}");
-        v
-    }
-}
+// ---- the door: rafka_test_scenario::faults::Door ----------------------------------------------------
 
 // ---- reading the estate -----------------------------------------------------------------------------
 

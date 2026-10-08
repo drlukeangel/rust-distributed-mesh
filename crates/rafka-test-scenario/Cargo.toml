@@ -9,12 +9,18 @@ publish = false
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 reqwest = { version = "0.13.3", features = ["json"] }
 yaml_serde = "0.10"
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 
 [dev-dependencies]
+# i143_acceptance_2782 captures the detector's own spans in process.
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 # i143_acceptance_2780 derives its cut list from the product's own documented step orders.

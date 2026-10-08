@@ -8,6 +8,7 @@
 
 pub mod elections;
 pub mod estate;
+pub mod faults;
 pub mod model;
 pub mod ledger;
 pub mod netfault;
@@ -15,3 +16,4 @@ pub mod replay;
 pub mod runner;
 pub mod scenario;
 pub mod sim;
+pub mod wedge;

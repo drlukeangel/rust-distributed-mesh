@@ -340,6 +340,30 @@
           "dir": "target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers"
         }
       ]
+    },
+    "i143-2782-unit": {
+      "issue": 2782,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "wedge_detector_rejects_fault_without_progress_consequence",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2782.rs",
+          "command": "cargo test -p rafka-test-scenario --test i143_acceptance_2782 wedge_detector_rejects_fault_without_progress_consequence -- --exact",
+          "dir": "target/i143-acceptance/2782/unit/wedge_detector_rejects_fault_without_progress_consequence"
+        }
+      ]
+    },
+    "i143-2782-process": {
+      "issue": 2782,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "wedge_detector_proves_stall_and_stateful_recovery",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2782.rs",
+          "command": "MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2782/process/wedge_detector_proves_stall_and_stateful_recovery/estate cargo test -p rafka-test-scenario --test i143_acceptance_2782 wedge_detector_proves_stall_and_stateful_recovery -- --exact",
+          "dir": "target/i143-acceptance/2782/process/wedge_detector_proves_stall_and_stateful_recovery"
+        }
+      ]
     }
   },
   "rshape_jobs": {
