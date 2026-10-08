@@ -23,6 +23,7 @@ use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub struct ProofStore;
@@ -301,9 +302,67 @@ impl FileProofStore {
     }
 }
 
+/// One failpoint of a proof-store call: armed for the NEXT call to cross it, it parks that call's
+/// handler, signals that it holds (`reached`), and waits for `release`. Shaped like
+/// [`rafka_node_rpc::Failpoint`], which it carries. Testkit only; the product handler has none.
+#[derive(Default)]
+pub struct ApplyCut {
+    armed: AtomicBool,
+    holds: AtomicU64,
+    point: rafka_node_rpc::Failpoint,
+}
+
+impl ApplyCut {
+    /// The next call to cross this cut parks there.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Resolves once a handler is parked at this cut: the active-injection acknowledgement.
+    pub async fn reached(&self) {
+        self.point.reached.notified().await
+    }
+
+    /// Let the parked handler go on.
+    pub fn release(&self) {
+        self.point.release.notify_one()
+    }
+
+    /// How many handlers have parked here since the process began.
+    pub fn holds(&self) -> u64 {
+        self.holds.load(Ordering::SeqCst)
+    }
+
+    async fn pass(&self) {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            self.holds.fetch_add(1, Ordering::SeqCst);
+            self.point.reached.notify_one();
+            self.point.release.notified().await;
+        }
+    }
+}
+
+/// The two apply cuts of a proof-store call and the counters that say what crossed them.
+#[derive(Default)]
+pub struct ApplyCuts {
+    /// The handler is running, the request complete and finished, nothing applied yet.
+    pub before_apply: ApplyCut,
+    /// The mutation is applied and stored; the reply is not yet returned.
+    pub after_apply: ApplyCut,
+    /// Handlers that began (every dispatched call enters once).
+    pub entered: AtomicU64,
+    /// Mutations (put, delete, swap) applied and stored.
+    pub applied: AtomicU64,
+}
+
 /// Serve `store` (opened from `launch`'s data dir). Every reply's provenance
 /// names this birth.
 pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> ServerBuilder {
+    serve_with_cuts(b, store, launch, Arc::new(ApplyCuts::default()))
+}
+
+/// [`serve`], with the handler crossing `cuts` before and after its apply.
+pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, cuts: Arc<ApplyCuts>) -> ServerBuilder {
     let (node_id, node, mesh, incarnation) =
         (launch.node_id.to_string(), launch.name.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string());
     b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
@@ -314,7 +373,7 @@ pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> S
             incarnation_id: incarnation.clone(),
             op: req.op(),
         };
-        let store = store.clone();
+        let (store, cuts) = (store.clone(), cuts.clone());
         async move {
             let span = tracing::info_span!(
                 "rdm.node_rpc.proof_store.serve.via-request",
@@ -324,11 +383,25 @@ pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> S
                 op = at.op.as_str(),
                 outcome = tracing::field::Empty,
             );
-            let reply = tokio::task::spawn_blocking(move || store.apply(req, at))
-                .await
-                .map_err(|e| HandlerFault::invariant_broken(format!("proof store task: {e}")))?;
-            span.record("outcome", outcome_name(&reply));
-            Ok(reply)
+            // The span covers the whole handler, so a parked call's span lasts as long as it parks.
+            let work = {
+                let span = span.clone();
+                async move {
+                    cuts.entered.fetch_add(1, Ordering::SeqCst);
+                    cuts.before_apply.pass().await;
+                    let reply = tokio::task::spawn_blocking(move || store.apply(req, at))
+                        .await
+                        .map_err(|e| HandlerFault::invariant_broken(format!("proof store task: {e}")))?;
+                    span.record("outcome", outcome_name(&reply));
+                    if matches!(reply, ProofReply::Stored { .. } | ProofReply::Deleted { .. } | ProofReply::Swapped { .. }) {
+                        cuts.applied.fetch_add(1, Ordering::SeqCst);
+                    }
+                    cuts.after_apply.pass().await;
+                    Ok::<_, HandlerFault>(reply)
+                }
+            };
+            use tracing::Instrument;
+            work.instrument(span).await
         }
     })
 }
