@@ -5618,6 +5618,76 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
     close_run(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
 }
 
+async fn carrier_edge_run(cell: &str, shape: Shape) {
+    let World { mut f, inv, nodes, launches, authorities, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
+    let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
+    let mut events = Vec::new();
+    let _ = (&formation, window_ms);
+    // Leg B, the carrier's own edge to the destination is lost: a compute holds Direct Failed and Proxy Connected
+    // via its mesh's gateway toward the other mesh's gateway; the carrier's edge is cut and its next inner call
+    // finds the edge not Active. The carrier refuses the carried call by name, the source retires that Proxy
+    // durably with the same reason and does not send the call through any other connection.
+    let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
+    let cn = node(&car);
+    // The healthy control, same family: the carrier also carries a call to another node of the other mesh while
+    // its edge to it is Active.
+    let other = "mesh2.broker.1".to_string();
+    let on = node(&other);
+    let carrier_edge0 = dial(&f, &car, &other);
+    f.actions.push(action_row(&carrier_edge0));
+    await_direct(&f.estate, &car, &other, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == on["incarnation_id"]).await;
+    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    assert_eq!((seeded0.out["proxy_recorded"].as_bool(), seeded0.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded0.out);
+    f.actions.push(action_row(&seeded0));
+    let healthy = orig_get(&f, &src, &other, "carried-control");
+    f.actions.push(action_row(&healthy));
+    assert_eq!((healthy.out["route"].as_str(), healthy.out["carrier"].as_str(), healthy.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the healthy control is carried: {}", healthy.out);
+    // The cut covers the carrier and the destination, which have never been connected: the carrier's own dial
+    // finds no path and writes its Failed fact, the carrier's edge to the destination is not Active.
+    let (cut_b, ack_b) = cut_between(&st.nodes, &car, &dst, &fp);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_b}));
+    let t_cut_b = now_ns();
+    let probe_edge = probe_call(&f.estate, &["dial", "--target", &format!("path:{car}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
+    f.actions.push(action_row(&probe_edge));
+    assert_eq!(probe_edge.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_edge.out);
+    let edge_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
+    // The source records the Proxy via the carrier toward the destination it cannot reach Direct either.
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    assert_eq!((seeded.out["proxy_recorded"].as_bool(), seeded.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded.out);
+    f.actions.push(action_row(&seeded));
+    let rows0 = proxy_retirements(&durable_history(&f, &src).await).len();
+    let t_call_b0 = now_ns();
+    let refused = orig_get(&f, &src, &dst, "carried-edge-lost");
+    let t_call_b1 = now_ns();
+    f.actions.push(action_row(&refused));
+    assert_eq!(refused.out["outcome"], "Reply", "the source answers its own probe: {}", refused.out);
+    assert_eq!(refused.out["call_outcome"], "NotSent", "a carried call whose carrier's edge is not Active sends nothing: {}", refused.out);
+    assert!(refused.out["retired"].to_string().contains("carrier-edge-lost"), "the source retires the Proxy it travelled with the carrier's refusal as the reason: {}", refused.out);
+    let rows1 = proxy_retirements(&durable_history(&f, &src).await);
+    assert_eq!(rows1.len(), rows0 + 1, "exactly one durable Proxy Disconnected: {rows1:?}");
+    assert_eq!(rows1.last().unwrap()["reason"], "carrier-edge-lost", "{rows1:?}");
+    let next = orig_get(&f, &src, &dst, "after-retirement");
+    f.actions.push(action_row(&next));
+    assert_ne!(next.out["carrier"].as_str(), Some(car.as_str()), "the retired Proxy is not selected again: {}", next.out);
+    assert_eq!(proxy_retirements(&durable_history(&f, &src).await).len(), rows0 + 1, "no second retirement row");
+    drop(cut_b);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    events.push(json!({"event": "carrier-edge-lost", "carrier": car, "destination": dst, "source": src, "ack": ack_b, "t_cut_ns": t_cut_b, "carrier_edge_after_cut": edge_down, "healthy_control": healthy.out, "refused": refused.out, "durable_retirement": rows1.last().unwrap(), "next_call": next.out, "call_window_ns": [t_call_b0, t_call_b1]}));
+
+    a.events.extend(events.iter().cloned());
+    let t_call = (t_call_b0, t_call_b1, t_cut_b);
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C12"], json!({"events": events}), move |_f, spans, inv| {
+        // The refusal is named on a span of the carrier, once, in the one carried call's window.
+        let lost: Vec<&Value> = named(spans, "rdm.node_rpc.request.reject.via-carrier-edge-lost").into_iter().filter(|sp| start_ns(sp) >= t_call.2).collect();
+        assert_eq!(lost.len(), 1, "the carrier refused exactly one carried call by name: {lost:?}");
+        let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| start_ns(sp) >= t_call.0 && start_ns(sp) <= t_call.1).count();
+        assert!(inner <= 1, "the carried call was tried once, never again: {inner} inner calls");
+        inv.holds("C12: a carrier whose own edge to the destination was cut refused the carried call by name once; the source retired the Proxy durably with that reason and did not select it again", true, json!({"refusals": lost.len()}));
+        json!({"carrier_edge_lost_spans": lost.len(), "inner_calls": inner})
+    })
+    .await;
+}
+
 async fn cutback_restart_run(cell: &str, shape: Shape) {
     let World { mut f, mut inv, nodes, launches, authorities, connections, mut a, st, fp: _, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
@@ -5757,5 +5827,19 @@ async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once() {
     cutback_restart_run("mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once", any_tier()).await;
+}
+
+/// CONTRACT: in the formed estate the carrier of a compute's Proxy loses its own edge to the destination (cut
+/// between two sockets that never connected, acknowledged by the host; the carrier's own dial finds no path
+/// and writes its Failed fact). The compute's carried call ends with the carrier's refusal by name,
+/// `carrier-edge-lost`, as a call that sent nothing (NotSent): the source writes one durable Proxy
+/// Disconnected with that reason, does not select the carrier again, and the carrier made one inner attempt.
+/// A healthy carried call to another node of the other mesh, with the carrier's edge Active, is the control.
+/// Canon: connections.md section 8 (the carrier refuses `carrier-edge-lost`; that refusal is how the source
+/// learns the edge is gone) and section 9 J. What must NOT happen: a carried call that ends Indeterminate for a
+/// call the carrier refused, a Proxy that stays selected after the carrier's edge is lost, a second inner call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget() {
+    carrier_edge_run("mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget", any_tier()).await;
 }
 

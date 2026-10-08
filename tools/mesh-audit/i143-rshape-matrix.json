@@ -768,6 +768,21 @@
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "adversarial",
+      "job": "i143-rshape-adv-carrier-edge-process",
+      "covers": [
+        "C12"
+      ],
+      "canon": "connections.md section 8 (the carrier refuses carrier-edge-lost; that refusal is how the source learns the edge is gone) and section 9 J",
+      "red": "FORK: the carrier's inner dial runs the whole budget the origin waits (both CallOptions::default, 10 s), so the refusal arrives after the origin gave up and the call ends Indeterminate; crates/rafka-node-rpc/src/forward.rs:88-110 dials first, crates/rafka-node-rpc/src/route.rs:101-104 waits the default. Arms: (1) the carrier refuses from its own latest Direct fact before it dials; (2) the Forward request carries the origin's remaining budget (wire change, durable format moved)",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     }
   ]
 }
