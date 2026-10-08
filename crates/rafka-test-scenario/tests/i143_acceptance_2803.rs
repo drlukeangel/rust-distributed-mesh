@@ -187,7 +187,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         assert!(decommissions.iter().any(|sp| attr(sp, "node") == *dead), "{dead} entered the decommission queue: {decommissions:?}");
     }
     // Both admins of the mesh sweep, so two spans name the member: the admin whose attempt ran it
-    // ends `attempt N`, the other finds it replaced (`heard-or-replaced`). The one that ran is the one asserted.
+    // ends `attempt N`, the other finds it `replaced-by-another-attempt`. The one that ran is the one asserted.
     let victim: Vec<&&Value> = decommissions.iter().filter(|sp| attr(sp, "node") == window_victim).collect();
     assert!(
         victim.iter().any(|sp| attr(sp, "outcome").starts_with("attempt ") && !attr(sp, "outcome").contains("failed")),

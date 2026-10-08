@@ -263,6 +263,21 @@ pub struct Decommission {
 /// How long one node's decommission waits for the Build to be free and its attempt to complete.
 pub const DECOMMISSION_WAIT: Duration = Duration::from_secs(180);
 
+/// Why the sweep's decommission of `n` needs no attempt of this sweeper's: the node is heard again
+/// as the same birth (`heard`), or another birth holds its path (`replaced-by-another-attempt`,
+/// the other admin of the mesh sweeps too and its attempt ran first). Neither is a completed
+/// attempt of this sweeper; an attempt this sweeper opened ends `attempt N` and is never decided here.
+pub fn sweep_ended_without_attempt(held: Option<&crate::model::Node>, swept: &crate::model::IncarnationId) -> Option<&'static str> {
+    let held = held?;
+    if held.incarnation_id.as_ref() != Some(swept) {
+        Some("replaced-by-another-attempt")
+    } else if held.status.is_live() {
+        Some("heard")
+    } else {
+        None
+    }
+}
+
 /// A node that did not answer the sweep enters the STANDARD decommission, one attempt per node in
 /// path order: a requested replacement of the birth, an attempt of the accepted Build opened at
 /// the fabric primary (itself, or over its control API), whose retire pipeline drains when
@@ -275,8 +290,8 @@ pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
         let started = Instant::now();
         let outcome = loop {
             let view = d.topology.read().await.clone();
-            if view.node(&n.name).is_some_and(|x| x.status.is_live() || x.incarnation_id.as_ref() != Some(&n.incarnation)) {
-                break "heard-or-replaced".to_string();
+            if let Some(why) = sweep_ended_without_attempt(view.node(&n.name), &n.incarnation) {
+                break why.to_string();
             }
             if started.elapsed() > DECOMMISSION_WAIT {
                 break format!("no attempt completed within {} s", DECOMMISSION_WAIT.as_secs());
@@ -329,5 +344,29 @@ pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
             elapsed_ms = started.elapsed().as_millis() as u64,
         )
         .in_scope(|| tracing::info!("a node that did not answer the entry sweep went through the standard decommission"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{IncarnationId, Node, NodeStatus};
+
+    fn node(inc: &IncarnationId, status: NodeStatus) -> Node {
+        let mut n = Node::allocated("mesh1.rpc.3".parse().unwrap());
+        n.incarnation_id = Some(inc.clone());
+        n.status = status;
+        n
+    }
+
+    /// CONTRACT (#2803): a sweep's decommission ends without an attempt of its own by one of two named
+    /// facts, never one label for both: the swept birth is heard again, or another birth holds its path.
+    #[test]
+    fn a_sweep_ends_without_an_attempt_as_heard_or_as_replaced_by_name() {
+        let (swept, other) = (IncarnationId::mint(), IncarnationId::mint());
+        assert_eq!(sweep_ended_without_attempt(Some(&node(&swept, NodeStatus::ReadyForTraffic)), &swept), Some("heard"));
+        assert_eq!(sweep_ended_without_attempt(Some(&node(&other, NodeStatus::ReadyForTraffic)), &swept), Some("replaced-by-another-attempt"));
+        assert_eq!(sweep_ended_without_attempt(Some(&node(&swept, NodeStatus::PendingReconnect)), &swept), None, "silent and the same birth: still to be decommissioned");
+        assert_eq!(sweep_ended_without_attempt(None, &swept), None, "absent from the view: still to be decommissioned");
     }
 }
