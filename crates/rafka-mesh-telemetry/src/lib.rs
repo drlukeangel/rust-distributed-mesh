@@ -6,7 +6,6 @@ use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 pub mod logs;
-pub mod one_thread;
 pub mod watchdog;
 
 pub struct TelemetryGuard {

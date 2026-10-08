@@ -5,8 +5,7 @@ use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
 
-/// The process's one endpoint (bound on one thread: iroh's bind holds a span guard across an await, see
-/// `rafka_mesh_telemetry::one_thread`): one identity, one physical UDP socket, at
+/// The process's one endpoint: one identity, one physical UDP socket, at
 /// exactly the transport address node-admin assigned (relay off, no
 /// discovery, Iroh's default transport configuration). Node RPC and gossip
 /// share it by ALPN. A request names its target in the fence of its framing;
@@ -19,7 +18,7 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .clear_ip_transports()
         .bind_addr(addr)?;
-    Ok(rafka_mesh_telemetry::one_thread::on_one_thread(builder.bind()).await?)
+    Ok(builder.bind().await?)
 }
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder
@@ -36,7 +35,7 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
         .transport_config(transport)
         .clear_ip_transports()
         .bind_addr(addr)?;
-    Ok(rafka_mesh_telemetry::one_thread::on_one_thread(builder.bind()).await?)
+    Ok(builder.bind().await?)
 }
 
 #[cfg(test)]
