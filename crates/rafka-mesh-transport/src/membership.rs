@@ -1472,9 +1472,9 @@ impl Membership {
     /// The topology this node holds, one snapshot per mesh (Node RPC op `0x1E` serves it). A
     /// remote mesh is the source this node holds, with the publisher and version it holds it at.
     /// This node's own mesh is its members as its book hears them, `own` among them, at the
-    /// publisher and version its primary last put into the mesh. `Err` names why the node holds
-    /// no topology yet.
-    pub fn held_topology(&self, own: &MeshDigest) -> Result<Vec<SourceSnapshot>, String> {
+    /// publisher and version its primary last put into the mesh. A mesh this node holds no
+    /// published snapshot of is absent: no version is invented for it.
+    pub fn held_topology(&self, own: &MeshDigest) -> Vec<SourceSnapshot> {
         let mut held = self.held_sources();
         // A source's members are served only while this node still hears them: a held source
         // outlives a primary that stopped publishing, and its dead members are not live because a
@@ -1482,22 +1482,19 @@ impl Membership {
         let current = self.book.current(self.book.staleness_floor());
         held = held.into_iter().map(|s| only_live_members(s, &current)).collect();
         let mesh = &self.view.mesh;
-        let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) else {
-            return Err(format!("{}: holds no source version of its own mesh {mesh} yet (its mesh primary has not put one into the mesh)", self.view.node));
-        };
-        let mut members: Vec<MeshDigest> = self
-            .book
-            .current(self.book.staleness_floor())
-            .into_iter()
-            .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
-            .collect();
-        members.push(own.clone());
-        members.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
-        let (in_flight, departed) = self.book.overlays_of(mesh);
-        at.digests = members;
-        at.in_flight = in_flight;
-        at.departed = departed;
-        Ok(held)
+        if let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) {
+            let mut members: Vec<MeshDigest> = current
+                .into_iter()
+                .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
+                .collect();
+            members.push(own.clone());
+            members.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
+            let (in_flight, departed) = self.book.overlays_of(mesh);
+            at.digests = members;
+            at.in_flight = in_flight;
+            at.departed = departed;
+        }
+        held
     }
 
     /// One chunk of a topology read from another node. The mesh installs atomically once every

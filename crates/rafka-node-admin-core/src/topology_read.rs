@@ -94,13 +94,7 @@ impl TopologyDoor {
         );
         async move {
             let span = tracing::Span::current();
-            let mut held = match self.membership.held_topology(&me) {
-                Ok(h) => h,
-                Err(reason) => {
-                    span.record("outcome", "not-ready");
-                    return TopologyReply::NotReady { reason };
-                }
-            };
+            let mut held = self.membership.held_topology(&me);
             if let Some(m) = &mesh {
                 held.retain(|s| &s.mesh == m);
                 if held.is_empty() {

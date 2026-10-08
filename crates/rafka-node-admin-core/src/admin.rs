@@ -840,17 +840,14 @@ struct EntryState {
 impl EntryState {
     /// What this admin holds now: the answer to a join (its control state and statuses; the
     /// topology is read with `GetTopology`).
-    async fn answer(&self, own: &MeshDigest) -> Result<crate::wire::JoinAnswer, String> {
+    async fn answer(&self) -> crate::wire::JoinAnswer {
         let e = self;
-        // A maker answers a join only once it can answer the topology read that follows it: it
-        // holds a version of its own mesh.
-        let _ = own;
         // The fabric control state a new admin hydrates before it may be Ready: the attempt the
         // answering admin holds of the Build the pointer names is the floor a joiner's own copy
         // of that Build's attempt facts must reach before it is Ready.
         let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build };
-        Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
+        crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) }
     }
 }
 
@@ -2271,15 +2268,15 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The join door: this admin verifies a node's digest against what it deployed, installs the
     // address for its key and answers what it holds.
     {
-        let (st, resolver, m, topo, own_digest) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.clone(), digest.clone());
+        let (st, resolver, m, topo) = (entry.clone(), node_rpc_resolver.clone(), membership.clone(), membership.clone());
         let door = Arc::new(crate::join::JoinDoor {
             me: name.clone(),
             joins: joins.clone(),
             answer: Arc::new(move || {
-                let (st, own) = (st.clone(), own_digest.lock().unwrap().clone());
+                let st = st.clone();
                 Box::pin(async move {
                     match st.get() {
-                        Some(e) => e.answer(&own).await,
+                        Some(e) => Ok(e.answer().await),
                         None => Err("this admin holds no view yet".to_string()),
                     }
                 })

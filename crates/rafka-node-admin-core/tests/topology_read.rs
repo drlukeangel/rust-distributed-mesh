@@ -127,16 +127,28 @@ async fn a_node_mid_birth_answers_not_ready_and_the_caller_installs_nothing() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a node that holds no source version of its own mesh (its mesh primary has put none
-/// into the mesh) answers NotReady naming that mesh, not an empty topology.
+/// CONTRACT: a mesh the node holds no published snapshot of is absent from its answer, its own
+/// mesh included: a node whose mesh primary has put no version into the mesh answers with the
+/// meshes it does hold (none is a complete, empty answer), and a read naming the absent mesh is
+/// UnknownMesh.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_holding_no_version_of_its_own_mesh_answers_not_ready_naming_the_mesh() {
+async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let t = target_of(&caller, &server);
-    let err = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap_err();
-    assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("own mesh mesh1")), "{err}");
+    let empty = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap();
+    assert!(empty.installed.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
+
+    let mesh2: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
+    hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 7, mesh2));
+    let read = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap();
+    assert_eq!((read.meshes, read.installed.len()), (1, 1));
+    assert_eq!(read.installed[0].mesh, "mesh2");
+    assert!(caller.membership.held_source_version("mesh1").is_none(), "no version of the own mesh is invented");
+
+    let err = get_topology(&caller.client, &t, &caller.membership, Some("mesh1"), None).await.unwrap_err();
+    assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh1".into()));
     server.ep.close().await;
     caller.ep.close().await;
 }
