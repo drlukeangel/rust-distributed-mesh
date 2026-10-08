@@ -105,3 +105,51 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     estate.stop().await;
     assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "no container of the fabric is left running");
 }
+
+fn gate_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("rdm-giveup-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn give_up_leaves_nothing(tag: &str, exe: &std::path::Path, program: &str) {
+    let node = format!("giveup{tag}{}.admin.1", std::process::id());
+    let dir = gate_dir(tag);
+    let t = std::time::Instant::now();
+    let e = rafka_test_scenario::estate::spawn_admin_in_container_within(Vec::new(), &dir, &dir, &node, exe, &[], Duration::from_secs(3), program).expect_err("the Day-0 container never advertises within 3 s");
+    assert!(!e.fabric_id.is_empty());
+    // The give-up has returned: whatever the Docker daemon was still committing is awaited first, so nothing appears after it.
+    std::thread::sleep(Duration::from_secs(8));
+    let ls = |args: &[&str]| String::from_utf8_lossy(&Command::new("docker").args(args).output().unwrap().stdout).trim().to_string();
+    let containers = ls(&["ps", "-aq", "--filter", &format!("label=rafka.fabric={}", e.fabric_id)]);
+    let networks = ls(&["network", "ls", "-q", "--filter", &format!("label=rafka.fabric={}", e.fabric_id)]);
+    assert_eq!((containers.as_str(), networks.as_str()), ("", ""), "after the give-up ({:?}) the fabric {} left a container or network: {}", t.elapsed(), e.fabric_id, e.message);
+}
+
+/// CONTRACT: when the harness gives up on the Day-0 container because `docker create` is still in
+/// flight (a gated delay before the create commits), it waits for the create to finish and removes
+/// the container and the fabric's network: no container or network labelled with the fabric exists
+/// afterwards, and none appears later.
+#[test]
+fn a_give_up_while_docker_create_is_in_flight_leaves_no_container_or_network() {
+    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container give-up: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
+        return;
+    }
+    let dir = gate_dir("gate");
+    let shim = dir.join("docker-gated");
+    std::fs::write(&shim, "#!/bin/sh\nif [ \"$1\" = create ]; then sleep 6; fi\nexec docker \"$@\"\n").unwrap();
+    std::fs::set_permissions(&shim, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    give_up_leaves_nothing("gate", &rafka_test_scenario::estate::binary("rafka-node-admin"), shim.to_str().unwrap());
+}
+
+/// CONTRACT: when the Day-0 container is created and started but never advertises its API base,
+/// the give-up kills the attached start and removes the container and the fabric's network.
+#[test]
+fn a_give_up_on_a_container_that_never_advertises_leaves_no_container_or_network() {
+    if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
+        eprintln!("SKIP container give-up: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
+        return;
+    }
+    give_up_leaves_nothing("silent", std::path::Path::new("/usr/bin/sleep"), "docker");
+}

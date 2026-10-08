@@ -118,7 +118,75 @@ pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 /// is given an address on it, and it drives the host's Docker daemon through its socket. The
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
-fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String) {
+fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String, String) {
+    spawn_admin_in_container_within(env, root, evidence, node, exe, read_dirs, ADVERTISE_WITHIN, "docker").unwrap_or_else(|e| panic!("{}", e.message))
+}
+
+/// A Day-0 container given up on: the fabric it was minted for (already removed) and why.
+#[derive(Debug)]
+pub struct GiveUp {
+    pub fabric_id: String,
+    pub message: String,
+}
+
+/// How long the Day-0 container has, from the first Docker call, to advertise its API base.
+const ADVERTISE_WITHIN: Duration = Duration::from_secs(30);
+
+/// Remove everything labelled `rafka.fabric=<fabric_id>` and that fabric's network: each
+/// container's output is kept in `artifacts` first when given. Returns what it could not remove.
+///
+/// A node-admin of the fabric makes containers through the Docker socket, so the admins are
+/// removed first: nothing then starts a new container. A create the daemon already accepted from
+/// one can still commit after the admin is gone; the listing is repeated until it is empty, so
+/// that container is removed too and the network is removed with nothing attached.
+pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
+    let mut left = Vec::new();
+    let list = || -> Vec<(String, String)> {
+        let out = Command::new("docker").args(["ps", "-a", "--no-trunc", "--filter", &format!("label=rafka.fabric={fabric_id}"), "--format", "{{.Label \"rafka.node\"}} {{.ID}}"]).output();
+        let mut v: Vec<(String, String)> = out.map(|o| String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.split_once(' ').map(|(n, i)| (n.to_string(), i.to_string()))).collect()).unwrap_or_default();
+        v.sort_by_key(|(n, _)| !n.contains(".admin."));
+        v
+    };
+    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let remove = |node: &str, id: &str, kept: &mut std::collections::HashSet<String>, left: &mut Vec<String>| {
+        if let (Some(dir), true) = (artifacts, kept.insert(id.to_string())) {
+            if let Ok(logs) = Command::new("docker").args(["logs", id]).output() {
+                let _ = std::fs::write(dir.join(format!("{node}.{}.container.log", &id[..12.min(id.len())])), [&logs.stdout[..], &logs.stderr[..]].concat());
+            }
+        }
+        if let Err(e) = docker(&["rm", "-f", id]) {
+            if !e.contains("No such container") {
+                left.push(e);
+            }
+        }
+    };
+    for (node, id) in list().iter().filter(|(n, _)| n.contains(".admin.")) {
+        remove(node, id, &mut kept, &mut left);
+    }
+    for _ in 0..40 {
+        let rest = list();
+        if rest.is_empty() {
+            break;
+        }
+        for (node, id) in &rest {
+            remove(node, id, &mut kept, &mut left);
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    if let Err(e) = docker(&["network", "rm", &format!("rafka-{fabric_id}")]) {
+        if !e.contains("No such network") && !e.contains("not found") {
+            left.push(e);
+        }
+    }
+    left
+}
+
+/// The Day-0 container of a new fabric, created and started so that nothing appears after a
+/// give-up: `docker create` is awaited to completion (never abandoned in flight), then the
+/// container is started attached. `program` is the Docker client for those two calls. When `within` passes before the API base is advertised, the
+/// start is killed and everything labelled with the fabric, plus its network, is removed.
+pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, String, String), GiveUp> {
+    let begun = Instant::now();
     let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
     if docker(&["image", "inspect", RUNTIME_IMAGE]).is_err() {
@@ -142,7 +210,7 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
     let root_for_mounts = root.to_path_buf();
     let (root, evidence) = (root.display().to_string(), evidence.display().to_string());
     let mut args: Vec<String> = vec![
-        "run".into(), "--name".into(), format!("rafka-{node}-{fabric_id}"),
+        "create".into(), "--name".into(), format!("rafka-{node}-{fabric_id}"),
         "--label".into(), format!("rafka.fabric={fabric_id}"), "--label".into(), format!("rafka.node={node}"),
         "--network".into(), network, "--ip".into(), ip.to_string(),
         "-v".into(), format!("{bin}:{bin}:ro"), "-v".into(), format!("{root}:{root}"), "-v".into(), format!("{evidence}:{evidence}"),
@@ -165,7 +233,44 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
     }
     args.push(RUNTIME_IMAGE.into());
     args.push(exe.display().to_string());
-    let mut child = Command::new("docker").args(&args).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker run the Day-0 node-admin");
+    let name = format!("rafka-{node}-{fabric_id}");
+    let give_up = |why: String, child: Option<Child>| -> GiveUp {
+        if let Some(mut c) = child {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        let state = docker(&["inspect", "--format", "status={{.State.Status}} created={{.Created}} started={{.State.StartedAt}} exit={{.State.ExitCode}}", &name]).unwrap_or_else(|e| e);
+        let logs = Command::new("docker").args(["logs", "--tail", "20", &name]).output().map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
+        let left = remove_fabric(&fabric_id, None);
+        let removed = if left.is_empty() { "everything labelled with the fabric, and its network, removed".to_string() } else { format!("NOT removed: {left:?}") };
+        GiveUp { fabric_id: fabric_id.clone(), message: format!("the containerised Day-0 node-admin {name} {why} ({state}; {removed}); last log lines:\n{logs}") }
+    };
+    // `docker create` runs to completion on its own thread: it is waited for, never abandoned in
+    // flight, so the container it commits exists before any removal runs.
+    let (ctx, crx) = std::sync::mpsc::channel();
+    let program_owned = program.to_string();
+    let creator = std::thread::spawn(move || {
+        let t = Instant::now();
+        let out = Command::new(&program_owned).args(&args).output();
+        let _ = ctx.send((out, t.elapsed()));
+    });
+    let created = crx.recv_timeout(within.saturating_sub(begun.elapsed()));
+    let (out, took) = match created {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = creator.join();
+            return Err(give_up(format!("was not created within {within:?}"), None));
+        }
+    };
+    let _ = creator.join();
+    eprintln!("[container] docker create of {name} took {took:?}");
+    match out {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => return Err(give_up(format!("docker create failed: {}", String::from_utf8_lossy(&o.stderr).trim()), None)),
+        Err(e) => return Err(give_up(format!("docker create: {e}"), None)),
+    }
+    let started = Instant::now();
+    let mut child = Command::new(program).args(["start", "-a", &name]).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker start the Day-0 node-admin");
     let stdout = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -175,18 +280,11 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
             }
         }
     });
-    let Ok(base) = rx.recv_timeout(Duration::from_secs(30)) else {
-        // No Estate exists yet to remove it: the container is removed here, before the refusal,
-        // and the refusal names what Docker reported for it.
-        let name = format!("rafka-{node}-{fabric_id}");
-        let state = docker(&["inspect", "--format", "status={{.State.Status}} created={{.Created}} started={{.State.StartedAt}} exit={{.State.ExitCode}}", &name]).unwrap_or_else(|e| e);
-        let logs = Command::new("docker").args(["logs", "--tail", "20", &name]).output().map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
-        let removed = docker(&["rm", "-f", &name]).map(|_| "removed".to_string()).unwrap_or_else(|e| format!("NOT removed: {e}"));
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("the containerised Day-0 node-admin {name} never advertised RDM_NODE_ADMIN_API_BASE within 30 s ({state}; container {removed}); last log lines:\n{logs}");
+    let Ok(base) = rx.recv_timeout(within.saturating_sub(begun.elapsed())) else {
+        return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child)));
     };
-    (child, base)
+    eprintln!("[container] {name} advertised {base} {:?} after docker start", started.elapsed());
+    Ok((child, base, fabric_id))
 }
 
 pub fn binary(name: &str) -> PathBuf {
@@ -347,13 +445,16 @@ impl Estate {
         };
         // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
         // the fabric is a container a successor can control in the same Docker domain.
-        let (child, admin) = if owner.provider == "container" {
+        let (child, admin, container_fabric) = if owner.provider == "container" {
             let read_dirs = external.as_ref().map(ExternalLaunch::read_dirs).unwrap_or_default();
             spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"), &admin_exe, &read_dirs)
         } else {
-            spawn_admin(&admin_exe, &env, "bootstrap node-admin")
+            let (c, a) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
+            (c, a, String::new())
         };
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: String::new(), bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new() };
+        // A container fabric's id is the one minted for its network: the estate holds it from
+        // birth, so a panic before the fabric answers still removes the fabric's containers.
+        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new() };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when its API first answers.
@@ -873,18 +974,10 @@ impl Estate {
         if self.owner.provider != "container" || self.fabric_id.is_empty() {
             return;
         }
-        let ids = Command::new("docker")
-            .args(["ps", "-a", "--no-trunc", "--filter", &format!("label=rafka.fabric={}", self.fabric_id), "--format", "{{.Label \"rafka.node\"}} {{.ID}}"])
-            .output();
-        for line in ids.map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default().lines() {
-            let Some((node, id)) = line.split_once(' ') else { continue };
-            // Each container's own output is evidence: kept in the artifacts before it goes.
-            if let Ok(logs) = Command::new("docker").args(["logs", id]).output() {
-                let _ = std::fs::write(self.artifacts.join(format!("{node}.{}.container.log", &id[..12.min(id.len())])), [&logs.stdout[..], &logs.stderr[..]].concat());
-            }
-            let _ = Command::new("docker").args(["rm", "-f", id]).output();
+        let left = remove_fabric(&self.fabric_id, Some(&self.artifacts));
+        if !left.is_empty() {
+            eprintln!("estate drop: fabric {} not fully removed: {left:?}", self.fabric_id);
         }
-        let _ = Command::new("docker").args(["network", "rm", &format!("rafka-{}", self.fabric_id)]).output();
     }
 
     pub fn live_runtimes(&self) -> Vec<(PathBuf, u32)> {
