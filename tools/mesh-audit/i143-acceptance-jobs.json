@@ -109,5 +109,116 @@
         }
       ]
     }
+  },
+  "rshape_jobs": {
+    "_contract": "The R-shape qualification jobs (epic #2943). Directories are target/i143-rshape/<job>/<cell>; ids are i143-rshape-<name>. The shared runner reads `jobs` only; a job here is run by the command of its cell until scripts/i143-acceptance-gate.sh (#2776) takes this namespace.",
+    "i143-rshape-composition-process": {
+      "issue": 2944,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "mock_estate_forms_twenty_distinct_nodes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes"
+        },
+        {
+          "name": "mock_roles_route_opaque_calls_to_exact_nodes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes"
+        },
+        {
+          "name": "mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay"
+        }
+      ]
+    },
+    "i143-rshape-composition-container": {
+      "issue": 2944,
+      "layer": "container",
+      "cells": [
+        {
+          "name": "mock_estate_forms_twenty_distinct_nodes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes"
+        },
+        {
+          "name": "mock_roles_route_opaque_calls_to_exact_nodes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes"
+        },
+        {
+          "name": "mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay"
+        }
+      ]
+    },
+    "i143-rshape-fast-process": {
+      "issue": 2944,
+      "layer": "fast-process",
+      "cells": [
+        {
+          "name": "mock_fast_estate_forms_and_routes_opaque_calls",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls"
+        }
+      ]
+    },
+    "i143-rshape-fast-container": {
+      "issue": 2944,
+      "layer": "fast-container",
+      "cells": [
+        {
+          "name": "mock_fast_estate_forms_and_routes_opaque_calls",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls"
+        }
+      ]
+    },
+    "i143-rshape-consumer-build": {
+      "issue": 2944,
+      "layer": "static",
+      "cells": [
+        {
+          "name": "rshape_consumer_builds_fresh_node_entry_points",
+          "source": "scripts/i143-rshape-build-consumer.sh",
+          "command": "scripts/i143-rshape-build-consumer.sh --candidate-sha \"$RDM_CANDIDATE_SHA\" --workspace target/i143-rshape/consumer-workspace --bin-dir target/i143-rshape/consumer-bin --output target/i143-rshape/consumer-build",
+          "dir": "target/i143-rshape/i143-rshape-consumer-build/rshape_consumer_builds_fresh_node_entry_points"
+        }
+      ]
+    },
+    "i143-rshape-consumer-import-static": {
+      "issue": 2944,
+      "layer": "static",
+      "cells": [
+        {
+          "name": "rshape_consumer_imports_exact_candidate_without_private_paths",
+          "source": "tools/mesh-audit/tests/rshape_definition.rs",
+          "command": "cargo test -p rafka-mesh-audit --test rshape_definition rshape_consumer_imports_exact_candidate_without_private_paths -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-consumer-import-static/rshape_consumer_imports_exact_candidate_without_private_paths"
+        }
+      ]
+    },
+    "i143-rshape-definition-static": {
+      "issue": 2943,
+      "layer": "static",
+      "cells": [
+        {
+          "name": "rshape_definition_covers_every_scenario_without_business_dependencies",
+          "source": "tools/mesh-audit/tests/rshape_definition.rs",
+          "command": "cargo test -p rafka-mesh-audit --test rshape_definition rshape_definition_covers_every_scenario_without_business_dependencies -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-definition-static/rshape_definition_covers_every_scenario_without_business_dependencies"
+        }
+      ]
+    }
   }
 }
