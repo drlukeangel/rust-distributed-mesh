@@ -156,6 +156,18 @@
           "dir": "target/i143-acceptance/2892/process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
         }
       ]
+    },
+    "i143-2902-unit": {
+      "issue": 2902,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "refeed_scheduler_bounds_stale_held_peer_attempts",
+          "source": "crates/rafka-mesh-transport/tests/i143_acceptance_2902.rs",
+          "command": "cargo test -p rafka-mesh-transport --test i143_acceptance_2902 refeed_scheduler_bounds_stale_held_peer_attempts -- --exact",
+          "dir": "target/i143-acceptance/2902/unit/refeed_scheduler_bounds_stale_held_peer_attempts"
+        }
+      ]
     }
   },
   "rshape_jobs": {
