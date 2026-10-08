@@ -17,6 +17,7 @@ use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricRecord, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
+use tracing::Instrument as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -378,16 +379,23 @@ impl AcceptedStore {
         let mut record = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "fabric.json".into(), reason: "no Fabric record to point".into() })?;
         let previous = record.build_id.clone();
         record.build_id = Some(build_id.clone());
-        self.storage.put_fabric(&record).await?;
-        tracing::info_span!(
+        // The span opens BEFORE the write: the pointer is readable (by the Ready guard, by a
+        // reader) the moment the record is renamed into place, which is before `put_fabric`
+        // returns, so a span opened after the write can start later than a read that already saw it.
+        let span = tracing::info_span!(
             "rdm.node_admin.fabric.update.via-build-accepted",
             node = %self.node,
             fabric_id = %record.fabric_id,
             build_id = %build_id,
             previous_build_id = %previous.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
             via,
-        )
-        .in_scope(|| tracing::info!("Fabric.build_id moved"));
+        );
+        let put = self.storage.put_fabric(&record).instrument(span.clone()).await;
+        match &put {
+            Ok(()) => span.in_scope(|| tracing::info!("Fabric.build_id moved")),
+            Err(e) => span.in_scope(|| tracing::info!(error = %e, "Fabric.build_id could not be moved")),
+        }
+        put?;
         Ok(record)
     }
 
