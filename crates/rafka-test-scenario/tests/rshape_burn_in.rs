@@ -1619,6 +1619,11 @@ impl Authority {
             if key(&own_nodes) != entry_key {
                 return Err(format!("{} holds a different admin set than the entry view", a["name"]));
             }
+            // Every ready admin's own view holds every node ready: an admin that has not heard a node
+            // return still refuses an operation on it (a restart of a node it holds silent is `node-not-live`).
+            if let Some(n) = own_nodes.iter().find(|n| n["status"] != "ready-for-traffic") {
+                return Err(format!("{}'s own view lists {} as {}", a["name"], n["name"], n["status"]));
+            }
             if own_fabric["fabric_primary"] != fp["name"] {
                 return Err(format!("{} names {} as fabric-primary, the entry view {}", a["name"], own_fabric["fabric_primary"], fp["name"]));
             }
@@ -1636,7 +1641,14 @@ impl Authority {
     /// A stable checkpoint: authority converges within 30 s of being asked (a bound that fires is
     /// evidence, never widened), then one fence probe round proves exactly one effective writer.
     async fn stable(&mut self, f: &mut Formed, label: &str, want_admins: &BTreeMap<String, usize>, inv: &mut Invariants) -> Stable {
-        let until = Instant::now() + Duration::from_secs(30);
+        self.stable_by(f, label, want_admins, inv, Instant::now() + Duration::from_secs(30)).await
+    }
+
+    /// [`Self::stable`] with its deadline given: a checkpoint that waits on a node's death being
+    /// established is bound by the canon's detection ladder from the death (the staleness floor to
+    /// mark it silent, half a floor to its one tickle, a floor to the second no-path that makes it
+    /// true offline: offline.rs module docs), not by the 30 s a settled fabric needs.
+    async fn stable_by(&mut self, f: &mut Formed, label: &str, want_admins: &BTreeMap<String, usize>, inv: &mut Invariants, until: Instant) -> Stable {
         let t0 = Instant::now();
         let st = loop {
             match self.look(f, want_admins).await {
@@ -2448,13 +2460,18 @@ async fn recovery_run(cell: &str, shape: Shape) {
         a.traffic.burst(&f, 1, "during-restart").await;
     };
     let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
+    let killed_instant = Instant::now();
     progress(&format!("R3: {executor_name} killed with attempt {killed_at_attempt} of {bid} in flight: {held}"));
     let fin = a.finish(&mut f, &bid, Until::Reborn { node: broker.clone(), old_incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
     a.traffic.aim = None;
     let broker_after = f.estate.node(&broker).await;
     assert_ne!(broker_after["incarnation_id"], broker_before["incarnation_id"], "R3: the broker stands under a new exact birth");
     let broker_kept = broker_after["node_id"] == broker_before["node_id"];
-    let recovered = a.stable(&mut f, "R3: the dead executor's path.name is re-born", &both(2), &mut inv).await;
+    // The dead executor is re-born only once its death is established: a floor to mark it silent, half a
+    // floor to its tickle and a floor to the second no-path, then the create itself (a further floor of margin).
+    let floor_ms = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    let reborn_by = (killed_instant + Duration::from_millis(floor_ms * 7 / 2)).max(Instant::now() + Duration::from_secs(30));
+    let recovered = a.stable_by(&mut f, "R3: the dead executor's path.name is re-born", &both(2), &mut inv, reborn_by).await;
     assert_eq!(s(&recovered.fabric["build_id"]), b0, "R3: recovery accepted no new Build");
     a.events.push(json!({
         "event": "executor.death", "scenario": "R3", "executor": executor_name, "executor_node_id": executor["node_id"], "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "broker": broker,
