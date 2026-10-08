@@ -798,7 +798,7 @@ mod tests {
             node_id: rafka_mesh_entity::NodeId::mint(),
             incarnation: rafka_mesh_entity::IncarnationId::mint(),
             name: node.parse().unwrap(),
-            event_at_ms: 1,
+            event_at_rafka_ms: 1,
         };
         let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
         let with = |operation: &str, step: &str, output: &rafka_mesh_entity::LifecycleOp| {

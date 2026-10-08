@@ -60,7 +60,7 @@ fn main() {
         node_id: node_id.clone(),
         incarnation: inc.clone(),
         name: path_1.clone(),
-        event_at_ms: 1718290000050,
+        event_at_rafka_ms: 1718290000050,
     };
     println!("=== LifecycleOp ===");
     println!("{}", to_string_pretty(&op).unwrap());
@@ -92,7 +92,8 @@ fn main() {
         node: mesh_node.clone(),
         status: MemberStatus::ReadyForTraffic,
         admin_api_base: None,
-        emitted_unix_ms: 1718290000000,
+        emitted_at_rafka_ms: 1718290000000,
+        digest_seq: 1,
         data_dir: None,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
@@ -121,7 +122,7 @@ fn main() {
         mesh: "mesh1".into(),
         publisher: "mesh1.admin.1".into(),
         forwarded_by: None,
-        sent_unix_ms: 1718290000000,
+        published_at_rafka_ms: 1718290000000,
         digests: vec![digest.clone()],
         in_flight: vec![op.clone()],
         departed: vec![],

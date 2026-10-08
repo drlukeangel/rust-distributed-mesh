@@ -170,11 +170,11 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     assert!(matches!(&own[0], Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
 
     // Nothing rides inside Members: its fields are digests and overlays only.
-    let members = Frame::Members { mesh: "mesh1".into(), publisher: me.into(), forwarded_by: None, sent_unix_ms: 1, digests: vec![], in_flight: vec![], departed: vec![] };
+    let members = Frame::Members { mesh: "mesh1".into(), publisher: me.into(), forwarded_by: None, published_at_rafka_ms: 1, digests: vec![], in_flight: vec![], departed: vec![] };
     let encoded: Value = serde_json::from_slice(&members.encode()).unwrap();
     let mut keys: Vec<&str> = encoded.as_object().unwrap().keys().map(|k| k.as_str()).collect();
     keys.sort();
-    assert_eq!(keys, vec!["departed", "digests", "forwarded_by", "frame", "in_flight", "mesh", "publisher", "sent_unix_ms"], "Members carries no status field");
+    assert_eq!(keys, vec!["departed", "digests", "forwarded_by", "frame", "in_flight", "mesh", "publisher", "published_at_rafka_ms"], "Members carries no status field");
 
     // The real Backbone: the publisher role is the span `via-status-publisher`, and a status the
     // primary announces is held under its own authorship at one instant.

@@ -85,7 +85,7 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
     Some(EndpointAddr::new(key).with_ip_addr(d.node.transport_addr))
 }
 
-/// The newest `emitted_unix_ms` each key's address was registered from (rafka-v2 node-base
+/// The newest `emitted_at_rafka_ms` each key's address was registered from (rafka-v2 node-base
 /// `peer_location_wall_time`): governs the address book only, never the held view.
 fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, u64>> {
     static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, u64>>> = std::sync::OnceLock::new();
@@ -103,9 +103,9 @@ pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
     let key = addr.id;
     let fresher = {
         let mut w = location_watermarks().lock().unwrap();
-        let fresher = !matches!(w.get(&key), Some(prev) if *prev >= d.emitted_unix_ms);
+        let fresher = !matches!(w.get(&key), Some(prev) if *prev >= d.emitted_at_rafka_ms);
         if fresher {
-            w.insert(key, d.emitted_unix_ms);
+            w.insert(key, d.emitted_at_rafka_ms);
         }
         fresher
     };
@@ -204,7 +204,7 @@ pub enum Frame {
     /// Members of `mesh`, published on the backbone by that mesh's primary
     /// (`publisher`), packed into as few frames as fit one gossip message, and
     /// forwarded onto a peer mesh's channel by its primary (`forwarded_by`).
-    /// `sent_unix_ms` makes each publication distinct. Every frame of one
+    /// `published_at_rafka_ms` makes each publication distinct. Every frame of one
     /// publication carries the mesh's open lifecycle overlays (`in_flight`)
     /// and its retained proven departures (`departed`), so a node that missed
     /// the events learns the same state from the next aggregate it hears. A
@@ -214,7 +214,7 @@ pub enum Frame {
         mesh: String,
         publisher: String,
         forwarded_by: Option<String>,
-        sent_unix_ms: u64,
+        published_at_rafka_ms: u64,
         digests: Vec<MeshDigest>,
         #[serde(default)]
         in_flight: Vec<LifecycleOp>,
@@ -495,8 +495,8 @@ impl StatusBook {
 /// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
 pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
     match frame {
-        Frame::Members { mesh, publisher, sent_unix_ms, digests, in_flight, departed, .. } if mesh != own_mesh => {
-            Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.to_string()), sent_unix_ms, digests, in_flight, departed })
+        Frame::Members { mesh, publisher, published_at_rafka_ms, digests, in_flight, departed, .. } if mesh != own_mesh => {
+            Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms, digests, in_flight, departed })
         }
         Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
@@ -1083,7 +1083,7 @@ impl Membership {
             mesh: mesh.to_string(),
             publisher: publisher.to_string(),
             forwarded_by: None,
-            sent_unix_ms: sent,
+            published_at_rafka_ms: sent,
             digests: Vec::new(),
             in_flight,
             departed,
@@ -1290,7 +1290,7 @@ impl Backbone {
                 mesh: self.mesh.clone(),
                 publisher: self.node.clone(),
                 forwarded_by,
-                sent_unix_ms: sent,
+                published_at_rafka_ms: sent,
                 digests,
                 in_flight,
                 departed,
@@ -1648,7 +1648,7 @@ impl DigestBook {
                 return false;
             }
             let older = if held.node.incarnation == d.node.incarnation {
-                d.emitted_unix_ms <= held.emitted_unix_ms
+                d.emitted_at_rafka_ms <= held.emitted_at_rafka_ms
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1686,7 +1686,7 @@ impl DigestBook {
                 return false;
             }
             let older = if held.node.incarnation == d.node.incarnation {
-                d.emitted_unix_ms < held.emitted_unix_ms
+                d.emitted_at_rafka_ms < held.emitted_at_rafka_ms
             } else {
                 held.node.supersedes.as_ref() == Some(&d.node.incarnation)
             };
@@ -1771,7 +1771,8 @@ mod tests {
             },
             status,
             admin_api_base: None,
-            emitted_unix_ms: at,
+            emitted_at_rafka_ms: at,
+            digest_seq: at,
             mesh_id: None,
             in_flight: None,
             extra: Default::default(),
@@ -1854,7 +1855,7 @@ mod tests {
             node_id: id.clone(),
             incarnation: inc.clone(),
             name: "mesh1.rpc.1".parse().unwrap(),
-            event_at_ms: 1,
+            event_at_rafka_ms: 1,
         }
     }
 
@@ -1927,7 +1928,7 @@ mod tests {
         let (in_flight, departed) = book.overlays_of("mesh1");
         assert!(in_flight.is_empty());
         assert_eq!(departed.len(), 60, "mesh2's departure is not mesh1's to publish");
-        let frame = |departed| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), sent_unix_ms: 1, digests: Vec::new(), in_flight: Vec::new(), departed };
+        let frame = |departed| Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), published_at_rafka_ms: 1, digests: Vec::new(), in_flight: Vec::new(), departed };
         let runs = pack(departed, frame);
         assert!(runs.len() > 1, "sixty departures do not fit one message");
         assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 60, "every departure travels");
@@ -1954,7 +1955,7 @@ mod tests {
             mesh: "mesh1".into(),
             publisher: "mesh1.admin.1".into(),
             forwarded_by: Some("mesh2.admin.1".into()),
-            sent_unix_ms: 1,
+            published_at_rafka_ms: 1,
             digests,
             in_flight: in_flight.clone(),
             departed: departed.clone(),
@@ -1993,7 +1994,7 @@ mod tests {
             mesh: "mesh1".into(),
             publisher: "mesh1.admin.1".into(),
             forwarded_by: Some("mesh2.admin.1".into()),
-            sent_unix_ms: 1,
+            published_at_rafka_ms: 1,
             digests,
             in_flight: Vec::new(),
             departed: Vec::new(),
@@ -2116,7 +2117,7 @@ mod tests {
         let id = NodeId::mint();
         let d = digest(&id, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
         assert!(view.book.record(d.clone()));
-        let aggregate = Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, sent_unix_ms: 100, digests: vec![d], in_flight: vec![], departed: vec![] };
+        let aggregate = Frame::Members { mesh: "mesh1".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, published_at_rafka_ms: 100, digests: vec![d], in_flight: vec![], departed: vec![] };
         let _ = view.take(&aggregate, &fabric, "backbone");
         let (_, at, forwarded) = view.book.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
         assert!(!forwarded, "its own mesh's member is held as heard directly, never forwarded");
@@ -2125,7 +2126,7 @@ mod tests {
         let peer = NodeId::mint();
         let mut p = digest(&peer, &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, 100);
         p.node.name = "mesh2.rpc.1".parse().unwrap();
-        let aggregate = Frame::Members { mesh: "mesh2".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, sent_unix_ms: 100, digests: vec![p], in_flight: vec![], departed: vec![] };
+        let aggregate = Frame::Members { mesh: "mesh2".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, published_at_rafka_ms: 100, digests: vec![p], in_flight: vec![], departed: vec![] };
         let _ = view.take(&aggregate, &fabric, "backbone");
         assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2, "a peer mesh's member is forwarded");
     }

@@ -21,8 +21,8 @@ pub struct LifecycleOp {
     pub node_id: NodeId,
     pub incarnation: IncarnationId,
     pub name: PathName,
-    /// When the event happened; evidence only, never liveness, order or expiry.
-    pub event_at_ms: u64,
+    /// When the event happened, in Rafka-time; evidence only, never liveness, order or expiry.
+    pub event_at_rafka_ms: u64,
 }
 
 impl LifecycleOp {
@@ -57,7 +57,7 @@ mod tests {
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             name: "mesh2.rpc.2".parse().unwrap(),
-            event_at_ms: 7,
+            event_at_rafka_ms: 7,
         };
         let back: LifecycleOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
         assert_eq!(back, op);

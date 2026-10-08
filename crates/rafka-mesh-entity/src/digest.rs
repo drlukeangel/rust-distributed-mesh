@@ -41,7 +41,12 @@ pub struct MeshDigest {
     pub status: MemberStatus,
     /// The control API a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
-    pub emitted_unix_ms: u64,
+    /// Orders ONE birth's own heartbeats: sender-local, per incarnation, from 1 (gossip.md §3.1).
+    /// A receiver takes a digest of the held birth only when this is higher than the held one's;
+    /// a Rafka-time stamp never decides heartbeat order.
+    pub digest_seq: u64,
+    /// When the digest was emitted, in Rafka-time: evidence only, never liveness, order or `Gone`.
+    pub emitted_at_rafka_ms: u64,
     /// Where the birth keeps its data (current operational metadata a
     /// successor needs to manage it; not part of its runtime identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]

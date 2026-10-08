@@ -1123,7 +1123,7 @@ impl DeploymentPipeline<'_> {
                 node_id: node.node_id.clone(),
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
                 name: name.clone(),
-                event_at_ms: now_unix_ms(),
+                event_at_rafka_ms: now_unix_ms(),
             };
             // The receipt first, then the publish: the Build facts carry the overlay from the
             // moment it is announced, so a successor derives it from the same facts.
@@ -1140,7 +1140,7 @@ impl DeploymentPipeline<'_> {
                 node_id: node.node_id.clone(),
                 incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
                 name: name.clone(),
-                event_at_ms: now_unix_ms(),
+                event_at_rafka_ms: now_unix_ms(),
             };
             let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.restarting(&op).await;
@@ -1265,7 +1265,7 @@ impl DeploymentPipeline<'_> {
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
-            let op = LifecycleOp { event_at_ms: now_unix_ms(), ..op };
+            let op = LifecycleOp { event_at_rafka_ms: now_unix_ms(), ..op };
             let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.deleted(&op).await;
         }

@@ -919,7 +919,7 @@ impl AdminRunner {
             node_id: prev.node_id.clone(),
             incarnation,
             name: path.clone(),
-            event_at_ms: now_ms(),
+            event_at_rafka_ms: now_ms(),
         };
         self.lifecycle_events.deleted(&op).await;
         let receipt = crate::build_state::BuildStepReceipt {
@@ -1296,7 +1296,7 @@ impl Running {
         let say = |status: MemberStatus| {
             let mut d = self.digest.lock().unwrap().clone();
             d.status = status;
-            d.emitted_unix_ms = now_ms();
+            d.emitted_at_rafka_ms = now_ms();
             *self.digest.lock().unwrap() = d.clone();
             d
         };
@@ -1883,7 +1883,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         // Pending until it can take authority at once (the Ready gate below).
         status: MemberStatus::Pending,
         admin_api_base: Some(api_base.clone()),
-        emitted_unix_ms: now_ms(),
+        emitted_at_rafka_ms: now_ms(),
+        digest_seq: 1,
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
         extra: BTreeMap::new(),
@@ -2067,7 +2068,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 let peers: Vec<EndpointAddr> = membership.book.all().iter().filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                 let _ = membership.join_peers(peers).await;
                 let mut d = digest.lock().unwrap().clone();
-                d.emitted_unix_ms = now_ms();
+                d.emitted_at_rafka_ms = now_ms();
                 let _ = membership.publish(&d).await;
             })
         }));
@@ -2075,7 +2076,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let d = digest.clone();
     let publisher = membership.publish_every(gossip_interval(), move || {
         let mut d = d.lock().unwrap().clone();
-        d.emitted_unix_ms = now_ms();
+        d.emitted_at_rafka_ms = now_ms();
         d
     });
     // The declarer (i143.e4.s11): what this admin owes its authorities over `Status`, re-sent
@@ -2371,7 +2372,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             let d = {
                 let mut d = digest_w.lock().unwrap();
                 d.status = MemberStatus::Draining;
-                d.emitted_unix_ms = now_ms();
+                d.emitted_at_rafka_ms = now_ms();
                 d.clone()
             };
             let _ = membership_w.publish(&d).await;
@@ -2431,7 +2432,8 @@ mod tests {
             },
             status,
             admin_api_base: (name.kind == NodeKind::NodeAdmin).then(|| format!("http://admin-{name}")),
-            emitted_unix_ms: now_ms(),
+            emitted_at_rafka_ms: now_ms(),
+            digest_seq: 1,
             mesh_id: Some(mesh_id(&name.mesh)),
             in_flight: None,
             extra: BTreeMap::new(),
@@ -2498,7 +2500,7 @@ mod tests {
         // Outside a shutdown a Draining primary loses its seat: the ordinary rule.
         let mut draining = admins[1].clone();
         draining.status = Draining;
-        draining.emitted_unix_ms += 1;
+        draining.emitted_at_rafka_ms += 1;
         book.record(draining.clone());
         let moved = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(seat(&moved, "mesh1.admin.2"), (false, false));
@@ -2514,7 +2516,7 @@ mod tests {
         for d in admins.iter().skip(2) {
             let mut d = d.clone();
             d.status = Draining;
-            d.emitted_unix_ms += 1;
+            d.emitted_at_rafka_ms += 1;
             book.record(d);
         }
         let all_draining = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
@@ -2691,7 +2693,7 @@ mod tests {
             node_id: gone.node.node_id.clone(),
             incarnation: gone.node.incarnation.clone(),
             name: gone.node.name.clone(),
-            event_at_ms: 1,
+            event_at_rafka_ms: 1,
         });
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &launched);
         assert!(t.node(&gone.node.name).is_none(), "a departed birth's launch record is not a node: {:?}", t.node(&gone.node.name));
