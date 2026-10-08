@@ -62,7 +62,7 @@ fn now_ns() -> u64 {
 
 /// The born estate: two node-admins and three rpc nodes, every one ready.
 async fn born(cell: &str) -> Estate {
-    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]});
     let (status, accepted) = estate.post("/api/build", &shape).await;
     assert_eq!(status, 202, "POST /api/build: {accepted}");
