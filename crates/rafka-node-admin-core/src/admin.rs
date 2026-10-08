@@ -1913,6 +1913,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>> = Arc::default();
     // The topology this admin enters its mesh from, and where it came from.
     let mut entry_map: Option<(&'static str, Vec<crate::reenter::MapNode>)> = None;
+    // The ids the maker stored for meshes it holds no snapshot of: a mesh keeps its id through a
+    // recovery, and an admin that deploys that mesh's births launches them with it.
+    let mut stored_mesh_ids: Vec<(String, MeshId)> = Vec::new();
     let policy = match &launched_anchor {
         Some(_) => {
             let answer = pulled.take().ok_or_else(|| format!("{name}: a launched admin joins its launcher before it takes its entry, and its launch names no launcher or runtime to join with"))?;
@@ -1928,6 +1931,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             // reach a local node with, never installed (the node's own topology is read next).
             let mut map = crate::reenter::map_of_read(&read, &cfg.fabric_id);
             map.extend(crate::reenter::map_of_stored(&read));
+            stored_mesh_ids = read.stored.iter().filter_map(|m| m.mesh_id.clone().map(|id| (m.mesh.clone(), id))).collect();
             entry_map = Some(("maker", map));
             let mut mesh_peers = Vec::new();
             let mut admins = Vec::new();
@@ -2027,6 +2031,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         for m in mesh_storage.meshes().await.map_err(storage_err)?.into_iter().filter(|m| named.meshes.contains_key(&m.name)) {
             records.meshes.lock().unwrap().insert(m.name, m.mesh_id);
         }
+    }
+    for (mesh, id) in stored_mesh_ids {
+        mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: id.clone(), name: mesh.clone() }).await.map_err(storage_err)?;
+        records.meshes.lock().unwrap().entry(mesh).or_insert(id);
     }
     records.meshes.lock().unwrap().insert(cfg.mesh.clone(), mesh_id.clone());
     let book = membership.book.clone();
@@ -2303,19 +2311,19 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
         let own = digest.clone();
         // For a mesh it holds no snapshot of, this admin answers from the births it stores.
-        let contacts = nodes_storage.clone();
+        let (contacts, meshes) = (nodes_storage.clone(), mesh_storage.clone());
         let stored: crate::topology_read::StoredSource = Arc::new(move || {
-            let contacts = contacts.clone();
+            let (contacts, meshes) = (contacts.clone(), meshes.clone());
             Box::pin(async move {
-                contacts
-                    .contacts()
-                    .await
-                    .map(|rows| {
-                        rows.into_iter()
-                            .map(|r| rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr })
-                            .collect()
-                    })
-                    .map_err(|e| e.to_string())
+                let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
+                let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
+                Ok(crate::topology_read::StoredMap {
+                    nodes: rows
+                        .into_iter()
+                        .map(|r| rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr })
+                        .collect(),
+                    mesh_ids: ids.into_iter().map(|m| (m.name, m.mesh_id)).collect(),
+                })
             })
         });
         let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone())).with_stored(stored)));

@@ -21,7 +21,7 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use rafka_mesh_entity::wire::WireDigest;
-use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, NodeId, PublisherId};
+use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
 use serde::{Deserialize, Serialize};
 
 pub struct Topology;
@@ -90,8 +90,9 @@ pub enum TopologyReply {
     Started,
     /// A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is
     /// never installed as the mesh's topology. It names births to reach, nothing more. One mesh may
-    /// arrive in several frames; `End.meshes` counts the mesh once.
-    Stored { mesh: String, nodes: Vec<StoredNode> },
+    /// arrive in several frames; `End.meshes` counts the mesh once. `mesh_id` is the id the target
+    /// stored for the mesh, when it stored one: the mesh keeps its id through a recovery.
+    Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
 }
 
 impl TopologyReply {

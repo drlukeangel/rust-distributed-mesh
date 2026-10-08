@@ -462,7 +462,7 @@ fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rafka_node_rpc_contra
     let d = own_digest(n, fabric);
     let source: rafka_node_admin_core::topology_read::StoredSource = Arc::new(move || {
         let rows = rows.clone();
-        Box::pin(async move { Ok(rows) })
+        Box::pin(async move { Ok(rafka_node_admin_core::topology_read::StoredMap { nodes: rows, mesh_ids: [("mesh1".to_string(), MeshId::parse("04raj09p3zp7").unwrap())].into_iter().collect() }) })
     });
     let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone())).with_stored(source)));
 }
@@ -492,6 +492,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
         assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held snapshot is answered as a snapshot");
         assert_eq!(read.stored.len(), 1, "only the lost mesh is answered from the stored map: {:?}", read.stored);
         assert_eq!((read.stored[0].mesh.as_str(), read.stored[0].nodes.len()), ("mesh1", 3));
+        assert_eq!(read.stored[0].mesh_id, Some(MeshId::parse("04raj09p3zp7").unwrap()), "the stored mesh carries the id the node stored for it");
         assert_eq!(read.meshes, 2, "End counts the snapshot mesh and the stored mesh");
         assert!(caller.membership.held_source_version("mesh1").is_none(), "a stored map carries no version, so no source is held for it");
         for d in &lost {

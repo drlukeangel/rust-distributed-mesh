@@ -35,8 +35,16 @@ pub struct TopologyDoor {
     snapshots: AtomicU64,
 }
 
+/// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
+/// it stored for each mesh.
+#[derive(Debug, Clone, Default)]
+pub struct StoredMap {
+    pub nodes: Vec<StoredNode>,
+    pub mesh_ids: std::collections::BTreeMap<String, rafka_mesh_entity::MeshId>,
+}
+
 /// The births a node stores, read when a mesh has no gossiped snapshot to answer from.
-pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<StoredNode>, String>> + Send>> + Send + Sync>;
+pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StoredMap, String>> + Send>> + Send + Sync>;
 
 /// Stored nodes per `Stored` frame: a frame stays under the reply ceiling.
 const STORED_PER_FRAME: usize = 24;
@@ -117,15 +125,17 @@ impl TopologyDoor {
             // A mesh with no gossiped snapshot is answered from the stored map, marked as having no
             // version, when the node stores births of it.
             let mut stored: std::collections::BTreeMap<String, Vec<StoredNode>> = Default::default();
+            let mut stored_ids = std::collections::BTreeMap::new();
             if let Some(source) = &self.stored {
-                let rows = match source().await {
-                    Ok(rows) => rows,
+                let map = match source().await {
+                    Ok(map) => map,
                     Err(reason) => {
                         span.record("outcome", "not-ready");
                         return TopologyReply::NotReady { reason: format!("{}: the stored map could not be read: {reason}", me.node.name) };
                     }
                 };
-                for n in rows {
+                stored_ids = map.mesh_ids;
+                for n in map.nodes {
                     let m = n.name.split('.').next().unwrap_or_default().to_string();
                     if m != me.node.name.mesh && held.iter().all(|s| s.mesh != m) && mesh.as_ref().is_none_or(|want| *want == m) {
                         stored.entry(m).or_default().push(n);
@@ -167,7 +177,7 @@ impl TopologyDoor {
             let stored_meshes = stored.len() as u64;
             for (m, nodes) in stored {
                 for chunk in nodes.chunks(STORED_PER_FRAME) {
-                    let r = TopologyReply::Stored { mesh: m.clone(), nodes: chunk.to_vec() };
+                    let r = TopologyReply::Stored { mesh: m.clone(), mesh_id: stored_ids.get(&m).cloned(), nodes: chunk.to_vec() };
                     bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                     if let Err(e) = sink.data(r).await {
                         span.record("outcome", format!("caller-gone: {e:?}").as_str());
@@ -221,6 +231,7 @@ pub struct TopologyRead {
 #[derive(Debug, Clone)]
 pub struct StoredMesh {
     pub mesh: String,
+    pub mesh_id: Option<rafka_mesh_entity::MeshId>,
     pub nodes: Vec<StoredNode>,
 }
 
@@ -333,9 +344,9 @@ async fn read_with(
                 }
             }
             StreamItem::Frame(_, TopologyReply::Unchanged { mesh, topology_version, .. }) => read.unchanged.push((mesh, topology_version)),
-            StreamItem::Frame(_, TopologyReply::Stored { mesh, nodes }) => match read.stored.iter_mut().find(|m| m.mesh == mesh) {
+            StreamItem::Frame(_, TopologyReply::Stored { mesh, mesh_id, nodes }) => match read.stored.iter_mut().find(|m| m.mesh == mesh) {
                 Some(m) => m.nodes.extend(nodes),
-                None => read.stored.push(StoredMesh { mesh, nodes }),
+                None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
