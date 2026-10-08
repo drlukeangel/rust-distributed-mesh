@@ -505,7 +505,7 @@
         {
           "name": "mesh_member_recovers_delta_gap_from_own_primary",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2900.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_FULL_EVERY_ROUNDS=12 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rafka-test-scenario --test i143_acceptance_2900 mesh_member_recovers_delta_gap_from_own_primary -- --exact",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rafka-test-scenario --test i143_acceptance_2900 mesh_member_recovers_delta_gap_from_own_primary -- --exact",
           "dir": "target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary"
         }
       ]

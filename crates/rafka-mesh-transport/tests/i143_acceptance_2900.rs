@@ -500,7 +500,7 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
             let (fbb, mm) = (fwd_bb.clone(), mem_m.clone());
             async move {
                 if n % 5 == 0 {
-                    fbb.forward_fulls("every").await;
+                    fbb.forward_fulls().await;
                 }
                 mm.held_source_version("mesh2")
             }

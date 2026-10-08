@@ -618,8 +618,8 @@ impl Forwarder {
         Forward::Delta(Box::new(frame))
     }
 
-    /// The passive anti-entropy full of every source in `held`, `(mesh, publisher, version, full)`:
-    /// sets each source's last-published version to the one sent.
+    /// The first publication, on taking the seat, of every source in `held`, `(mesh, publisher,
+    /// version, full)`: sets each source's last-published version to the one sent.
     pub fn fulls(&mut self, me: &str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) -> Vec<Frame> {
         let mut out = Vec::new();
         for (mesh, publisher, version, full) in held {

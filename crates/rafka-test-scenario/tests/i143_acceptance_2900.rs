@@ -2,8 +2,7 @@
 //! `scripts/i143-acceptance-gate.sh i143-2900-process`, which exports `I143_ACCEPTANCE_DIR` (this
 //! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it) at the test cadence (staleness
-//! 3 s, gossip 500 ms), with `RDM_FULL_EVERY_ROUNDS=12` so that no periodic full falls inside the
-//! windows the cell reads.
+//! 3 s, gossip 500 ms).
 //!
 //! The estate: mesh1 (one node-admin, one rpc node) and mesh2 (one node-admin, two rpc nodes),
 //! settled through a Build. An observer joins the backbone and mesh1's channel and decodes the

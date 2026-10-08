@@ -57,42 +57,6 @@ pub fn backbone_gossip_interval() -> Duration {
     static EVERY: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| env_ms("RDM_BACKBONE_INTERVAL_MS", 2_000))
 }
-/// The default `FULL_EVERY`: the forwarding primary puts the stripped full of every source into
-/// its Mesh every this many aggregate rounds (gossip.md §3.3). It is passive anti-entropy for a
-/// node that noticed nothing wrong, and the liveness word for a member heard only through forwarded
-/// topology, so it must stay inside that member's extra grace (see [`full_every_rounds`]). The
-/// default keeps a full within four rounds, a quarter of the grace at the default cadences.
-pub const FULL_EVERY_DEFAULT: u32 = 4;
-
-/// The upper bound `RDM_FULL_EVERY_ROUNDS` may name, whatever the cadences.
-pub const FULL_EVERY_MAX: u32 = 64;
-
-/// `FULL_EVERY`, from `RDM_FULL_EVERY_ROUNDS` (default [`FULL_EVERY_DEFAULT`]): a number of
-/// aggregate rounds between 1 and [`FULL_EVERY_MAX`] such that a full, plus one round, arrives
-/// inside the forwarded staleness floor. A member of a peer Mesh is heard by an ordinary node only
-/// through these fulls and deltas, so a value whose interval outlasts that floor would make every
-/// remote member flicker to `PendingReconnect`. A value outside the bounds is refused by name,
-/// never replaced by the default.
-pub fn full_every_rounds() -> Result<u32, String> {
-    let rounds = match std::env::var("RDM_FULL_EVERY_ROUNDS") {
-        Err(_) => FULL_EVERY_DEFAULT,
-        Ok(v) => v.parse::<u32>().map_err(|_| format!("RDM_FULL_EVERY_ROUNDS={v:?} is not a whole number of rounds"))?,
-    };
-    if rounds == 0 || rounds > FULL_EVERY_MAX {
-        return Err(format!("RDM_FULL_EVERY_ROUNDS={rounds} is outside 1..={FULL_EVERY_MAX}"));
-    }
-    let g = gossip_interval();
-    let forwarded_floor = staleness_floor() + backbone_gossip_interval() + staleness_floor() + backbone_gossip_interval();
-    if g * (rounds + 1) > forwarded_floor {
-        return Err(format!(
-            "RDM_FULL_EVERY_ROUNDS={rounds} at a {}ms round puts {}ms between fulls, past the {}ms a member heard only through forwarded topology stays heard",
-            g.as_millis(),
-            (g * rounds).as_millis(),
-            forwarded_floor.as_millis()
-        ));
-    }
-    Ok(rounds)
-}
 
 /// The largest encoded frame: the payload that fits iroh-gossip's frame limit with its framing.
 pub const MAX_FRAME: usize = crate::chunking::MAX_MESSAGE_BYTES;
@@ -1844,7 +1808,7 @@ impl Backbone {
         let overlays = Full::new(Vec::new(), full.in_flight(), full.departed());
         *self.own.lock().unwrap() = Some((version, overlays.clone()));
         if self.full_due.swap(false, Ordering::Relaxed) {
-            self.forward_fulls("seat").await;
+            self.forward_fulls().await;
         } else {
             let out = self.membership.view.forwarder.lock().unwrap().source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
             self.membership.send_forward(&self.node, &self.mesh, &self.publisher, version, out).await;
@@ -1852,9 +1816,10 @@ impl Backbone {
     }
 
     /// The forwarded full of every source this primary holds (its own Mesh and each peer Mesh),
-    /// without loads: on taking the seat, and every `FULL_EVERY` rounds as passive anti-entropy.
-    /// `reason` is `seat` or `every`.
-    pub async fn forward_fulls(&self, reason: &'static str) {
+    /// without loads, on taking the seat: the first publication of every source into this Mesh.
+    /// Nothing sends it again on a timer; a held source whose peer Mesh is unheard is not
+    /// re-sent, so no member's coverage is renewed by a word its primary did not receive.
+    pub async fn forward_fulls(&self) {
         if !self.forwarding.load(Ordering::Relaxed) {
             return;
         }
@@ -1865,7 +1830,7 @@ impl Backbone {
         let now = self.membership.clock.now_rafka_ms();
         let frames = self.membership.view.forwarder.lock().unwrap().fulls(&self.node, &held, now);
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
+        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason = "seat", sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
         for f in frames {
             let _ = self.membership.forward(&f).await;

@@ -2284,9 +2284,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
         let adapter = runner.builds.clone();
-        let full_every = rafka_mesh_transport::membership::full_every_rounds()?;
         hierarchy = tokio::spawn(async move {
-            let mut rounds: u32 = 0;
             // Each unreadable pre-event step is named once, not every round.
             let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
             loop {
@@ -2317,15 +2315,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
                 backbone.announce_statuses(&mesh_status, &status_of(t.fabric.status)).await;
-                // The forwarding primary puts the stripped full of every source into its Mesh every
-                // `full_every` rounds as passive anti-entropy (gossip.md §3.3); a change in a source
-                // is a delta, sent when the move is heard (`Backbone::publish`, the backbone handler).
-                if live && backbone.is_mesh_primary() {
-                    rounds += 1;
-                    if rounds % full_every == 0 {
-                        backbone.forward_fulls("every").await;
-                    }
-                }
                 let addr = rafka_mesh_transport::membership::gossip_addr;
                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                 builds.join_admins(admins.clone()).await;
