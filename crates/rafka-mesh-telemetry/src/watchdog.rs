@@ -64,13 +64,29 @@ pub fn spawn() -> Option<()> {
         .name("rdm-watchdog".into())
         .spawn(move || {
             let mut stalled: Option<(u64, u64, Vec<String>)> = None;
+            let mut profiled = false;
             loop {
                 std::thread::sleep(BEAT);
                 let last = beat.load(Ordering::Acquire);
                 let now = now_ms(origin);
                 match &mut stalled {
                     None if last > 0 && now.saturating_sub(last) > STALL.as_millis() as u64 => {
-                        stalled = Some((last, runqueue_wait_ms(), vec![thread_states()]));
+                        let states = thread_states();
+                        // Diagnosis runs only (RAFKA_STALL_PERF set): profile this process while
+                        // its workers are busy, once, into the evidence directory.
+                        if states.contains(":R:") && !profiled {
+                            if let (Ok(_), Ok(dir)) = (std::env::var("RAFKA_STALL_PERF"), std::env::var("RAFKA_EVIDENCE_DIR")) {
+                                profiled = true;
+                                let out = format!("{dir}/stall-{}-{now}.perf.data", std::process::id());
+                                let r = std::process::Command::new("perf")
+                                    .args(["record", "-q", "-F", "499", "--call-graph", "dwarf,16384", "-p", &std::process::id().to_string(), "-o", &out, "--", "sleep", "1"])
+                                    .stdout(std::process::Stdio::null())
+                                    .stderr(std::process::Stdio::null())
+                                    .spawn();
+                                tracing::warn!(step = "runtime-stall-profile", path = %out, started = r.is_ok(), "profiling the stalled runtime's busy workers");
+                            }
+                        }
+                        stalled = Some((last, runqueue_wait_ms(), vec![states]));
                     }
                     Some((_, _, samples)) if now.saturating_sub(last) > STALL.as_millis() as u64 => {
                         if samples.len() < 4 {
