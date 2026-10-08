@@ -589,8 +589,7 @@ impl NodeObserver for MembershipObserver {
 
     async fn drain(&self, node: &Node) -> crate::deployment::pipeline::DrainOutcome {
         use crate::deployment::pipeline::DrainOutcome;
-        use rafka_node_rpc_contract::outcome::RpcOutcome;
-        use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+        use rafka_node_rpc_contract::status::{NodeState, Status, StatusRequest};
         let Some(client) = self.client.as_ref() else {
             return DrainOutcome::NotSent { reason: "this admin holds no Node RPC client".into() };
         };
@@ -599,16 +598,7 @@ impl NodeObserver for MembershipObserver {
         };
         let req = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining };
         let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
-        let outcome = match &out {
-            RpcOutcome::Reply(r) => match r.value() {
-                StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
-                other => DrainOutcome::Refused { reply: other.name().to_string() },
-            },
-            RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
-            RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
-            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
-            RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
-        };
+        let outcome = crate::deployment::pipeline::drain_outcome(&out);
         tracing::info_span!("rdm.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the typed drain was sent to the exact birth"));
         outcome

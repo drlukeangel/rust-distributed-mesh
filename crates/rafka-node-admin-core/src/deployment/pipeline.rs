@@ -486,6 +486,25 @@ pub enum DrainOutcome {
     Deadline { last_in_flight: Option<u64> },
 }
 
+/// The arm one typed drain call is (`ApplyNodeState(Draining)` to the exact birth): only
+/// `NodeDrainingApplied` establishes a drain; every other reply is `Refused` by its name, an
+/// unsent call `NotSent`, an unanswered one `Indeterminate`. `Deadline` is `WaitForDrain`'s, never
+/// a call's.
+pub fn drain_outcome(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafka_node_rpc_contract::status::StatusReply>) -> DrainOutcome {
+    use rafka_node_rpc_contract::outcome::RpcOutcome;
+    use rafka_node_rpc_contract::status::StatusReply;
+    match out {
+        RpcOutcome::Reply(r) => match r.value() {
+            StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
+            other => DrainOutcome::Refused { reply: other.name().to_string() },
+        },
+        RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
+        RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
+        RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
+        RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
+    }
+}
+
 #[async_trait::async_trait]
 pub trait LifecycleEvents: Send + Sync {
     async fn deleting(&self, op: &LifecycleOp);
