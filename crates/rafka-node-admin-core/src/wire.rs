@@ -16,7 +16,7 @@
 use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
-use crate::deployment::endpoint::Assignment;
+use crate::deployment::pipeline::Bound;
 use crate::deployment::pipeline::{AdmissionClosure, CreateStep, DrainOutcome, Identity, RetireStep, StorageDisposition};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
@@ -255,7 +255,7 @@ impl From<WireTopology> for FabricTopology {
 #[derive(Serialize, Deserialize)]
 pub(crate) enum WireOutput {
     Identity(Identity),
-    Assignment(Assignment),
+    Bound(Bound),
     EndpointId(EndpointId),
     DeploymentHandle(DeploymentHandle),
     RuntimeEvidence(WireRuntimeEvidence),
@@ -374,7 +374,7 @@ impl From<WireStorageDisposition> for StorageDisposition {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Produces {
     Identity,
-    Assignment,
+    Bound,
     EndpointId,
     DeploymentHandle,
     RuntimeEvidence,
@@ -390,8 +390,8 @@ fn produces(step: &str) -> Option<Produces> {
     let ret = |r: RetireStep| r.name() == step;
     Some(if is(CreateStep::AllocateIdentity) {
         Produces::Identity
-    } else if is(CreateStep::AllocateEndpoints) {
-        Produces::Assignment
+    } else if is(CreateStep::WaitForBind) {
+        Produces::Bound
     } else if is(CreateStep::PrepareStorage) {
         Produces::EndpointId
     } else if is(CreateStep::DeployRuntime) {
@@ -431,7 +431,7 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
     };
     Ok(match kind {
         Produces::Identity => WireOutput::Identity(typed(v)?),
-        Produces::Assignment => WireOutput::Assignment(typed(v)?),
+        Produces::Bound => WireOutput::Bound(typed(v)?),
         Produces::EndpointId => WireOutput::EndpointId(typed(v)?),
         Produces::DeploymentHandle => WireOutput::DeploymentHandle(typed(v)?),
         Produces::RuntimeEvidence => {
@@ -477,7 +477,7 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
 fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
     match o {
         WireOutput::Identity(i) => json(&i),
-        WireOutput::Assignment(a) => json(&a),
+        WireOutput::Bound(b) => json(&b),
         WireOutput::EndpointId(e) => json(&e),
         WireOutput::DeploymentHandle(h) => json(&h),
         WireOutput::RuntimeEvidence(e) => {

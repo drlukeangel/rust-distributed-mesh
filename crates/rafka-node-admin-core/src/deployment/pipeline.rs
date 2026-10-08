@@ -623,9 +623,9 @@ impl Default for Timeouts {
 
 /// Where a birth reported it bound: the addresses its own digest names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Bound {
-    transport: SocketAddr,
-    listeners: Vec<(String, SocketAddr)>,
+pub struct Bound {
+    pub transport: SocketAddr,
+    pub listeners: Vec<(String, SocketAddr)>,
 }
 
 impl Bound {

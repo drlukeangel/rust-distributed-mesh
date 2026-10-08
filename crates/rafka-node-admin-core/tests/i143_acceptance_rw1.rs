@@ -18,7 +18,7 @@ use rafka_mesh_transport::snapshot::{chunks_of, Full, PublisherId};
 use rafka_node_admin_core::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::Assignment;
+use rafka_node_admin_core::deployment::pipeline::Bound;
 use rafka_node_admin_core::deployment::pipeline::{AdmissionClosure, CreateStep, DrainOutcome, RetireStep, StorageDisposition};
 use rafka_node_admin_core::deployment::provider::DeploymentHandle;
 use rafka_node_admin_core::fabric_builds::{encode_chunks, BuildMessage};
@@ -190,7 +190,7 @@ fn facts() -> Vec<BuildFact> {
     }));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "dep-1" }))));
     out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": to_json(&IncarnationId::mint()), "deployment_id": "dep-1" }))));
-    out.push(step(CreateStep::AllocateEndpoints.name(), Some(to_json(&Assignment { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![("control".into(), "127.0.0.1:41001".parse().unwrap())] }))));
+    out.push(step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![("control".into(), "127.0.0.1:41001".parse().unwrap())] }))));
     out.push(step(CreateStep::PrepareStorage.name(), Some(to_json(&EndpointId("abcd".into())))));
     out.push(step(
         CreateStep::DeployRuntime.name(),
@@ -341,7 +341,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     result.insert("refusals".into(), json!({ "garbage": garbage, "json_frame": json_frame, "trailing_bytes": trailing, "json_build_message": build_garbage }));
 
     // ---- an output with no wire shape is refused naming Build, attempt and step; neighbours travel ----
-    let good = step(CreateStep::AllocateEndpoints.name(), Some(to_json(&Assignment { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![] })));
+    let good = step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![] })));
     let stray = step(CreateStep::Complete.name(), Some(json!({ "anything": 1 })));
     let mistyped = step(CreateStep::AllocateIdentity.name(), Some(json!({ "pid": 7 })));
     let (messages, refused) = encode_chunks(vec![good.clone(), stray, mistyped, good.clone()]);
