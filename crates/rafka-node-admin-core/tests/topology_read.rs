@@ -274,3 +274,181 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     server.ep.close().await;
     lossy_ep.close().await;
 }
+
+/// This cell's own span capture: an in-memory OTel exporter behind a dispatcher installed on every
+/// thread of the cell's own runtime, so cells sharing a test process never share spans.
+struct Capture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: opentelemetry_sdk::trace::TracerProvider,
+    dispatch: tracing::Dispatch,
+}
+
+fn capture(cell: &str) -> Capture {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::TracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .with_resource(opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("service.name", format!("topology-read-{cell}"))]))
+        .build();
+    let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("topology-read"));
+    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+impl Capture {
+    fn run<F: std::future::Future>(&self, f: F) -> F::Output {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(f)
+    }
+
+    /// `(name, attributes)` of every finished span.
+    fn spans(&self) -> Vec<(String, std::collections::BTreeMap<String, String>)> {
+        let _ = self.provider.force_flush();
+        self.exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.name.to_string(), s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect()))
+            .collect()
+    }
+
+    fn named(&self, name: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+        self.spans().into_iter().filter(|(n, _)| n == name).map(|(_, a)| a).collect()
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a request naming a mesh the node never heard of is answered `UnknownMesh` naming it,
+/// installs nothing, and the node's serve span records the `unknown-mesh` outcome for that request
+/// (`requested` names the mesh) with no mesh or snapshot streamed.
+#[test]
+fn a_request_naming_a_mesh_the_node_never_heard_is_unknown_mesh_and_streams_nothing() {
+    let cap = capture("unknown-mesh");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        open(&server, &fabric);
+        hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 3, vec![member_of(&fabric, "mesh2", "rpc", 1)]));
+        let t = target_of(&caller, &server);
+        let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh77"), None).await.unwrap_err();
+        assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh77".into()));
+        assert!(caller.membership.held_source_version("mesh2").is_none() && caller.membership.held_source_version("mesh77").is_none());
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    let serves = cap.named("rdm.mesh.topology.serve.via-read");
+    assert_eq!(serves.len(), 1, "{serves:?}");
+    assert_eq!((serves[0]["outcome"].as_str(), serves[0]["requested"].as_str()), ("unknown-mesh", "mesh77"));
+    assert!(!serves[0].contains_key("snapshots"), "nothing was streamed: {:?}", serves[0]);
+    assert!(cap.named("rdm.mesh.topology.update.via-read-install").is_empty(), "nothing was installed");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: `since` is the source version the caller holds, scoped by the publisher's exact
+/// birth. The same topology_version from another publisher epoch is not held: the node streams the
+/// snapshot (never Unchanged), and the serve span counts one snapshot and no unchanged. A `since`
+/// with no mesh named is ignored: every mesh is streamed.
+#[test]
+fn a_since_from_another_publisher_epoch_is_answered_with_the_snapshot_not_unchanged() {
+    let cap = capture("since-epoch");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        open(&server, &fabric);
+        let epoch1 = publisher("mesh2.admin.1");
+        hold(&server.membership, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
+        let t = target_of(&caller, &server);
+        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId("birth-2".into()) };
+        let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
+        let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
+        assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
+        assert_eq!(caller.membership.held_source_version("mesh2"), Some((epoch1.clone(), 7)), "installed at the publisher it was held from");
+        // The same version from the held publisher is Unchanged; a `since` with no mesh named is ignored.
+        let held = SourceVersion { publisher: epoch1, topology_version: 7 };
+        let unchanged = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(held.clone())).await.unwrap();
+        assert_eq!(unchanged.unchanged, vec![("mesh2".to_string(), 7)]);
+        let all = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, Some(held)).await.unwrap();
+        assert!(all.unchanged.is_empty() && all.installed.len() == 1, "since is honoured only with a mesh named: {all:?}");
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    let serves = cap.named("rdm.mesh.topology.serve.via-read");
+    let counts: Vec<(&str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["snapshots"].as_str(), a["unchanged"].as_str())).collect();
+    assert_eq!(counts, vec![("mesh2", "1", "0"), ("mesh2", "0", "1"), ("*", "1", "0")], "{serves:?}");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (R-G2): a read from a node of another mesh whose source of the reader's own mesh is
+/// stale installs topology and no liveness. The members of the reader's own mesh are returned to
+/// the reader (to map and sweep) but are held nowhere in its book, so a dead one is never heard
+/// as alive; a third mesh's members are held as topology. The reader's install spans name the
+/// answering node and the mesh.
+#[test]
+fn a_read_from_a_peer_mesh_returns_the_readers_own_mesh_but_holds_none_of_it_as_heard() {
+    let cap = capture("peer-read");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh2", "mesh2.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        open(&server, &fabric);
+        let own: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "rpc", k)).collect();
+        let third: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
+        hold(&server.membership, &snap("mesh1", &publisher("mesh1.admin.1"), 9, own.clone()));
+        hold(&server.membership, &snap("mesh3", &publisher("mesh3.admin.1"), 2, third.clone()));
+        let t = target_of(&caller, &server);
+        let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
+        let members_of = |mesh: &str| read.installed.iter().find(|m| m.mesh == mesh).map(|m| m.members.len());
+        assert_eq!((members_of("mesh1"), members_of("mesh3")), (Some(3), Some(2)), "the reader is given every mesh the node holds");
+        for d in &own {
+            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_none(), "{} of the reader's own mesh is not held as heard from a peer mesh's stale source", d.node.name);
+        }
+        for d in &third {
+            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_some(), "{} of a third mesh is held as topology", d.node.name);
+        }
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    let installs = cap.named("rdm.mesh.topology.update.via-read-install");
+    let mut got: Vec<(&str, &str, &str)> = installs.iter().map(|a| (a["node"].as_str(), a["mesh"].as_str(), a["members"].as_str())).collect();
+    got.sort();
+    assert_eq!(got, vec![("mesh1.rpc.2", "mesh1", "3"), ("mesh1.rpc.2", "mesh3", "2")], "{installs:?}");
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a topology read of a mesh that has a birth being retired carries the retirement: the
+/// node serves the held source's in-flight operation with the member still listed, and the reader
+/// holds the member as deleting (its overlay names the operation) rather than as a plain member.
+#[test]
+fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_overlay() {
+    let cap = capture("retiring");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        open(&server, &fabric);
+        let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
+        let retiring = &members[1];
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 1,
+            operation: "retire-node:mesh3.rpc.2".into(),
+            node_id: retiring.node.node_id.clone(),
+            incarnation: retiring.node.incarnation.clone(),
+            name: retiring.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        let mut s = snap("mesh3", &publisher("mesh3.admin.1"), 4, members.clone());
+        s.in_flight = vec![op.clone()];
+        hold(&server.membership, &s);
+        let t = target_of(&caller, &server);
+        let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh3"), None).await.unwrap();
+        assert_eq!(read.installed[0].members.len(), 3, "the retiring member is still listed");
+        let (in_flight, _) = caller.membership.book.overlays_of("mesh3");
+        assert_eq!(in_flight, vec![op], "the reader holds the retirement as an overlay");
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    let serve = cap.named("rdm.mesh.topology.serve.via-read");
+    assert_eq!(serve.len(), 1);
+    assert_eq!((serve[0]["outcome"].as_str(), serve[0]["snapshots"].as_str()), ("served", "1"));
+}
