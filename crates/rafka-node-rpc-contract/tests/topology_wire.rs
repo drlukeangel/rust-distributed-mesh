@@ -7,7 +7,7 @@ use rafka_mesh_entity::{IncarnationId, LifecycleOp, PublisherId};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
 use rafka_node_rpc_contract::streaming::{FrameKind, StreamingProtocol};
-use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+use rafka_node_rpc_contract::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
 
 fn bytes(hex: &str) -> Vec<u8> {
     let hex: String = hex.split_whitespace().collect();
@@ -57,7 +57,7 @@ fn requests_match_the_frozen_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_eleven_variant_wire_schema() {
+fn replies_match_the_frozen_twelve_variant_wire_schema() {
     use TopologyReply::*;
     let fixtures = [
         (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0161 0162 07"),
@@ -70,13 +70,14 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
+        (Stored { mesh: "m".into(), nodes: vec![StoredNode { node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rafka_mesh_entity::EndpointId("k".into()), incarnation: IncarnationId("i".into()), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0169 00 7f000001 50"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Topology::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Topology::REPLY_VARIANTS, 11);
-    assert_eq!(Topology::decode_reply(&[11]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Topology::REPLY_VARIANTS, 12);
+    assert_eq!(Topology::decode_reply(&[12]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]

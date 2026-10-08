@@ -18,7 +18,7 @@ use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::streaming::FrameKind;
-use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+use rafka_node_rpc_contract::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -29,12 +29,27 @@ pub struct TopologyDoor {
     pub membership: Membership,
     /// This node's own digest, as it publishes it now.
     pub own: Arc<dyn Fn() -> MeshDigest + Send + Sync>,
+    /// The map this node stores (an admin's durable map of the births it knows), for a mesh it holds
+    /// no gossiped snapshot of.
+    stored: Option<StoredSource>,
     snapshots: AtomicU64,
 }
 
+/// The births a node stores, read when a mesh has no gossiped snapshot to answer from.
+pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<StoredNode>, String>> + Send>> + Send + Sync>;
+
+/// Stored nodes per `Stored` frame: a frame stays under the reply ceiling.
+const STORED_PER_FRAME: usize = 24;
+
 impl TopologyDoor {
     pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>) -> Self {
-        Self { membership, own, snapshots: AtomicU64::new(0) }
+        Self { membership, own, stored: None, snapshots: AtomicU64::new(0) }
+    }
+
+    /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
+    pub fn with_stored(mut self, stored: StoredSource) -> Self {
+        self.stored = Some(stored);
+        self
     }
 
     fn next_snapshot_id(&self) -> u64 {
@@ -89,6 +104,7 @@ impl TopologyDoor {
             meshes = tracing::field::Empty,
             snapshots = tracing::field::Empty,
             unchanged = tracing::field::Empty,
+            stored = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -97,7 +113,27 @@ impl TopologyDoor {
             let mut held = self.membership.held_topology(&me);
             if let Some(m) = &mesh {
                 held.retain(|s| &s.mesh == m);
-                if held.is_empty() {
+            }
+            // A mesh with no gossiped snapshot is answered from the stored map, marked as having no
+            // version, when the node stores births of it.
+            let mut stored: std::collections::BTreeMap<String, Vec<StoredNode>> = Default::default();
+            if let Some(source) = &self.stored {
+                let rows = match source().await {
+                    Ok(rows) => rows,
+                    Err(reason) => {
+                        span.record("outcome", "not-ready");
+                        return TopologyReply::NotReady { reason: format!("{}: the stored map could not be read: {reason}", me.node.name) };
+                    }
+                };
+                for n in rows {
+                    let m = n.name.split('.').next().unwrap_or_default().to_string();
+                    if m != me.node.name.mesh && held.iter().all(|s| s.mesh != m) && mesh.as_ref().is_none_or(|want| *want == m) {
+                        stored.entry(m).or_default().push(n);
+                    }
+                }
+            }
+            if let Some(m) = &mesh {
+                if held.is_empty() && stored.is_empty() {
                     span.record("outcome", "unknown-mesh");
                     return TopologyReply::UnknownMesh { mesh: m.clone() };
                 }
@@ -128,6 +164,19 @@ impl TopologyDoor {
                 }
                 answered += 1;
             }
+            let stored_meshes = stored.len() as u64;
+            for (m, nodes) in stored {
+                for chunk in nodes.chunks(STORED_PER_FRAME) {
+                    let r = TopologyReply::Stored { mesh: m.clone(), nodes: chunk.to_vec() };
+                    bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                    if let Err(e) = sink.data(r).await {
+                        span.record("outcome", format!("caller-gone: {e:?}").as_str());
+                        return TopologyReply::End { meshes: answered };
+                    }
+                }
+                answered += 1;
+            }
+            span.record("stored", stored_meshes);
             span.record("meshes", answered);
             span.record("snapshots", snapshots);
             span.record("unchanged", unchanged);
@@ -163,6 +212,16 @@ pub struct TopologyRead {
     pub unchanged: Vec<(String, u64)>,
     /// The meshes the target says it answered.
     pub meshes: u32,
+    /// Each mesh the target answered from its stored map, with no version: births to reach, never
+    /// installed and never the mesh's current topology.
+    pub stored: Vec<StoredMesh>,
+}
+
+/// A mesh answered from the target's stored map.
+#[derive(Debug, Clone)]
+pub struct StoredMesh {
+    pub mesh: String,
+    pub nodes: Vec<StoredNode>,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +333,10 @@ async fn read_with(
                 }
             }
             StreamItem::Frame(_, TopologyReply::Unchanged { mesh, topology_version, .. }) => read.unchanged.push((mesh, topology_version)),
+            StreamItem::Frame(_, TopologyReply::Stored { mesh, nodes }) => match read.stored.iter_mut().find(|m| m.mesh == mesh) {
+                Some(m) => m.nodes.extend(nodes),
+                None => read.stored.push(StoredMesh { mesh, nodes }),
+            },
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),
@@ -283,7 +346,7 @@ async fn read_with(
         return Err(TopologyFailure::Unreached("the stream ended without its End frame".into()));
     };
     read.meshes = meshes;
-    let held = (read.installed.len() + read.unchanged.len()) as u32;
+    let held = (read.installed.len() + read.unchanged.len() + read.stored.len()) as u32;
     if held > meshes {
         return Err(TopologyFailure::Incomplete(format!("{held} meshes arrived whole, the target counted {meshes}")));
     }

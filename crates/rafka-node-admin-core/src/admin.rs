@@ -1924,7 +1924,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 .map_err(|e| format!("the topology read from the launching admin {} failed: {e}", launcher.name))?;
             // When the own mesh already has nodes, this admin is entering an existing mesh
             // (recovery); a mesh's first birth finds none.
-            entry_map = Some(("maker", crate::reenter::map_of_read(&read, &cfg.fabric_id)));
+            // A maker that holds no snapshot of this mesh answers from its stored map: births to
+            // reach a local node with, never installed (the node's own topology is read next).
+            let mut map = crate::reenter::map_of_read(&read, &cfg.fabric_id);
+            map.extend(crate::reenter::map_of_stored(&read));
+            entry_map = Some(("maker", map));
             let mut mesh_peers = Vec::new();
             let mut admins = Vec::new();
             for d in read.installed.iter().flat_map(|m| m.members.iter()).filter(|d| d.fabric_id == cfg.fabric_id && d.node.name != name) {
@@ -2298,7 +2302,23 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let _ = join_slot.set(door);
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
         let own = digest.clone();
-        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()))));
+        // For a mesh it holds no snapshot of, this admin answers from the births it stores.
+        let contacts = nodes_storage.clone();
+        let stored: crate::topology_read::StoredSource = Arc::new(move || {
+            let contacts = contacts.clone();
+            Box::pin(async move {
+                contacts
+                    .contacts()
+                    .await
+                    .map(|rows| {
+                        rows.into_iter()
+                            .map(|r| rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr })
+                            .collect()
+                    })
+                    .map_err(|e| e.to_string())
+            })
+        });
+        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone())).with_stored(stored)));
     }
     // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
     // a blind put (a successor fabric primary proves an exit from it).

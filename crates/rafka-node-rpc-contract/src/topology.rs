@@ -5,9 +5,13 @@
 //! by the one method gossip's `Members` snapshots use:
 //!
 //! ```text
-//! Started  Snapshot* | Unchanged*  End { meshes }       a stream
+//! Started  (Snapshot* | Unchanged* | Stored*)  End { meshes }       a stream
 //! NotReady | UnknownMesh                                  one refusal, nothing started
 //! ```
+//!
+//! A mesh the target holds no gossiped snapshot of, but whose nodes it stores, is answered with
+//! `Stored`: the stored map, which carries no version. It names births to reach and is never the
+//! mesh's current topology: a caller installs none of it.
 //!
 //! A mesh is named by its NAME on the wire, as the gossip `Members` frame names it. A caller
 //! installs a mesh atomically, and only once every chunk of one `(snapshot_id, publisher,
@@ -17,10 +21,20 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use rafka_mesh_entity::wire::WireDigest;
-use rafka_mesh_entity::{LifecycleOp, PublisherId};
+use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, NodeId, PublisherId};
 use serde::{Deserialize, Serialize};
 
 pub struct Topology;
+
+/// One node of a stored map: how to reach a birth the target stored, with no claim that it lives.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredNode {
+    pub node_id: NodeId,
+    pub name: String,
+    pub endpoint_id: EndpointId,
+    pub incarnation: IncarnationId,
+    pub transport_addr: std::net::SocketAddr,
+}
 
 /// The source version a caller already holds for a mesh: the publisher is the epoch, so
 /// `topology_version` is compared only inside one publisher.
@@ -74,6 +88,10 @@ pub enum TopologyReply {
     Unauthorized { reason: String },
     /// The stream begins: sent before the first snapshot of an accepted read.
     Started,
+    /// A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is
+    /// never installed as the mesh's topology. It names births to reach, nothing more. One mesh may
+    /// arrive in several frames; `End.meshes` counts the mesh once.
+    Stored { mesh: String, nodes: Vec<StoredNode> },
 }
 
 impl TopologyReply {
@@ -90,6 +108,7 @@ impl TopologyReply {
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
+            Self::Stored { .. } => "stored",
         }
     }
 }
@@ -103,14 +122,14 @@ impl NodeProtocol for Topology {
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 11;
+    const REPLY_VARIANTS: u32 = 12;
 
     type Request = TopologyRequest;
     type Reply = TopologyReply;
 
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
             TopologyReply::UnknownMesh { .. } => ReplyKind::ProtocolRefusal,
             TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
@@ -144,7 +163,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } => FrameKind::Data,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }

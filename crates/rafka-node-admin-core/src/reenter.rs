@@ -103,6 +103,29 @@ pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mes
         .collect()
 }
 
+/// The births of a stored map the maker answered with, as the map a Ping reaches. A stored map has
+/// no version and says nothing of who lives: every birth is settled-for-the-sweep and not ready.
+/// It is for reaching a local node of the own mesh and is never installed as topology.
+pub fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<MapNode> {
+    read.stored
+        .iter()
+        .flat_map(|m| m.nodes.iter())
+        .filter_map(|n| {
+            Some(MapNode {
+                settled: true,
+                ready: false,
+                data_dir: None,
+                admin_api_base: None,
+                node_id: n.node_id.clone(),
+                name: n.name.parse().ok()?,
+                endpoint_id: n.endpoint_id.clone(),
+                transport_addr: n.transport_addr,
+                incarnation: n.incarnation.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Where a topology is read from.
 pub enum TopologySource<'a> {
     /// This admin's durable map (nodes.storage), with no maker.

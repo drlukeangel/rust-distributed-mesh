@@ -452,3 +452,62 @@ fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_over
     assert_eq!(serve.len(), 1);
     assert_eq!((serve[0]["outcome"].as_str(), serve[0]["snapshots"].as_str()), ("served", "1"));
 }
+
+fn stored_of(d: &MeshDigest) -> rafka_node_rpc_contract::topology::StoredNode {
+    rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id.clone(), name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
+}
+
+/// `n` serves the births `rows` as its stored map.
+fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rafka_node_rpc_contract::topology::StoredNode>) {
+    let d = own_digest(n, fabric);
+    let source: rafka_node_admin_core::topology_read::StoredSource = Arc::new(move || {
+        let rows = rows.clone();
+        Box::pin(async move { Ok(rows) })
+    });
+    let _ = n.slot.set(Arc::new(TopologyDoor::new(n.membership.clone(), Arc::new(move || d.clone())).with_stored(source)));
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a node that holds no gossiped snapshot of a mesh but stores births of it answers that
+/// mesh with its stored map, marked as having no version: the reader gets the births to reach and
+/// installs nothing. The stored mesh holds no source version at the reader, none of its nodes is in
+/// the reader's book, and a mesh the node does hold a snapshot of is answered by the snapshot, not
+/// the stored map. The node never answers its own mesh from the stored map. The serve span counts
+/// the stored mesh and streams no snapshot of it.
+#[test]
+fn a_stored_answer_is_never_installed_as_current_topology() {
+    let cap = capture("stored");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh2", "mesh2.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+        let lost: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh1", "rpc", k)).collect();
+        let held: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
+        let own: Vec<MeshDigest> = vec![member_of(&fabric, "mesh2", "rpc", 9)];
+        // The node stores births of the lost mesh, of a mesh it holds a snapshot of, and of its own.
+        let rows: Vec<_> = lost.iter().chain(held.iter()).chain(own.iter()).map(stored_of).collect();
+        open_with_stored(&server, &fabric, rows);
+        hold(&server.membership, &snap("mesh3", &publisher("mesh3.admin.1"), 5, held.clone()));
+        let t = target_of(&caller, &server);
+        let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
+        assert_eq!(read.installed.iter().map(|m| m.mesh.as_str()).collect::<Vec<_>>(), vec!["mesh3"], "the held snapshot is answered as a snapshot");
+        assert_eq!(read.stored.len(), 1, "only the lost mesh is answered from the stored map: {:?}", read.stored);
+        assert_eq!((read.stored[0].mesh.as_str(), read.stored[0].nodes.len()), ("mesh1", 3));
+        assert_eq!(read.meshes, 2, "End counts the snapshot mesh and the stored mesh");
+        assert!(caller.membership.held_source_version("mesh1").is_none(), "a stored map carries no version, so no source is held for it");
+        for d in &lost {
+            assert!(caller.membership.book.get(d.node.node_id.as_str()).is_none(), "{} of a stored map is not held by the reader", d.node.name);
+        }
+        // Asking for the stored mesh by name is answered the same way; a mesh stored nowhere is unknown.
+        let one = get_topology(&caller.client, &t, "mesh2", &caller.membership, Some("mesh1"), None).await.unwrap();
+        assert!(one.installed.is_empty() && one.stored.len() == 1 && one.meshes == 1, "{one:?}");
+        let err = get_topology(&caller.client, &t, "mesh2", &caller.membership, Some("mesh8"), None).await.unwrap_err();
+        assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh8".into()));
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    let serves = cap.named("rdm.mesh.topology.serve.via-read");
+    let rows: Vec<(&str, &str, &str, &str)> = serves.iter().map(|a| (a["requested"].as_str(), a["outcome"].as_str(), a.get("stored").map(|s| s.as_str()).unwrap_or("-"), a.get("snapshots").map(|s| s.as_str()).unwrap_or("-"))).collect();
+    assert_eq!(rows, vec![("*", "served", "1", "1"), ("mesh1", "served", "1", "0"), ("mesh8", "unknown-mesh", "-", "-")], "{serves:?}");
+    let installs = cap.named("rdm.mesh.topology.update.via-read-install");
+    assert!(installs.iter().all(|a| a["mesh"] == "mesh3"), "nothing of the stored mesh was installed: {installs:?}");
+}
