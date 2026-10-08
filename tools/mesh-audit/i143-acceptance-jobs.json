@@ -406,6 +406,30 @@
           "dir": "target/i143-acceptance/2902/chaos-process/partitioned_meshes_rejoin_with_neighbors_preserve_live_births"
         }
       ]
+    },
+    "i143-2901-unit": {
+      "issue": 2901,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "status_publisher_reinforces_changed_state_five_times_then_stops",
+          "source": "crates/rafka-mesh-transport/tests/i143_acceptance_2901.rs",
+          "command": "cargo test -p rafka-mesh-transport --test i143_acceptance_2901 status_publisher_reinforces_changed_state_five_times_then_stops -- --exact",
+          "dir": "target/i143-acceptance/2901/unit/status_publisher_reinforces_changed_state_five_times_then_stops"
+        }
+      ]
+    },
+    "i143-2901-process": {
+      "issue": 2901,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "late_member_receives_held_status_on_join_without_status_heartbeat",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2901.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat/estate cargo test -p rafka-test-scenario --test i143_acceptance_2901 late_member_receives_held_status_on_join_without_status_heartbeat -- --exact",
+          "dir": "target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat"
+        }
+      ]
     }
   },
   "rshape_jobs": {
