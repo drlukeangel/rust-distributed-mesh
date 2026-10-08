@@ -197,11 +197,11 @@ impl std::fmt::Display for TopologyFailure {
     }
 }
 
-/// `GetTopology` to `target`, installing into `membership` each mesh whose snapshot arrives
+/// `GetTopology` to `target` (a node of `answerer_mesh`), installing into `membership` each mesh whose snapshot arrives
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
-pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c)).await
+pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+    read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await
 }
 
 /// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole

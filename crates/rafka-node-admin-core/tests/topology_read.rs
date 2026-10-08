@@ -97,7 +97,7 @@ fn hold(m: &Membership, s: &SourceSnapshot) {
             digests: digests.into_iter().map(MeshDigest::from).collect(),
             in_flight,
             departed,
-        });
+        }, "peer");
         assert!(!matches!(t, Taken::Refused(_)), "{t:?}");
     }
 }
@@ -119,7 +119,7 @@ async fn a_node_mid_birth_answers_not_ready_and_the_caller_installs_nothing() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     let t = target_of(&caller, &server);
-    let err = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap_err();
     assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("no membership")), "{err}");
     assert!(caller.membership.held_source_version("mesh1").is_none());
     server.ep.close().await;
@@ -137,17 +137,17 @@ async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let t = target_of(&caller, &server);
-    let empty = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap();
+    let empty = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert!(empty.installed.is_empty() && empty.meshes == 0, "nothing held: an empty, complete answer");
 
     let mesh2: Vec<MeshDigest> = (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect();
     hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 7, mesh2));
-    let read = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!((read.meshes, read.installed.len()), (1, 1));
     assert_eq!(read.installed[0].mesh, "mesh2");
     assert!(caller.membership.held_source_version("mesh1").is_none(), "no version of the own mesh is invented");
 
-    let err = get_topology(&caller.client, &t, &caller.membership, Some("mesh1"), None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh1"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh1".into()));
     server.ep.close().await;
     caller.ep.close().await;
@@ -169,7 +169,7 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     hold(&server.membership, &snap("mesh2", &remote_pub, 7, mesh2.clone()));
     let t = target_of(&caller, &server);
 
-    let read = get_topology(&caller.client, &t, &caller.membership, None, None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.meshes, 2);
     let names = |mesh: &str| -> Vec<String> {
         let mut v: Vec<String> = read.installed.iter().find(|m| m.mesh == mesh).unwrap().members.iter().map(|d| d.node.name.to_string()).collect();
@@ -182,16 +182,16 @@ async fn an_ordinary_member_serves_the_topology_it_holds_and_answers_unchanged_a
     assert_eq!(caller.membership.held_source_version("mesh1"), Some((own_pub.clone(), 4)));
 
     let held = SourceVersion { publisher: remote_pub.clone(), topology_version: 7 };
-    let again = get_topology(&caller.client, &t, &caller.membership, Some("mesh2"), Some(held)).await.unwrap();
+    let again = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(held)).await.unwrap();
     assert!(again.installed.is_empty());
     assert_eq!(again.unchanged, vec![("mesh2".to_string(), 7)]);
     assert_eq!(again.meshes, 1, "End counts the meshes answered, Unchanged included");
 
     let behind = SourceVersion { publisher: remote_pub.clone(), topology_version: 6 };
-    let newer = get_topology(&caller.client, &t, &caller.membership, Some("mesh2"), Some(behind)).await.unwrap();
+    let newer = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(behind)).await.unwrap();
     assert!(newer.unchanged.is_empty() && newer.installed.len() == 1, "a caller behind the node's version is sent the snapshot");
 
-    let err = get_topology(&caller.client, &t, &caller.membership, Some("mesh9"), None).await.unwrap_err();
+    let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh9"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh9".into()));
     server.ep.close().await;
     caller.ep.close().await;
@@ -218,7 +218,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     }
     hold(&server.membership, &source);
     let t = target_of(&caller, &server);
-    let read = get_topology(&caller.client, &t, &caller.membership, Some("mesh2"), None).await.unwrap();
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), None).await.unwrap();
     let m = &read.installed[0];
     let mut ids: Vec<String> = m.members.iter().map(|d| d.node.node_id.to_string()).collect();
     ids.sort();
@@ -267,7 +267,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     let _router = Router::builder(lossy_ep.clone()).accept(rafka_node_rpc::ALPN, lossy).spawn();
     let lossy_node = ResolvedNode { node_id: lid.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
     server.resolver.insert(lossy_node);
-    let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), &server.membership, None, None).await.unwrap();
+    let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.membership, None, None).await.unwrap();
     assert_eq!(*sent.lock().unwrap(), 1);
     assert!(read.installed.is_empty(), "one chunk of two installs nothing");
     assert!(server.membership.held_source_version("mesh2").is_none());

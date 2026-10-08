@@ -971,8 +971,14 @@ enum Side {
     /// This node's own Mesh channel: the other sources as its primary forwards them, no loads.
     MeshChannel,
     /// A topology read (Node RPC op `0x1E`) from a node that holds the topology: installed into
-    /// the Mesh channel's receiver, every member recorded as heard through the node read.
+    /// the Mesh channel's receiver. The answerer is a member of this node's mesh: its own mesh's
+    /// members are held as the answerer hears them.
     Read,
+    /// A topology read from a node of another mesh: everything it serves is a source it holds, not
+    /// something it hears. A member of another mesh is topology (R-G2); a member of this node's
+    /// own mesh is held only once this node hears it on its mesh channel, so the read leaves it
+    /// out of the book (the reader maps it from the read itself).
+    ReadPeer,
 }
 
 impl Side {
@@ -980,7 +986,7 @@ impl Side {
         match self {
             Side::Backbone => "backbone",
             Side::MeshChannel => "mesh-channel",
-            Side::Read => "topology-read",
+            Side::Read | Side::ReadPeer => "topology-read",
         }
     }
 
@@ -988,7 +994,7 @@ impl Side {
         match self {
             Side::Backbone => "backbone",
             Side::MeshChannel => "forwarded",
-            Side::Read => "read",
+            Side::Read | Side::ReadPeer => "read",
         }
     }
 }
@@ -1173,7 +1179,7 @@ impl View {
     fn receiver(&self, side: Side) -> &Arc<Mutex<SnapshotReceiver>> {
         match side {
             Side::Backbone => &self.backbone_rx,
-            Side::MeshChannel | Side::Read => &self.mesh_rx,
+            Side::MeshChannel | Side::Read | Side::ReadPeer => &self.mesh_rx,
         }
     }
 
@@ -1215,7 +1221,7 @@ impl View {
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
             // A read carries this node's own digest as the node read holds it: this node's own
             // book is the authority on itself.
-            if side == Side::Read && d.node.name.to_string() == self.node {
+            if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == self.node {
                 continue;
             }
             // A member of this node's own mesh is heard directly on its mesh channel: an
@@ -1231,7 +1237,8 @@ impl View {
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a member of
                 // this node's own mesh is held as the answerer heard it.
                 (Side::Read, true) => self.book.record_forwarded(d.clone()),
-                (Side::Read, false) => self.book.record_topology(d.clone()),
+                (Side::Read, false) | (Side::ReadPeer, false) => self.book.record_topology(d.clone()),
+                (Side::ReadPeer, true) => false,
             };
             if taken {
                 self.note(&d, side.via());
@@ -1475,12 +1482,10 @@ impl Membership {
     /// publisher and version its primary last put into the mesh. A mesh this node holds no
     /// published snapshot of is absent: no version is invented for it.
     pub fn held_topology(&self, own: &MeshDigest) -> Vec<SourceSnapshot> {
+        // A held source is topology, served as published: whether its members are alive is the
+        // reader's to learn (a read installs them as topology and refreshes no liveness).
         let mut held = self.held_sources();
-        // A source's members are served only while this node still hears them: a held source
-        // outlives a primary that stopped publishing, and its dead members are not live because a
-        // reader asked (a read must never refresh a member's liveness).
         let current = self.book.current(self.book.staleness_floor());
-        held = held.into_iter().map(|s| only_live_members(s, &current)).collect();
         let mesh = &self.view.mesh;
         if let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) {
             let mut members: Vec<MeshDigest> = current
@@ -1501,10 +1506,11 @@ impl Membership {
     /// chunk of its snapshot is held, through the same receiver the Mesh channel's snapshots
     /// install into; a source it ends the desynchronization of is resumed. Every member the
     /// snapshot carries is held as heard and its location registered.
-    pub fn take_read_chunk(&self, chunk: Chunk) -> Taken {
+    pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let taken = self.view.mesh_rx.lock().unwrap().take_read_chunk(chunk);
         if let Taken::Installed(i) = &taken {
-            self.view.installed(i, &self.fabric, Side::Read);
+            let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
+            self.view.installed(i, &self.fabric, side);
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
                 self.mesh.register(&d);
             }
@@ -1603,13 +1609,6 @@ impl Membership {
     pub async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
         self.mesh.join_peers(peers).await
     }
-}
-
-/// `source` without the members `current` (the digests the book still hears) does not hold at the
-/// same birth.
-pub fn only_live_members(mut source: SourceSnapshot, current: &[MeshDigest]) -> SourceSnapshot {
-    source.digests.retain(|d| current.iter().any(|c| c.node.node_id == d.node.node_id && c.node.incarnation == d.node.incarnation));
-    source
 }
 
 /// What a top-up read installed.
@@ -2647,34 +2646,6 @@ mod tests {
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         assert!(!book.deleting(op(&id, &inc, "retire-node:mesh1.rpc.1")), "no overlay on a departed node");
-    }
-
-    #[test]
-    fn a_held_source_serves_only_the_members_the_book_still_hears() {
-        let now = Instant::now();
-        let book = DigestBook::with_floor(Duration::from_secs(600), Duration::from_secs(3), Duration::from_millis(500));
-        let (live, dead) = ((NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()));
-        let (d_live, d_dead) = (digest(&live.0, &live.1, None, MemberStatus::ReadyForTraffic, 1), digest(&dead.0, &dead.1, None, MemberStatus::ReadyForTraffic, 1));
-        assert!(book.record_at(d_live.clone(), now));
-        assert!(book.record_at(d_dead.clone(), now - Duration::from_secs(20)));
-        let source = SourceSnapshot {
-            mesh: "mesh1".into(),
-            publisher: PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId("old".into()) },
-            topology_version: 4,
-            digests: vec![d_live.clone(), d_dead],
-            in_flight: vec![],
-            departed: vec![],
-        };
-        let served = only_live_members(source, &book.current_at(book.staleness_floor(), now));
-        assert_eq!(served.digests.iter().map(|d| d.node.node_id.clone()).collect::<Vec<_>>(), vec![live.0.clone()], "the member unheard past the floor is not served");
-        assert_eq!(served.topology_version, 4, "the source keeps its publisher and version");
-        let reborn = {
-            let mut d = d_live;
-            d.node.incarnation = IncarnationId::mint();
-            d
-        };
-        let again = only_live_members(SourceSnapshot { digests: vec![reborn], ..served }, &book.current_at(book.staleness_floor(), now));
-        assert!(again.digests.is_empty(), "another birth of the same node is not the birth the book hears");
     }
 
     #[test]

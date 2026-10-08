@@ -312,7 +312,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
     // its snapshot is complete.
     if let (Some(answer), Some(launcher)) = (joined, &launch.launcher) {
         membership.learn_statuses(&answer.statuses);
-        let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &membership, None, None)
+        let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
             .await
             .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
         let mesh_peers: Vec<EndpointAddr> = read
@@ -333,7 +333,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
             Box::pin(async move {
                 let mut done = rafka_mesh_transport::membership::TopUpDone::default();
                 for mesh in meshes {
-                    let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &membership, Some(&mesh), None)
+                    let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None)
                         .await
                         .map_err(|e| format!("{mesh}: {e}"))?;
                     done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));

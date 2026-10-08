@@ -262,7 +262,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
         in_flight: vec![],
         departed: vec![],
     };
-    assert!(matches!(membership.take_read_chunk(held), rafka_mesh_transport::snapshot::Taken::Installed(_)));
+    assert!(matches!(membership.take_read_chunk(held, "peer"), rafka_mesh_transport::snapshot::Taken::Installed(_)));
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let rpc_server = rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
