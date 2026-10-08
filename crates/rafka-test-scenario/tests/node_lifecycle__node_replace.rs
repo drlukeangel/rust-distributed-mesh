@@ -92,7 +92,6 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_ne!(after["deployment_id"], before["deployment_id"], "a new runtime");
 
     // The record the exiting runtime wrote is keyed to the birth that wrote it (the new birth cleared it at spawn).
-    let spans = estate.spans();
     let drift = drift_span(&estate, &birth_build, node_path, "restart").await;
     assert_eq!(s(&drift["attributes"]["exit_code"]), "4", "the proof names TRANSPORT_STOPPED: {drift}");
     // mesh2's admin launched the node, so the fabric-primary has no child handle: the code 4 is the
@@ -103,6 +102,16 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let build = estate.await_build(&birth_build, SETTLE).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "the same Build carries the repair: {build}");
     assert_eq!(s(&build["reason"]), "proven-drift", "{build}");
+    // The restart's own span closes when its attempt ends: read the evidence once it is exported,
+    // never from a snapshot taken before the Build settled.
+    let spans = wait_for("the restart attempt's spans are exported", SETTLE, || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.node.update.via-build")
+            .into_iter()
+            .any(|sp| sp["attributes"]["node"] == node_path && s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == s(&drift["attributes"]["attempt"]))
+            .then_some(spans)
+    })
+    .await;
 
     // Restart, not replace: the NodeId never departs, and the node's logs say why it exited.
     let departed: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
