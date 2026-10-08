@@ -27,7 +27,8 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mut spans = Vec::new();
     for e in std::fs::read_dir(dir).unwrap().flatten() {
         let p = e.path();
-        if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
+        let mine = format!(".{}-", std::process::id());
+        if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl") && n.to_string_lossy().contains(&mine)) {
             for line in std::fs::read_to_string(&p).unwrap().lines() {
                 if let Ok(v) = serde_json::from_str::<Value>(line) {
                     spans.push(v);
