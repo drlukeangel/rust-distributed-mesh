@@ -33,7 +33,7 @@ fn owner(test: &str) -> Owner {
 fn acceptance_dir(cell: &str) -> PathBuf {
     match std::env::var("I143_ACCEPTANCE_DIR") {
         Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2803/process").join(cell),
+        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2803-detect/process").join(cell),
     }
 }
 

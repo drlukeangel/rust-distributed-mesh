@@ -709,32 +709,32 @@
       ]
     },
     "i143-2803-detect-process": {
-      "issue": 2803,
+      "issue": "2803-detect",
       "layer": "process",
       "cells": [
         {
           "name": "peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes -- --exact",
-          "dir": "target/i143-acceptance/2803/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes"
         },
         {
           "name": "alive_but_unheard_admin_answers_the_probe_and_is_not_reborn",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect alive_but_unheard_admin_answers_the_probe_and_is_not_reborn -- --exact",
-          "dir": "target/i143-acceptance/2803/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect alive_but_unheard_admin_answers_the_probe_and_is_not_reborn -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn"
         },
         {
           "name": "peer_mesh_heard_again_between_probes_cancels_the_investigation",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/process/peer_mesh_heard_again_between_probes_cancels_the_investigation/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_heard_again_between_probes_cancels_the_investigation -- --exact",
-          "dir": "target/i143-acceptance/2803/process/peer_mesh_heard_again_between_probes_cancels_the_investigation"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_heard_again_between_probes_cancels_the_investigation -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation"
         },
         {
           "name": "peer_mesh_whose_members_all_stay_silent_is_held_not_reborn",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_whose_members_all_stay_silent_is_held_not_reborn -- --exact",
-          "dir": "target/i143-acceptance/2803/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn"
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_whose_members_all_stay_silent_is_held_not_reborn -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn"
         }
       ]
     }
