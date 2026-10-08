@@ -245,11 +245,10 @@ impl NodeRpcClient {
             resolver: self.resolver.clone(),
             target: target.clone(),
             addr: node.transport_addr,
-            deadline: send_deadline,
             failpoint: opts.after_connect.clone(),
         };
         let dial_started = Instant::now();
-        let conn = match self.pool.get_or_dial(&key, spec).await {
+        let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
             Ok((c, reused)) => {
                 tracing::info!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
                 evidence.connection = Some(c.stable_id());

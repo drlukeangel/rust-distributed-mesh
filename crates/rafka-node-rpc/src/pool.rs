@@ -13,7 +13,9 @@
 //! - a dial that completes after its birth was superseded is never pooled;
 //! - pooled connections of a superseded birth are evicted.
 //!
-//! One dial per key is in flight at a time; concurrent callers share it.
+//! One dial per key is in flight at a time; concurrent callers share it. A dial is bounded by no
+//! caller's budget: each caller bounds its own wait, so a caller that joins a dial with a longer
+//! budget is not ended by the starter's shorter one.
 //!
 //! Eviction removes the entry only; it never closes the connection, so a call
 //! already riding it finishes. Eviction is connection health, not
@@ -106,7 +108,6 @@ pub struct DialSpec {
     pub resolver: Arc<dyn NodeResolver>,
     pub target: NodeTarget,
     pub addr: SocketAddr,
-    pub deadline: Instant,
     pub failpoint: Option<Arc<Failpoint>>,
 }
 
@@ -165,11 +166,10 @@ impl Pool {
 
     /// The pooled connection for `key`, or the outcome of the one dial for
     /// it (started here or already in flight). `true` when reused.
-    pub async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec) -> Result<(Connection, bool), DialError> {
+    pub async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec, deadline: Instant) -> Result<(Connection, bool), DialError> {
         if let Some(c) = self.pooled(key) {
             return Ok((c, true));
         }
-        let deadline = spec.deadline;
         let mut rx = {
             let mut dials = self.inner.dials.lock().unwrap();
             match dials.get(key) {
@@ -218,7 +218,7 @@ impl Pool {
             biased;
             _ = cancelled.wait_for(|c| *c) => None,
             () = moved => None,
-            r = tokio::time::timeout_at(spec.deadline, connect) => Some(r),
+            r = connect => Some(r),
         };
         let Some(res) = res else {
             let now = resolver.resolve(&target).ok();
@@ -226,9 +226,8 @@ impl Pool {
             return Err(DialError::Superseded);
         };
         let conn = match res {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => return Err(DialError::Failed(e.to_string())),
-            Err(_) => return Err(DialError::Deadline),
+            Ok(c) => c,
+            Err(e) => return Err(DialError::Failed(e.to_string())),
         };
         if let Some(fp) = &spec.failpoint {
             fp.reached.notify_one();
