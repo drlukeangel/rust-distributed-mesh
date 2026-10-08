@@ -64,6 +64,10 @@ fn blocked_call(task: &std::path::Path) -> String {
     #[cfg(target_arch = "aarch64")]
     let call: Option<(&str, bool)> = match nr {
         56 => Some(("openat", false)),
+        79 => Some(("newfstatat", false)),
+        291 => Some(("statx", false)),
+        78 => Some(("readlinkat", false)),
+        48 => Some(("faccessat", false)),
         57 => Some(("close", true)),
         63 => Some(("read", true)),
         64 => Some(("write", true)),
@@ -98,7 +102,18 @@ fn blocked_call(task: &std::path::Path) -> String {
         316 => Some(("renameat2", false)),
         _ => None,
     };
-    let fd = f.next().and_then(|a| i64::from_str_radix(a.trim_start_matches("0x"), 16).ok());
+    let args: Vec<u64> = f.by_ref().take(6).filter_map(|a| u64::from_str_radix(a.trim_start_matches("0x"), 16).ok()).collect();
+    // A call that takes a path passes its address as the first (open, stat, unlink, rename) or
+    // second (the *at calls) argument; the address is in this very process, so it is read back
+    // through /proc/self/mem, which refuses an unreadable address instead of faulting.
+    if let Some(path_arg) = path_arg_index(nr) {
+        let name = call.map(|(n, _)| n.to_string()).unwrap_or_else(|| format!("syscall {nr}"));
+        return match args.get(path_arg).copied().and_then(read_c_string) {
+            Some(p) => format!("[{name} {p}]"),
+            None => format!("[{name}]"),
+        };
+    }
+    let fd = args.first().map(|a| *a as i64);
     match (call, fd) {
         (None, _) => format!("[syscall {nr}]"),
         (Some((n, true)), Some(fd)) => {
@@ -107,6 +122,31 @@ fn blocked_call(task: &std::path::Path) -> String {
         }
         (Some((n, _)), _) => format!("[{n}]"),
     }
+}
+
+/// Which argument of syscall `nr` is a path pointer (the *at calls take a directory descriptor first).
+fn path_arg_index(nr: i64) -> Option<usize> {
+    #[cfg(target_arch = "aarch64")]
+    return match nr {
+        56 | 35 | 38 | 276 | 78 | 79 | 291 | 48 | 34 | 33 => Some(1),
+        _ => None,
+    };
+    #[cfg(not(target_arch = "aarch64"))]
+    return match nr {
+        257 | 262 | 263 | 264 | 316 | 332 | 269 => Some(1),
+        2 | 4 | 6 | 82 | 87 | 21 => Some(0),
+        _ => None,
+    };
+}
+
+/// The NUL-terminated string at `addr` in this process, up to 256 bytes.
+fn read_c_string(addr: u64) -> Option<String> {
+    use std::os::unix::fs::FileExt as _;
+    let mem = std::fs::File::open("/proc/self/mem").ok()?;
+    let mut buf = [0u8; 256];
+    let n = mem.read_at(&mut buf, addr).ok()?;
+    let end = buf[..n].iter().position(|b| *b == 0).unwrap_or(n);
+    Some(String::from_utf8_lossy(&buf[..end]).into_owned())
 }
 
 /// Start the watchdog on the current tokio runtime; `None` outside one.
