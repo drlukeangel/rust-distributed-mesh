@@ -165,8 +165,8 @@ fn rafka_test_scenario_now() -> u64 {
 /// CONTRACT: a node born into the fabric makes `JoinNode` its first call to its maker and then
 /// reads the maker's topology with `GetTopology`: the maker's join span (`via-join`, installed)
 /// precedes the maker's topology serve span, which precedes the node's own
-/// `via-read-install` span, one per mesh it installed. The join carries no topology: the maker
-/// records no join as `member`: a join of an already-held member is not a re-read.
+/// `via-read-install` span, one per mesh it installed. A join of an already-held member is not a
+/// re-read: no join is recorded as `member`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it() {
     let cell = "born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it";
