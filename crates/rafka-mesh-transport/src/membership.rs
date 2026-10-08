@@ -2767,4 +2767,29 @@ mod tests {
         assert!(c.authorizes(healed + floor), "every live member has published again");
         assert_eq!(c.observe(false, healed + floor), None);
     }
+
+    /// CONTRACT (i143 R-J1 follow-up): a member whose restart is open is held through it, but its
+    /// address is the address of a birth that is going or gone: the repair refeed never hands it
+    /// to the channel again, however long the member has been silent. The later birth closes the
+    /// restart and the member is a target again at its new address.
+    #[test]
+    fn a_member_under_an_open_restart_is_never_a_repair_target() {
+        let book = DigestBook::default();
+        let (id, old, new) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let key = iroh::SecretKey::generate().public().to_string();
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
+        let mut d = digest(&id, &old, None, MemberStatus::ReadyForTraffic, 100);
+        d.node.endpoint_id = EndpointId(key.clone());
+        assert!(book.record_at(d.clone(), long_ago));
+        assert_eq!(held_targets(&book, |_| true).len(), 1, "a silent held member is a repair target");
+        assert!(book.restarting(op(&id, &old, "restart-node:mesh1.rpc.1")));
+        assert!(held_targets(&book, |_| true).is_empty(), "its restart is open: its old address is never handed to the channel");
+        let mut next = digest(&id, &new, Some(old.clone()), MemberStatus::Pending, 300);
+        next.node.endpoint_id = EndpointId(key);
+        next.node.transport_addr = "127.0.0.1:41999".parse().unwrap();
+        assert!(book.record_at(next, long_ago));
+        let targets = held_targets(&book, |_| true);
+        assert_eq!(targets.len(), 1, "the later birth closes the restart");
+        assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41999), "and is a target at its own address");
+    }
 }

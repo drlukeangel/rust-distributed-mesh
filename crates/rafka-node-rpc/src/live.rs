@@ -178,6 +178,9 @@ impl LiveNodeResolver {
 }
 
 impl LiveNodeResolver {
+    /// The exact birth `incarnation` of `node_id` is known to have exited.
+    pub fn retire_birth(&self, _node_id: &NodeId, _incarnation: &IncarnationId) {}
+
     /// [`NodeResolver::resolve`] as of `now`.
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
     /// this process holds no live node for (a probe's ephemeral key, a departed birth) is `None`.
