@@ -672,7 +672,9 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     // that request is dispatched, which the dispatch cells prove and the trace confirms: no
     // serve shares a refusal's trace.
     let spans = estate.spans();
-    let stale = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target");
+    // The target's own 425 (the span carries the receiver): a caller's refusal before it dials
+    // and a caller's record of a 425 it was answered are the same family in the caller's trace.
+    let stale: Vec<&Value> = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target").into_iter().filter(|sp| sp["attributes"].get("receiver_node_id").is_some()).collect();
     for sp in &stale {
         assert_eq!(sp["attributes"]["decided_by"], "target", "{sp}");
         assert!(sp["attributes"].get("caller_system").is_none(), "a 425 owes nothing to section 1: {sp}");
