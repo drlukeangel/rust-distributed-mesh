@@ -1216,7 +1216,7 @@ impl View {
                 (Side::Backbone, true) => self.book.record(d.clone()),
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
                 (Side::MeshChannel, true) => false,
-                (Side::MeshChannel, false) => self.book.record_forwarded_unloaded(d.clone()),
+                (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
             };
             if taken {
                 self.note(&d, side.via());
@@ -1328,7 +1328,10 @@ impl Membership {
             return;
         }
         self.mesh.register(&d);
-        if self.book.record_forwarded(d.clone()) {
+        // An own-mesh member is heard directly and ages from that; a peer mesh's member an entry
+        // answer names is topology.
+        let taken = if d.node.name.mesh == self.view.mesh { self.book.record_forwarded(d.clone()) } else { self.book.record_topology(d.clone()) };
+        if taken {
             self.view.note(&d, via);
         }
     }
@@ -1900,11 +1903,25 @@ impl CutOff {
     }
 }
 
-/// The latest digest heard per logical node: when it was taken, and whether
-/// it came forwarded by its mesh's primary.
+/// How a held member was last heard. Only `Direct` and `Forwarded` are liveness: a word received
+/// on the mesh channel or the backbone. `Topology` is a member known only from forwarded topology
+/// (a delta, a full, a replay, an entry answer): it is held, and never ages to silent for want of
+/// a forwarded frame (gossip.md §3.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heard {
+    /// The member's own digest, received here.
+    Direct,
+    /// A peer mesh's member listed in an aggregate received on the backbone: it ages, with the
+    /// forwarded grace.
+    Forwarded,
+    /// Known only from topology forwarded onto the mesh channel.
+    Topology,
+}
+
+/// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestBook {
-    inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, bool)>>>,
+    inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, Heard)>>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
     /// birth does not tick.
@@ -1942,12 +1959,12 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 /// How long a member has gone unheard at `now`, measured against the staleness floor: a forwarded
 /// copy is measured against the forwarded staleness floor, so the difference is taken off. A
 /// terminal `Leaving` is never succeeded, so it earns no forwarded extra.
-fn unheard(d: &MeshDigest, at: &Instant, forwarded: bool, extra: Duration, now: Instant) -> Duration {
+fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, extra: Duration, now: Instant) -> Duration {
     let age = now.saturating_duration_since(*at);
-    if forwarded && d.status != rafka_mesh_entity::MemberStatus::Leaving {
-        age.saturating_sub(extra)
-    } else {
-        age
+    match heard {
+        Heard::Topology => Duration::ZERO,
+        Heard::Forwarded if d.status != rafka_mesh_entity::MemberStatus::Leaving => age.saturating_sub(extra),
+        _ => age,
     }
 }
 
@@ -2186,7 +2203,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d.clone(), now, false));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
         drop(inner);
         if birth_changed {
             self.close_restarts(&d);
@@ -2203,20 +2220,52 @@ impl DigestBook {
         self.record_forwarded_at(d, Instant::now())
     }
 
-    /// [`Self::record_forwarded`] for a copy that omits loads (a peer Mesh's forwarded projection):
-    /// a copy of the very heartbeat already held keeps the held digest, load and all, and only
-    /// hears the member again, so a node that also holds the loaded backbone copy never trades it
-    /// for the stripped one.
-    pub fn record_forwarded_unloaded(&self, d: MeshDigest) -> bool {
-        self.record_forwarded_inner(d, Instant::now(), true)
+    /// Hold `d` as topology forwarded onto the mesh channel (a peer Mesh's projection, loads
+    /// omitted, or an entry answer). A forwarded word is not liveness: it never refreshes when a
+    /// held member was heard, and a member held only from forwards never ages to silent. A
+    /// member already heard keeps its instant and how it was heard; only its digest moves on.
+    pub fn record_topology(&self, d: MeshDigest) -> bool {
+        let now = Instant::now();
+        if self.is_departed_at(d.node.node_id.as_str(), now) {
+            reject_departed(&d, "forwarded");
+            return false;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        let mut held_entry = None;
+        if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
+            if runtime_changed(held, &d) {
+                return false;
+            }
+            let older = if held.node.incarnation == d.node.incarnation {
+                d.digest_seq < held.digest_seq
+            } else {
+                held.node.supersedes.as_ref() == Some(&d.node.incarnation)
+            };
+            if older {
+                return false;
+            }
+            if held.node.incarnation == d.node.incarnation && d.digest_seq == held.digest_seq && held.node == d.node {
+                return true;
+            }
+            held_entry = Some((*at, *heard));
+        }
+        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
+        let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
+        drop(inner);
+        if birth_changed {
+            self.close_restarts(&d);
+            self.births.send_modify(|v| *v += 1);
+        }
+        true
     }
 
     /// [`Self::record_forwarded`], heard at `now`.
     pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
-        self.record_forwarded_inner(d, now, false)
+        self.record_forwarded_inner(d, now)
     }
 
-    fn record_forwarded_inner(&self, d: MeshDigest, now: Instant, keep_held_load: bool) -> bool {
+    fn record_forwarded_inner(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
@@ -2234,15 +2283,9 @@ impl DigestBook {
             if older {
                 return false;
             }
-            if keep_held_load && held.node.incarnation == d.node.incarnation && d.digest_seq == held.digest_seq && held.node == d.node {
-                if let Some(e) = inner.get_mut(d.node.node_id.as_str()) {
-                    e.1 = now;
-                }
-                return true;
-            }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        inner.insert(d.node.node_id.to_string(), (d.clone(), now, true));
+        inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         if birth_changed {
             self.close_restarts(&d);
@@ -2568,6 +2611,27 @@ mod tests {
         }
     }
 
+    /// CONTRACT (R-G2): a member known only from topology forwarded onto the mesh channel is held
+    /// and never ages to silent; a forwarded copy of a member already heard leaves when it was
+    /// heard alone, so a forwarded word is never liveness.
+    #[test]
+    fn forwarded_topology_holds_a_member_and_refreshes_no_liveness() {
+        let book = DigestBook::default();
+        let (topo, heard, birth) = (NodeId::mint(), NodeId::mint(), IncarnationId::mint());
+        let t0 = Instant::now();
+        assert!(book.record_topology(digest(&topo, &birth, None, MemberStatus::ReadyForTraffic, 10)));
+        assert!(book.record_at(digest(&heard, &birth, None, MemberStatus::ReadyForTraffic, 10), t0));
+        let far = t0 + Duration::from_secs(3600);
+        assert_eq!(book.get_at(topo.as_str(), far).unwrap().1, Duration::ZERO, "topology never ages");
+        assert!(book.current_at(book.staleness_floor(), far).iter().any(|d| d.node.node_id == topo), "a topology member stays current");
+        let before = book.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
+        assert!(book.record_topology(digest(&heard, &birth, None, MemberStatus::ReadyForTraffic, 10)), "an equal forwarded copy");
+        assert!(book.record_topology(digest(&heard, &birth, None, MemberStatus::Draining, 11)), "a newer forwarded copy");
+        let after = book.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
+        assert_eq!(before, after, "a forwarded copy does not refresh when the member was heard");
+        assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
+    }
+
     #[test]
     fn a_forwarded_copy_keeps_a_member_heard_and_never_reverts_it() {
         let book = DigestBook::default();
@@ -2682,7 +2746,7 @@ mod tests {
         let aggregate = members("mesh1", "mesh1.admin.1", None, vec![d], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone);
         let (_, at, forwarded) = view.book.inner.lock().unwrap().get(id.as_str()).cloned().unwrap();
-        assert!(!forwarded, "its own mesh's member is held as heard directly, never forwarded");
+        assert!(forwarded == Heard::Direct, "its own mesh's member is held as heard directly, never forwarded");
         let _ = at;
         // A peer mesh's member in the same kind of aggregate is forwarded.
         let peer = NodeId::mint();
@@ -2690,7 +2754,7 @@ mod tests {
         p.node.name = "mesh2.rpc.1".parse().unwrap();
         let aggregate = members("mesh2", "mesh2.admin.1", None, vec![p], vec![], vec![]);
         let _ = view.take_snapshot(&single_chunk(aggregate), &fabric, Side::Backbone);
-        assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2, "a peer mesh's member is forwarded");
+        assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2 == Heard::Forwarded, "a peer mesh's member is forwarded");
     }
 
     /// The first `Leaving` is lost; one of the later announcements in the
