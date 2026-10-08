@@ -312,3 +312,82 @@ async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
     assert_eq!((body["error"].as_str(), body["fabric_primary"].as_str()), (Some("rejected-not-authority"), Some("mesh1.admin.1")), "{body}");
     assert!(control.held().is_none(), "a refused shutdown holds nothing");
 }
+
+/// CONTRACT (i143 export gate: the fabric-primary is the only topology writer): an admin that is
+/// not the current fabric-primary refuses every topology-changing route by name, naming the
+/// primary, and appends nothing to the Build facts.
+#[tokio::test]
+async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_change_by_name() {
+    let spans = SpanNames::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = mn();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let before = builds.facts().await.unwrap().len();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.2".parse().unwrap(), t));
+    let app = router(cp, Router::new());
+    for (method, uri, body) in [
+        ("POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 5}]}))),
+        ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))),
+        ("POST", "/api/meshes", Some(json!({"name": "mesh2", "node_admin": 1, "rpc_node": 1}))),
+        ("POST", "/api/nodes/mesh1.rpc.1/restart", None),
+    ] {
+        let (s, v) = call(&app, method, uri, body).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{method} {uri}: {v}");
+        assert_eq!((v["error"].as_str(), v["fabric_primary"].as_str()), (Some("rejected-not-authority"), Some("mesh1.admin.1")), "{method} {uri}: {v}");
+    }
+    assert_eq!(builds.facts().await.unwrap().len(), before, "a refused change appends no Build fact");
+    assert!(spans.0.lock().unwrap().iter().any(|(n, _)| n == "rdm.node_admin.build.reject.via-not-authority"), "the refusal is spanned by name");
+}
+
+/// Builds storage that refuses every accepted Build by name and holds the rest in memory.
+struct RefusingAccept(Arc<MemoryBuildStateAdapter>);
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
+    async fn publish_accepted(&self, accepted: &rafka_node_admin_core::build_state::BuildAccepted) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        Err(rafka_node_admin_core::build_state::BuildStateError::Io(format!("builds.storage refused Build {}", accepted.build_id.0)))
+    }
+    async fn open_attempt(&self, o: &rafka_node_admin_core::build_state::AttemptOpened) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.open_attempt(o).await
+    }
+    async fn read_build(&self, b: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.read_build(b).await
+    }
+    async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.list_active().await
+    }
+    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<rafka_node_admin_core::build_state::ClaimOutcome, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.claim_attempt(c).await
+    }
+    async fn append_step_receipt(&self, r: &rafka_node_admin_core::build_state::BuildStepReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.facts().await
+    }
+    async fn forget(&self, b: &BuildId) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.forget(b).await
+    }
+}
+
+/// CONTRACT (i143 export gate: complete Build persistence precedes the Fabric.build_id write): a
+/// change whose Build builds.storage refuses is refused with the store's reason, and
+/// Fabric.build_id still names the previous Build: the pointer never names a Build that is not
+/// durable.
+#[tokio::test]
+async fn a_build_the_store_refuses_is_never_named_by_fabric_build_id() {
+    let mem = Arc::new(MemoryBuildStateAdapter::new());
+    let t = mn();
+    let accepted = AcceptedStore::seeded(&*mem, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let previous = accepted.build_id().await.expect("the seeded Build is named");
+    let cp = Arc::new(ControlPlane::new(Arc::new(RefusingAccept(mem.clone())), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t));
+    let app = router(cp, Router::new());
+    let (s, v) = call(&app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+    assert!(v["detail"].as_str().unwrap_or_default().contains("builds.storage refused Build"), "the refusal carries the store's reason: {v}");
+    assert_eq!(accepted.build_id().await, Some(previous), "Fabric.build_id still names the previous Build");
+}

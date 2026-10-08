@@ -511,6 +511,31 @@ pub fn retire_mesh_order(members: Vec<PathName>, last_admin: Option<&PathName>) 
     ordinary
 }
 
+/// How a node-admin's own mesh's Pending holds its Ready (e4.s11; i143 export gate: normal
+/// joining admins never self-Ready; only the Day-0 root, which has no upstream authority, applies
+/// its own mesh's Pending).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingGate {
+    /// Pending is applied here, or an admin joining a mesh whose admin cohort is live owes nothing.
+    Clear,
+    /// The Day-0 root applies its own mesh's Pending to itself.
+    SelfApply,
+    /// A mesh's first admin that is not the Day-0 root waits for the fabric primary to apply it.
+    Blocked(String),
+}
+
+pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applied: bool, cohort_live: bool) -> PendingGate {
+    if pending_applied {
+        PendingGate::Clear
+    } else if day0 {
+        PendingGate::SelfApply
+    } else if cohort_live {
+        PendingGate::Clear
+    } else {
+        PendingGate::Blocked(format!("{me}: the first admin of {mesh}: its mesh's Pending has not been applied here by the fabric primary"))
+    }
+}
+
 /// Why this admin cannot yet take authority over `held` (every live birth it
 /// hears but itself): each birth that publishes no runtime fact, or one this
 /// admin's provider cannot adopt in its own control domain. Empty: it is
@@ -1865,23 +1890,19 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
                 // root, with no upstream authority, applies its own. An admin joining a mesh whose
                 // admin cohort is already live owes nothing here.
                 let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
-                if !pending_applied {
-                    if day0.is_some() {
-                        match authority.get() {
-                            Some(auth) => {
-                                let reply = auth.self_apply_mesh_pending(&mesh_id).await;
-                                if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
-                                    blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
-                                }
+                let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
+                match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, cohort_live) {
+                    PendingGate::Clear => {}
+                    PendingGate::Blocked(why) => blocked.push(why),
+                    PendingGate::SelfApply => match authority.get() {
+                        Some(auth) => {
+                            let reply = auth.self_apply_mesh_pending(&mesh_id).await;
+                            if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
+                                blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
                             }
-                            None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
                         }
-                    } else {
-                        let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
-                        if !cohort_live {
-                            blocked.push(format!("{me}: the first admin of {mesh_name}: its mesh's Pending has not been applied here by the fabric primary"));
-                        }
-                    }
+                        None => blocked.push(format!("{me}: no view yet to apply its mesh's Pending to itself")),
+                    },
                 }
                 if blocked.is_empty() {
                     let mut d = digest.lock().unwrap();
@@ -2424,6 +2445,23 @@ mod tests {
         assert_eq!(blocked.len(), 2, "{blocked:?}");
         assert!(blocked[0].starts_with("mesh1.rpc.2: publishes no runtime fact"), "{blocked:?}");
         assert!(blocked[1].starts_with("mesh1.rpc.3:") && blocked[1].contains("control domain"), "{blocked:?}");
+    }
+
+    /// CONTRACT (i143 export gate: normal joining or restarted admins cannot self-Ready; only the
+    /// Day-0 root may apply its own mesh's Pending): a mesh's first admin that is not Day 0 is held
+    /// by name until the fabric primary applies Pending; an admin joining a live cohort owes
+    /// nothing; Day 0 alone self-applies; an applied Pending holds no one.
+    #[test]
+    fn only_the_day0_root_applies_its_own_meshs_pending() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        assert_eq!(pending_gate(&me, "mesh2", true, false, false), PendingGate::SelfApply, "Day 0 has no upstream authority");
+        match pending_gate(&me, "mesh2", false, false, false) {
+            PendingGate::Blocked(why) => assert!(why.contains("not been applied here by the fabric primary"), "{why}"),
+            other => panic!("a first admin that is not Day 0 never self-applies: {other:?}"),
+        }
+        assert_eq!(pending_gate(&me, "mesh2", false, false, true), PendingGate::Clear, "joining a live cohort owes no Pending");
+        assert_eq!(pending_gate(&me, "mesh2", false, true, false), PendingGate::Clear);
+        assert_eq!(pending_gate(&me, "mesh2", true, true, false), PendingGate::Clear, "Day 0 applies it once");
     }
 
     #[tokio::test]

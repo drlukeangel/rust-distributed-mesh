@@ -136,7 +136,7 @@ fn refeed(
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
     neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>>,
 ) {
-    use rafka_mesh_transport::membership::{backbone_gossip_interval, staleness_floor};
+    use rafka_mesh_transport::membership::backbone_gossip_interval;
     tokio::spawn(async move {
         // As the membership channels (PRD §6.2): a bounded join attempt one gossip interval after
         // the topic was left alone, backed off (doubling, at most one floor apart) while it holds.
@@ -153,7 +153,7 @@ fn refeed(
             if since.elapsed() < backoff {
                 continue;
             }
-            backoff = (backoff * 2).min(staleness_floor());
+            backoff = rafka_mesh_transport::membership::refeed_backoff(backoff);
             let mut peers = known.lock().unwrap().clone();
             peers.sort();
             peers.dedup();

@@ -296,6 +296,14 @@ pub async fn until_transport_stopped() -> String {
 /// The peers of the live list `live` to join now: those not joined while
 /// they stayed live. `joined` forgets a peer that left the list, so one that
 /// returns is joined again (`gossip.md` §6).
+/// The wait before the next refeed of a channel that is still alone, after waiting `prev`:
+/// doubled, never more than one staleness floor (PRD §6.2). A failed rejoin is retried on this
+/// bounded schedule forever and decides nothing about any member: the refeed hands peers to
+/// iroh-gossip and holds no view, so silence is never death proof.
+pub fn refeed_backoff(prev: Duration) -> Duration {
+    (prev * 2).min(staleness_floor())
+}
+
 pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::EndpointId]) -> Vec<iroh::EndpointId> {
     let mut joined = joined.lock().unwrap();
     joined.retain(|id| live.contains(id));
@@ -455,7 +463,7 @@ impl Channel {
                 if since.elapsed() < backoff {
                     continue;
                 }
-                backoff = (backoff * 2).min(staleness_floor());
+                backoff = refeed_backoff(backoff);
                 let peers: Vec<iroh::EndpointId> = me.peers.lock().unwrap().iter().copied().collect();
                 if peers.is_empty() {
                     continue;
@@ -1718,6 +1726,23 @@ mod tests {
         let took = start.elapsed();
         assert!(took < linger + Duration::from_millis(150), "repeating held the node {took:?}");
         assert!((2..=8).contains(&n), "{n} announcements in a 300 ms linger at 50 ms");
+    }
+
+    /// CONTRACT (i143 export gate: a failed rejoin is bounded and never marks Dead): a channel left
+    /// alone is refed on a doubling schedule that never waits more than one staleness floor and
+    /// reaches it; the schedule is the refeed's only state, so no failed rejoin touches a member.
+    #[test]
+    fn a_failed_rejoin_is_retried_on_a_bounded_schedule() {
+        let floor = staleness_floor();
+        let mut wait = backbone_gossip_interval();
+        let mut waits = vec![wait];
+        for _ in 0..64 {
+            wait = refeed_backoff(wait);
+            waits.push(wait);
+        }
+        assert!(waits.windows(2).all(|w| w[1] >= w[0]), "never shrinks while alone: {waits:?}");
+        assert!(waits.iter().all(|w| *w <= floor), "never waits past one staleness floor: {waits:?}");
+        assert_eq!(*waits.last().unwrap(), floor, "settles at one floor, retried forever");
     }
 
     #[test]

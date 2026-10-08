@@ -298,6 +298,33 @@ mod tests {
         assert_eq!(fabric(&nodes), ["mesh3.admin.2"], "the lowest mesh-primary NodeId holds the fabric");
     }
 
+    /// CONTRACT (i143 export gate: provider control domain, locality and runtime metadata are
+    /// never election keys): candidates on another provider, data dir, deployment, transport
+    /// address or admin API elect exactly as the NodeIds alone decide.
+    #[test]
+    fn provider_locality_and_runtime_metadata_never_decide_a_seat() {
+        let mut nodes = vec![
+            node("mesh1.admin.1", "300000000000", true),
+            node("mesh1.admin.2", "100000000000", true),
+            node("mesh1.admin.3", "200000000000", true),
+        ];
+        let plain = {
+            let mut n = nodes.clone();
+            resolve(&mut n);
+            (primaries(&n), fabric(&n))
+        };
+        for (i, n) in nodes.iter_mut().enumerate() {
+            n.provider = Some(if i == 1 { crate::model::ProviderKind::Container } else { crate::model::ProviderKind::Process });
+            n.data_dir = Some(format!("/srv/domain-{}/{}", 9 - i, n.name));
+            n.deployment_id = Some(crate::model::DeploymentId::mint());
+            n.transport_addr = Some(std::net::SocketAddr::from(([10, 0, i as u8, 1], 40000 - i as u16)));
+            n.admin_api_base = Some(format!("http://host-{}:{}", 9 - i, 9000 + i));
+        }
+        resolve(&mut nodes);
+        assert_eq!((primaries(&nodes), fabric(&nodes)), plain, "the same seats with or without runtime metadata");
+        assert_eq!(fabric(&nodes), ["mesh1.admin.2"], "the lowest ready NodeId, on a container, still holds the seat");
+    }
+
     #[test]
     fn losing_a_winner_moves_each_seat_to_the_next_lowest() {
         let mut nodes = vec![
