@@ -157,15 +157,23 @@ pub struct Seams {
     pub fault: Arc<StorageFault>,
 }
 
-/// Serve the door on this node's own seams.
+/// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
 pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
+    serve_with_policy(b, seams, launch, POLICY)
+}
+
+/// Serve the door with the carrier policy the serving application declares: a Proxy held for a
+/// destination is the effective route only through a carrier of `policy`'s kind
+/// (`rafka_mesh_entity::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
+/// gateway carrying for a compute) declares its own kind here.
+pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy: CarrierPolicy) -> ServerBuilder {
     let by = AnsweredBy { node_id: launch.node_id.to_string(), node: launch.name.to_string(), incarnation_id: launch.incarnation.to_string() };
     let own: PathName = launch.name.clone();
     b.serve::<Originate, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: OriginateRequest| {
         let (by, seams, own) = (by.clone(), seams.clone(), own.clone());
         async move {
             Ok(match req {
-                OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op).await,
+                OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op, policy).await,
                 OriginateRequest::ArmFault { refuse_index, refuse_history } => {
                     seams.fault.arm(refuse_index, refuse_history);
                     OriginateReply::FaultArmed { by, refuse_index, refuse_history }
@@ -199,7 +207,7 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
     })
 }
 
-async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str, op: ProofOp) -> OriginateReply {
+async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str, op: ProofOp, policy: CarrierPolicy) -> OriginateReply {
     let path: PathName = match destination.parse() {
         Ok(p) => p,
         Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
@@ -214,7 +222,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
     let resolution = {
         let held = seams.connections.held();
         let held = held.lock().unwrap();
-        resolve(&held, own, &path, POLICY)
+        resolve(&held, own, &path, policy)
     };
     let req = match op {
         ProofOp::Get { key } => ProofRequest::Get { key },
@@ -310,4 +318,40 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionsHeld, EffectiveRoute};
+    use rafka_mesh_entity::{IncarnationId, NodeId};
+
+    fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
+        ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind, ordinal }, node_id: NodeId::mint(), incarnation: Some(IncarnationId(inc.into())) }
+    }
+
+    fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
+        NodeConnection { source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    }
+
+    /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A
+    /// Proxy through a gateway is the effective route under a gateway policy, and is skipped (the
+    /// route stays Direct, the Proxy is not retired) under the default rpc_node policy.
+    #[test]
+    fn door_resolves_a_gateway_carried_proxy_only_under_a_gateway_policy() {
+        let (own, carrier, dest) = (end(NodeKind::Compute, 1, "o1"), end(NodeKind::Gateway, 1, "c1"), end(NodeKind::Broker, 1, "d1"));
+        let mut held = ConnectionsHeld::new();
+        held.set_own_source(own.name.clone());
+        held.mark_complete();
+        held.apply(row(&carrier, &dest, ConnectionKind::Direct, None, 10)).unwrap();
+        let p = row(&own, &dest, ConnectionKind::Proxy, Some(&carrier), 20);
+        held.apply(p.clone()).unwrap();
+        let gateway = CarrierPolicy::Forwardable { carrier_kind: NodeKind::Gateway };
+        let r = resolve(&held, &own.name, &dest.name, gateway);
+        assert_eq!(r.route, EffectiveRoute::ViaPeer { carrier: carrier.name.clone(), proxy: p });
+        assert_eq!(r.retire, None);
+        let d = resolve(&held, &own.name, &dest.name, POLICY);
+        assert_eq!(d.route, EffectiveRoute::NoActiveRoute, "the gateway-carried Proxy is not the route under the rpc_node policy");
+        assert_eq!(d.retire, None, "a Proxy through a kind the policy does not name is skipped, never retired");
+    }
 }
