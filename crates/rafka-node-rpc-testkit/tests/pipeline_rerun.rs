@@ -122,7 +122,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
     let sink = Published::default();
     let reached = Arc::new(Notify::new());
     let process = Arc::new(ProcessDeploymentProvider::new());
-    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false, held_runtimes: Vec::new() };
+    let req = |attempt| CreateRequest { build_id: build_id.clone(), attempt, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() };
 
     // Attempt 1 dies at the kill point.
     let first = Killable {

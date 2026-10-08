@@ -562,11 +562,6 @@ pub struct CreateRequest {
     /// `Some(current record)` for a restart: same node id, data dir and
     /// transport key, a new incarnation.
     pub restart_of: Option<Node>,
-    /// Members of the node's own mesh the launch seeds beside the launcher (a node-admin's
-    /// launch: `(public key, address)`, from the executor's held topology and nodes.storage).
-    pub mesh_seeds: Vec<(String, SocketAddr)>,
-    /// The node is a recovering mesh's first node-admin: the launch sets `RDM_MESH_PRIMARY`.
-    pub mesh_primary: bool,
     /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
     /// starts: its durable map of the births a predecessor heard.
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
@@ -916,11 +911,9 @@ impl DeploymentPipeline<'_> {
             bind_addr,
             listeners: bind_listeners.clone(),
             launcher: Some(self.template.launcher.clone()),
-            seeds: self.template.seeds.iter().cloned().chain(req.mesh_seeds.iter().cloned()).collect(),
+            seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
-            mesh_primary: req.mesh_primary,
-            fabric_primary: false,
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.

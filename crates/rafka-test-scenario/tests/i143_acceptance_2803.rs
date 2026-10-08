@@ -189,17 +189,6 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         .collect();
     assert!(decided.iter().all(|d| d["attributes"]["receiver_is_primary"] == "false"), "{decided:?}");
 
-    // The recovery admin is launched with a live member of its mesh among its seeds (the launcher
-    // alone is a node of another mesh): it joins its mesh channel through more than the launcher.
-    let subscribed: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-subscribe")
-        .into_iter()
-        .filter(|sp| s(&sp["attributes"]["node"]) == recovery_admin && s(&sp["attributes"]["channel"]) == format!("mesh:{lost}"))
-        .collect();
-    assert!(
-        subscribed.iter().any(|sp| sp["attributes"]["peers"].as_str().and_then(|p| p.parse::<u64>().ok()).unwrap_or(0) >= 2),
-        "{recovery_admin} joined mesh:{lost} through its launcher alone: {subscribed:?}"
-    );
-
     let preserved = old.keys().filter(|n| !n.starts_with(&format!("{lost}.admin.")) && n.starts_with(&format!("{lost}."))).count();
     let result = json!({
         "cell": cell,

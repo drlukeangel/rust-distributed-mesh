@@ -144,8 +144,6 @@ async fn rig(dir: &std::path::Path) -> Rig {
         launcher: None,
         data_dir,
         mesh_id: None,
-        mesh_primary: false,
-        fabric_primary: false,
     };
     let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());
