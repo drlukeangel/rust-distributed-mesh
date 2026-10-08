@@ -716,6 +716,54 @@
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof"
         }
       ]
+    },
+    "i143-rshape-routing-chaos-process": {
+      "issue": 2946,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_routes_survive_connection_and_birth_supersession",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_routes_survive_connection_and_birth_supersession -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession"
+        },
+        {
+          "name": "mock_proxy_cutback_requires_durable_retirement",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_proxy_cutback_requires_durable_retirement -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement"
+        },
+        {
+          "name": "mock_connection_churn_releases_superseded_resources",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_connection_churn_releases_superseded_resources -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_connection_churn_releases_superseded_resources"
+        }
+      ]
+    },
+    "i143-rshape-routing-chaos-container": {
+      "issue": 2946,
+      "layer": "chaos-container",
+      "cells": [
+        {
+          "name": "mock_routes_survive_connection_and_birth_supersession",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_routes_survive_connection_and_birth_supersession -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession"
+        },
+        {
+          "name": "mock_proxy_cutback_requires_durable_retirement",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_proxy_cutback_requires_durable_retirement -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement"
+        },
+        {
+          "name": "mock_connection_churn_releases_superseded_resources",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_connection_churn_releases_superseded_resources -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources"
+        }
+      ]
     }
   }
 }

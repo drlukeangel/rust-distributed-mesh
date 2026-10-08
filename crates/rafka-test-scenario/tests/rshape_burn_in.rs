@@ -514,7 +514,9 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
         if descends_from(spans, r, &rest) {
             continue;
         }
-        assert!(r["parent_span_id"] == "" && r["attributes"]["attempt"] != "1", "every attempt of the formation Build descends from its REST request, or is a later attempt on its own trace: {r}");
+        // A later attempt is opened by a REST request of the same Build (a restart, a replace) and descends from it.
+        let from_later_request = named(spans, "rdm.node_admin.build.update.via-rest").into_iter().any(|q| q["attributes"]["build_id"] == bid && descends_from(spans, r, q));
+        assert!((from_later_request || r["parent_span_id"] == "") && r["attributes"]["attempt"] != "1", "every attempt of the formation Build descends from a REST request of the Build, or is a later attempt on its own trace: {r}");
         own_trace.push(json!({"attempt": r["attributes"]["attempt"], "executor": r["attributes"]["executor"], "previous_executor": r["attributes"]["previous_executor"], "reason": r["attributes"]["reason"], "span_id": r["span_id"]}));
     }
     assert!(reconciles.iter().any(|r| r["attributes"]["attempt"] == "1" && descends_from(spans, r, &rest)), "the formation Build's first attempt descends from its REST request");
@@ -4145,27 +4147,15 @@ async fn supersession_run(cell: &str, shape: Shape) {
     assert!(failed_call.out["outcome"] == "Reply" && failed_call.out["call_outcome"] == "NotSent", "a dial that ends without a connection sends nothing: {}", failed_call.out);
     f.actions.push(action_row(&failed_call));
     let failed = await_direct(&f.estate, &lost_src, &dst, "Failed on the new birth", Duration::from_secs(30), |d| d["state"] == "Failed" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
+    // The release begins here: the rules come out one by one, and the held dial can connect before the last one.
+    let t_release = now_ns();
     drop(cut2);
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
-    let t_release = now_ns();
     events.push(json!({"event": "dial-lost", "source": lost_src, "ack": ack2, "failed_fact": failed, "call": failed_call.out, "t_cut_ns": t_cut2, "t_release_ns": t_release}));
 
-    // Recovery: a call over the projection while the latest Direct is Failed has no active route and sends
-    // nothing; the redial is the node's own dial; then the route is Direct again and the new birth answers.
-    let refused = orig_get(&f, &lost_src, &dst, "failed-fact-before-redial");
-    f.actions.push(action_row(&refused));
-    assert_eq!((refused.out["route"].as_str(), refused.out["call_outcome"].as_str()), (Some("no-active-route"), Some("NotSent")), "a Failed Direct is no route and nothing is sent: {}", refused.out);
-    let mut attempts = Vec::new();
-    loop {
-        let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{lost_src}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
-        attempts.push(json!({"dial": c.out["dialed"], "trace_id": c.trace_id}));
-        f.actions.push(action_row(&c));
-        if c.out["dialed"] == "Reply" {
-            break;
-        }
-        assert!(attempts.len() < 120 && (now_ns() - t_release) < 30_000_000_000, "{lost_src} did not redial {dst} within 30 s of the release: {attempts:?}");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    // Recovery: the dial that missed its caller's deadline is still running; released, it connects and reports
+    // the pair Connected itself, with no caller waiting. Nothing dials again.
+    let attempts: Vec<Value> = Vec::new();
     let edge1 = await_direct(&f.estate, &lost_src, &dst, "Connected on the new birth", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
     let recovered_op = originate_op(&f, &mut a, &lost_src, &d1, "after-recovery");
 
