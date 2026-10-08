@@ -135,7 +135,20 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         let door = JoinDoor {
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
-            answer: Arc::new(|| Box::pin(async { EntryAnswer { served_by: "mesh1.admin.1".into(), ..Default::default() } })),
+            answer: Arc::new(|| {
+                Box::pin(async {
+                    EntryAnswer {
+                        served_by: "mesh1.admin.1".into(),
+                        topology: serde_json::to_value(rafka_node_admin_core::topology::Topology {
+                            fabric: rafka_node_admin_core::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic, provider: rafka_node_admin_core::model::ProviderKind::Process },
+                            meshes: vec![],
+                            nodes: vec![],
+                        })
+                        .unwrap(),
+                        ..Default::default()
+                    }
+                })
+            }),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             is_member: Arc::new(|_| false),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),

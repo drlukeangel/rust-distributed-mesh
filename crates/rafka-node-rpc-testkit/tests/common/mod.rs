@@ -235,7 +235,14 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
             joins: joins.clone(),
             answer: Arc::new(move || {
                 let book = answer_book.clone();
-                Box::pin(async move { rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), members: book.current(book.staleness_floor()), ..Default::default() } })
+                Box::pin(async move {
+                    let topology = rafka_node_admin_core::topology::Topology {
+                        fabric: rafka_node_admin_core::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic, provider: rafka_node_admin_core::model::ProviderKind::Process },
+                        meshes: vec![],
+                        nodes: vec![],
+                    };
+                    rafka_mesh_transport::entry::EntryAnswer { served_by: "mesh1.admin.1".into(), topology: serde_json::to_value(&topology).unwrap(), members: book.current(book.staleness_floor()), ..Default::default() }
+                })
             }),
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
             is_member: Arc::new(move |d| member_book.get(d.node.node_id.as_str()).is_some_and(|(h, _)| h.node.incarnation == d.node.incarnation)),
