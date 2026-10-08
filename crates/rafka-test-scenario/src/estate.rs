@@ -69,7 +69,13 @@ fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String
             }
         }
     });
-    let base = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("{what} never advertised RAFKA_NODE_ADMIN_API_BASE"));
+    let Ok(base) = rx.recv_timeout(Duration::from_secs(30)) else {
+        // No Estate exists yet to stop it: the process is stopped here, before the refusal.
+        let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("{what} never advertised RAFKA_NODE_ADMIN_API_BASE within 30 s (pid {}, {status})", child.id());
+    };
     (child, base)
 }
 
@@ -169,7 +175,17 @@ fn spawn_admin_in_container(mut env: Vec<(&str, String)>, root: &Path, evidence:
             }
         }
     });
-    let base = rx.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("the containerised Day-0 node-admin never advertised RAFKA_NODE_ADMIN_API_BASE"));
+    let Ok(base) = rx.recv_timeout(Duration::from_secs(30)) else {
+        // No Estate exists yet to remove it: the container is removed here, before the refusal,
+        // and the refusal names what Docker reported for it.
+        let name = format!("rafka-{node}-{fabric_id}");
+        let state = docker(&["inspect", "--format", "status={{.State.Status}} created={{.Created}} started={{.State.StartedAt}} exit={{.State.ExitCode}}", &name]).unwrap_or_else(|e| e);
+        let logs = Command::new("docker").args(["logs", "--tail", "20", &name]).output().map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
+        let removed = docker(&["rm", "-f", &name]).map(|_| "removed".to_string()).unwrap_or_else(|e| format!("NOT removed: {e}"));
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the containerised Day-0 node-admin {name} never advertised RAFKA_NODE_ADMIN_API_BASE within 30 s ({state}; container {removed}); last log lines:\n{logs}");
+    };
     (child, base)
 }
 
@@ -976,4 +992,28 @@ pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
     }
     let f: Value = r.json().await.ok()?;
     (f["id"].as_str() == Some(fabric_id)).then_some(f)
+}
+
+#[cfg(test)]
+mod spawn_tests {
+    use super::*;
+
+    /// CONTRACT: a node-admin that never advertises its control API is refused by name, and the
+    /// refusal leaves nothing running: no Estate exists yet to stop it. What must NOT happen: a
+    /// panic that leaves the process alive.
+    #[test]
+    fn an_admin_that_never_advertises_is_stopped_before_the_refusal() {
+        let dir = std::env::temp_dir().join(format!("rdm-spawn-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("silent-admin.sh");
+        let pid_file = dir.join("pid");
+        std::fs::write(&script, format!("#!/bin/sh\necho $$ > {}\nexec sleep 60 >/dev/null\n", pid_file.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let err = std::panic::catch_unwind(|| spawn_admin(&script, &[], "the silent admin")).expect_err("refused");
+        let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(msg.contains("the silent admin never advertised RAFKA_NODE_ADMIN_API_BASE"), "{msg}");
+        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        assert!(!Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.contains(") Z ")), "pid {pid} still runs after the refusal");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
