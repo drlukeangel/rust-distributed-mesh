@@ -333,3 +333,24 @@ async fn a_dial_that_outlives_its_callers_deadline_reports_connected_once_when_i
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(told.0.lock().unwrap().clone(), told_open, "reuse is not a new fact");
 }
+
+/// CONTRACT: when two reply deadlines evict the pooled connection (a post-commit loss), the writer is
+/// told the edge is broken through the observer's `direct_broken`, once, so the held Direct fact leaves
+/// Connected; the connection is reported neither before the second strike nor again afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_reply_deadlines_that_evict_the_pooled_connection_report_it_broken() {
+    let n = node().await;
+    let (r, told) = observed_rig(n.resolved.clone()).await;
+    let (out, _) = r.ping().await;
+    assert!(out.reply().is_some());
+    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(200) }, ..Default::default() };
+    let (first, _) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
+    assert!(matches!(&first, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{first:?}");
+    assert!(!told.0.lock().unwrap().iter().any(|e| e.starts_with("broken")), "one strike evicts nothing: {:?}", told.0.lock().unwrap());
+    let (second, _) = r.client.call::<Ping>(&r.target, &echo(b"hang"), &opts).await;
+    assert!(matches!(&second, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::ReplyDeadline), "{second:?}");
+    assert!(r.client.pooled().is_empty(), "the second strike evicted the connection");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let told = told.0.lock().unwrap().clone();
+    assert_eq!(told.iter().filter(|e| e.starts_with("broken")).count(), 1, "the eviction is reported broken, once: {told:?}");
+}
