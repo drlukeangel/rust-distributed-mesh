@@ -79,7 +79,8 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert_eq!(status, 202, "restart route: {restart}");
     let restart_build = restart["build_id"].as_str().expect("restart returns a build_id").to_string();
     assert_eq!(restart_build, birth_build, "a restart changes no topology: it is an attempt of the accepted Build");
-    let (_, submitted) = estate.get(&format!("/api/builds?id={restart_build}")).await;
+    // The attempt is opened on the admin that took the POST (the fabric-primary); that admin's Build log is the one that holds it at once.
+    let (_, submitted) = estate.http_get(&control_before, &format!("/api/builds?id={restart_build}")).await;
     assert_eq!(submitted["build_id"], restart_build.as_str(), "the Build is visible by id: {submitted}");
     assert_eq!(submitted["reason"], "restart", "{submitted}");
     assert_eq!(submitted["action"]["path"], NODE, "{submitted}");
@@ -113,7 +114,7 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     // 8. A request cut before full send is reset with 499 and reports NotSent; it was never dispatched.
     let cut = estate.probe(&["put", "--target", &exact, "--key", "42", "--value", "never", "--cut-before-finish"]);
     assert_eq!(cut["outcome"], "NotSent", "{cut}");
-    assert!(cut["reason"].as_str().unwrap_or("").contains("499"), "the cut is the 499 FRAME_NOT_SENT reset: {cut}");
+    assert_eq!(cut["reason"], "FrameNotSent", "the cut is the 499 FRAME_NOT_SENT reset: {cut}");
     let absent = estate.probe(&["get", "--target", &exact, "--key", "42"]);
     assert_eq!(absent["outcome"], "Reply", "{absent}");
     assert_eq!(absent["reply"]["result"]["found"], false, "the cut request was never applied: {absent}");
@@ -158,8 +159,13 @@ async fn rpc_node_restarts_same_identity_rebinds_and_recovers_state() {
     assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
     let deploy = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == "DeployRuntime")
-        .expect("the DeployRuntime step span of the restart");
+        .find(|s| {
+            s["attributes"]["build_id"] == restart_build.as_str()
+                && s["attributes"]["step"] == "DeployRuntime"
+                && s["attributes"]["node"] == NODE
+                && s["attributes"]["attempt"] == Estate::attempt_of(&restart).to_string().as_str()
+        })
+        .expect("the DeployRuntime step span of the restart attempt for rpc.2");
     assert!(descends_from(&spans, deploy, node_op), "the deployment step descends from the node Build operation");
     let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
         .into_iter()
