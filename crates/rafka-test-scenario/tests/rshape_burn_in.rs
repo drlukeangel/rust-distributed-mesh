@@ -5427,7 +5427,12 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     drop(cuts);
     let healed_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
-    let st2 = a.stable(&mut f, "healed", &both(2), &mut inv).await;
+    // The bound is the canon's: a node-admin whose coverage of a peer-mesh admin went stale re-feeds it once per
+    // repair window (gossip.md section 6: one attempt per peer per window), so the attempt that restores the
+    // healed victim's coverage comes at most one window after the heal; then the ordinary settle of a stable
+    // fabric. (Observed at production cadence: the victim's own neighbour-up on the backbone was at +0.2 s and the
+    // peers' coverage was restored by their next re-feed, one window after their last.)
+    let st2 = a.stable_by(&mut f, "healed", &both(2), &mut inv, Instant::now() + window + Duration::from_secs(30)).await;
     for o in &observers {
         let (name, base) = (s(&o["name"]), s(&o["admin_api_base"]));
         wait_for(&format!("{name} holds every member ready after the heal"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.nodes_at(&base).await, &everyone).then_some(()) }).await;
