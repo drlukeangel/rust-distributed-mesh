@@ -17,7 +17,7 @@ use crate::{
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Instant;
-use tracing::info_span;
+use tracing::{info_span, Instrument};
 
 const NODE_TYPES: &[&str] = &["gateway", "broker", "compute", "registry"];
 
@@ -102,25 +102,28 @@ impl ChaosPrimitive for KillNode {
             target = %target,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
-        let url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
-        let resp = ctx
-            .http
-            .delete(&url)
-            .send()
-            .await
-            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("DELETE {url}: {e}")))?;
-        if !resp.status().is_success() && resp.status().as_u16() != 404 {
-            return Err(ChaosError::Execution(format!(
-                "kill {target} returned {}",
-                resp.status()
-            )));
+        async {
+            let url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+            let resp = ctx
+                .http
+                .delete(&url)
+                .send()
+                .await
+                .map_err(|e| ChaosError::TopologyUiUnreachable(format!("DELETE {url}: {e}")))?;
+            if !resp.status().is_success() && resp.status().as_u16() != 404 {
+                return Err(ChaosError::Execution(format!(
+                    "kill {target} returned {}",
+                    resp.status()
+                )));
+            }
+            Ok(ChaosOutcome {
+                primitive_name: "kill_node".into(),
+                targets: vec![target.clone()],
+                state: json!({"killed": target}),
+            })
         }
-        Ok(ChaosOutcome {
-            primitive_name: "kill_node".into(),
-            targets: vec![target.clone()],
-            state: json!({"killed": target}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -207,42 +210,45 @@ impl ChaosPrimitive for RestartNode {
             node_type = node_type,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
-        let _ = ctx.http.delete(&kill_url).send().await; // best-effort; even 404 is fine
+            let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+            let _ = ctx.http.delete(&kill_url).send().await; // best-effort; even 404 is fine
 
-        // Re-spawn phase
-        let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
-        let resp = ctx
-            .http
-            .post(&spawn_url)
-            // admin-ui now requires mesh_id on every spawn (post mesh-native pivot).
-            // Default replacement to mesh-a; a future enhancement queries the original
-            // target's mesh from heartbeats so the replacement inherits.
-            .json(&json!({"node_type": node_type, "mesh_id": "mesh-a"}))
-            .send()
-            .await
-            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(ChaosError::Execution(format!(
-                "respawn returned {}",
-                resp.status()
-            )));
+            // Re-spawn phase
+            let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+            let resp = ctx
+                .http
+                .post(&spawn_url)
+                // admin-ui now requires mesh_id on every spawn (post mesh-native pivot).
+                // Default replacement to mesh-a; a future enhancement queries the original
+                // target's mesh from heartbeats so the replacement inherits.
+                .json(&json!({"node_type": node_type, "mesh_id": "mesh-a"}))
+                .send()
+                .await
+                .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(ChaosError::Execution(format!(
+                    "respawn returned {}",
+                    resp.status()
+                )));
+            }
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
+            let new_name = body["node_name"]
+                .as_str()
+                .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
+                .to_string();
+            Ok(ChaosOutcome {
+                primitive_name: "restart_node".into(),
+                targets: vec![target.clone(), new_name.clone()],
+                state: json!({"old": target, "new": new_name, "node_type": node_type}),
+            })
         }
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
-        let new_name = body["node_name"]
-            .as_str()
-            .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
-            .to_string();
-        Ok(ChaosOutcome {
-            primitive_name: "restart_node".into(),
-            targets: vec![target.clone(), new_name.clone()],
-            state: json!({"old": target, "new": new_name, "node_type": node_type}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -313,22 +319,25 @@ impl ChaosPrimitive for BurstKill {
             count = self.count as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
-        let mut killed: Vec<String> = Vec::new();
-        for _ in 0..self.count {
-            let target = match pick_random_spawned(ctx).await {
-                Ok(t) => t,
-                Err(_) => break, // no more targets; stop early, still report what was killed
-            };
-            let url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
-            let _ = ctx.http.delete(&url).send().await;
-            killed.push(target);
+        async {
+            let mut killed: Vec<String> = Vec::new();
+            for _ in 0..self.count {
+                let target = match pick_random_spawned(ctx).await {
+                    Ok(t) => t,
+                    Err(_) => break, // no more targets; stop early, still report what was killed
+                };
+                let url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+                let _ = ctx.http.delete(&url).send().await;
+                killed.push(target);
+            }
+            Ok(ChaosOutcome {
+                primitive_name: "burst_kill".into(),
+                targets: killed.clone(),
+                state: json!({"killed": killed}),
+            })
         }
-        Ok(ChaosOutcome {
-            primitive_name: "burst_kill".into(),
-            targets: killed.clone(),
-            state: json!({"killed": killed}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -478,31 +487,34 @@ impl ChaosPrimitive for WedgeNode {
             duration_ms = self.duration_ms as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        // If the requested node_type has no live OS process (e.g. a prior chaos event
-        // killed them), pick whichever node_type IS alive from topology-ui's spawned
-        // registry. This makes wedge_node safe to put in the soak's random pool —
-        // it can't fail just because the random pick happened to target a node_type
-        // with no current process.
-        let actual_type = match resolve_alive_node_type(ctx, &self.target_node_type).await {
-            Some(t) => t,
-            None => {
-                return Err(ChaosError::InvalidTarget(
-                    "no live node process to wedge (all node_types empty)".into(),
-                ));
-            }
-        };
-        let binary_name = format!("rafka-{}", actual_type);
-        // Race lost (process died between the spawned-list check and suspend) is
-        // surfaced as InvalidTarget by os_suspend_process, so the soak counts it
-        // as a soft skip rather than an assertion failure.
-        let pid = os_suspend_process(&binary_name).await?;
-        Ok(ChaosOutcome {
-            primitive_name: "wedge_node".into(),
-            targets: vec![format!("{}:{}", actual_type, pid)],
-            state: json!({"node_type": actual_type, "pid": pid, "duration_ms": self.duration_ms}),
-        })
+            // If the requested node_type has no live OS process (e.g. a prior chaos event
+            // killed them), pick whichever node_type IS alive from topology-ui's spawned
+            // registry. This makes wedge_node safe to put in the soak's random pool —
+            // it can't fail just because the random pick happened to target a node_type
+            // with no current process.
+            let actual_type = match resolve_alive_node_type(ctx, &self.target_node_type).await {
+                Some(t) => t,
+                None => {
+                    return Err(ChaosError::InvalidTarget(
+                        "no live node process to wedge (all node_types empty)".into(),
+                    ));
+                }
+            };
+            let binary_name = format!("rafka-{}", actual_type);
+            // Race lost (process died between the spawned-list check and suspend) is
+            // surfaced as InvalidTarget by os_suspend_process, so the soak counts it
+            // as a soft skip rather than an assertion failure.
+            let pid = os_suspend_process(&binary_name).await?;
+            Ok(ChaosOutcome {
+                primitive_name: "wedge_node".into(),
+                targets: vec![format!("{}:{}", actual_type, pid)],
+                state: json!({"node_type": actual_type, "pid": pid, "duration_ms": self.duration_ms}),
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -575,44 +587,47 @@ impl ChaosPrimitive for DiskFull {
             max_bytes = self.max_bytes as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", target);
-        let filler_path = format!("{}/CHAOS-DISK-FULL.bin", spawn_dir);
+            let spawn_dir = format!("E:/tmp/rafka-ui-nodes/{}", target);
+            let filler_path = format!("{}/CHAOS-DISK-FULL.bin", spawn_dir);
 
-        let chunk = vec![0u8; 1 * 1024 * 1024]; // 1MB
-        let mut written: u64 = 0;
-        let mut file = match tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&filler_path)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                return Err(ChaosError::Execution(format!(
-                    "open {filler_path}: {e}"
-                )));
+            let chunk = vec![0u8; 1 * 1024 * 1024]; // 1MB
+            let mut written: u64 = 0;
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&filler_path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    return Err(ChaosError::Execution(format!(
+                        "open {filler_path}: {e}"
+                    )));
+                }
+            };
+            use tokio::io::AsyncWriteExt;
+            loop {
+                if written >= self.max_bytes {
+                    break;
+                }
+                if let Err(e) = file.write_all(&chunk).await {
+                    tracing::info!(target = %target, written, error = %e, "disk_full filler write stopped");
+                    break;
+                }
+                written += chunk.len() as u64;
             }
-        };
-        use tokio::io::AsyncWriteExt;
-        loop {
-            if written >= self.max_bytes {
-                break;
-            }
-            if let Err(e) = file.write_all(&chunk).await {
-                tracing::info!(target = %target, written, error = %e, "disk_full filler write stopped");
-                break;
-            }
-            written += chunk.len() as u64;
+            let _ = file.flush().await;
+            Ok(ChaosOutcome {
+                primitive_name: "disk_full".into(),
+                targets: vec![target.clone()],
+                state: json!({"filler_path": filler_path, "bytes_written": written}),
+            })
         }
-        let _ = file.flush().await;
-        Ok(ChaosOutcome {
-            primitive_name: "disk_full".into(),
-            targets: vec![target.clone()],
-            state: json!({"filler_path": filler_path, "bytes_written": written}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -698,45 +713,48 @@ impl ChaosPrimitive for PartitionPair {
             duration_ms = self.duration_ms as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let tag = format!("RAFKA-CHAOS-PARTITION-{id}");
+            let id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let tag = format!("RAFKA-CHAOS-PARTITION-{id}");
 
-        // Two rules: a→b and b→a, both outbound block. We block at the program level
-        // (the binary's exe path won't exist on disk reliably across spawn dirs), so
-        // instead we block by remote port range that QUIC uses (ephemeral). The honest
-        // approximation: block ALL outbound UDP for the named program. That blocks all
-        // QUIC, which is the comm channel between rafka nodes.
-        //
-        // Note: this requires the test harness to run elevated (admin) on Windows. If
-        // New-NetFirewallRule fails with access denied, return Err and surface clearly.
-        let prog_a = format!("rafka-{}.exe", self.a.trim_start_matches("rafka-"));
-        let prog_b = format!("rafka-{}.exe", self.b.trim_start_matches("rafka-"));
-        let ps_script = format!(
-            "New-NetFirewallRule -DisplayName '{tag}-out-a' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_a}' -ErrorAction Stop | Out-Null; \
-             New-NetFirewallRule -DisplayName '{tag}-out-b' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_b}' -ErrorAction Stop | Out-Null; \
-             Write-Output '{tag}'"
-        );
-        let output = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps_script])
-            .output()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("powershell partition: {e}")))?;
-        if !output.status.success() {
-            return Err(ChaosError::Execution(format!(
-                "New-NetFirewallRule failed (need admin?): {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
+            // Two rules: a→b and b→a, both outbound block. We block at the program level
+            // (the binary's exe path won't exist on disk reliably across spawn dirs), so
+            // instead we block by remote port range that QUIC uses (ephemeral). The honest
+            // approximation: block ALL outbound UDP for the named program. That blocks all
+            // QUIC, which is the comm channel between rafka nodes.
+            //
+            // Note: this requires the test harness to run elevated (admin) on Windows. If
+            // New-NetFirewallRule fails with access denied, return Err and surface clearly.
+            let prog_a = format!("rafka-{}.exe", self.a.trim_start_matches("rafka-"));
+            let prog_b = format!("rafka-{}.exe", self.b.trim_start_matches("rafka-"));
+            let ps_script = format!(
+                "New-NetFirewallRule -DisplayName '{tag}-out-a' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_a}' -ErrorAction Stop | Out-Null; \
+                 New-NetFirewallRule -DisplayName '{tag}-out-b' -Direction Outbound -Action Block -Protocol UDP -Program '%PROGRAMFILES%\\rafka\\{prog_b}' -ErrorAction Stop | Out-Null; \
+                 Write-Output '{tag}'"
+            );
+            let output = tokio::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &ps_script])
+                .output()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("powershell partition: {e}")))?;
+            if !output.status.success() {
+                return Err(ChaosError::Execution(format!(
+                    "New-NetFirewallRule failed (need admin?): {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            Ok(ChaosOutcome {
+                primitive_name: "partition_pair".into(),
+                targets: vec![self.a.clone(), self.b.clone()],
+                state: json!({"a": self.a, "b": self.b, "tag": tag, "duration_ms": self.duration_ms}),
+            })
         }
-        Ok(ChaosOutcome {
-            primitive_name: "partition_pair".into(),
-            targets: vec![self.a.clone(), self.b.clone()],
-            state: json!({"a": self.a, "b": self.b, "tag": tag, "duration_ms": self.duration_ms}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -842,44 +860,47 @@ impl ChaosPrimitive for PartitionSubset {
             duration_ms = self.duration_ms as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        // Build one PowerShell call that creates all K*M firewall rules at once.
-        let mut script = String::new();
-        for (i, a) in subset_names.iter().enumerate() {
-            for (j, b) in rest_names.iter().enumerate() {
-                let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{a}.exe");
-                let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{b}.exe");
-                script.push_str(&format!(
-                    "New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
-                     New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null; "
-                ));
+            // Build one PowerShell call that creates all K*M firewall rules at once.
+            let mut script = String::new();
+            for (i, a) in subset_names.iter().enumerate() {
+                for (j, b) in rest_names.iter().enumerate() {
+                    let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{a}.exe");
+                    let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{b}.exe");
+                    script.push_str(&format!(
+                        "New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
+                         New-NetFirewallRule -DisplayName '{tag}-{i}-{j}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null; "
+                    ));
+                }
             }
-        }
-        script.push_str(&format!("Write-Output '{tag}'"));
+            script.push_str(&format!("Write-Output '{tag}'"));
 
-        let output = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("powershell partition_subset: {e}")))?;
-        if !output.status.success() {
-            return Err(ChaosError::Execution(format!(
-                "New-NetFirewallRule failed (need admin?): {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
+            let output = tokio::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &script])
+                .output()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("powershell partition_subset: {e}")))?;
+            if !output.status.success() {
+                return Err(ChaosError::Execution(format!(
+                    "New-NetFirewallRule failed (need admin?): {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
 
-        Ok(ChaosOutcome {
-            primitive_name: "partition_subset".into(),
-            targets: subset_names.clone(),
-            state: json!({
-                "subset": subset_names,
-                "rest": rest_names,
-                "tag": tag,
-                "duration_ms": self.duration_ms,
-            }),
-        })
+            Ok(ChaosOutcome {
+                primitive_name: "partition_subset".into(),
+                targets: subset_names.clone(),
+                state: json!({
+                    "subset": subset_names,
+                    "rest": rest_names,
+                    "tag": tag,
+                    "duration_ms": self.duration_ms,
+                }),
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -955,52 +976,55 @@ impl ChaosPrimitive for FlapLink {
             off_ms = self.off_ms as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let tag = format!("RAFKA-CHAOS-FLAP-{id}");
+            let id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let tag = format!("RAFKA-CHAOS-FLAP-{id}");
 
-        let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.a.trim_start_matches("rafka-"));
-        let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.b.trim_start_matches("rafka-"));
+            let prog_a = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.a.trim_start_matches("rafka-"));
+            let prog_b = format!("%PROGRAMFILES%\\rafka\\rafka-{}.exe", self.b.trim_start_matches("rafka-"));
 
-        for cycle in 0..self.cycles {
-            let cycle_tag = format!("{tag}-{cycle}");
-            // Create
-            let mk = format!(
-                "New-NetFirewallRule -DisplayName '{cycle_tag}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
-                 New-NetFirewallRule -DisplayName '{cycle_tag}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null"
-            );
-            let out = tokio::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &mk])
-                .output()
-                .await
-                .map_err(|e| ChaosError::Execution(format!("flap create: {e}")))?;
-            if !out.status.success() {
-                return Err(ChaosError::Execution(format!(
-                    "flap_link create cycle {cycle} failed (need admin?): {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )));
+            for cycle in 0..self.cycles {
+                let cycle_tag = format!("{tag}-{cycle}");
+                // Create
+                let mk = format!(
+                    "New-NetFirewallRule -DisplayName '{cycle_tag}-a' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_a}' -ErrorAction Stop | Out-Null; \
+                     New-NetFirewallRule -DisplayName '{cycle_tag}-b' -Direction Outbound -Action Block -Protocol UDP -Program '{prog_b}' -ErrorAction Stop | Out-Null"
+                );
+                let out = tokio::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &mk])
+                    .output()
+                    .await
+                    .map_err(|e| ChaosError::Execution(format!("flap create: {e}")))?;
+                if !out.status.success() {
+                    return Err(ChaosError::Execution(format!(
+                        "flap_link create cycle {cycle} failed (need admin?): {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(self.on_ms)).await;
+                // Remove
+                let rm = format!(
+                    "Get-NetFirewallRule -DisplayName '{cycle_tag}-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
+                );
+                let _ = tokio::process::Command::new("powershell")
+                    .args(["-NoProfile", "-Command", &rm])
+                    .output()
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_millis(self.off_ms)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(self.on_ms)).await;
-            // Remove
-            let rm = format!(
-                "Get-NetFirewallRule -DisplayName '{cycle_tag}-*' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"
-            );
-            let _ = tokio::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &rm])
-                .output()
-                .await;
-            tokio::time::sleep(std::time::Duration::from_millis(self.off_ms)).await;
-        }
 
-        Ok(ChaosOutcome {
-            primitive_name: "flap_link".into(),
-            targets: vec![self.a.clone(), self.b.clone()],
-            state: json!({"a": self.a, "b": self.b, "cycles": self.cycles, "tag": tag}),
-        })
+            Ok(ChaosOutcome {
+                primitive_name: "flap_link".into(),
+                targets: vec![self.a.clone(), self.b.clone()],
+                state: json!({"a": self.a, "b": self.b, "cycles": self.cycles, "tag": tag}),
+            })
+        }
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -1049,37 +1073,40 @@ impl ChaosPrimitive for FirewallInbound {
             duration_ms = self.duration_ms as i64,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        let id = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let tag = format!("RAFKA-CHAOS-FW-INBOUND-{id}");
-        let prog = format!(
-            "%PROGRAMFILES%\\rafka\\rafka-{}.exe",
-            self.target_node_type.trim_start_matches("rafka-")
-        );
-        let ps = format!(
-            "New-NetFirewallRule -DisplayName '{tag}' -Direction Inbound -Action Block -Protocol UDP -Program '{prog}' -ErrorAction Stop | Out-Null; Write-Output '{tag}'"
-        );
-        let out = tokio::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps])
-            .output()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("firewall_inbound: {e}")))?;
-        if !out.status.success() {
-            return Err(ChaosError::Execution(format!(
-                "New-NetFirewallRule (inbound) failed (need admin?): {}",
-                String::from_utf8_lossy(&out.stderr)
-            )));
+            let id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let tag = format!("RAFKA-CHAOS-FW-INBOUND-{id}");
+            let prog = format!(
+                "%PROGRAMFILES%\\rafka\\rafka-{}.exe",
+                self.target_node_type.trim_start_matches("rafka-")
+            );
+            let ps = format!(
+                "New-NetFirewallRule -DisplayName '{tag}' -Direction Inbound -Action Block -Protocol UDP -Program '{prog}' -ErrorAction Stop | Out-Null; Write-Output '{tag}'"
+            );
+            let out = tokio::process::Command::new("powershell")
+                .args(["-NoProfile", "-Command", &ps])
+                .output()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("firewall_inbound: {e}")))?;
+            if !out.status.success() {
+                return Err(ChaosError::Execution(format!(
+                    "New-NetFirewallRule (inbound) failed (need admin?): {}",
+                    String::from_utf8_lossy(&out.stderr)
+                )));
+            }
+
+            Ok(ChaosOutcome {
+                primitive_name: "firewall_inbound".into(),
+                targets: vec![self.target_node_type.clone()],
+                state: json!({"node_type": self.target_node_type, "tag": tag, "duration_ms": self.duration_ms}),
+            })
         }
-
-        Ok(ChaosOutcome {
-            primitive_name: "firewall_inbound".into(),
-            targets: vec![self.target_node_type.clone()],
-            state: json!({"node_type": self.target_node_type, "tag": tag, "duration_ms": self.duration_ms}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -1162,44 +1189,47 @@ impl ChaosPrimitive for ClockSkew {
             skew_ms = self.skew_ms,
             "otel.kind" = "internal",
         );
-        let _enter = span.enter();
+        async {
 
-        // Kill old
-        let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
-        let _ = ctx.http.delete(&kill_url).send().await;
+            // Kill old
+            let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+            let _ = ctx.http.delete(&kill_url).send().await;
 
-        // Spawn new with extra_env carrying the skew
-        let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
-        let resp = ctx
-            .http
-            .post(&spawn_url)
-            .json(&json!({
-                "node_type": node_type,
-                "mesh_id": "mesh-a",  // admin-ui post mesh-native pivot requires mesh_id
-                "extra_env": {"RDM_CLOCK_SKEW_MS": self.skew_ms.to_string()},
-            }))
-            .send()
-            .await
-            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(ChaosError::Execution(format!(
-                "respawn with skew returned {}",
-                resp.status()
-            )));
+            // Spawn new with extra_env carrying the skew
+            let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+            let resp = ctx
+                .http
+                .post(&spawn_url)
+                .json(&json!({
+                    "node_type": node_type,
+                    "mesh_id": "mesh-a",  // admin-ui post mesh-native pivot requires mesh_id
+                    "extra_env": {"RDM_CLOCK_SKEW_MS": self.skew_ms.to_string()},
+                }))
+                .send()
+                .await
+                .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(ChaosError::Execution(format!(
+                    "respawn with skew returned {}",
+                    resp.status()
+                )));
+            }
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
+            let new_name = body["node_name"]
+                .as_str()
+                .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
+                .to_string();
+            Ok(ChaosOutcome {
+                primitive_name: "clock_skew".into(),
+                targets: vec![target.clone(), new_name.clone()],
+                state: json!({"old": target, "new": new_name, "skew_ms": self.skew_ms}),
+            })
         }
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
-        let new_name = body["node_name"]
-            .as_str()
-            .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
-            .to_string();
-        Ok(ChaosOutcome {
-            primitive_name: "clock_skew".into(),
-            targets: vec![target.clone(), new_name.clone()],
-            state: json!({"old": target, "new": new_name, "skew_ms": self.skew_ms}),
-        })
+        .instrument(span.clone())
+        .await
     }
 
     async fn detect(
@@ -1309,38 +1339,41 @@ async fn respawn_with_env(
         node_type = node_type,
         "otel.kind" = "internal",
     );
-    let _enter = span.enter();
+    async {
 
-    let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
-    let _ = ctx.http.delete(&kill_url).send().await;
+        let kill_url = format!("{}/api/nodes/{}", ctx.topology_ui_url, target);
+        let _ = ctx.http.delete(&kill_url).send().await;
 
-    let mut env_map = serde_json::Map::new();
-    for (k, v) in extra_env {
-        env_map.insert((*k).to_string(), json!(v));
+        let mut env_map = serde_json::Map::new();
+        for (k, v) in extra_env {
+            env_map.insert((*k).to_string(), json!(v));
+        }
+        let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
+        let resp = ctx
+            .http
+            .post(&spawn_url)
+            // Inject mesh_id at top-level for the new admin-ui validation; extra_env
+            // also gets RDM_MESH_ID so the child env carries it.
+            .json(&json!({"node_type": node_type, "mesh_id": "mesh-a", "extra_env": env_map}))
+            .send()
+            .await
+            .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(ChaosError::Execution(format!("respawn returned {}", resp.status())));
+        }
+        let body: serde_json::Value = resp.json().await
+            .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
+        let new_name = body["node_name"].as_str()
+            .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
+            .to_string();
+        Ok(ChaosOutcome {
+            primitive_name: primitive_name.into(),
+            targets: vec![target.clone(), new_name.clone()],
+            state: json!({"old": target, "new": new_name, "extra_env": env_map}),
+        })
     }
-    let spawn_url = format!("{}/api/nodes/spawn", ctx.topology_ui_url);
-    let resp = ctx
-        .http
-        .post(&spawn_url)
-        // Inject mesh_id at top-level for the new admin-ui validation; extra_env
-        // also gets RDM_MESH_ID so the child env carries it.
-        .json(&json!({"node_type": node_type, "mesh_id": "mesh-a", "extra_env": env_map}))
-        .send()
-        .await
-        .map_err(|e| ChaosError::TopologyUiUnreachable(format!("POST {spawn_url}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(ChaosError::Execution(format!("respawn returned {}", resp.status())));
-    }
-    let body: serde_json::Value = resp.json().await
-        .map_err(|e| ChaosError::Execution(format!("parse spawn response: {e}")))?;
-    let new_name = body["node_name"].as_str()
-        .ok_or_else(|| ChaosError::Execution("spawn response missing node_name".into()))?
-        .to_string();
-    Ok(ChaosOutcome {
-        primitive_name: primitive_name.into(),
-        targets: vec![target.clone(), new_name.clone()],
-        state: json!({"old": target, "new": new_name, "extra_env": env_map}),
-    })
+    .instrument(span.clone())
+    .await
 }
 
 async fn detect_respawned(

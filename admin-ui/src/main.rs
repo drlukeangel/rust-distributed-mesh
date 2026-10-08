@@ -1588,58 +1588,61 @@ async fn handle_chaos_recent(State(state): State<AppState>) -> impl IntoResponse
 /// non-Passed results in the last 10 minutes; surface them as alerts.
 async fn handle_alerts(State(state): State<AppState>) -> impl IntoResponse {
     let span = info_span!("rdm.ui.alerts.query", "otel.kind" = "internal");
-    let _enter = span.enter();
+    async {
 
-    let url = format!(
-        "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=100&lookback=10m",
-        state.jaeger_url
-    );
-    // Red-team A#4: tighten to 2s so total wall stays <4s even with retries.
-    let body: Value = match state.http.get(&url).timeout(Duration::from_secs(2)).send().await {
-        Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
-        Err(_) => json!({"data":[]}),
-    };
-    let mut alerts: Vec<Value> = Vec::new();
-    if let Some(arr) = body["data"].as_array() {
-        for trace in arr {
-            if let Some(spans) = trace["spans"].as_array() {
-                for s in spans {
-                    if s["operationName"] != "rafka.chaos.primitive.detected" {
-                        continue;
+        let url = format!(
+            "{}/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=100&lookback=10m",
+            state.jaeger_url
+        );
+        // Red-team A#4: tighten to 2s so total wall stays <4s even with retries.
+        let body: Value = match state.http.get(&url).timeout(Duration::from_secs(2)).send().await {
+            Ok(r) => r.json::<Value>().await.unwrap_or(json!({"data":[]})),
+            Err(_) => json!({"data":[]}),
+        };
+        let mut alerts: Vec<Value> = Vec::new();
+        if let Some(arr) = body["data"].as_array() {
+            for trace in arr {
+                if let Some(spans) = trace["spans"].as_array() {
+                    for s in spans {
+                        if s["operationName"] != "rafka.chaos.primitive.detected" {
+                            continue;
+                        }
+                        let ts_us = s["startTime"].as_i64().unwrap_or(0);
+                        let tags = s["tags"].as_array();
+                        let result = tags
+                            .and_then(|tt| tt.iter().find(|t| t["key"] == "result"))
+                            .and_then(|t| t["value"].as_str())
+                            .unwrap_or("");
+                        if result == "passed" || result.is_empty() {
+                            continue;
+                        }
+                        let primitive = tags
+                            .and_then(|tt| tt.iter().find(|t| t["key"] == "name"))
+                            .and_then(|t| t["value"].as_str())
+                            .unwrap_or("?");
+                        let target = tags
+                            .and_then(|tt| tt.iter().find(|t| t["key"] == "target"))
+                            .and_then(|t| t["value"].as_str())
+                            .map(String::from);
+                        let mesh_id = tags
+                            .and_then(|tt| tt.iter().find(|t| t["key"] == "mesh_id"))
+                            .and_then(|t| t["value"].as_str())
+                            .map(String::from);
+                        alerts.push(json!({
+                            "ts_us": ts_us,
+                            "severity": if result == "failed" { "error" } else { "warn" },
+                            "node_name": target,
+                            "mesh_id": mesh_id,
+                            "message": format!("chaos primitive '{primitive}' detection: {result}"),
+                        }));
                     }
-                    let ts_us = s["startTime"].as_i64().unwrap_or(0);
-                    let tags = s["tags"].as_array();
-                    let result = tags
-                        .and_then(|tt| tt.iter().find(|t| t["key"] == "result"))
-                        .and_then(|t| t["value"].as_str())
-                        .unwrap_or("");
-                    if result == "passed" || result.is_empty() {
-                        continue;
-                    }
-                    let primitive = tags
-                        .and_then(|tt| tt.iter().find(|t| t["key"] == "name"))
-                        .and_then(|t| t["value"].as_str())
-                        .unwrap_or("?");
-                    let target = tags
-                        .and_then(|tt| tt.iter().find(|t| t["key"] == "target"))
-                        .and_then(|t| t["value"].as_str())
-                        .map(String::from);
-                    let mesh_id = tags
-                        .and_then(|tt| tt.iter().find(|t| t["key"] == "mesh_id"))
-                        .and_then(|t| t["value"].as_str())
-                        .map(String::from);
-                    alerts.push(json!({
-                        "ts_us": ts_us,
-                        "severity": if result == "failed" { "error" } else { "warn" },
-                        "node_name": target,
-                        "mesh_id": mesh_id,
-                        "message": format!("chaos primitive '{primitive}' detection: {result}"),
-                    }));
                 }
             }
         }
+        (StatusCode::OK, axum::Json(json!({"alerts": alerts}))).into_response()
     }
-    (StatusCode::OK, axum::Json(json!({"alerts": alerts}))).into_response()
+    .instrument(span.clone())
+    .await
 }
 
 /// `GET /api/topology` — the nodes node-admin manages, one per path.name,

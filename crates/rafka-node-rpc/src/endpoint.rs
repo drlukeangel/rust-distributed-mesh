@@ -5,22 +5,21 @@ use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
 
-/// The process's one endpoint: one identity, one physical UDP socket, at
+/// The process's one endpoint (bound on one thread: iroh's bind holds a span guard across an await, see
+/// `rafka_mesh_telemetry::one_thread`): one identity, one physical UDP socket, at
 /// exactly the transport address node-admin assigned (relay off, no
 /// discovery, Iroh's default transport configuration). Node RPC and gossip
 /// share it by ALPN. A request names its target in the fence of its framing;
 /// the socket decides nothing and there is never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
-    let ep = Endpoint::builder(presets::Minimal)
+    let builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .clear_ip_transports()
-        .bind_addr(addr)?
-        .bind()
-        .await?;
-    Ok(ep)
+        .bind_addr(addr)?;
+    Ok(rafka_mesh_telemetry::one_thread::on_one_thread(builder.bind()).await?)
 }
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder
@@ -29,17 +28,15 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
 /// NAT-PMP, PCP) from wildcard sockets and advertises what it maps; both are
 /// off, so the node is reachable only at the address node-admin advertises.
 pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>, transport: iroh::endpoint::QuicTransportConfig) -> Result<Endpoint> {
-    let ep = Endpoint::builder(presets::Minimal)
+    let builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
         .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .transport_config(transport)
         .clear_ip_transports()
-        .bind_addr(addr)?
-        .bind()
-        .await?;
-    Ok(ep)
+        .bind_addr(addr)?;
+    Ok(rafka_mesh_telemetry::one_thread::on_one_thread(builder.bind()).await?)
 }
 
 #[cfg(test)]

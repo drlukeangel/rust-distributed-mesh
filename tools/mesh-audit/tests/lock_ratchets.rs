@@ -327,3 +327,55 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
     );
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 }
+
+/// CONTRACT: a span guard bound with `enter()` or `entered()` and still alive at an `.await` of
+/// its block is refused in non-test code; a guard released before the await, one that never meets
+/// an await, a discarded `let _ =` and a test module are not.
+#[test]
+fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
+    let t = Planted::of_tree();
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
+    let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+    assert!(matches!(&v[0], Violation::Token { file, line: 2, token, .. } if file.ends_with("planted.rs") && token.contains("held across the .await at line 3")), "{v:?}");
+    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let g = span.clone().entered();\n    if ok() {\n        step();\n    }\n    other().await;\n}\n");
+    only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
+}
+
+#[test]
+fn no_span_guard_across_await_accepts_scoped_dropped_discarded_and_test_guards() {
+    let t = Planted::of_tree();
+    t.write(
+        "crates/rafka-node-admin-core/src/planted.rs",
+        r#"
+async fn scoped(span: tracing::Span) {
+    {
+        let _g = span.enter();
+        step();
+    }
+    work().await;
+}
+async fn dropped(span: tracing::Span) {
+    let g = span.enter();
+    step();
+    drop(g);
+    work().await;
+}
+async fn discarded(span: tracing::Span) {
+    let _ = span.enter();
+    work().await;
+}
+async fn instrumented(span: tracing::Span) {
+    use tracing::Instrument;
+    work().instrument(span).await;
+}
+#[cfg(test)]
+mod tests {
+    async fn held(span: tracing::Span) {
+        let _g = span.enter();
+        work().await;
+    }
+}
+"#,
+    );
+    assert!(check_one(t.root(), Ratchet::NoSpanGuardAcrossAwait).is_empty());
+}

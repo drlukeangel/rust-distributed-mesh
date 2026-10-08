@@ -12,7 +12,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The seventeen #2927 ratchets, the telemetry ownership ratchet and R-W1's wire ratchet.
+/// The seventeen #2927 ratchets, the telemetry ownership ratchet, R-W1's wire ratchet and the span-guard ratchet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ratchet {
     TagIsDescriptiveOnly,
@@ -34,10 +34,11 @@ pub enum Ratchet {
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
+    NoSpanGuardAcrossAwait,
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 19] = [
+    pub const ALL: [Ratchet; 20] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeMeta,
@@ -57,6 +58,7 @@ impl Ratchet {
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
+        Self::NoSpanGuardAcrossAwait,
     ];
 
     /// The name the issue gives the ratchet.
@@ -81,6 +83,7 @@ impl Ratchet {
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
+            Self::NoSpanGuardAcrossAwait => "no_span_guard_across_await",
         }
     }
 }
@@ -213,6 +216,8 @@ pub const JSON_VALUE_EDGE: &str = "crates/rafka-node-admin-core/src/wire.rs";
 pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rafka-mesh-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
 pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs";
+/// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
+pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "admin-ui/", "cli/", "gateway/", "broker/", "compute/", "registry/", "qualification/", "tools/"];
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -345,6 +350,51 @@ fn scan_non_test_tokens(root: &Path, files: &[PathBuf], tokens: &[&str], ratchet
     }
 }
 
+/// The guards a source binds with `span.enter()` / `span.entered()` that are still alive at an
+/// `.await` of the same block, as `(line, guard name)` pairs of the first such await's line.
+/// A test module (from its `#[cfg(test)]` line to the end of the file) is not scanned. A guard
+/// dropped by name before the await is not held across it.
+pub fn span_guards_across_await(text: &str) -> Vec<(usize, usize, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let end = lines.iter().position(|l| l.trim_start().starts_with("#[cfg(test)]")).unwrap_or(lines.len());
+    let mut found = Vec::new();
+    for (i, line) in lines[..end].iter().enumerate() {
+        let c = code(line);
+        let Some(name) = guard_binding(c) else { continue };
+        let mut depth: i32 = c.matches('{').count() as i32 - c.matches('}').count() as i32;
+        for (j, later) in lines[i + 1..end].iter().enumerate() {
+            let l = code(later);
+            if l.contains(&format!("drop({name})")) {
+                break;
+            }
+            if l.contains(".await") {
+                found.push((i + 1, i + 2 + j, name.clone()));
+                break;
+            }
+            depth += l.matches('{').count() as i32 - l.matches('}').count() as i32;
+            if depth < 0 {
+                break;
+            }
+        }
+    }
+    found
+}
+
+/// The name a statement binds a span guard to: `let _g = span.enter();` or `let g = s.entered();`.
+fn guard_binding(code: &str) -> Option<String> {
+    let t = code.trim_start();
+    let rest = t.strip_prefix("let ")?;
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+    let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    if name.is_empty() || name == "_" {
+        return None;
+    }
+    let after = rest[name.len()..].trim_start();
+    let rhs = after.strip_prefix('=')?;
+    let rhs = rhs.trim_end();
+    (rhs.ends_with(".enter();") || rhs.ends_with(".entered();")).then_some(name)
+}
+
 /// Every violation of `ratchet` in the workspace at `root`.
 pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
     let mut out = Vec::new();
@@ -361,6 +411,18 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                     }
                 },
                 Err(e) => out.push(Violation::Missing { ratchet, file: "runtime Rust sources".into(), what: format!("parseable instrumentation: {e}") }),
+            }
+        }
+        Ratchet::NoSpanGuardAcrossAwait => {
+            for f in files_in(root, SPAN_GUARD_SOURCES) {
+                let file = rel(root, &f);
+                if file.contains("/tests/") || file.contains("/benches/") || file.contains("/examples/") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&f) else { continue };
+                for (line, await_line, name) in span_guards_across_await(&text) {
+                    out.push(Violation::Token { ratchet, file: file.clone(), line, token: format!("let {name} = <span>.enter() held across the .await at line {await_line}") });
+                }
             }
         }
         Ratchet::TagIsDescriptiveOnly => {
