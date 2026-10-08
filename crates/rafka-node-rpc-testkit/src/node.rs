@@ -277,6 +277,7 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
                 }
                 membership.learn(d, "entry");
             }
+            membership.learn_statuses(&answer.statuses);
             let _ = membership.join_peers(mesh_peers).await;
         }
     }

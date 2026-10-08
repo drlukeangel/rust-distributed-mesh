@@ -45,6 +45,10 @@ pub struct EntryAnswer {
     /// an admin that holds none.
     #[serde(default)]
     pub control: serde_json::Value,
+    /// The statuses the admin holds (`MeshStatus` / `FabricStatus` frames, original publisher and
+    /// instant kept): the top-up a node that missed the status frames takes. Never inside `members`.
+    #[serde(default)]
+    pub statuses: Vec<crate::membership::Frame>,
 }
 
 /// The answer is awaited: what an admin holds (its fabric control state) is read through storage.

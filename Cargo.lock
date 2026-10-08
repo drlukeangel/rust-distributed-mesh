@@ -3745,6 +3745,8 @@ dependencies = [
  "iroh-gossip",
  "iroh-mdns-address-lookup",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
+ "rafka-node-rpc",
  "serde",
  "serde_json",
  "tokio",

@@ -235,8 +235,14 @@ pub enum Frame {
     /// later birth of the same NodeId is heard. Same channels as `NodeDeleting`; carried in
     /// `Members.in_flight` while open.
     NodeRestarting { op: LifecycleOp, forwarded_by: Option<String> },
-    /// The fabric's status, published by the fabric primary alone.
-    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, sent_unix_ms: u64 },
+    /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
+    /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
+    /// restates it as its own. `published_at_rafka_ms` is the instant of the CHANGE: all five sends
+    /// of one change carry the same value (gossip.md §3.1, §3.2).
+    MeshStatus { mesh: String, status: String, publisher: String, forwarded_by: Option<String>, published_at_rafka_ms: u64 },
+    /// The fabric's status, authored by the fabric primary alone; same channels, forwarding and
+    /// `published_at_rafka_ms` as [`Frame::MeshStatus`].
+    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, published_at_rafka_ms: u64 },
 }
 
 impl Frame {
@@ -248,11 +254,259 @@ impl Frame {
     }
 }
 
-/// The fabric status a node last heard, with its publisher.
+/// The fabric status a node holds, with its publisher and the instant of the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricStatus {
     pub status: String,
     pub publisher: String,
+    pub published_at_rafka_ms: u64,
+}
+
+/// A mesh's status a node holds, with its publisher and the instant of the change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshStatus {
+    pub status: String,
+    pub publisher: String,
+    pub published_at_rafka_ms: u64,
+}
+
+/// How many times one status change is sent: at once, then once per [`STATUS_EVERY`]
+/// (gossip.md §3.2). After the fifth send there is nothing more until the next change.
+pub const STATUS_SENDS: u32 = 5;
+
+/// The spacing of a status change's reinforcing sends.
+pub const STATUS_EVERY: Duration = Duration::from_secs(1);
+
+/// A status change: the status and the instant it changed. Every send of one change carries both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusFact {
+    pub status: String,
+    pub published_at_rafka_ms: u64,
+}
+
+/// The bounded reinforcement of one status: a change is sent at once, then once per second, five
+/// sends in all, then nothing; a status that did not change sends nothing. A pure state machine
+/// over an explicit clock: the caller says when it observes the status and when it asks what is
+/// due, and sends what it is given.
+#[derive(Debug, Default)]
+pub struct StatusReinforcement {
+    held: Option<StatusFact>,
+    sent: u32,
+    next_at: Option<Instant>,
+}
+
+impl StatusReinforcement {
+    /// The status as observed at `now` (`now_ms` stamps a change). A change returns the fact to
+    /// send at once (the first of its five sends) and replaces any change still being reinforced;
+    /// the same status returns nothing.
+    pub fn observe(&mut self, status: &str, now: Instant, now_ms: u64) -> Option<StatusFact> {
+        if self.held.as_ref().is_some_and(|h| h.status == status) {
+            return None;
+        }
+        let fact = StatusFact { status: status.to_string(), published_at_rafka_ms: now_ms };
+        self.held = Some(fact.clone());
+        self.sent = 1;
+        self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
+        Some(fact)
+    }
+
+    /// Hold `fact` as already published (heard from the previous publisher): no send follows.
+    pub fn adopt(&mut self, fact: StatusFact) {
+        self.held = Some(fact);
+        self.sent = STATUS_SENDS;
+        self.next_at = None;
+    }
+
+    /// The next reinforcing send due at `now`, if any.
+    pub fn due(&mut self, now: Instant) -> Option<StatusFact> {
+        let at = self.next_at?;
+        if now < at {
+            return None;
+        }
+        self.sent += 1;
+        self.next_at = (self.sent < STATUS_SENDS).then(|| at + STATUS_EVERY);
+        self.held.clone()
+    }
+
+    /// When the next reinforcing send is due; `None` once the five sends are done.
+    pub fn next_due(&self) -> Option<Instant> {
+        self.next_at
+    }
+
+    pub fn held(&self) -> Option<&StatusFact> {
+        self.held.as_ref()
+    }
+
+    /// Forget the status and any sends still to come: the publisher role ended.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Which status a [`StatusPublisher`] authors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusScope {
+    Mesh(String),
+    Fabric(FabricId),
+}
+
+/// The author of one status frame: `node`, while it holds the role (the mesh primary for a mesh's
+/// status, the fabric primary for the fabric's) and only then. Losing the role ends the sends still
+/// to come.
+#[derive(Debug)]
+pub struct StatusPublisher {
+    node: String,
+    scope: StatusScope,
+    role: bool,
+    schedule: StatusReinforcement,
+}
+
+impl StatusPublisher {
+    pub fn new(node: &str, scope: StatusScope) -> Self {
+        Self { node: node.to_string(), scope, role: false, schedule: StatusReinforcement::default() }
+    }
+
+    /// Hold (or lose) the publisher role. Losing it forgets the status and the sends still to come.
+    pub fn set_role(&mut self, primary: bool) {
+        if !primary {
+            self.schedule.reset();
+        }
+        self.role = primary;
+    }
+
+    pub fn has_role(&self) -> bool {
+        self.role
+    }
+
+    fn frame(&self, fact: &StatusFact) -> Frame {
+        match &self.scope {
+            StatusScope::Mesh(mesh) => {
+                Frame::MeshStatus { mesh: mesh.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, published_at_rafka_ms: fact.published_at_rafka_ms }
+            }
+            StatusScope::Fabric(fabric) => {
+                Frame::FabricStatus { fabric: fabric.clone(), status: fact.status.clone(), publisher: self.node.clone(), forwarded_by: None, published_at_rafka_ms: fact.published_at_rafka_ms }
+            }
+        }
+    }
+
+    /// The status as observed: a change is the frame to send at once. A publisher that holds the
+    /// role for the first time and observes the status `heard` from the previous publisher adopts
+    /// it unchanged and sends nothing. Without the role: nothing.
+    pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, now: Instant, now_ms: u64) -> Option<Frame> {
+        if !self.role {
+            return None;
+        }
+        if self.schedule.held().is_none() {
+            if let Some(h) = heard.filter(|h| h.status == status) {
+                self.schedule.adopt(h);
+            }
+        }
+        self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
+    }
+
+    /// The reinforcing send due at `now`: the same fact, the same instant, as the first send.
+    pub fn due(&mut self, now: Instant) -> Option<Frame> {
+        if !self.role {
+            return None;
+        }
+        self.schedule.due(now).map(|f| self.frame(&f))
+    }
+
+    pub fn next_due(&self) -> Option<Instant> {
+        self.role.then(|| self.schedule.next_due()).flatten()
+    }
+}
+
+/// The statuses a node holds, each until the next change: a mesh's by its name, the fabric's. A
+/// frame older than the one held is refused by name, the same one again is taken once.
+#[derive(Debug, Clone, Default)]
+pub struct StatusBook {
+    meshes: Arc<Mutex<HashMap<String, MeshStatus>>>,
+    fabric: Arc<Mutex<Option<FabricStatus>>>,
+}
+
+impl StatusBook {
+    /// Hold what `f` carries if it is newer than what is held; whether it was taken.
+    pub fn take(&self, f: &Frame, fabric: &FabricId) -> bool {
+        match f {
+            Frame::MeshStatus { mesh, status, publisher, published_at_rafka_ms, .. } => {
+                let mut held = self.meshes.lock().unwrap();
+                if Self::refuse(held.get(mesh).map(|h| h.published_at_rafka_ms), *published_at_rafka_ms, &format!("mesh {mesh}")) {
+                    return false;
+                }
+                held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), published_at_rafka_ms: *published_at_rafka_ms });
+                true
+            }
+            Frame::FabricStatus { fabric: f, status, publisher, published_at_rafka_ms, .. } if f == fabric => {
+                let mut held = self.fabric.lock().unwrap();
+                if Self::refuse(held.as_ref().map(|h| h.published_at_rafka_ms), *published_at_rafka_ms, "the fabric") {
+                    return false;
+                }
+                *held = Some(FabricStatus { status: status.clone(), publisher: publisher.clone(), published_at_rafka_ms: *published_at_rafka_ms });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn refuse(held: Option<u64>, offered: u64, what: &str) -> bool {
+        match held {
+            Some(h) if offered < h => {
+                tracing::info!(reason = "older-than-held", what, held_at_rafka_ms = h, offered_at_rafka_ms = offered, "a status older than the one held is refused");
+                true
+            }
+            Some(h) => h == offered,
+            None => false,
+        }
+    }
+
+    pub fn mesh(&self, mesh: &str) -> Option<MeshStatus> {
+        self.meshes.lock().unwrap().get(mesh).cloned()
+    }
+
+    pub fn fabric(&self) -> Option<FabricStatus> {
+        self.fabric.lock().unwrap().clone()
+    }
+
+    /// Every status held, as the frames its holder `me` replays: the original publisher and the
+    /// original instant are kept; only a status `me` did not author names `me` as `forwarded_by`.
+    pub fn held_frames(&self, fabric: &FabricId, me: &str) -> Vec<Frame> {
+        let by = |publisher: &str| (publisher != me).then(|| me.to_string());
+        let mut out: Vec<Frame> = self
+            .meshes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(mesh, h)| Frame::MeshStatus { mesh: mesh.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), published_at_rafka_ms: h.published_at_rafka_ms })
+            .collect();
+        out.sort_by_key(|f| if let Frame::MeshStatus { mesh, .. } = f { mesh.clone() } else { String::new() });
+        if let Some(h) = self.fabric.lock().unwrap().as_ref() {
+            out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), published_at_rafka_ms: h.published_at_rafka_ms });
+        }
+        out
+    }
+}
+
+/// What a peer mesh's primary puts on its own mesh channel for a frame it heard on the backbone:
+/// the frame, unchanged but for `forwarded_by`, or nothing. `me` is the forwarding node, `own_mesh`
+/// its mesh. A status keeps its publisher and its instant: a forwarder never restates one as its
+/// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
+pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
+    match frame {
+        Frame::Members { mesh, publisher, sent_unix_ms, digests, in_flight, departed, .. } if mesh != own_mesh => {
+            Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.to_string()), sent_unix_ms, digests, in_flight, departed })
+        }
+        Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
+        Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, published_at_rafka_ms } if mesh != own_mesh => {
+            Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms })
+        }
+        Frame::FabricStatus { fabric, status, publisher, forwarded_by: None, published_at_rafka_ms } if publisher != me => {
+            Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.to_string()), published_at_rafka_ms })
+        }
+        _ => None,
+    }
 }
 
 fn now_ms() -> u64 {
@@ -394,6 +648,7 @@ impl Channel {
         seeds: Vec<EndpointAddr>,
         on_frame: Arc<dyn Fn(Frame) + Send + Sync>,
         targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync>,
+        replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync>,
     ) -> Result<Self> {
         let lookup = MemoryLookup::new();
         endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
@@ -431,6 +686,12 @@ impl Channel {
                             };
                             tracing::info_span!("rdm.mesh.connection.update.via-neighbour-up", node = %node, channel = %channel, peer = %p.fmt_short(), neighbours = count)
                                 .in_scope(|| tracing::info!("a neighbour came up on this channel"));
+                            // A join, a heal or a refeed brings a neighbour up: the holder says the
+                            // statuses it holds once (gossip.md §3.1), the original authors intact.
+                            let sender = shared.read().await.clone();
+                            for f in replay() {
+                                let _ = sender.broadcast(Bytes::from(f.encode())).await;
+                            }
                         }
                         Some(Ok(Event::NeighborDown(p))) => {
                             let count = {
@@ -592,7 +853,9 @@ struct View {
     /// This node's own mesh: its members are heard directly on the mesh channel.
     mesh: String,
     book: DigestBook,
-    fabric_status: Arc<Mutex<Option<(FabricStatus, Instant)>>>,
+    statuses: StatusBook,
+    /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
+    primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
 }
 
@@ -646,8 +909,8 @@ impl View {
                 self.book.restarting(op.clone());
                 Vec::new()
             }
-            Frame::FabricStatus { fabric: f, status, publisher, .. } if f == fabric => {
-                *self.fabric_status.lock().unwrap() = Some((FabricStatus { status: status.clone(), publisher: publisher.clone() }, Instant::now()));
+            Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
+                self.statuses.take(f, fabric);
                 Vec::new()
             }
             _ => Vec::new(),
@@ -673,6 +936,14 @@ impl Membership {
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::new(mesh);
+        let (replay_view, replay_fabric, replay_me) = (view.clone(), fabric.clone(), node.to_string());
+        let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
+            if replay_view.primary.load(Ordering::Relaxed) {
+                replay_view.statuses.held_frames(&replay_fabric, &replay_me)
+            } else {
+                Vec::new()
+            }
+        });
         let lookup_slot: Arc<Mutex<Option<MemoryLookup>>> = Arc::default();
         let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
@@ -687,7 +958,7 @@ impl Membership {
         let (book, own_mesh, me_name) = (view.book.clone(), mesh.to_string(), node.to_string());
         let targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync> =
             Arc::new(move || held_targets(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
-        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets).await?;
+        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
         *lookup_slot.lock().unwrap() = Some(channel.lookup.clone());
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default() };
         me.watch_meshes(node.to_string());
@@ -758,9 +1029,27 @@ impl Membership {
         self.book.current(self.book.staleness_floor()).into_iter().map(|d| d.node.name.mesh).collect::<BTreeSet<_>>().len()
     }
 
-    /// The fabric status this node last heard, while fresh.
+    /// The fabric status this node holds: the last one published, until the next change.
     pub fn fabric_status(&self) -> Option<FabricStatus> {
-        self.view.fabric_status.lock().unwrap().as_ref().filter(|(_, at)| at.elapsed() <= self.book.staleness_floor() * 2).map(|(s, _)| s.clone())
+        self.view.statuses.fabric()
+    }
+
+    /// The status of `mesh` this node holds: the last one published, until the next change.
+    pub fn mesh_status(&self, mesh: &str) -> Option<MeshStatus> {
+        self.view.statuses.mesh(mesh)
+    }
+
+    /// The statuses this node holds, as the frames it replays (original publisher and instant
+    /// kept): what an entry pull answers (`entry::EntryAnswer::statuses`).
+    pub fn status_frames(&self, me: &str) -> Vec<Frame> {
+        self.view.statuses.held_frames(&self.fabric, me)
+    }
+
+    /// Hold the statuses an entry pull answered.
+    pub fn learn_statuses(&self, frames: &[Frame]) {
+        for f in frames {
+            self.view.statuses.take(f, &self.fabric);
+        }
     }
 
     /// Broadcast this member's digest on its mesh channel (and record it).
@@ -839,6 +1128,11 @@ pub struct Backbone {
     forwarding: Arc<AtomicBool>,
     publishing: Arc<AtomicBool>,
     status_publishing: Arc<AtomicBool>,
+    membership: Membership,
+    mesh_status: Arc<Mutex<StatusPublisher>>,
+    fabric_status: Arc<Mutex<StatusPublisher>>,
+    /// Wakes the status sender when a change starts its reinforcement.
+    wake: Arc<tokio::sync::Notify>,
 }
 
 impl Backbone {
@@ -852,30 +1146,26 @@ impl Backbone {
             if !fw.load(Ordering::Relaxed) {
                 return;
             }
-            let forward = match frame {
-                Frame::Members { mesh, publisher, sent_unix_ms, digests, in_flight, departed, .. } if mesh != own => {
-                    Some(Frame::Members { mesh, publisher, forwarded_by: Some(me.clone()), sent_unix_ms, digests, in_flight, departed })
-                }
-                Frame::NodeDeleting { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.clone()) }),
-                Frame::NodeDeleted { op, .. } if op.name.mesh != own => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.clone()) }),
-                Frame::NodeRestarting { op, .. } if op.name.mesh != own => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.clone()) }),
-                Frame::FabricStatus { fabric, status, publisher, sent_unix_ms, .. } if publisher != me => {
-                    Some(Frame::FabricStatus { fabric, status, publisher, forwarded_by: Some(me.clone()), sent_unix_ms })
-                }
-                _ => None,
-            };
-            if let Some(f) = forward {
+            if let Some(f) = forward_of(frame, &me, &own) {
                 let m = m.clone();
                 tokio::spawn(async move {
                     let _ = m.forward(&f).await;
                 });
             }
         });
+        let (replay_view, replay_fabric, replay_me) = (membership.view.clone(), membership.fabric.clone(), node.to_string());
+        let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
+            if replay_view.primary.load(Ordering::Relaxed) {
+                replay_view.statuses.held_frames(&replay_fabric, &replay_me)
+            } else {
+                Vec::new()
+            }
+        });
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Vec<RepairTarget> + Send + Sync> =
             Arc::new(move || held_targets(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
-        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame, targets).await?;
-        Ok(Self {
+        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, on_frame, targets, replay).await?;
+        let me = Self {
             channel,
             node: node.to_string(),
             mesh: mesh.to_string(),
@@ -883,7 +1173,68 @@ impl Backbone {
             forwarding,
             publishing: Arc::default(),
             status_publishing: Arc::default(),
-        })
+            membership: membership.clone(),
+            mesh_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string())))),
+            fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(membership.fabric.clone())))),
+            wake: Arc::default(),
+        };
+        me.spawn_status_sender();
+        Ok(me)
+    }
+
+    /// Sends the reinforcing repeats of a status change, one per second until its fifth send. It
+    /// sleeps with nothing due and wakes on a change: no status traffic without a change.
+    fn spawn_status_sender(&self) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                let next = [me.mesh_status.lock().unwrap().next_due(), me.fabric_status.lock().unwrap().next_due()].into_iter().flatten().min();
+                match next {
+                    Some(at) => {
+                        tokio::select! {
+                            _ = me.wake.notified() => {}
+                            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(at)) => {}
+                        }
+                    }
+                    None => me.wake.notified().await,
+                }
+                let now = Instant::now();
+                let due: Vec<Frame> = [me.mesh_status.lock().unwrap().due(now), me.fabric_status.lock().unwrap().due(now)].into_iter().flatten().collect();
+                for f in due {
+                    me.send_status(&f).await;
+                }
+            }
+        });
+    }
+
+    /// One status send: the backbone, the author's own mesh channel, and its own view.
+    async fn send_status(&self, f: &Frame) {
+        let _ = self.channel.broadcast(f).await;
+        let _ = self.membership.forward(f).await;
+        let _ = self.membership.view.take(f, &self.fabric, "mesh-channel");
+    }
+
+    /// The statuses as this node's topology states them now. While this node is its mesh's primary
+    /// its mesh's status is sent when it changed, and while it is the fabric primary the fabric's;
+    /// a status that did not change sends nothing. A change is sent at once and reinforced by the
+    /// status sender (five sends in all).
+    pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str) {
+        let (now, now_ms) = (Instant::now(), now_ms());
+        let first: Vec<Frame> = {
+            let view = &self.membership.view;
+            let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, published_at_rafka_ms: h.published_at_rafka_ms });
+            let heard_fabric = view.statuses.fabric().map(|h| StatusFact { status: h.status, published_at_rafka_ms: h.published_at_rafka_ms });
+            [self.mesh_status.lock().unwrap().observe(mesh_status, heard_mesh, now, now_ms), self.fabric_status.lock().unwrap().observe(fabric_status, heard_fabric, now, now_ms)]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        if !first.is_empty() {
+            self.wake.notify_one();
+        }
+        for f in first {
+            self.send_status(&f).await;
+        }
     }
 
     fn role(flag: &AtomicBool, on: bool) -> Option<&'static str> {
@@ -897,6 +1248,8 @@ impl Backbone {
 
     /// Be (or stop being) this mesh's publisher and forwarder: its primary.
     pub fn set_mesh_primary(&self, primary: bool) {
+        self.membership.view.primary.store(primary, Ordering::Relaxed);
+        self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
             tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh aggregate publication"));
@@ -909,16 +1262,16 @@ impl Backbone {
 
     /// Be (or stop being) the fabric-status publisher: the fabric primary.
     pub fn set_fabric_primary(&self, primary: bool) {
+        self.fabric_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.status_publishing, primary) {
             tracing::info_span!("rdm.mesh.fabric.update.via-status-publisher", node = %self.node, fabric = %self.fabric, role)
                 .in_scope(|| tracing::info!("fabric status publication"));
         }
     }
 
-    /// One publication round: this mesh's `members` (while its primary) and
-    /// the fabric's `status` (while the fabric primary), on the backbone; the
-    /// fabric primary also puts its status on its own mesh channel.
-    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>, status: &str) {
+    /// One publication round: this mesh's `members` (while its primary) on the backbone. A status
+    /// is not part of a round: [`Backbone::announce_statuses`] sends one when it changes.
+    pub async fn publish(&self, membership: &Membership, members: Vec<MeshDigest>) {
         let sent = now_ms();
         if self.publishing.load(Ordering::Relaxed) {
             // This mesh's own overlays and departures only; a peer mesh's travel in that mesh's
@@ -944,12 +1297,6 @@ impl Backbone {
             for ops in pack(departed, |o| frame(Vec::new(), Vec::new(), o, sized.clone())) {
                 let _ = self.channel.broadcast(&frame(Vec::new(), Vec::new(), ops, None)).await;
             }
-        }
-        if self.status_publishing.load(Ordering::Relaxed) {
-            let f = Frame::FabricStatus { fabric: self.fabric.clone(), status: status.into(), publisher: self.node.clone(), forwarded_by: None, sent_unix_ms: sent };
-            let _ = self.channel.broadcast(&f).await;
-            let _ = membership.forward(&f).await;
-            let _ = membership.view.take(&f, &self.fabric, "mesh-channel");
         }
     }
 

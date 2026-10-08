@@ -658,6 +658,7 @@ struct EntryState {
     digest: Arc<Mutex<MeshDigest>>,
     accepted: Arc<AcceptedStore>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
+    membership: Membership,
 }
 
 use crate::fence::FenceOutcome;
@@ -1291,7 +1292,7 @@ impl Running {
         let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
             let d = say(MemberStatus::Leaving);
             let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let (m, bb, control, me) = (self.membership.clone(), self.backbone.clone(), self.control.clone(), me.clone());
+            let (m, bb, me) = (self.membership.clone(), self.backbone.clone(), me.clone());
             async move {
                 let started = std::time::Instant::now();
                 let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
@@ -1302,14 +1303,8 @@ impl Running {
                 let mesh = d.node.name.mesh.clone();
                 let mine: Vec<MeshDigest> = m.book.current(m.book.staleness_floor()).into_iter().filter(|x| x.node.name.mesh == mesh).collect();
                 let started = std::time::Instant::now();
-                let view_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "view", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let status = serde_json::to_value(control.topology.read().instrument(view_span.clone()).await.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                view_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                view_span.record("outcome", "read");
-                view_span.in_scope(|| tracing::info!("read the fabric status for the backbone frame"));
-                let started = std::time::Instant::now();
                 let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                bb.publish(&m, mine, &status).instrument(bb_span.clone()).await;
+                bb.publish(&m, mine).instrument(bb_span.clone()).await;
                 bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
                 bb_span.record("outcome", "sent");
                 bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
@@ -1500,7 +1495,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     let topology = project(&e.fabric, &e.fabric_id, e.provider, &e.book, &e.records);
                     // The fabric control state a new admin hydrates before it may be Ready.
                     let control = serde_json::json!({ "fabric": e.accepted.record().await.ok().flatten(), "shutdown": e.shutdown.held() });
-                    EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control }
+                    EntryAnswer { served_by: e.name.to_string(), topology: serde_json::to_value(&topology).unwrap_or_default(), members, control, statuses: e.membership.status_frames(&e.name.to_string()) }
                 }
             }
         }
@@ -1630,6 +1625,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 }
                 membership.learn(d, "entry");
             }
+            membership.learn_statuses(&answer.statuses);
             let _ = membership.join_peers(mesh_peers).await;
             backbone.join_admins(admins).await;
             // Hydrate `Fabric.build_id` from the launching admin; without it this admin stays
@@ -1931,6 +1927,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         digest: digest.clone(),
         accepted: accepted.clone(),
         shutdown: shutdown_control.clone(),
+        membership: membership.clone(),
     });
     let mut tasks = vec![contacts_task, node_rpc_feed];
     // Authority-capable Ready: this admin commits `ReadyForTraffic` (and so
@@ -2202,8 +2199,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 backbone.set_fabric_primary(live && t.fabric_primary().is_some_and(|n| n.name == me));
                 let heard = membership.book.current(membership.book.staleness_floor());
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
-                let status = serde_json::to_value(t.fabric.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
-                backbone.publish(&membership, mine.clone(), &status).await;
+                let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+                backbone.publish(&membership, mine.clone()).await;
+                // A status is sent when it changed, never per round (gossip.md §3.2).
+                let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
+                backbone.announce_statuses(&mesh_status, &status_of(t.fabric.status)).await;
                 // The mesh's own members hear the overlays and departures alone on their
                 // channel: on a change, and every `full_every` rounds as anti-entropy.
                 if live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me) {
