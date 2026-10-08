@@ -422,3 +422,60 @@ async fn a_build_the_store_refuses_is_never_named_by_fabric_build_id() {
     assert!(v["detail"].as_str().unwrap_or_default().contains("builds.storage refused Build"), "the refusal carries the store's reason: {v}");
     assert_eq!(accepted.build_id().await, Some(previous), "Fabric.build_id still names the previous Build");
 }
+
+/// Every span's name with its fields rendered, so a refusal is read from its own span.
+#[derive(Clone, Default)]
+struct SpanFields(Arc<Mutex<Vec<(String, std::collections::BTreeMap<String, String>)>>>);
+
+impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for SpanFields {
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct V(std::collections::BTreeMap<String, String>);
+        impl tracing::field::Visit for V {
+            fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+                self.0.insert(f.name().to_string(), format!("{v:?}"));
+            }
+        }
+        let mut v = V(Default::default());
+        attrs.record(&mut v);
+        self.0.lock().unwrap().push((attrs.metadata().name().to_string(), v.0));
+    }
+}
+
+/// CONTRACT: a restart or replace of a node the live view does not hold live is refused 422
+/// `node-not-live`, and the refusal is spanned `rdm.node_admin.node.reject.via-not-live` with the
+/// node, the status the view holds for it and the reason, so the refusal is diagnosed from its
+/// own span. A replace of an unheard birth (`dead`) is legal; of a `restarting` one it is refused.
+/// Canon: fabric-node-lifecycle.md (a restarting node is owned by its executor; a dead birth is
+/// replaced), rafka-v2 CLAUDE.md "an error state carries every non-leaking detail".
+#[tokio::test]
+async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_status() {
+    let fields = SpanFields::default();
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = mn();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t));
+    let app = router(cp.clone(), Router::new());
+    {
+        let mut topo = cp.topology.write().await;
+        for (name, status) in [("mesh1.rpc.2", NodeStatus::Restarting), ("mesh1.rpc.3", NodeStatus::Dead)] {
+            topo.nodes.iter_mut().find(|n| n.name.to_string() == name).expect("the node is held").status = status;
+        }
+    }
+    let seed = builds.facts().await.unwrap().len();
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.2/restart", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "{v}");
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.2/replace", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "a restarting birth is its executor's, never replaced: {v}");
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.3/restart", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "{v}");
+    assert_eq!(builds.facts().await.unwrap().len(), seed, "refusals publish nothing");
+    let spans = fields.0.lock().unwrap();
+    let rejects: Vec<_> = spans.iter().filter(|(n, _)| n == "rdm.node_admin.node.reject.via-not-live").map(|(_, f)| f).collect();
+    assert_eq!(rejects.len(), 3, "one span per refusal: {spans:?}");
+    let by = |node: &str| rejects.iter().filter(|f| f.get("node").map(String::as_str) == Some(node)).collect::<Vec<_>>();
+    assert_eq!(by("mesh1.rpc.2").len(), 2);
+    assert!(by("mesh1.rpc.2").iter().all(|f| f.get("status").map(String::as_str) == Some("restarting") && f.get("reason").is_some_and(|r| !r.is_empty())), "{rejects:?}");
+    assert_eq!(by("mesh1.rpc.3").len(), 1);
+    assert_eq!(by("mesh1.rpc.3")[0].get("status").map(String::as_str), Some("dead"), "{rejects:?}");
+}

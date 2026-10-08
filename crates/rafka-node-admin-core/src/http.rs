@@ -188,9 +188,13 @@ impl ControlPlane {
                 // Dead): the decommission retires its exact runtime before the new node is created.
                 let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                 if !n.status.is_live() && !(replace && unheard) {
-                    return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
+                    let reason = if replace { "the node's status is neither live nor an unheard birth a replacement may retire" } else { "a restart needs a live node" };
+                    return Err(not_live(&outer, route, &path, n.status, reason));
                 }
-                n.incarnation_id.clone().ok_or_else(|| Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }))?
+                match n.incarnation_id.clone() {
+                    Some(incarnation) => incarnation,
+                    None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
+                }
             };
             let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
             let opened = AttemptOpened {
@@ -216,6 +220,19 @@ impl ControlPlane {
         .instrument(span.clone())
         .await
     }
+}
+
+/// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the
+/// status the live view holds for it and why that status refuses the operation
+/// (`rdm.node_admin.node.reject.via-not-live`).
+fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status: crate::model::NodeStatus, reason: &'static str) -> Refusal {
+    let held = serde_json::to_value(status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| format!("{status:?}"));
+    let reject = BuildReject::NodeNotLive { node: path.to_string() };
+    outer.in_scope(|| {
+        tracing::info_span!("rdm.node_admin.node.reject.via-not-live", route, node = %path, status = %held, reason, detail = %reject)
+            .in_scope(|| tracing::info!(%reject, status = %held, reason, "build refused: the node is not live"))
+    });
+    Refusal::Reject(reject)
 }
 
 fn reject_span(route: &'static str, reject: &BuildReject) {
