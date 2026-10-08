@@ -151,7 +151,9 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let dir = acceptance_dir(KILL_CELL);
     let cap = capture(KILL_CELL);
-    let mut estate = estate(KILL_CELL, 2, 3).await;
+    // Three node-admins: the bootstrap admin is the harness's own control address and is never signalled,
+    // and a launched admin that is neither primary is always left to kill.
+    let mut estate = estate(KILL_CELL, 3, 3).await;
     let floor = rafka_mesh_transport::membership::staleness_floor();
     let build_id = s(&estate.get("/api/fabric").await.1["build_id"]);
     let nodes0 = estate.nodes().await;
@@ -255,7 +257,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
 
     // ---- A node-admin that is neither mesh primary nor fabric primary: killed by exact runtime.
     let nodes = estate.nodes().await;
-    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false).cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
+    let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = s(&admin_n["name"]);
     let admin_rt = published(&estate, &admin).await;
     let admin_killed = admin_rt.apply(Fault::Kill).expect("the admin's exact runtime is killed");
@@ -265,7 +267,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
         (n["status"] == "ready-for-traffic" && n["node_id"] != admin_n["node_id"]).then_some(n)
     })
     .await;
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(120)).await;
+    estate.settled_shape(&[("mesh1", 3, 3)], Duration::from_secs(120)).await;
     let nodes_end = estate.nodes().await;
     let survivors_after: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["node_id"])).collect();
     let untouched: Vec<&String> = survivors_before.iter().filter(|id| ![s(&kill_n["node_id"]), s(&admin_n["node_id"])].contains(id)).collect();
@@ -628,7 +630,7 @@ async fn process_port_allocator_survives_seeded_collisions() {
             let Some(addr) = addr else { v.push(format!("{name} advertises no transport")); continue };
             let holders = port_holders(addr, SlotTransport::Udp);
             if holders.is_empty() || holders.iter().any(|h| h.pid != Some(pid as u32)) {
-                v.push(format!("{name}: transport {addr} is held by {holders:?}, not only by its runtime pid {pid}"));
+                v.push(format!("{name}: transport {addr} is held by {holders:?}, not only by its runtime pid {pid}; {}", socket_diagnosis(pid as u32, addr.port())));
             }
             for l in n["listeners"].as_array().into_iter().flatten() {
                 if let Some(la) = l[1].as_str().and_then(|a| a.parse::<std::net::SocketAddr>().ok()) {
@@ -750,6 +752,20 @@ async fn process_port_allocator_survives_seeded_collisions() {
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
     assert!(violations.is_empty(), "the allocator collided:\n{}\nreplay: {rerun}", violations.join("\n"));
     assert!(skipped_total > 0, "no squat was ever in the allocator's path: the soak proved nothing (replay: {rerun})");
+}
+
+/// What the OS says about a runtime and a port: the runtime's state, its own socket inodes, and
+/// every table line of the port (the evidence behind a holder mismatch).
+fn socket_diagnosis(pid: u32, port: u16) -> String {
+    let inodes: Vec<String> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .map(|d| d.flatten().filter_map(|e| std::fs::read_link(e.path()).ok()).map(|t| t.to_string_lossy().to_string()).filter(|t| t.starts_with("socket:")).collect())
+        .unwrap_or_default();
+    let hex = format!("{port:04X}");
+    let lines: Vec<String> = ["/proc/net/udp", "/proc/net/udp6", "/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .flat_map(|t| std::fs::read_to_string(t).unwrap_or_default().lines().skip(1).filter(|l| l.split_whitespace().nth(1).is_some_and(|a| a.ends_with(&format!(":{hex}")))).map(|l| format!("{t}: {}", l.split_whitespace().take(10).collect::<Vec<_>>().join(" "))).collect::<Vec<_>>())
+        .collect();
+    format!("runtime pid {pid} state {:?}, its sockets {inodes:?}, table lines {lines:?}", proc_state(pid))
 }
 
 fn walk_logs(root: &std::path::Path) -> Vec<PathBuf> {
