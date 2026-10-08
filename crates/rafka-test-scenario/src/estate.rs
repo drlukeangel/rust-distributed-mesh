@@ -296,6 +296,9 @@ pub fn binary(name: &str) -> PathBuf {
          (node-admin: i143.e1/e2; rpc node + probe: i143.e7.s3)",
         p.display()
     );
+    if let Err(why) = binary_is_fresh(name, &p) {
+        panic!("{why}");
+    }
     p
 }
 
@@ -316,8 +319,51 @@ fn package_of(name: &str) -> &'static str {
 /// stale when any of them is newer than it. A binary with no dep-info file beside it (copied in from another
 /// build, as a consumer's executables are, and judged by their recorded hashes instead) has no fingerprint here
 /// and is not judged. The refusal names the binary, the file that changed and the rebuild command.
-pub fn binary_is_fresh(_name: &str, _exe: &Path) -> Result<(), String> {
-    Ok(())
+pub fn binary_is_fresh(name: &str, exe: &Path) -> Result<(), String> {
+    let dep_info = exe.with_extension("d");
+    let Ok(text) = std::fs::read_to_string(&dep_info) else { return Ok(()) };
+    let built = std::fs::metadata(exe).and_then(|m| m.modified()).map_err(|e| format!("{name} at {}: {e}", exe.display()))?;
+    // `target: dep dep dep` with a space in a path escaped as `\ `.
+    let deps = text.lines().next().and_then(|l| l.split_once(": ")).map(|(_, d)| d.to_string()).unwrap_or_default();
+    let mut newest: Option<(std::time::SystemTime, String)> = None;
+    let mut cur = String::new();
+    let mut chars = deps.chars().peekable();
+    let mut paths = Vec::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&' ') => {
+                cur.push(' ');
+                chars.next();
+            }
+            ' ' => {
+                if !cur.is_empty() {
+                    paths.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        paths.push(cur);
+    }
+    for path in paths {
+        if let Ok(m) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+            if newest.as_ref().is_none_or(|(t, _)| m > *t) {
+                newest = Some((m, path));
+            }
+        }
+    }
+    match newest {
+        Some((changed, path)) if changed > built => {
+            let age = changed.duration_since(built).map(|d| d.as_secs()).unwrap_or(0);
+            Err(format!(
+                "REFUSED: {name} at {} was built before {path} changed ({age} s after the binary); this tree's source is not the binary's. Rebuild with `cargo build -p {} --bin {name}`",
+                exe.display(),
+                package_of(name)
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Poll `check` until it yields `Some`, failing at `deadline` with `what`.
