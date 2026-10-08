@@ -37,6 +37,9 @@ pub struct MapNode {
     /// The birth is not in a lifecycle transition (being born, restarted, drained or leaving):
     /// only a settled birth is expected to answer a Ping.
     pub settled: bool,
+    /// What the source knew: a birth the source holds ready is ready, anything else settled is
+    /// not yet reached.
+    pub ready: bool,
 }
 
 impl MapNode {
@@ -90,13 +93,14 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
                 .into_iter()
                 .filter_map(|n| {
                     let settled = matches!(n.status, crate::model::NodeStatus::ReadyForTraffic | crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
-                    Some(MapNode { node_id: n.node_id, name: n.name, endpoint_id: n.endpoint_id?, transport_addr: n.transport_addr?, incarnation: n.incarnation_id?, settled })
+                    let ready = n.status == crate::model::NodeStatus::ReadyForTraffic;
+                    Some(MapNode { node_id: n.node_id, name: n.name, endpoint_id: n.endpoint_id?, transport_addr: n.transport_addr?, incarnation: n.incarnation_id?, settled, ready })
                 })
                 .collect())
         }
         TopologySource::DurableMap(rows) => Ok(rows
             .iter()
-            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true })
+            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false })
             .collect()),
         TopologySource::LocalNode { node, membership } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
@@ -110,6 +114,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
                         .into_iter()
                         .map(|d| MapNode {
                             settled: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+                            ready: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
                             node_id: d.node.node_id,
                             name: d.node.name,
                             endpoint_id: d.node.endpoint_id,

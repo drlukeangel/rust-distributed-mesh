@@ -1956,9 +1956,17 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
         for r in nodes_storage.contacts().await.map_err(storage_err)? {
             if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
-                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true };
+                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false };
                 records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
             }
+        }
+    }
+    // A birth starts from its maker's topology: every settled node the maker's projection holds is
+    // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
+    // primary this admin becomes then never plans from an empty view.
+    if let Some(("maker", map)) = entry_map.as_ref().map(|(src, m)| (*src, m)) {
+        for n in map.iter().filter(|n| n.node_id != node_id && n.settled) {
+            records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, policy.provider));
         }
     }
     // The meshes the accepted Build names keep the ids this admin stored for them.
