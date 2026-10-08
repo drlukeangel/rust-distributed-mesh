@@ -27,6 +27,12 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
 
+# The executable binding re-hashes every bound file at every launch and every admin birth hashes the
+# whole set; an unoptimised sha2 takes 4.4 s per 430 MB debug executable (RDM's own workspace sets
+# the same profile).
+[profile.dev.package.sha2]
+opt-level = 3
+
 [lib]
 name = "rshape_consumer"
 path = "src/lib.rs"
