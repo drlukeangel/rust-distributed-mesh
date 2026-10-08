@@ -248,10 +248,51 @@ pub fn current_tracestate() -> Option<String> {
 /// An evidence write at or beyond this length is named on stderr.
 pub const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// Writes evidence lines on its own OS thread: the thread that closes a span (a runtime worker)
+/// only hands the lines over, so a write the kernel holds stalls this thread, never the runtime.
+/// Lines are written in the order they were handed over; shutdown drains every line handed over
+/// before it returns.
+#[derive(Debug)]
+struct EvidenceWriter {
+    tx: Option<std::sync::mpsc::Sender<String>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl EvidenceWriter {
+    fn start(mut file: std::fs::File) -> std::io::Result<Self> {
+        use std::io::Write;
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let thread = std::thread::Builder::new().name("rdm-evidence".into()).spawn(move || {
+            for out in rx {
+                let started = std::time::Instant::now();
+                if let Err(e) = file.write_all(out.as_bytes()) {
+                    eprintln!("telemetry: evidence write failed: {e}");
+                }
+                let took = started.elapsed();
+                if took >= EVIDENCE_WRITE_STALL {
+                    eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread", took.as_millis(), out.len());
+                }
+            }
+        })?;
+        Ok(Self { tx: Some(tx), thread: Some(thread) })
+    }
+
+    fn send(&self, out: String) -> Result<(), String> {
+        self.tx.as_ref().ok_or_else(|| "the evidence writer is shut down".to_string())?.send(out).map_err(|e| e.to_string())
+    }
+
+    fn shutdown(&mut self) {
+        self.tx.take();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct JsonlSpanExporter {
     service: String,
-    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    writer: std::sync::Arc<std::sync::Mutex<EvidenceWriter>>,
 }
 
 impl JsonlSpanExporter {
@@ -260,7 +301,7 @@ impl JsonlSpanExporter {
         let ns = std::fs::read_link("/proc/self/ns/pid").ok().and_then(|l| l.to_string_lossy().trim_start_matches("pid:[").trim_end_matches(']').parse::<u64>().ok()).unwrap_or(0);
         let path = dir.join(format!("{service}.{}-{ns}.spans.jsonl", std::process::id()));
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { service: service.to_string(), file: std::sync::Arc::new(std::sync::Mutex::new(file)) })
+        Ok(Self { service: service.to_string(), writer: std::sync::Arc::new(std::sync::Mutex::new(EvidenceWriter::start(file)?)) })
     }
 
     fn line(&self, s: &opentelemetry_sdk::export::trace::SpanData) -> String {
@@ -293,24 +334,19 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
         &mut self,
         batch: Vec<opentelemetry_sdk::export::trace::SpanData>,
     ) -> futures_util::future::BoxFuture<'static, opentelemetry_sdk::export::trace::ExportResult> {
-        use std::io::Write;
         let mut out = String::new();
         for s in &batch {
             out.push_str(&self.line(s));
             out.push('\n');
         }
-        let file = self.file.clone();
-        // The write runs on the thread that closed the span, a runtime worker. A write the kernel
-        // holds (writeback throttling, a full disk queue) stalls that worker; one that exceeds
-        // [`EVIDENCE_WRITE_STALL`] is named on stderr with its length, so a runtime-wide stall in
-        // a process can be matched against it.
-        let started = std::time::Instant::now();
-        let r = file.lock().map_err(|e| e.to_string()).and_then(|mut f| f.write_all(out.as_bytes()).map_err(|e| e.to_string()));
-        let took = started.elapsed();
-        if took >= EVIDENCE_WRITE_STALL {
-            eprintln!("telemetry: evidence write stalled {} ms for {} spans ({} bytes)", took.as_millis(), batch.len(), out.len());
-        }
+        let r = self.writer.lock().map_err(|e| e.to_string()).and_then(|w| w.send(out));
         Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(e.into())) })
+    }
+
+    fn shutdown(&mut self) {
+        if let Ok(mut w) = self.writer.lock() {
+            w.shutdown();
+        }
     }
 }
 
