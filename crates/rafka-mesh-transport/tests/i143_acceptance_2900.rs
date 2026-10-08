@@ -361,6 +361,38 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     assert!(epoch.new_epoch && epoch.resumed);
     assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "its versions start again, never compared with the previous birth's");
 
+    // A chunk lost for good: the incomplete snapshot is never applied, and the top-up from the
+    // Mesh's own primary completes the picture; the straggler chunks that follow install nothing.
+    let lossy = members_chunks(&Full::new(big.digests(8), vec![], vec![]), &successor, 8, 14, None);
+    assert!(lossy.len() > 2);
+    for (k, c) in lossy.iter().enumerate() {
+        if k != 1 {
+            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { .. }), "chunk {k} of a snapshot missing chunk 1 installs nothing");
+        }
+    }
+    assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "the held version stands while a chunk is missing");
+    let top_up = SourceSnapshot { mesh: "mesh2".into(), publisher: successor.clone(), topology_version: 8, digests: big.digests(8), in_flight: vec![], departed: vec![] };
+    let r = installed(rx.install_baseline(&top_up));
+    assert_eq!(r.topology_version, 8);
+    assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)), "the top-up completed what the lost chunk left incomplete");
+    let late = rx.take_chunk(chunk_of(&lossy[1]));
+    assert!(matches!(late, Taken::Waiting { .. } | Taken::Refused(_)), "the straggler installs nothing: {late:?}");
+    assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 8)));
+    // A newer snapshot supersedes an incomplete one.
+    let lossy2 = members_chunks(&Full::new(big.digests(9), vec![], vec![]), &successor, 9, 15, None);
+    assert!(matches!(rx.take_chunk(chunk_of(&lossy2[0])), Taken::Waiting { .. }));
+    let newest = members_chunks(&Full::new(big.digests(10), vec![], vec![]), &successor, 10, 16, None);
+    let mut done = None;
+    for c in &newest {
+        if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
+            done = Some(*i);
+        }
+    }
+    assert_eq!(done.expect("the newer snapshot completes").topology_version, 10);
+    let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
+    assert!(matches!(straggler, Taken::Refused(_)), "a chunk of the superseded snapshot is refused: {straggler:?}");
+    assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
+
     // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------
     let src = publisher("mesh2.admin.1");
     let f41 = Full::new(mesh2.digests(10), vec![], vec![]);

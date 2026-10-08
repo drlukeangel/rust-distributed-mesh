@@ -66,16 +66,7 @@ fn encode_fabric(r: &FabricRecord) -> Result<bytes::Bytes, BuildStateError> {
         .map_err(|e| BuildStateError::Io(e.to_string()))
 }
 
-/// iroh-gossip's frame limit (`DEFAULT_MAX_MESSAGE_SIZE`): a frame of this
-/// many bytes or more is refused at write, which closes the connection, and
-/// with it every topic sharing that connection.
-pub const GOSSIP_FRAME_LIMIT: usize = 4096;
-
-/// The largest Build message payload. The frame is the payload plus the
-/// message envelope (two enum tags, the 32-byte message id, the payload's
-/// length prefix, the delivery scope and round: about 40 bytes); 64 bytes
-/// are kept for it.
-pub const MAX_MESSAGE_BYTES: usize = GOSSIP_FRAME_LIMIT - 64;
+pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
     let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, fabric: None, shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
@@ -91,29 +82,10 @@ fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
 /// `facts` packed, in order, into messages that each fit the gossip limit.
 /// A fact that fits no message on its own is left out and named.
 pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
-    // Each encoding draws a fresh nonce, whose length varies: a batch is sent
-    // as the bytes that were measured to fit, never encoded a second time.
-    let (mut out, mut refused, mut batch) = (Vec::new(), Vec::new(), Vec::new());
-    let mut fitted: Option<bytes::Bytes> = None;
-    for f in facts {
-        batch.push(f);
-        if let Ok(b) = encode(batch.clone()) {
-            fitted = Some(b);
-            continue;
-        }
-        let last = batch.pop().expect("just pushed");
-        batch.clear();
-        out.extend(fitted.take());
-        match encode(vec![last.clone()]) {
-            Ok(b) => {
-                batch.push(last);
-                fitted = Some(b);
-            }
-            Err(e) => refused.push(e),
-        }
-    }
-    out.extend(fitted);
-    (out, refused)
+    // Each encoding draws a fresh nonce, whose length varies: a batch is sent as the bytes that
+    // were measured to fit, never encoded a second time.
+    let (runs, refused) = rafka_mesh_transport::chunking::pack_in_order(facts, |batch| encode(batch.to_vec()));
+    (runs.into_iter().map(|(_, b)| b).collect(), refused)
 }
 
 /// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),

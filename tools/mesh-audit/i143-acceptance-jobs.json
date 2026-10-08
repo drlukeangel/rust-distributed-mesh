@@ -454,6 +454,30 @@
           "dir": "target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic"
         }
       ]
+    },
+    "i143-2900-unit": {
+      "issue": 2900,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "members_receiver_commits_complete_snapshot_before_advancing_version",
+          "source": "crates/rafka-mesh-transport/tests/i143_acceptance_2900.rs",
+          "command": "cargo test -p rafka-mesh-transport --test i143_acceptance_2900 members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
+          "dir": "target/i143-acceptance/2900/unit/members_receiver_commits_complete_snapshot_before_advancing_version"
+        }
+      ]
+    },
+    "i143-2900-process": {
+      "issue": 2900,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "mesh_member_recovers_delta_gap_from_own_primary",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2900.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_FULL_EVERY_ROUNDS=12 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rafka-test-scenario --test i143_acceptance_2900 mesh_member_recovers_delta_gap_from_own_primary -- --exact",
+          "dir": "target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary"
+        }
+      ]
     }
   },
   "rshape_jobs": {

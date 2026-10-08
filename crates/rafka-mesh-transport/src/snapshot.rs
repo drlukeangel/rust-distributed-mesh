@@ -379,6 +379,11 @@ impl SnapshotReceiver {
         if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
             return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the index is outside the count" });
         }
+        if let Some(h) = self.held.get(&c.mesh) {
+            if h.publisher == c.publisher && c.topology_version < h.version {
+                return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
+            }
+        }
         let key = SourceKey { mesh: c.mesh.clone(), publisher: c.publisher.clone(), forwarded_by: c.forwarded_by.clone() };
         // One snapshot per source is assembled at a time: a newer one drops the stale partial.
         if let Some(p) = self.pending.get(&key) {
@@ -422,6 +427,8 @@ impl SnapshotReceiver {
             Some(h) => (false, h.desynced.is_some(), version == h.version),
         };
         self.unbased.remove(&mesh);
+        // An incomplete snapshot this one supersedes is dropped, never completed later.
+        self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && p.version <= version));
         self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None });
         Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_epoch, resumed, refreshed }))
     }

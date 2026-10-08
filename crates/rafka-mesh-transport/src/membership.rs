@@ -94,9 +94,8 @@ pub fn full_every_rounds() -> Result<u32, String> {
     Ok(rounds)
 }
 
-/// The largest encoded frame: iroh-gossip's default maximum message is 4096
-/// bytes; the rest is its own framing.
-pub const MAX_FRAME: usize = 3800;
+/// The largest encoded frame: the payload that fits iroh-gossip's frame limit with its framing.
+pub const MAX_FRAME: usize = crate::chunking::MAX_MESSAGE_BYTES;
 
 /// A mesh's membership channel.
 pub fn mesh_topic(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
@@ -758,7 +757,14 @@ impl Channel {
                             // A join, a heal or a refeed brings a neighbour up: the holder says the
                             // statuses it holds once (gossip.md §3.1), the original authors intact.
                             let sender = shared.read().await.clone();
-                            for f in replay() {
+                            let frames = replay();
+                            if !frames.is_empty() {
+                                let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
+                                let fulls = frames.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
+                                tracing::info_span!("rdm.mesh.membership.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = frames.len(), full_chunks = fulls, bytes)
+                                    .in_scope(|| tracing::info!("a neighbour came up: this primary says what it holds once"));
+                            }
+                            for f in frames {
                                 let _ = sender.broadcast(Bytes::from(f.encode())).await;
                             }
                         }
@@ -884,24 +890,24 @@ impl Channel {
     }
 }
 
-/// Split `items` into runs whose frame (as `frame` builds it, sized as a
-/// forward would be) encodes within [`MAX_FRAME`]. An item alone too large
-/// travels alone.
+/// Split `items` into runs whose frame (as `frame` builds it, sized as a forward would be)
+/// encodes within [`MAX_FRAME`], by the one method the Build facts share
+/// ([`crate::chunking::pack_in_order`]). An item that fits no message on its own is left out and
+/// named.
 pub(crate) fn pack<T: Clone>(items: Vec<T>, frame: impl Fn(Vec<T>) -> Frame) -> Vec<Vec<T>> {
-    let mut out: Vec<Vec<T>> = Vec::new();
-    let mut run: Vec<T> = Vec::new();
-    for d in items {
-        run.push(d);
-        if run.len() > 1 && frame(run.clone()).encode().len() > MAX_FRAME {
-            let last = run.pop().expect("just pushed");
-            out.push(std::mem::take(&mut run));
-            run.push(last);
+    let (runs, refused) = crate::chunking::pack_in_order(items, |run: &[T]| {
+        let bytes = frame(run.to_vec()).encode();
+        if bytes.len() > MAX_FRAME {
+            Err(bytes.len())
+        } else {
+            Ok(Bytes::from(bytes))
         }
+    });
+    for len in refused {
+        tracing::info_span!("rdm.mesh.membership.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
+            .in_scope(|| tracing::warn!("a member, overlay or departure that fits no gossip message on its own: left out"));
     }
-    if !run.is_empty() {
-        out.push(run);
-    }
-    out
+    runs.into_iter().map(|(run, _)| run).collect()
 }
 
 /// Why a subscription was re-opened, if it was.
@@ -1351,7 +1357,8 @@ impl Membership {
     async fn send_forward(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, out: Forward) {
         match out {
             Forward::Full(frames) => {
-                tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %source_mesh, source_publisher = %publisher, topology_version = version, reason = "first-for-source", chunks = frames.len())
+                let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
+                tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %source_mesh, source_publisher = %publisher, topology_version = version, reason = "first-for-source", chunks = frames.len(), bytes)
                     .in_scope(|| tracing::info!("the first publication of this source into the mesh is a full, loads omitted"));
                 for f in &frames {
                     let _ = self.forward(f).await;
@@ -1404,7 +1411,7 @@ impl Membership {
         for s in sources {
             let taken = self.view.mesh_rx.lock().unwrap().install_baseline(s);
             if let Taken::Installed(i) = taken {
-                self.view.apply_full(&i.mesh, &i.full, &self.fabric, Side::MeshChannel);
+                self.view.installed(&i, &self.fabric, Side::MeshChannel);
                 installed.push((i.mesh.clone(), i.topology_version));
             }
         }
@@ -1441,9 +1448,9 @@ impl Membership {
         let me = self.clone();
         tokio::spawn(async move {
             loop {
-                if me.desynced_sources().is_empty() {
-                    me.view.desync.notified().await;
-                }
+                // One attempt per signal: a delta heard on a desynchronized source signals again,
+                // so a top-up that failed is attempted when the primary next speaks, never in a loop.
+                me.view.desync.notified().await;
                 let gaps = me.desynced_sources();
                 if !gaps.is_empty() {
                     me.top_up(&endpoint, gaps).await;
@@ -1753,13 +1760,15 @@ impl Backbone {
         }) {
             let _ = self.channel.broadcast(&frame).await;
         }
-        *self.own.lock().unwrap() = Some((version, full.clone()));
         // This Mesh's members hear every birth directly: its own source goes into the Mesh as the
-        // overlays and departures a member that missed an event resynchronizes from.
+        // overlays and departures a member that missed an event resynchronizes from (gossip.md
+        // §3.3), so the forwarded projection of it names no member.
+        let overlays = Full::new(Vec::new(), full.in_flight(), full.departed());
+        *self.own.lock().unwrap() = Some((version, overlays.clone()));
         if self.full_due.swap(false, Ordering::Relaxed) {
             self.forward_fulls("seat").await;
         } else {
-            let out = self.membership.view.forwarder.lock().unwrap().source(&self.node, &self.mesh, &self.publisher, version, &full, sent);
+            let out = self.membership.view.forwarder.lock().unwrap().source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
             self.membership.send_forward(&self.node, &self.mesh, &self.publisher, version, out).await;
         }
     }
@@ -1777,7 +1786,8 @@ impl Backbone {
         }
         let now = self.membership.clock.now_rafka_ms();
         let frames = self.membership.view.forwarder.lock().unwrap().fulls(&self.node, &held, now);
-        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason, sources = held.len(), chunks = frames.len())
+        let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
+        tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %self.node, mesh = %self.mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
         for f in frames {
             let _ = self.membership.forward(&f).await;
