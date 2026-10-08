@@ -345,3 +345,425 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
 }
+
+// ---------------------------------------------------------------------------------------------
+// The port-collision soak.
+// ---------------------------------------------------------------------------------------------
+
+/// A foreign process holding ports (`rafka-port-squatter`), alive until its stdin closes.
+struct Squatter {
+    child: std::process::Child,
+    pid: u32,
+    held: Vec<(String, u16)>,
+    refused: Vec<Value>,
+}
+
+fn squat(tcp: &[u16], udp: &[u16]) -> Squatter {
+    let list = |v: &[u16]| v.iter().map(u16::to_string).collect::<Vec<_>>().join(",");
+    let mut child = std::process::Command::new(binary("rafka-port-squatter"))
+        .args(["--tcp", &list(tcp), "--udp", &list(udp)])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn rafka-port-squatter");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).expect("the squatter reports what it holds");
+    let v: Value = serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("squatter printed no JSON ({e}): {line}"));
+    let held = v["held"].as_array().into_iter().flatten().map(|h| (s(&h["proto"]), h["port"].as_u64().unwrap() as u16)).collect();
+    Squatter { pid: child.id(), child, held, refused: v["refused"].as_array().cloned().unwrap_or_default() }
+}
+
+impl Squatter {
+    fn ports(&self) -> BTreeSet<u16> {
+        self.held.iter().map(|(_, p)| *p).collect()
+    }
+    fn end(mut self) {
+        drop(self.child.stdin.take());
+        let _ = self.child.wait();
+    }
+}
+
+fn claims_dir() -> PathBuf {
+    std::env::temp_dir().join("rafka-endpoint-ports")
+}
+
+fn claim_path(port: u16) -> PathBuf {
+    claims_dir().join(format!("127.0.0.1-{port}"))
+}
+
+fn claim_owner(port: u16) -> Option<u32> {
+    std::fs::read_to_string(claim_path(port)).ok().and_then(|t| t.split_whitespace().next().and_then(|p| p.parse().ok()))
+}
+
+fn live_claim(port: u16) -> bool {
+    claim_owner(port).is_some_and(|p| std::path::Path::new(&format!("/proc/{p}")).exists())
+}
+
+/// Every socket port an estate's nodes advertise, by node.
+fn assigned(nodes: &[Value]) -> BTreeMap<String, Vec<u16>> {
+    nodes
+        .iter()
+        .map(|n| {
+            let mut ports: Vec<u16> = n["transport_addr"].as_str().and_then(|a| a.rsplit(':').next()).and_then(|p| p.parse().ok()).into_iter().collect();
+            for l in n["listeners"].as_array().into_iter().flatten() {
+                if let Some(p) = l[1].as_str().and_then(|a| a.rsplit(':').next()).and_then(|p| p.parse().ok()) {
+                    ports.push(p);
+                }
+            }
+            (s(&n["name"]), ports)
+        })
+        .collect()
+}
+
+/// One round's raw draws. A fixed number of draws per round: the schedule never depends on what
+/// the estate answered, so one seed is one schedule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Draws {
+    op: u64,
+    squats: u64,
+    offsets: Vec<u64>,
+    protos: Vec<u64>,
+    stale: u64,
+    pick: u64,
+    probe: u64,
+}
+
+const WINDOW: u64 = 24;
+const MAX_SQUATS: usize = 12;
+
+fn draw_round(sch: &mut Scheduler) -> Draws {
+    let op = sch.draw("op", 4);
+    let squats = sch.draw("squats", 10) + 3;
+    let offsets = (0..MAX_SQUATS).map(|_| sch.draw("squat-offset", WINDOW)).collect();
+    let protos = (0..MAX_SQUATS).map(|_| sch.draw("squat-proto", 3)).collect();
+    let stale = sch.draw("stale-claims", 3);
+    let pick = sch.draw("pick", 1000);
+    let probe = sch.draw("probe", 1000);
+    Draws { op, squats, offsets, protos, stale, pick, probe }
+}
+
+fn schedule(seed: u64, rounds: u64) -> (Vec<Draws>, Vec<Value>) {
+    let mut sch = Scheduler::new(seed);
+    let all = (0..rounds).map(|_| draw_round(&mut sch)).collect();
+    (all, sch.events_json())
+}
+
+/// CONTRACT (#2783): seeded foreign processes squat ports of the allocator's range while births,
+/// restarts (a restart binds fresh ports, like a birth), exact-runtime kills and deletions run through the Build rectifier on the process
+/// provider. Each round a seeded set of ports (always the very next port the allocator would hand
+/// out, a seeded few ahead of it in TCP-only, UDP-only or both, every free port below it, and a
+/// few stale claim files of a dead process) is held by a real foreign process; then one seeded
+/// operation runs. After it: every node is ready; no two nodes advertise one socket; no advertised
+/// socket is a squatted port; every advertised socket is held by its own runtime and by no other
+/// process; every squatter still holds its ports; each live runtime is a node's (no orphan); a
+/// restart keeps its addresses; and a second foreign bind of a port a live runtime holds is
+/// refused by the OS (EADDRINUSE). A stale claim of a dead process is taken over, never honoured.
+/// The schedule is drawn from one seed with a fixed number of draws per round, so the same seed
+/// is the same schedule; the classified outcomes are recorded for comparison. What must NOT
+/// happen: a handed-out port that something holds, a duplicated allocation, a birth that does not
+/// bind, an orphan runtime, a failed replay. The story names no soak length: `RAFKA_COLLISION_ROUNDS`
+/// (default 60) sets the rounds, `RAFKA_COLLISION_SEED` (default 2783) the seed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn process_port_allocator_survives_seeded_collisions() {
+    let dir = acceptance_dir(SOAK_CELL);
+    let rounds: u64 = std::env::var("RAFKA_COLLISION_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let seed: u64 = std::env::var("RAFKA_COLLISION_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(2783);
+    let rerun = format!("RAFKA_COLLISION_SEED={seed} RAFKA_COLLISION_ROUNDS={rounds} cargo test -p rafka-test-scenario --test i143_acceptance_2783 {SOAK_CELL} -- --exact");
+    eprintln!("COLLISION seed={seed} rounds={rounds}  (rerun: {rerun})");
+    let (draws, events) = schedule(seed, rounds);
+    assert_eq!((draws.clone(), events.clone()), schedule(seed, rounds), "one seed draws one schedule");
+    assert_ne!(events, schedule(seed + 1, rounds).1, "the seed decides the schedule");
+    let (first, last) = port_range_from_env();
+    let cap = capture(SOAK_CELL);
+    let mut estate = estate(SOAK_CELL, 2, 2).await;
+    estate.set_seed(seed);
+
+    let bootstrap_pid = u64::from(estate.bootstrap_pid().expect("the bootstrap admin runs"));
+    let mut names: BTreeSet<String> = estate.nodes().await.iter().map(|n| s(&n["name"])).collect();
+    let in_range = |p: &u16| *p >= first && *p <= last;
+    let mut hwm: u16 = assigned(&estate.nodes().await).values().flatten().copied().filter(in_range).max().unwrap_or(first - 1);
+    let mut squatters: Vec<Squatter> = Vec::new();
+    let mut stale_files: BTreeSet<u16> = BTreeSet::new();
+    let dead_pid = {
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        c.wait().unwrap();
+        c.id()
+    };
+    let mut classes: Vec<String> = Vec::new();
+    let mut rows: Vec<Value> = Vec::new();
+    let (mut skipped_total, mut birth_rounds, mut stale_taken_total, mut refused_total) = (0usize, 0usize, 0usize, 0usize);
+    let mut violations: Vec<String> = Vec::new();
+
+    for (round, d) in draws.iter().enumerate() {
+        let before = estate.nodes().await;
+        let before_assigned = assigned(&before);
+        let in_use: BTreeSet<u16> = before_assigned.values().flatten().copied().filter(in_range).collect();
+        let all_squatted = |sq: &[Squatter]| sq.iter().flat_map(|q| q.ports()).collect::<BTreeSet<u16>>();
+        let already = all_squatted(&squatters);
+
+        // The squats: the next port the allocator would hand out, a seeded few ahead of it, every
+        // free port below it.
+        let mut ahead: BTreeMap<u16, u64> = BTreeMap::new();
+        if !already.contains(&(hwm + 1)) {
+            ahead.insert(hwm + 1, d.protos[0]);
+        }
+        for i in 1..(d.squats as usize).min(MAX_SQUATS) {
+            let p = hwm + 1 + (d.offsets[i] as u16);
+            if p <= last && !in_use.contains(&p) && !already.contains(&p) {
+                ahead.entry(p).or_insert(d.protos[i]);
+            }
+        }
+        let gaps: Vec<u16> = (first..=hwm).filter(|p| !in_use.contains(p) && !already.contains(p) && !live_claim(*p)).collect();
+        let (mut tcp, mut udp) = (Vec::new(), Vec::new());
+        for (p, proto) in ahead.iter() {
+            match proto {
+                0 => tcp.push(*p),
+                1 => udp.push(*p),
+                _ => {
+                    tcp.push(*p);
+                    udp.push(*p);
+                }
+            }
+        }
+        for p in &gaps {
+            tcp.push(*p);
+            udp.push(*p);
+        }
+        let sq = squat(&tcp, &udp);
+        refused_total += sq.refused.len();
+        let squatted_now = sq.ports();
+        squatters.push(sq);
+        // Stale claim files of a dead process, ahead of the allocator.
+        let mut stale: BTreeSet<u16> = BTreeSet::new();
+        // The lowest free ports above the allocator's frontier carry the stale claims: the next
+        // birth reaches them first and must take them over.
+        let mut p = hwm + 1;
+        while stale.len() < d.stale as usize && p <= last {
+            if !in_use.contains(&p) && !already.contains(&p) && !squatted_now.contains(&p) && claim_owner(p).is_none() {
+                std::fs::create_dir_all(claims_dir()).unwrap();
+                std::fs::write(claim_path(p), dead_pid.to_string()).unwrap();
+                stale.insert(p);
+                stale_files.insert(p);
+            }
+            p += 1;
+        }
+        let squatted_all = all_squatted(&squatters);
+
+        // The operation, through the rectifier (or the exact fault backend).
+        let rpcs: Vec<String> = names.iter().filter(|n| n.contains(".rpc.")).cloned().collect();
+        let pick = |k: u64| rpcs[(k as usize) % rpcs.len()].clone();
+        let op = match d.op {
+            0 if rpcs.len() < 5 => "spawn",
+            0 | 3 if rpcs.len() > 2 => "delete",
+            3 => "spawn",
+            1 => "restart",
+            _ => "kill",
+        };
+        let target = if op == "spawn" { String::new() } else { pick(d.pick) };
+        let old = before.iter().find(|n| n["name"] == target.as_str()).cloned();
+        let new_node: Option<Value> = match op {
+            "spawn" => {
+                let (status, a) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh1", "kind": "rpc_node"})).await;
+                assert_eq!(status, 202, "round {round}: spawn: {a}");
+                estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
+                let n = wait_for("the spawned node is ready", Duration::from_secs(60), || async {
+                    estate.nodes().await.into_iter().find(|n| !names.contains(&s(&n["name"])) && n["status"] == "ready-for-traffic")
+                })
+                .await;
+                names.insert(s(&n["name"]));
+                Some(n)
+            }
+            "restart" => {
+                let old = old.clone().unwrap();
+                let (status, r) = estate.post(&format!("/api/nodes/{target}/restart"), &json!({})).await;
+                assert_eq!(status, 202, "round {round}: restart {target}: {r}");
+                estate.await_build(&s(&r["build_id"]), Duration::from_secs(120)).await;
+                Some(wait_for("the restarted birth is ready", Duration::from_secs(60), || async {
+                    estate.node_opt(&target).await.filter(|n| n["status"] == "ready-for-traffic" && n["incarnation_id"] != old["incarnation_id"])
+                })
+                .await)
+            }
+            "delete" => {
+                let (status, r) = estate.delete(&format!("/api/nodes/{target}")).await;
+                assert_eq!(status, 202, "round {round}: delete {target}: {r}");
+                estate.await_build(&s(&r["build_id"]), Duration::from_secs(120)).await;
+                wait_for(&format!("{target} left the view"), Duration::from_secs(60), || async { estate.node_opt(&target).await.is_none().then_some(()) }).await;
+                names.remove(&target);
+                None
+            }
+            _ => {
+                let old = old.clone().unwrap();
+                let rt = published(&estate, &target).await;
+                let killed = rt.apply(Fault::Kill).unwrap_or_else(|r| panic!("round {round}: kill {target}: {r:?}"));
+                assert!(killed.exited);
+                Some(wait_for("the path is re-created", Duration::from_secs(120), || async {
+                    estate.node_opt(&target).await.filter(|n| n["status"] == "ready-for-traffic" && n["node_id"] != old["node_id"])
+                })
+                .await)
+            }
+        };
+        estate.settled(&names, Duration::from_secs(120)).await;
+
+        // The invariants.
+        let nodes = estate.nodes().await;
+        let now = assigned(&nodes);
+        let mut v: Vec<String> = Vec::new();
+        let mut seen: BTreeMap<u16, String> = BTreeMap::new();
+        for (node, ports) in &now {
+            for p in ports {
+                if let Some(other) = seen.insert(*p, node.clone()) {
+                    v.push(format!("port {p} is advertised by {other} and {node}"));
+                }
+                if squatted_all.contains(p) {
+                    v.push(format!("{node} was handed squatted port {p}"));
+                }
+            }
+        }
+        let mut runtimes: BTreeMap<String, u64> = BTreeMap::new();
+        for n in &nodes {
+            let name = s(&n["name"]);
+            let pid = if name == "mesh1.admin.1" { bootstrap_pid } else { u64::from(published(&estate, &name).await.pid) };
+            runtimes.insert(name.clone(), pid);
+            let addr = n["transport_addr"].as_str().and_then(|a| a.parse::<std::net::SocketAddr>().ok());
+            let Some(addr) = addr else { v.push(format!("{name} advertises no transport")); continue };
+            let holders = port_holders(addr, SlotTransport::Udp);
+            if holders.is_empty() || holders.iter().any(|h| h.pid != Some(pid as u32)) {
+                v.push(format!("{name}: transport {addr} is held by {holders:?}, not only by its runtime pid {pid}"));
+            }
+            for l in n["listeners"].as_array().into_iter().flatten() {
+                if let Some(la) = l[1].as_str().and_then(|a| a.parse::<std::net::SocketAddr>().ok()) {
+                    let h = port_holders(la, SlotTransport::Tcp);
+                    if h.iter().filter(|x| x.state == "listen").any(|x| x.pid != Some(pid as u32)) || !h.iter().any(|x| x.pid == Some(pid as u32)) {
+                        v.push(format!("{name}: listener {la} is held by {h:?}, not only by its runtime pid {pid}"));
+                    }
+                }
+            }
+        }
+        let live: BTreeSet<u64> = estate.live_runtimes().iter().map(|(_, p)| u64::from(*p)).collect();
+        let expected: BTreeSet<u64> = runtimes.values().copied().filter(|p| *p != bootstrap_pid).collect();
+        if live != expected {
+            v.push(format!("live runtimes {live:?} are not the nodes' {expected:?}"));
+        }
+        // Every squatter still holds what it took (a sample).
+        for q in &squatters {
+            if !std::path::Path::new(&format!("/proc/{}", q.pid)).exists() {
+                v.push(format!("squatter {} died", q.pid));
+                continue;
+            }
+            for (proto, p) in q.held.iter().take(3) {
+                let t = if proto == "tcp" { SlotTransport::Tcp } else { SlotTransport::Udp };
+                let h = port_holders(std::net::SocketAddr::from(([127, 0, 0, 1], *p)), t);
+                if !h.iter().any(|x| x.pid == Some(q.pid)) {
+                    v.push(format!("squatter {} lost {proto} {p}: {h:?}", q.pid));
+                }
+            }
+        }
+        // A second foreign bind of a port a live runtime holds: the OS refuses it.
+        let victim = {
+            let names_now: Vec<&String> = now.keys().collect();
+            names_now[(d.probe as usize) % names_now.len()].clone()
+        };
+        let vp = now[&victim][0];
+        let probe = squat(&[], &[vp]);
+        let eaddrinuse = probe.refused.len() == 1 && probe.refused[0]["os_error"] == 98 && probe.held.is_empty();
+        if !eaddrinuse {
+            v.push(format!("a foreign bind of {victim}'s port {vp} was not refused with EADDRINUSE: held {:?} refused {:?}", probe.held, probe.refused));
+        }
+        probe.end();
+
+        // What the round did to the allocator, classified.
+        let new_ports: Vec<u16> = match (&new_node, op) {
+            (Some(n), "spawn" | "kill" | "restart") => now.get(&s(&n["name"])).cloned().unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let skipped: Vec<u16> = match new_ports.iter().copied().max() {
+            Some(top) => squatted_all.iter().copied().filter(|p| *p > hwm && *p < top).collect(),
+            None => Vec::new(),
+        };
+        let stale_taken: Vec<u16> = stale.iter().copied().filter(|p| new_ports.contains(p)).collect();
+        let class = match op {
+            "restart" => if skipped.is_empty() { "restart_bound_fresh_no_squat_in_path" } else { "restart_skipped_squats_and_bound_fresh" },
+            "delete" => "delete_released_addresses",
+            "spawn" => if skipped.is_empty() { "spawn_bound_no_squat_in_path" } else { "spawn_skipped_squats_and_bound" },
+            _ => if skipped.is_empty() { "replacement_bound_no_squat_in_path" } else { "replacement_skipped_squats_and_bound" },
+        };
+        if matches!(op, "spawn" | "kill" | "restart") {
+            birth_rounds += 1;
+            skipped_total += skipped.len();
+        }
+        stale_taken_total += stale_taken.len();
+        classes.push(class.to_string());
+        hwm = hwm.max(now.values().flatten().copied().filter(in_range).max().unwrap_or(hwm));
+        rows.push(json!({
+            "round": round, "op": op, "target": target, "class": class,
+            "squatted_ahead": ahead.keys().collect::<Vec<_>>(), "squatted_gaps": gaps.len(), "stale_claims": stale, "stale_taken": stale_taken,
+            "new_ports": new_ports, "squats_skipped_by_the_allocator": skipped, "hwm": hwm, "eaddrinuse_probe": {"node": victim, "port": vp, "refused": eaddrinuse},
+            "squatter_refused_binds": squatters.last().map(|q| q.refused.clone()).unwrap_or_default(),
+        }));
+        eprintln!("COLLISION round {round} op={op} class={class} skipped={} violations={}", skipped.len(), v.len());
+        violations.extend(v.into_iter().map(|x| format!("round {round} ({op} {target}): {x}")));
+        if !violations.is_empty() {
+            break;
+        }
+    }
+
+    // The runs' end: nothing bound twice, no refusal in any node's own logs.
+    let held_by_squatters: BTreeSet<u16> = squatters.iter().flat_map(|q| q.ports()).collect();
+    let squatter_count = squatters.len();
+    for q in squatters {
+        q.end();
+    }
+    for p in &stale_files {
+        if claim_owner(*p) == Some(dead_pid) {
+            let _ = std::fs::remove_file(claim_path(*p));
+        }
+    }
+    let root = estate.root.clone();
+    let mut bind_errors = Vec::new();
+    for e in walk_logs(&root) {
+        for line in std::fs::read_to_string(&e).unwrap_or_default().lines().filter(|l| l.contains("Address already in use") || l.contains("AddrInUse")) {
+            bind_errors.push(format!("{}: {line}", e.display()));
+        }
+    }
+    if !bind_errors.is_empty() {
+        violations.push(format!("a runtime hit EADDRINUSE: {bind_errors:?}"));
+    }
+    estate.stop().await;
+    let spans = estate.spans();
+    let bind_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| attr(st, "step") == "WaitForBind").collect();
+    let failed_binds: Vec<&&Value> = bind_steps.iter().filter(|st| attr(st, "outcome") != "complete").collect();
+    if !failed_binds.is_empty() {
+        violations.push(format!("WaitForBind did not complete: {:?}", failed_binds.iter().map(|st| json!({"node": attr(st, "node"), "outcome": attr(st, "outcome")})).collect::<Vec<_>>()));
+    }
+    let own = cap.spans();
+    let result = json!({
+        "cell": SOAK_CELL, "seed": seed, "rounds_run": rows.len(), "rounds_planned": rounds, "rerun": rerun,
+        "port_range": [first, last], "story_names_no_length": true,
+        "schedule": {"events": events, "draws": draws.len()},
+        "classified_outcomes": classes,
+        "totals": {"birth_rounds": birth_rounds, "squats_skipped_by_the_allocator": skipped_total, "stale_claims_taken_over": stale_taken_total, "squatter_binds_refused": refused_total, "squatter_processes": squatter_count, "distinct_ports_squatted": held_by_squatters.len(), "wait_for_bind_steps": bind_steps.len()},
+        "rows": rows, "violations": violations,
+        "backend_spans": named(&own, "rdm.testkit.fault.update.via-process-signal").len(),
+        "unknown_issuer_observed": false,
+    });
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
+    assert!(violations.is_empty(), "the allocator collided:\n{}\nreplay: {rerun}", violations.join("\n"));
+    assert!(skipped_total > 0, "no squat was ever in the allocator's path: the soak proved nothing (replay: {rerun})");
+}
+
+fn walk_logs(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "log") {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
