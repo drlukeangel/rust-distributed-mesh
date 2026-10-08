@@ -34,6 +34,7 @@ pub mod status_declare;
 pub mod status_rpc;
 pub mod connections_writer;
 pub mod storage;
+pub mod status_storage;
 pub mod topology;
 pub mod wire;
 pub mod wiring;

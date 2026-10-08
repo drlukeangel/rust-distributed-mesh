@@ -12,6 +12,7 @@ use rafka_mesh_entity::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::deployment::pipeline::{drain_outcome, DrainOutcome};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
+use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -127,10 +128,16 @@ struct Rig {
 }
 
 async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, drain_in_flight: Option<u64>) -> Rig {
+    rig_with(me, others, mesh_ids, drain_in_flight, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await
+}
+
+/// The rig over a given `status.storage` and a given starting `Declared` (what a restarted
+/// authority folded from its rows).
+async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, drain_in_flight: Option<u64>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rafka_mesh_entity::FabricId>) -> Rig {
     let mut nodes = vec![me.node.clone()];
     nodes.extend(others.iter().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-        fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: fabric.unwrap_or_else(rafka_mesh_entity::FabricId::mint), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }));
@@ -144,8 +151,9 @@ async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, d
         me: me.node.name.clone(),
         fabric_id,
         topology,
-        declared: Arc::new(Mutex::new(Declared::default())),
+        declared: Arc::new(Mutex::new(declared)),
         nodes_storage: Arc::new(MemoryNodesStorage::default()),
+        status_storage,
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(OnceLock::new()),
         drain,
@@ -465,4 +473,401 @@ async fn deadline_arm() -> DrainOutcome {
     assert!(pos(RetireStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
     let step = &view.steps[waited.unwrap()];
     serde_json::from_value(step.output.clone().expect("WaitForDrain records its arm")).unwrap()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The adversary's cells: every refusal by its name, the durable row before the answer, the seat
+// and the birth moving under an in-flight declaration.
+
+/// Every span of `name` this cell emitted whose attributes carry the given pairs.
+fn spans_where<'a>(spans: &'a [Value], name: &str, want: &[(&str, &str)]) -> Vec<&'a Value> {
+    spans.iter().filter(|s| s["name"] == name && want.iter().all(|(k, v)| s["attributes"][*k] == *v)).collect()
+}
+
+const DECLARATION: &str = "rdm.node_admin.status.update.via-declaration";
+
+fn finish(capture: &Capture, dir: &std::path::Path, result: Value) -> Vec<Value> {
+    let spans = capture.spans();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    spans
+}
+
+fn cell_dir(cell: &str) -> PathBuf {
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A `status.storage` whose puts are refused while `refuse` is set, over a real memory store.
+struct Refusing {
+    inner: MemoryStatusStorage,
+    refuse: std::sync::atomic::AtomicBool,
+}
+
+impl Refusing {
+    fn refusing() -> Arc<Self> {
+        Arc::new(Self { inner: MemoryStatusStorage::default(), refuse: std::sync::atomic::AtomicBool::new(true) })
+    }
+    fn check(&self) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        if self.refuse.load(Ordering::SeqCst) {
+            return Err(rafka_node_admin_core::record_store::StorageError::Io { file: "status/refused.json".into(), reason: "the disk refused the put".into() });
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl StatusStorage for Refusing {
+    async fn put_mesh_status(&self, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_mesh_status(row).await
+    }
+    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.mesh_statuses().await
+    }
+    async fn put_fabric_event(&self, row: &rafka_node_admin_core::status_storage::FabricEventRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.check()?;
+        self.inner.put_fabric_event(row).await
+    }
+    async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.fabric_events().await
+    }
+}
+
+/// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after
+/// its own keyed row was acknowledged. A refused put answers NotReady naming status.storage and
+/// holds nothing, so the same declaration again is decided afresh and applies (it is never
+/// AlreadyApplied over a fact nothing recorded). An authority restarted over the same rows folds
+/// them and answers the same natural keys AlreadyApplied. What must NOT happen: an Applied or
+/// AlreadyApplied for a row that was refused.
+#[test]
+fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
+    let cell = "status_authority_answers_applied_only_after_its_row_is_acknowledged";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let fabric_primary = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let mesh2 = MeshId::mint();
+        let fabric = rafka_mesh_entity::FabricId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
+        let store = Refusing::refusing();
+        let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let rig = rig_with(me, &[&fabric_primary], ids.clone(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
+
+        let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
+        assert!(matches!(&refused, StatusReply::NotReady { reason } if reason.contains("status.storage refused the Mesh status row") && reason.contains("the disk refused the put")), "{refused:?}");
+        assert!(rig.authority.declared.lock().unwrap().meshes.is_empty(), "a refused row holds nothing as applied");
+        assert!(store.inner.mesh_statuses().await.unwrap().is_empty());
+
+        store.refuse.store(false, Ordering::SeqCst);
+        let first = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
+        assert_eq!(first, StatusReply::Applied, "the retry of a refused put applies; it is not AlreadyApplied");
+        assert_eq!(store.inner.mesh_statuses().await.unwrap().get(&mesh2), Some(&MeshState::Pending), "the row was put before the answer");
+        let again = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
+        assert_eq!(again, StatusReply::AlreadyApplied);
+
+        // A Fabric event: refused, then applied, then a repeat.
+        let mesh1_primary = birth("mesh3.admin.1", NodeKind::NodeAdmin, "mesh3", true, false);
+        let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic };
+        store.refuse.store(true, Ordering::SeqCst);
+        let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
+        assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("status.storage refused the Fabric event row")), "{ev_refused:?}");
+        assert!(rig3.authority.declared.lock().unwrap().fabric.is_empty());
+        store.refuse.store(false, Ordering::SeqCst);
+        assert_eq!(reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await), StatusReply::Applied);
+
+        // The authority restarts over the same rows: what it folds is what it applied.
+        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
+        let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let restarted = rig_with(me_again, &[&fabric_primary], ids, None, store.clone(), folded, Some(fabric.clone())).await;
+        let after_restart = reply(&call(&restarted, &fabric_primary, &pending, &CallOptions::default()).await);
+        assert_eq!(after_restart, StatusReply::AlreadyApplied, "the folded row answers the natural key");
+
+        let spans = finish(
+            &capture,
+            &dir,
+            json!({"cell": cell, "refused_mesh": format!("{refused:?}"), "retry": format!("{first:?}"), "repeat": format!("{again:?}"), "refused_event": format!("{ev_refused:?}"), "after_restart": format!("{after_restart:?}")}),
+        );
+        let nr = spans_where(&spans, DECLARATION, &[("outcome", "not-ready")]);
+        assert_eq!(nr.len(), 2, "both refusals are spanned as not-ready: {nr:?}");
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-mesh-state"), ("outcome", "applied")]).len(), 1);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-mesh-state"), ("outcome", "already-applied")]).len(), 2);
+    });
+}
+
+/// CONTRACT (#2805, adversary): every backward move through the door is refused by its name with
+/// the current state it ran into, for each of the four node states and each of the four Mesh
+/// states; the same state again is AlreadyApplied, three times over, the same typed reply; a skip
+/// forward applies. What must NOT happen: a backward move applied, or a repeat answered anything
+/// but AlreadyApplied.
+#[test]
+fn status_authority_refuses_every_backward_move_by_name() {
+    let cell = "status_authority_refuses_every_backward_move_by_name";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let nodes = [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving];
+        let meshes = [MeshState::Pending, MeshState::ReadyForTraffic, MeshState::Draining, MeshState::Retired];
+        let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let senders: Vec<Birth> = (0..4).map(|i| birth(&format!("mesh1.rpc.{}", i + 1), NodeKind::RpcNode, "mesh1", false, false)).collect();
+        let fabric_primary = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
+        let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let node_rig = rig(me, &senders.iter().collect::<Vec<_>>(), BTreeMap::new(), None).await;
+        let mut fp = fabric_primary;
+        fp.node.is_fabric_primary = true;
+        let mesh_rig = rig(receiver, &[&fp], BTreeMap::new(), None).await;
+        let mut refused_node = 0;
+        let mut refused_mesh = 0;
+        let mut repeats = 0;
+        for (i, start) in nodes.iter().enumerate() {
+            let s = &senders[i];
+            let decl = |st: NodeState| StatusRequest::DeclareNodeState { node_id: s.node.node_id.clone(), incarnation: s.node.incarnation_id.clone().unwrap(), state: st };
+            assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::Applied, "{start:?}");
+            for lower in nodes.iter().filter(|l| *l < start) {
+                let r = reply(&call(&node_rig, s, &decl(*lower), &CallOptions::default()).await);
+                assert_eq!(r, StatusReply::RejectedInvalidNodeTransition { current: *start }, "{lower:?} after {start:?}");
+                refused_node += 1;
+            }
+            for _ in 0..3 {
+                assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::AlreadyApplied, "a repeat of {start:?}");
+                repeats += 1;
+            }
+            assert_eq!(node_rig.authority.declared.lock().unwrap().node(&s.node.node_id).map(|(_, st)| st), Some(*start), "refusals moved nothing");
+        }
+        for start in meshes {
+            let id = MeshId::mint();
+            let apply = |st: MeshState| StatusRequest::ApplyMeshState { mesh_id: id.clone(), mesh_name: "mesh2".into(), state: st };
+            assert_eq!(reply(&call(&mesh_rig, &fp, &apply(start), &CallOptions::default()).await), StatusReply::Applied, "{start:?}");
+            for lower in meshes.iter().filter(|l| **l < start) {
+                let r = reply(&call(&mesh_rig, &fp, &apply(*lower), &CallOptions::default()).await);
+                assert_eq!(r, StatusReply::RejectedInvalidMeshTransition { current: start }, "{lower:?} after {start:?}");
+                refused_mesh += 1;
+            }
+            assert_eq!(reply(&call(&mesh_rig, &fp, &apply(start), &CallOptions::default()).await), StatusReply::AlreadyApplied);
+            repeats += 1;
+            assert_eq!(mesh_rig.authority.declared.lock().unwrap().meshes.get(&id), Some(&start));
+        }
+        // A skip forward is a forward move.
+        let skip = MeshId::mint();
+        let to_retired = StatusRequest::ApplyMeshState { mesh_id: skip.clone(), mesh_name: "mesh2".into(), state: MeshState::Retired };
+        assert_eq!(reply(&call(&mesh_rig, &fp, &to_retired, &CallOptions::default()).await), StatusReply::Applied, "an unseen Mesh may be told Retired: a skip is forward");
+
+        let spans = finish(&capture, &dir, json!({"cell": cell, "refused_node_moves": refused_node, "refused_mesh_moves": refused_mesh, "repeats_already_applied": repeats}));
+        assert_eq!(refused_node, 6, "0+1+2+3 backward pairs");
+        assert_eq!(refused_mesh, 6);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "rejected-invalid-node-transition")]).len(), refused_node);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "rejected-invalid-mesh-transition")]).len(), refused_mesh);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "already-applied")]).len(), repeats);
+    });
+}
+
+/// CONTRACT (#2805, adversary): a declaration to a receiver that does not hold the seat it needs
+/// is refused naming the seat, and one from a sender that is not the subject or the authority is
+/// refused naming the sender; a stranger whose key the view does not hold is refused as unknown;
+/// a stale Fabric id and a stale Mesh id are refused naming the id the receiver holds. What must
+/// NOT happen: any of these applied, or answered as a transport failure.
+#[test]
+fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
+    let cell = "status_declaration_to_a_non_authority_is_refused_naming_the_seat";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        // The receiver: a mesh1 admin that holds no seat.
+        let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let rpc = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
+        let other_admin = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let stranger = birth("mesh9.rpc.1", NodeKind::RpcNode, "mesh9", false, false);
+        let receiver = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
+        let rig = rig(receiver, &[&fp, &rpc, &other_admin], BTreeMap::new(), None).await;
+        let not_authority = |r: &StatusReply, name: &str| match r {
+            StatusReply::RejectedNotAuthority { why } => assert_eq!(why.as_str(), name, "{r:?}"),
+            other => panic!("expected rejected-not-authority/{name}: {other:?}"),
+        };
+        let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        // An ordinary node declares to a non-primary admin.
+        let r = reply(&call(&rig, &rpc, &decl_node(&rpc), &CallOptions::default()).await);
+        not_authority(&r, "receiver-not-primary");
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
+        // A node-admin declares to a non-fabric-primary.
+        let r = reply(&call(&rig, &other_admin, &decl_node(&other_admin), &CallOptions::default()).await);
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "fabric-primary of mesh2"), "{r:?}");
+        // A Mesh primary declares its Mesh to a non-fabric-primary.
+        let mesh2 = MeshId::mint();
+        let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::ReadyForTraffic }, &CallOptions::default()).await);
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
+        // The fabric-primary applies an event at an admin that is not a mesh primary.
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic };
+        let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
+        // The fabric-primary applies a Mesh state at an admin of another mesh.
+        let r = reply(&call(&rig, &fp, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "an admin of mesh2"), "{r:?}");
+        // A sender that is not the fabric-primary applies an event or a Mesh state.
+        let r = reply(&call(&rig, &other_admin, &event, &CallOptions::default()).await);
+        not_authority(&r, "sender-not-subject");
+        let r = reply(&call(&rig, &rpc, &StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        not_authority(&r, "sender-not-subject");
+        // A stranger the view does not hold.
+        let r = reply(&call(&rig, &stranger, &decl_node(&stranger), &CallOptions::default()).await);
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "unknown peer"), "{r:?}");
+        // Stale ids: another Fabric's event at the mesh primary; another Mesh id for a held name.
+        let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
+        let held = MeshId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
+        let rig2 = rig_with(mp_receiver, &[&fp], ids, None, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await;
+        let wrong_fabric = rafka_mesh_entity::FabricId::mint();
+        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
+        assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
+        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
+        assert_eq!(r, StatusReply::RejectedStaleMesh { held });
+        assert!(rig.authority.declared.lock().unwrap().nodes.is_empty() && rig.authority.declared.lock().unwrap().meshes.is_empty() && rig.authority.declared.lock().unwrap().fabric.is_empty(), "nothing applied by any refusal");
+
+        let spans = finish(&capture, &dir, json!({"cell": cell, "refusals": 10}));
+        for outcome in ["rejected-not-authority", "rejected-stale-fabric", "rejected-stale-mesh"] {
+            assert!(!spans_where(&spans, DECLARATION, &[("outcome", outcome)]).is_empty(), "{outcome} is spanned");
+        }
+        assert_eq!(spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-authority")]).len(), 8);
+        assert!(!spans_where(&spans, DECLARATION, &[("outcome", "rejected-not-authority"), ("detail", "receiver-not-primary")]).is_empty());
+    });
+}
+
+/// CONTRACT (#2805, acceptance 10): an event applied by the fabric-primary stays applied when the
+/// seat moves: the old authority's in-flight application is refused (not the sender), the new
+/// authority's repeat of the same natural key is AlreadyApplied, a new event applies, and a
+/// receiver restarted over its rows still answers the first event AlreadyApplied. What must NOT
+/// happen: the old authority applied after it lost the seat, or an applied event applied twice.
+#[test]
+fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
+    let cell = "applied_events_survive_authority_change_and_the_old_authority_is_refused";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        use rafka_node_rpc_contract::status::FabricEvent;
+        let fp1 = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let fp2 = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
+        let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let fabric = rafka_mesh_entity::FabricId::mint();
+        let store: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+        let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
+        assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
+        // The seat moves: fp2 holds it, fp1 does not.
+        {
+            let mut t = rig.authority.topology.write().await;
+            for n in t.nodes.iter_mut() {
+                if n.name == fp1.node.name {
+                    n.is_fabric_primary = false;
+                }
+                if n.name == fp2.node.name {
+                    n.is_fabric_primary = true;
+                }
+            }
+        }
+        let shutdown = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } };
+        let old = reply(&call(&rig, &fp1, &shutdown, &CallOptions::default()).await);
+        assert!(matches!(&old, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender } } if sender == "mesh1.admin.1"), "the old authority's in-flight work: {old:?}");
+        assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), reply_of_not_authority(&old), "even a repeat of an applied key is refused to the old authority");
+        assert_eq!(reply(&call(&rig, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "previously applied events survive the move");
+        assert_eq!(reply(&call(&rig, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::Applied, "the new authority applies new work");
+        // The receiver restarts over its rows.
+        let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
+        let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
+        let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), None, store.clone(), folded, Some(fabric.clone())).await;
+        {
+            let mut t = rig2.authority.topology.write().await;
+            for n in t.nodes.iter_mut().filter(|n| n.name == fp1.node.name) {
+                n.is_fabric_primary = false;
+            }
+            for n in t.nodes.iter_mut().filter(|n| n.name == fp2.node.name) {
+                n.is_fabric_primary = true;
+            }
+        }
+        assert_eq!(reply(&call(&rig2, &fp2, &ready, &CallOptions::default()).await), StatusReply::AlreadyApplied, "the restarted receiver folded the event");
+        assert_eq!(reply(&call(&rig2, &fp2, &shutdown, &CallOptions::default()).await), StatusReply::AlreadyApplied);
+        let spans = finish(&capture, &dir, json!({"cell": cell, "old_authority": format!("{old:?}"), "events_held": store.fabric_events().await.unwrap().len()}));
+        assert_eq!(store.fabric_events().await.unwrap().len(), 2, "each event is one row");
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "applied")]).len(), 2);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "rejected-not-authority"), ("sender", "mesh1.admin.1")]).len(), 2);
+        assert_eq!(spans_where(&spans, DECLARATION, &[("op", "apply-fabric-event"), ("outcome", "already-applied")]).len(), 3);
+    });
+}
+
+fn reply_of_not_authority(r: &StatusReply) -> StatusReply {
+    r.clone()
+}
+
+/// CONTRACT (#2805, adversary): a declaration racing a restart. The subject's birth is replaced in
+/// the receiver's view (same node, new incarnation, same key): the old incarnation's in-flight
+/// declaration is refused naming the incarnation the receiver holds, nothing is applied under it,
+/// and the new incarnation's declaration applies on a clean key (the old birth's state is not
+/// its). What must NOT happen: the old birth's state applied, or carried to the new birth.
+#[test]
+fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_applies() {
+    let cell = "status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_applies";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
+        let rig = rig(me, &[&subject], BTreeMap::new(), None).await;
+        let old_inc = subject.node.incarnation_id.clone().unwrap();
+        let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st };
+        assert_eq!(reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Draining), &CallOptions::default()).await), StatusReply::Applied, "the old birth reached Draining");
+        // The restart: same node and key, a new incarnation, now what the view holds.
+        let new_inc = IncarnationId::mint();
+        {
+            let mut t = rig.authority.topology.write().await;
+            t.nodes.iter_mut().find(|n| n.node_id == subject.node.node_id).unwrap().incarnation_id = Some(new_inc.clone());
+        }
+        let in_flight = reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Leaving), &CallOptions::default()).await);
+        assert_eq!(in_flight, StatusReply::RejectedStaleIncarnation { held: new_inc.clone() });
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((old_inc.clone(), NodeState::Draining)), "the stale declaration moved nothing");
+        let fresh = reply(&call(&rig, &subject, &decl(&new_inc, NodeState::Pending), &CallOptions::default()).await);
+        assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's Draining is not backward");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id), Some((new_inc.clone(), NodeState::Pending)));
+        let spans = finish(&capture, &dir, json!({"cell": cell, "in_flight": format!("{in_flight:?}"), "fresh": format!("{fresh:?}"), "new_incarnation": new_inc.to_string()}));
+        let stale = spans_where(&spans, DECLARATION, &[("outcome", "rejected-stale-incarnation")]);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert_eq!(stale[0]["attributes"]["detail"], new_inc.to_string().as_str(), "the span names the incarnation held");
+    });
+}
+
+/// CONTRACT (#2805, acceptance 12): a lost route never makes a node Dead. After a healthy control
+/// call applied a declaration, a call to a target the caller has no route for is NotSent with
+/// nothing dispatched; the receiver's view of every node keeps its status (none Dead), the applied
+/// state is unchanged, and no declaration span is emitted for the unsent call. What must NOT
+/// happen: a status of Dead or Leaving appearing from the failed call.
+#[test]
+fn status_route_loss_never_synthesizes_dead() {
+    let cell = "status_route_loss_never_synthesizes_dead";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
+        let rig = rig(me, &[&subject], BTreeMap::new(), None).await;
+        let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        // The healthy control, in the same capture.
+        assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
+        let served_before = spans_where(&capture.spans(), DECLARATION, &[]).len();
+        // No route: a client whose resolver holds nothing for the target.
+        let ep = rafka_node_rpc::endpoint::bind(subject.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let routeless = NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm");
+        let to = NodeTarget::ExactNode(rig.me.node.node_id.clone());
+        let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
+        let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
+        assert!(matches!(out, RpcOutcome::NotSent(_)), "no route is NotSent, nothing dispatched: {out:?}");
+        assert!(out.proves_not_dispatched());
+        let t = rig.authority.topology.read().await;
+        assert!(t.nodes.iter().all(|n| n.status == NodeStatus::ReadyForTraffic), "no node became Dead or Leaving: {:?}", t.nodes.iter().map(|n| (n.name.to_string(), n.status)).collect::<Vec<_>>());
+        drop(t);
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "the applied state is unchanged");
+        let spans = finish(&capture, &dir, json!({"cell": cell, "no_route": out.name(), "declaration_spans_before": served_before}));
+        assert_eq!(spans_where(&spans, DECLARATION, &[]).len(), served_before, "the unsent call reached no handler");
+        assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");
+    });
 }

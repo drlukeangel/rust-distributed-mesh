@@ -1995,9 +1995,15 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
+    // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
+    // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
+    // holds as applied. A reader folds; nothing here writes a row.
+    let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
+    *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
         let records_for_ids = records.clone();
         let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+            status_storage: status_storage.clone(),
             me: name.clone(),
             fabric_id: cfg.fabric_id.clone(),
             topology: control.topology.clone(),

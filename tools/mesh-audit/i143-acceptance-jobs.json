@@ -106,6 +106,42 @@
           "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
           "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 draining_authority_serves_status_checks_exact_birth -- --exact",
           "dir": "target/i143-acceptance/2805/unit/draining_authority_serves_status_checks_exact_birth"
+        },
+        {
+          "name": "status_authority_answers_applied_only_after_its_row_is_acknowledged",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_authority_answers_applied_only_after_its_row_is_acknowledged -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/status_authority_answers_applied_only_after_its_row_is_acknowledged"
+        },
+        {
+          "name": "status_authority_refuses_every_backward_move_by_name",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_authority_refuses_every_backward_move_by_name -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/status_authority_refuses_every_backward_move_by_name"
+        },
+        {
+          "name": "status_declaration_to_a_non_authority_is_refused_naming_the_seat",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_declaration_to_a_non_authority_is_refused_naming_the_seat -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/status_declaration_to_a_non_authority_is_refused_naming_the_seat"
+        },
+        {
+          "name": "applied_events_survive_authority_change_and_the_old_authority_is_refused",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 applied_events_survive_authority_change_and_the_old_authority_is_refused -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/applied_events_survive_authority_change_and_the_old_authority_is_refused"
+        },
+        {
+          "name": "status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_applies",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_applies -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_applies"
+        },
+        {
+          "name": "status_route_loss_never_synthesizes_dead",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_route_loss_never_synthesizes_dead -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/status_route_loss_never_synthesizes_dead"
         }
       ]
     },

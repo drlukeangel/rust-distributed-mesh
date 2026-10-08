@@ -37,6 +37,24 @@ impl Declared {
     }
 }
 
+impl Declared {
+    /// What an admin applied before it last stopped, folded from the rows it put: the greatest
+    /// state per Mesh, each Fabric event once, and the state on each node row it wrote. A reader
+    /// folds; nothing is written back.
+    pub async fn rehydrate(status: &dyn crate::status_storage::StatusStorage, nodes: &dyn crate::storage::NodesStorage) -> Result<Self, String> {
+        let mut declared = Self { meshes: status.mesh_statuses().await.map_err(|e| format!("status.storage: {e}"))?, ..Self::default() };
+        for e in status.fabric_events().await.map_err(|e| format!("status.storage: {e}"))? {
+            declared.fabric.entry(e.fabric_id).or_default().push(e.event);
+        }
+        for c in nodes.contacts().await.map_err(|e| format!("nodes.storage: {e}"))? {
+            if let Some(state) = c.declared.as_deref().and_then(parse_node_state) {
+                declared.nodes.insert(c.node_id, (c.incarnation_id, state));
+            }
+        }
+        Ok(declared)
+    }
+}
+
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
@@ -45,6 +63,8 @@ pub struct StatusAuthority {
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     pub declared: Arc<Mutex<Declared>>,
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
+    /// Where an applied Mesh status or Fabric event is a keyed row, put before it is answered.
+    pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
     /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
@@ -59,8 +79,18 @@ pub struct StatusAuthority {
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// The decision, pure over a view: what the admin does with a declaration from `sender`.
-pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, sender: Option<&crate::model::Node>, req: &StatusRequest) -> (StatusReply, Option<NodeRecord>) {
+/// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
+/// `Declared`: the effect is committed only after the put returned `Ok`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    Node(NodeRecord, NodeState),
+    Mesh(MeshId, MeshState),
+    Fabric(FabricId, String),
+}
+
+/// The decision, pure over a view and what was applied: what the admin does with a declaration
+/// from `sender`. It reads `declared` and returns the effect to commit; it writes nothing.
+pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, sender: Option<&crate::model::Node>, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
     let me = match view.nodes.iter().find(|n| n.name == auth.me) {
         Some(n) => n,
         None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } }, None),
@@ -91,7 +121,6 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
                 Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
                 Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
                 Transition::Apply => {
-                    declared.nodes.insert(sender.node_id.clone(), (incarnation.clone(), *state));
                     let row = NodeRecord {
                         node_id: sender.node_id.clone(),
                         name: sender.name.clone(),
@@ -102,7 +131,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
                         declared: Some(format!("{state:?}")),
                         status: None,
                     };
-                    (StatusReply::Applied, Some(row))
+                    (StatusReply::Applied, Some(Effect::Node(row, *state)))
                 }
             }
         }
@@ -147,13 +176,11 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &mut Declared, 
             if *fabric_id != auth.fabric_id {
                 return (StatusReply::RejectedStaleFabric { held: auth.fabric_id.clone() }, None);
             }
-            let events = declared.fabric.entry(fabric_id.clone()).or_default();
             let key = event_key(event);
-            if events.contains(&key) {
+            if declared.fabric.get(fabric_id).is_some_and(|events| events.contains(&key)) {
                 return (StatusReply::AlreadyApplied, None);
             }
-            events.push(key);
-            (StatusReply::Applied, None)
+            (StatusReply::Applied, Some(Effect::Fabric(fabric_id.clone(), key)))
         }
     }
 }
@@ -165,14 +192,11 @@ fn event_key(e: &FabricEvent) -> String {
     }
 }
 
-fn apply_mesh(declared: &mut Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<NodeRecord>) {
+fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<Effect>) {
     match transition(declared.meshes.get(mesh_id).copied(), state) {
         Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
         Transition::Backward { current } => (StatusReply::RejectedInvalidMeshTransition { current }, None),
-        Transition::Apply => {
-            declared.meshes.insert(mesh_id.clone(), state);
-            (StatusReply::Applied, None)
-        }
+        Transition::Apply => (StatusReply::Applied, Some(Effect::Mesh(mesh_id.clone(), state))),
     }
 }
 
@@ -192,22 +216,13 @@ impl StatusAuthority {
             }
         }
         let receiver_is_primary = view.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
-        let (reply, row) = {
-            let mut declared = self.declared.lock().unwrap();
-            decide(self, &view, &mut declared, sender.as_ref(), req)
+        let (reply, effect) = {
+            let declared = self.declared.lock().unwrap();
+            decide(self, &view, &declared, sender.as_ref(), req)
         };
-        let reply = match (&reply, row) {
-            (StatusReply::Applied, Some(row)) => match self.nodes_storage.put_contact(&row).await {
-                Ok(()) => {
-                    let mut t = self.topology.write().await;
-                    if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
-                        n.declared = row.declared.clone();
-                    }
-                    reply
-                }
-                Err(e) => StatusReply::NotReady { reason: format!("nodes.storage refused the row: {e}") },
-            },
-            _ => reply,
+        let reply = match effect {
+            Some(effect) => self.persist_then_commit(effect).await,
+            None => reply,
         };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-declaration",
@@ -224,13 +239,72 @@ impl StatusAuthority {
 }
 
 impl StatusAuthority {
+    /// An `Applied` decision: the fact's row is put and acknowledged, and only then is it held as
+    /// applied and answered. A refused put answers `NotReady` naming the store and holds nothing,
+    /// so the same declaration again is decided afresh. The commit decides again over what is
+    /// held now, so two declarations of one natural key racing each other answer `Applied` once.
+    async fn persist_then_commit(&self, effect: Effect) -> StatusReply {
+        let put = match &effect {
+            Effect::Node(row, _) => self.nodes_storage.put_contact(row).await.map_err(|e| format!("nodes.storage refused the row: {e}")),
+            Effect::Mesh(mesh_id, state) => {
+                self.status_storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: *state }).await.map_err(|e| format!("status.storage refused the Mesh status row: {e}"))
+            }
+            Effect::Fabric(fabric_id, event) => {
+                self.status_storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.clone() }).await.map_err(|e| format!("status.storage refused the Fabric event row: {e}"))
+            }
+        };
+        if let Err(reason) = put {
+            return StatusReply::NotReady { reason };
+        }
+        let reply = {
+            let mut declared = self.declared.lock().unwrap();
+            match &effect {
+                Effect::Node(row, state) => match transition(declared.node(&row.node_id).and_then(|(inc, s)| (inc == row.incarnation_id).then_some(s)), *state) {
+                    Transition::Apply => {
+                        declared.nodes.insert(row.node_id.clone(), (row.incarnation_id.clone(), *state));
+                        StatusReply::Applied
+                    }
+                    Transition::AlreadyApplied => StatusReply::AlreadyApplied,
+                    Transition::Backward { current } => StatusReply::RejectedInvalidNodeTransition { current },
+                },
+                Effect::Mesh(mesh_id, state) => match apply_mesh(&declared, mesh_id, *state) {
+                    (StatusReply::Applied, _) => {
+                        declared.meshes.insert(mesh_id.clone(), *state);
+                        StatusReply::Applied
+                    }
+                    (other, _) => other,
+                },
+                Effect::Fabric(fabric_id, event) => {
+                    let events = declared.fabric.entry(fabric_id.clone()).or_default();
+                    if events.contains(event) {
+                        StatusReply::AlreadyApplied
+                    } else {
+                        events.push(event.clone());
+                        StatusReply::Applied
+                    }
+                }
+            }
+        };
+        if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
+            let mut t = self.topology.write().await;
+            if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
+                n.declared = row.declared.clone();
+            }
+        }
+        reply
+    }
+
     /// Initial fabric bootstrap: the Day-0 root has no upstream authority to hand it its mesh's
     /// Pending, so it applies it to itself (e4.s11 "single-admin recovery root"). Only Pending, only
     /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
     /// as every decision, with the sender named as itself.
     pub async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
         let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
-        let (reply, _) = apply_mesh(&mut self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
+        let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
+        let reply = match effect {
+            Some(effect) => self.persist_then_commit(effect).await,
+            None => decided,
+        };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
@@ -249,6 +323,11 @@ impl StatusAuthority {
 /// declaration is `NotReady` by name.
 /// A node's re-publish of its presence, filled once it has joined its mesh.
 pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+
+/// A node row's stored `declared` text (the state's `Debug` name), read back as the state.
+pub fn parse_node_state(s: &str) -> Option<NodeState> {
+    [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().find(|n| format!("{n:?}") == s)
+}
 
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {

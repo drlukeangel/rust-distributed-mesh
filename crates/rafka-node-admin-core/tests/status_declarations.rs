@@ -89,6 +89,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         topology: topology.clone(),
         declared: Arc::new(Mutex::new(Declared::default())),
         nodes_storage: storage.clone(),
+        status_storage: Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(std::sync::OnceLock::new()),
         drain: Arc::new(std::sync::OnceLock::new()),
