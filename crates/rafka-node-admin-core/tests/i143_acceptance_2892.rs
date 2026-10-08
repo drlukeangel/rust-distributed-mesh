@@ -148,7 +148,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId(env("RDM_INCARNATION_ID")),
-            supersedes: spec.env.get("RDM_SUPERSEDES").cloned().map(IncarnationId),
+            supersedes: spec.env.get("RDM_SUPERSEDES").filter(|s| !s.is_empty()).cloned().map(IncarnationId),
             runtime,
         },
         status: rafka_mesh_entity::MemberStatus::Pending,

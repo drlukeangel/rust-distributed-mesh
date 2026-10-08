@@ -102,19 +102,15 @@ impl Launch {
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
         m.insert(ENV_INCARNATION.into(), self.incarnation.0.clone());
-        if let Some(s) = &self.supersedes {
-            m.insert(ENV_SUPERSEDES.into(), s.0.clone());
-        }
+        // An absent optional is written EMPTY, never omitted: a child process inherits its
+        // launcher's environment, and an omitted variable would be the launcher's own value.
+        m.insert(ENV_SUPERSEDES.into(), self.supersedes.as_ref().map(|s| s.0.clone()).unwrap_or_default());
         m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
-        if let Some(l) = &self.launcher {
-            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation.0));
-        }
+        m.insert(ENV_LAUNCHER.into(), self.launcher.as_ref().map(|l| format!("{},{},{}", l.name, l.node_id, l.incarnation.0)).unwrap_or_default());
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
         m.insert(ENV_DATA_DIR.into(), self.data_dir.display().to_string());
-        if let Some(id) = &self.mesh_id {
-            m.insert(ENV_MESH_ID.into(), id.to_string());
-        }
+        m.insert(ENV_MESH_ID.into(), self.mesh_id.as_ref().map(|id| id.to_string()).unwrap_or_default());
         m
     }
 
