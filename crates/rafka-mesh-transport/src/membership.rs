@@ -85,6 +85,48 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
     Some(EndpointAddr::new(key).with_ip_addr(d.node.transport_addr))
 }
 
+/// The newest `emitted_unix_ms` each key's address was registered from (rafka-v2 node-base
+/// `peer_location_wall_time`): governs the address book only, never the held view.
+fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, u64>> {
+    static W: std::sync::OnceLock<Mutex<HashMap<iroh::PublicKey, u64>>> = std::sync::OnceLock::new();
+    W.get_or_init(Mutex::default)
+}
+
+/// Register where the birth `d` names is (rafka-v2 node-base `register_peer_location_if_fresher`).
+/// A digest strictly newer than the last one this key was registered from REPLACES the key's
+/// addresses (`set_endpoint_info`, never a union): a node that restarts keeps its key and binds a
+/// fresh port, and its old port, now free for anyone, must never be dialled for it again. A digest
+/// that is not newer (replayed, late, or an aggregate copy of an older view) only fills a key that
+/// has no address, so it never puts an old socket back.
+pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) {
+    let Some(addr) = gossip_addr(d) else { return };
+    let key = addr.id;
+    let fresher = {
+        let mut w = location_watermarks().lock().unwrap();
+        let fresher = !matches!(w.get(&key), Some(prev) if *prev >= d.emitted_unix_ms);
+        if fresher {
+            w.insert(key, d.emitted_unix_ms);
+        }
+        fresher
+    };
+    let old = lookup.get_endpoint_info(key).and_then(|e| e.ip_addrs().next().cloned());
+    if fresher {
+        if old.is_some_and(|o| o != d.node.transport_addr) {
+            tracing::info_span!(
+                "rdm.mesh.connection.update.via-peer-location-refreshed",
+                node = %d.node.name,
+                incarnation_id = %d.node.incarnation.0,
+                old_socket = %old.map(|o| o.to_string()).unwrap_or_default(),
+                new_socket = %d.node.transport_addr,
+            )
+            .in_scope(|| tracing::info!("a newer birth of this key moved: its old socket is no longer dialled"));
+        }
+        lookup.set_endpoint_info(addr);
+    } else if old.is_none() {
+        lookup.add_endpoint_info(addr);
+    }
+}
+
 /// `RAFKA_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
 /// announcing `Leaving` before it closes. Every node kind takes the same one.
 pub fn leave_linger_from_env() -> Duration {
@@ -553,8 +595,8 @@ impl Membership {
             let via = if matches!(frame, Frame::Members { .. }) { "forwarded" } else { "mesh-channel" };
             let carried = v.take(&frame, &f, via);
             if let Some(l) = ls.lock().unwrap().as_ref() {
-                for a in carried.iter().filter_map(gossip_addr) {
-                    l.add_endpoint_info(a);
+                for d in &carried {
+                    register_location(l, d);
                 }
             }
         });
@@ -605,9 +647,7 @@ impl Membership {
         if d.fabric_id != self.fabric {
             return;
         }
-        if let Some(a) = gossip_addr(&d) {
-            self.mesh.lookup.add_endpoint_info(a);
-        }
+        register_location(&self.mesh.lookup, &d);
         if self.book.record_forwarded(d.clone()) {
             self.view.note(&d, via);
         }
@@ -719,8 +759,8 @@ impl Backbone {
         let forwarding = Arc::new(AtomicBool::new(false));
         let (m, fw, me, own) = (membership.clone(), forwarding.clone(), node.to_string(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
-            for a in m.view.take(&frame, &m.fabric, "backbone").iter().filter_map(gossip_addr) {
-                m.mesh.lookup.add_endpoint_info(a);
+            for d in m.view.take(&frame, &m.fabric, "backbone") {
+                register_location(&m.mesh.lookup, &d);
             }
             if !fw.load(Ordering::Relaxed) {
                 return;
@@ -1285,6 +1325,27 @@ mod tests {
             extra: Default::default(),
             data_dir: None,
         }
+    }
+
+    /// CONTRACT (rafka-v2 `register_peer_location_if_fresher`): a restart keeps the key and binds a
+    /// fresh port; the newer birth's digest replaces the key's address, and a late digest of the
+    /// old birth never puts the old socket back.
+    #[test]
+    fn a_newer_birth_replaces_its_keys_address_and_an_older_digest_never_restores_it() {
+        let key = iroh::SecretKey::generate().public();
+        let at = |port: u16, ms: u64| {
+            let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, ms);
+            d.node.endpoint_id = EndpointId(key.to_string());
+            d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            d
+        };
+        let lookup = MemoryLookup::new();
+        let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
+        register_location(&lookup, &at(41001, 10));
+        register_location(&lookup, &at(41002, 20));
+        assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "the newer birth replaces, never joins, the old socket");
+        register_location(&lookup, &at(41001, 10));
+        assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "a late digest of the old birth never restores its socket");
     }
 
     #[test]
