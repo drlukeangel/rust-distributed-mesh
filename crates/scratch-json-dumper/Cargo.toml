@@ -1,0 +1,12 @@
+[package]
+name = "scratch-json-dumper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
+rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

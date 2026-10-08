@@ -4251,6 +4251,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "scratch-json-dumper"
+version = "0.1.0"
+dependencies = [
+ "rafka-mesh-entity",
+ "rafka-mesh-transport",
+ "rafka-node-admin-core",
+ "rafka-node-rpc-contract",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "security-framework"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

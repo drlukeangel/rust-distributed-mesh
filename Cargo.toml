@@ -19,6 +19,7 @@ members = [
     "admin-ui",
     "cli/rfa",
     "tools/mesh-audit",
+    "crates/scratch-json-dumper",
 ]
 resolver = "2"
 
