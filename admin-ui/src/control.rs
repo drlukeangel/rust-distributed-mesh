@@ -1,6 +1,6 @@
 //! The Admin UI's topology routes: thin front doors to node-admin (PRD §4,
 //! i143.e1.s6). Each one submits one Build through
-//! `rafka-node-admin-client` and answers `202 {"build_id"}`, or node-admin's
+//! `rafka-node-admin-client` and answers `202 {"build_id","attempt"}`, or node-admin's
 //! refusal with its status and named reason. The UI never starts or stops a
 //! runtime itself.
 //!
@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::{Json, Router};
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{BuildId, ClientError, FabricDesired, MeshDesired, NodeAdminClient};
+use rafka_node_admin_client::{Accepted, BuildId, ClientError, FabricDesired, MeshDesired, NodeAdminClient};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -63,13 +63,13 @@ fn client(c: &Control) -> Result<&NodeAdminClient, Response> {
     })
 }
 
-fn answer(c: &Control, what: &str, r: Result<BuildId, ClientError>, node: Option<&str>, mesh: Option<&str>) -> Response {
+fn answer(c: &Control, what: &str, r: Result<Accepted, ClientError>, node: Option<&str>, mesh: Option<&str>) -> Response {
     match r {
-        Ok(build_id) => {
+        Ok(Accepted { build_id, attempt }) => {
             c.events.submitted(what, &build_id, node, mesh);
             tracing::info_span!("rdm.ui.build.create.via-node-admin", what, build_id = %build_id, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!(%build_id, "{what} submitted to node-admin"));
-            (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id }))).into_response()
+            (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id, "attempt": attempt }))).into_response()
         }
         Err(ClientError::Refused { status, error, detail }) => {
             (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), Json(json!({ "error": error, "detail": detail })))

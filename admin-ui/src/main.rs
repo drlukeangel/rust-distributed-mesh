@@ -2121,7 +2121,7 @@ async fn chaos_loop(state: AppState) {
         let (victim, meta) = candidates[idx].clone();
         let Ok(node) = victim.parse::<PathName>() else { continue };
         match client.restart(&node).await {
-            Ok(build_id) => {
+            Ok(rafka_node_admin_client::Accepted { build_id, attempt }) => {
                 state.chaos.total_events.fetch_add(1, Ordering::SeqCst);
                 state.chaos.last_event_ts_us.store(now_us(), Ordering::SeqCst);
                 state.events.push(LocalEvent {
@@ -2130,7 +2130,7 @@ async fn chaos_loop(state: AppState) {
                     node_name: Some(victim.clone()),
                     node_type: Some(meta.node_type.clone()),
                     mesh_id: Some(meta.mesh_id.clone()),
-                    detail: Some(format!("restart build {build_id}")),
+                    detail: Some(format!("restart build {build_id} attempt {attempt}")),
                 });
                 info_span!(
                     "rdm.ui.chaos.restart",

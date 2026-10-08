@@ -106,7 +106,7 @@ impl ControlPlane {
 
     /// Compile `change` once against the accepted topology into the next complete Build, persist
     /// it, move `Fabric.build_id`, and broadcast both. One accepted topology, one Build in flight.
-    pub async fn submit(&self, route: &'static str, change: TopologyChange) -> Result<BuildId, Refusal> {
+    pub async fn submit(&self, route: &'static str, change: TopologyChange) -> Result<Opened, Refusal> {
         let span = tracing::info_span!(
             "rdm.node_admin.build.create.via-rest",
             route,
@@ -149,7 +149,7 @@ impl ControlPlane {
             self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id, "build accepted");
             self.build_submitted.notify_waiters();
-            Ok::<BuildId, Refusal>(build_id)
+            Ok::<Opened, Refusal>(Opened { build_id, attempt: 1 })
         }
         .instrument(span.clone())
         .await
@@ -157,7 +157,7 @@ impl ControlPlane {
 
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
-    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<BuildId, Refusal> {
+    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<Opened, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
         let outer = tracing::Span::current();
         async {
@@ -207,7 +207,7 @@ impl ControlPlane {
             self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
             tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
             self.build_submitted.notify_waiters();
-            Ok::<BuildId, Refusal>(current.build_id)
+            Ok::<Opened, Refusal>(Opened { build_id: current.build_id, attempt: opened.attempt })
         }
         .instrument(span.clone())
         .await
@@ -289,8 +289,16 @@ impl IntoResponse for Refusal {
     }
 }
 
-fn accepted(id: BuildId) -> Response {
-    (StatusCode::ACCEPTED, Json(json!({ "build_id": id }))).into_response()
+/// The Build and the attempt a request answered 202 for: the caller waits for exactly this
+/// attempt. A Build that is accepted starts at attempt 1; an opened attempt is the one it opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    pub build_id: BuildId,
+    pub attempt: u32,
+}
+
+fn accepted(o: Opened) -> Response {
+    (StatusCode::ACCEPTED, Json(json!({ "build_id": o.build_id, "attempt": o.attempt }))).into_response()
 }
 
 fn parse_path(name: &str) -> Result<PathName, Refusal> {

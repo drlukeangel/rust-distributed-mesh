@@ -205,7 +205,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     let build_id = cp
         .submit("POST /api/build", TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) })
         .await
-        .unwrap();
+        .unwrap()
+        .build_id;
 
     // A executes: mesh1.rpc.2 completes, A dies in mesh1.rpc.3.
     let died = Arc::new(Notify::new());

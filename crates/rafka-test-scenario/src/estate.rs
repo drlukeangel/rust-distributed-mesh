@@ -1216,7 +1216,12 @@ pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
 
 /// What one reading of Build `id` says about attempt `attempt`: its converged Build, or nothing
 /// yet. A failed attempt panics with the Build JSON.
-pub fn attempt_verdict(id: &str, _attempt: u64, b: &Value) -> Option<Value> {
+pub fn attempt_verdict(id: &str, attempt: u64, b: &Value) -> Option<Value> {
+    // The Build reports the highest attempt claimed; a reading below the awaited attempt is an
+    // earlier attempt's state (its `complete` included), never this attempt's.
+    if b["attempt"].as_u64()? < attempt {
+        return None;
+    }
     match b["state"].as_str() {
         Some("complete") => Some(b.clone()),
         Some("failed") => panic!("build {id} failed: {b:#}"),

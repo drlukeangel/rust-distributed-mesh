@@ -199,9 +199,12 @@ impl fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-#[derive(Deserialize)]
-struct Accepted {
-    build_id: BuildId,
+/// The 202 of a request that opens an attempt: the Build and the attempt this request opened
+/// (attempt 1 for a Build it accepted). Wait for exactly this attempt, never for the Build alone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Accepted {
+    pub build_id: BuildId,
+    pub attempt: u32,
 }
 
 #[derive(Deserialize)]
@@ -268,35 +271,35 @@ impl NodeAdminClient {
     }
 
     /// `POST /api/nodes/spawn`: add one node of `kind` to `mesh`.
-    pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<BuildId, ClientError> {
+    pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<Accepted, ClientError> {
         let a: Accepted = self.post("/api/nodes/spawn", Some(serde_json::json!({ "mesh": mesh, "kind": kind }))).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `DELETE /api/nodes/{name}`.
-    pub async fn remove(&self, node: &PathName) -> Result<BuildId, ClientError> {
+    pub async fn remove(&self, node: &PathName) -> Result<Accepted, ClientError> {
         let a: Accepted = self.delete(&format!("/api/nodes/{node}")).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `POST /api/nodes/{name}/restart`.
-    pub async fn restart(&self, node: &PathName) -> Result<BuildId, ClientError> {
+    pub async fn restart(&self, node: &PathName) -> Result<Accepted, ClientError> {
         let a: Accepted = self.post(&format!("/api/nodes/{node}/restart"), None).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `POST /api/nodes/{name}/replace`: the next attempt of the accepted Build retires the live
     /// birth and creates a new node at the path.
-    pub async fn replace(&self, node: &PathName) -> Result<BuildId, ClientError> {
+    pub async fn replace(&self, node: &PathName) -> Result<Accepted, ClientError> {
         let a: Accepted = self.post(&format!("/api/nodes/{node}/replace"), None).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `POST /api/build`: reconcile the whole fabric to `desired`.
-    pub async fn build(&self, desired: &FabricDesired) -> Result<BuildId, ClientError> {
+    pub async fn build(&self, desired: &FabricDesired) -> Result<Accepted, ClientError> {
         let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;
         let a: Accepted = self.post("/api/build", Some(body)).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `GET /api/builds?id=`.
@@ -325,16 +328,16 @@ impl NodeAdminClient {
     }
 
     /// `POST /api/meshes`.
-    pub async fn create_mesh(&self, desired: &MeshDesired) -> Result<BuildId, ClientError> {
+    pub async fn create_mesh(&self, desired: &MeshDesired) -> Result<Accepted, ClientError> {
         let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;
         let a: Accepted = self.post("/api/meshes", Some(body)).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `DELETE /api/meshes/{id|name}`.
-    pub async fn remove_mesh(&self, id_or_name: &str) -> Result<BuildId, ClientError> {
+    pub async fn remove_mesh(&self, id_or_name: &str) -> Result<Accepted, ClientError> {
         let a: Accepted = self.delete(&format!("/api/meshes/{id_or_name}")).await?;
-        Ok(a.build_id)
+        Ok(a)
     }
 
     /// `POST /api/shutdown`: runtime administration, not a Build.

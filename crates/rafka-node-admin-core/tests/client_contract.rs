@@ -91,22 +91,26 @@ async fn settle(cp: &ControlPlane, id: &rafka_node_admin_client::BuildId) {
 async fn every_mutation_returns_a_build_and_the_build_reads_back() {
     let (c, cp) = serve().await;
     let before = cp.topology.read().await.clone();
-    let spawn = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap();
+    let spawn_accepted = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap();
+    assert_eq!(spawn_accepted.attempt, 1, "an accepted Build starts at attempt 1");
+    let spawn = spawn_accepted.build_id;
     let v = c.build_view(&spawn).await.unwrap();
     assert_eq!((v.build_id.clone(), v.state, v.submitted_change.as_ref().and_then(|c| c["kind"].as_str())), (spawn.clone(), BuildState::Pending, Some("add_node")));
     assert!(v.topology["meshes"]["mesh1"]["nodes"].as_array().is_some_and(|n| n.len() == 5), "{:?}", v.topology);
     settle(&cp, &spawn).await;
     // A restart is an attempt of the accepted Build, never a Build of its own.
-    let restart = c.restart(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
+    let restart_accepted = c.restart(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
+    assert_eq!(restart_accepted.attempt, 2, "a restart answers the attempt it opened");
+    let restart = restart_accepted.build_id;
     assert_eq!(restart, spawn);
     let v = c.build_view(&restart).await.unwrap();
     assert_eq!((v.reason.as_str(), v.action.as_ref().and_then(|a| a["path"].as_str())), ("restart", Some("mesh1.rpc.2")));
     settle(&cp, &restart).await;
-    let removed = c.remove(&"mesh1.rpc.2".parse().unwrap()).await.unwrap();
+    let removed = c.remove(&"mesh1.rpc.2".parse().unwrap()).await.unwrap().build_id;
     settle(&cp, &removed).await;
-    let built = c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 4)])] }).await.unwrap();
+    let built = c.build(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 4)])] }).await.unwrap().build_id;
     settle(&cp, &built).await;
-    let mesh2 = c.create_mesh(&MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)])).await.unwrap();
+    let mesh2 = c.create_mesh(&MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)])).await.unwrap().build_id;
     c.remove_mesh("mesh2").await.unwrap_err(); // the Build above is still in flight: refused below
     settle(&cp, &mesh2).await;
     c.remove_mesh("mesh9").await.unwrap_err(); // no such mesh
@@ -125,7 +129,7 @@ async fn refusals_keep_their_status_and_named_reason() {
     assert_eq!(refused(c.spawn("mesh7", NodeKind::RpcNode).await.unwrap_err()), (404, "unknown-mesh".into()));
     assert_eq!(refused(c.remove_mesh("mesh1").await.unwrap_err()), (422, "empty-fabric".into()));
     assert_eq!(refused(c.mesh("mesh9").await.unwrap_err()), (404, "not-found".into()));
-    let pending = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap();
+    let pending = c.spawn("mesh1", NodeKind::RpcNode).await.unwrap().build_id;
     assert_eq!(refused(c.forget(&pending).await.unwrap_err()), (409, "conflict".into()), "a running Build is not history");
     assert_eq!(refused(c.spawn("mesh1", NodeKind::RpcNode).await.unwrap_err()), (409, "build-in-progress".into()), "one Build at a time");
     let gone = NodeAdminClient::new("http://127.0.0.1:9");
