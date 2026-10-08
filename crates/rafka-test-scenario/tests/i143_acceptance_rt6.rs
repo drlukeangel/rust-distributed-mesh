@@ -165,7 +165,9 @@ fn rafka_test_scenario_now() -> u64 {
 /// CONTRACT: a node born into the fabric makes `JoinNode` its first call to its maker and then
 /// reads the maker's topology with `GetTopology`: the maker's join span (`via-join`, installed)
 /// precedes the maker's topology serve span, which precedes the node's own
-/// `via-read-install` span, one per mesh it installed. A join of an already-held member is not a
+/// `via-read-install` span, one per mesh the maker streamed. The read is one call that is answered
+/// (never refused) with the meshes the maker holds published snapshots of: a Day-0 maker that has
+/// published none answers none, and the birth completes. A join of an already-held member is not a
 /// re-read: no join is recorded as `member`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it() {
@@ -182,14 +184,16 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "served_by") == maker).collect();
         let join_span = join_served.iter().find(|sp| attr(sp, "outcome") == "installed").unwrap_or_else(|| panic!("{maker} installed no join of {node}: {join_served:?}"));
         let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node).collect();
-        assert!(!installs.is_empty(), "{node} installed no mesh from a topology read");
-        let first_install = installs.iter().min_by_key(|sp| at(sp)).unwrap();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()
-            .filter(|sp| attr(sp, "node") == maker && at(sp) >= at(join_span) && at(sp) <= at(first_install))
-            .max_by_key(|sp| at(sp))
-            .unwrap_or_else(|| panic!("{maker} served no topology read between the join of {node} and its first install"));
-        assert!(at(join_span) < at(serve) && at(serve) < at(first_install), "join, then serve, then install");
+            .filter(|sp| attr(sp, "node") == maker && at(sp) >= at(join_span))
+            .min_by_key(|sp| at(sp))
+            .unwrap_or_else(|| panic!("{maker} served no topology read after the join of {node}"));
+        assert_eq!(attr(serve, "outcome"), "served", "{maker}'s read of {node} is answered, not refused");
+        assert_eq!(installs.len().to_string(), attr(serve, "snapshots"), "{node} installs exactly the meshes the maker's single read streamed (a maker that holds none answers none): {installs:?}");
+        if let Some(first_install) = installs.iter().min_by_key(|sp| at(sp)) {
+            assert!(at(join_span) < at(serve) && at(serve) < at(first_install), "join, then serve, then install");
+        }
         assert!(installs.iter().all(|sp| attr(sp, "publisher").contains('@') && attr(sp, "topology_version").parse::<u64>().unwrap() >= 1 && !attr(sp, "mesh").is_empty()), "{installs:?}");
         births.push(json!({
             "node": node,
