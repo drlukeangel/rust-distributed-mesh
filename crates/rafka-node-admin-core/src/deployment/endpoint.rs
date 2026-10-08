@@ -442,7 +442,7 @@ pub fn port_bindable(port: u16) -> bool {
 fn reserve_on_host(addr: SocketAddr) -> bool {
     let path = reservation_path(addr);
     with_claims_locked(|_| {
-        if claim_owner(&path).is_some_and(process_is_alive)  {
+        if claim_owner(&path).is_some_and(process_is_alive) {
             return false;
         }
         match std::fs::write(&path, std::process::id().to_string()) {
