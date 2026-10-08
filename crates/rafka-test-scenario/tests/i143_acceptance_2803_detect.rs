@@ -267,6 +267,22 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert!(degraded_at >= at_ns(rebirth_verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");
     assert!(statuses.last().is_some_and(|(st, _)| st == "ready-for-traffic"), "the fabric is ready again: {statuses:?}");
 
+    // The mark sends nothing and the fabric primary never authors the peer mesh's status; the
+    // fabric's two changes are five identical sends each.
+    let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true").collect();
+    assert_eq!(marks.len(), 1, "the silent mark is made once: {marks:#?}");
+    assert!(round(marks[0]) >= 15, "the mark is at 15 rounds, not before: {}", round(marks[0]));
+    let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
+    let authored_for_peer: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope") == format!("mesh:{}", f.lost)).collect();
+    assert!(authored_for_peer.is_empty(), "the fabric primary never authors {}'s MeshStatus: {authored_for_peer:#?}", f.lost);
+    let fabric_sends: Vec<&&Value> = sends.iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "scope").starts_with("fabric:")).collect();
+    for status in ["degraded", "ready-for-traffic"] {
+        let mut by_change: BTreeMap<String, usize> = BTreeMap::new();
+        for sp in fabric_sends.iter().filter(|sp| attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= last_heard_ms) {
+            *by_change.entry(attr(sp, "changed_at_rafka_ms")).or_default() += 1;
+        }
+        assert!(!by_change.is_empty() && by_change.values().all(|n| *n == 5), "{status} is one change sent five identical times: {by_change:?}");
+    }
     result(
         &dir,
         json!({
@@ -402,4 +418,134 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     assert!(f.rebirths(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"]}));
+}
+
+/// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later
+/// probe that finds it answering do not add up to a rebirth: the latest probe decides. Both
+/// node-admins of the peer mesh are frozen (SIGSTOP: every member's dial to them fails, so probe 1 is
+/// `carrier-edge-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
+/// node-admins is cut (netfault; the mesh is unheard). After probe 1 the node-admins are continued:
+/// probe 2 reaches them through a member and they answer, `admin-alive`. No rebirth, no degraded
+/// fabric, no third probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost() {
+    let cell = "an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut f = fixture(cell).await;
+    let side = |m: &str| -> Vec<String> { f.before.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin").map(|n| s(&n["name"])).collect() };
+    let (mine, theirs) = (side(if f.lost == "mesh1" { "mesh2" } else { "mesh1" }), side(&f.lost));
+    let cut = match Partition::start(&udp_ports(&f.before, &mine), &udp_ports(&f.before, &theirs)) {
+        Ok(p) => p,
+        Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1") => {
+            eprintln!("SKIPPED by name: the host cannot cut UDP between node-admins: {why}");
+            f.estate.stop().await;
+            return;
+        }
+        Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
+    };
+    let admins = f.lost_admins();
+    for (_, pid) in &admins {
+        signal(*pid, "-STOP");
+    }
+    let first = wait_for("probe 1 is made", Duration::from_secs(120), || {
+        let spans = f.estate.spans();
+        let found = f.probes(&spans).first().map(|p| (*p).clone());
+        async move { found }
+    })
+    .await;
+    for (_, pid) in &admins {
+        signal(*pid, "-CONT");
+    }
+    let second = wait_for("probe 2 is made", Duration::from_secs(120), || {
+        let spans = f.estate.spans();
+        let found = f.probes(&spans).get(1).map(|p| (*p).clone());
+        async move { found }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(ROUND_MS * 40)).await;
+    let fabric = f.fabric_status().await;
+    drop(cut);
+    let fp = f.fabric_primary.clone();
+    f.estate.stop().await;
+    let spans = f.estate.spans();
+    assert_eq!(attr(&first, "outcome"), "carrier-edge-lost", "frozen node-admins cannot be reached by their members: {first:#?}");
+    assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
+    assert_eq!(f.probes(&spans).len(), 2, "no third probe");
+    assert!(f.rebirths(&spans).is_empty(), "the latest probe decides: no rebirth");
+    assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
+    assert_eq!(fabric, "ready-for-traffic");
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe_1": first["attributes"], "probe_2": second["attributes"]}));
+}
+
+/// CONTRACT (#2803 detection): two peer meshes that lose their node-admins at the same time are two
+/// investigations. The estate has three meshes of two node-admins and two rpc nodes; the node-admins
+/// of the two meshes the fabric primary does not belong to are killed together. Each mesh is
+/// probed twice by its own members, each decided `carrier-edge-lost` and reborn once, under its own
+/// MeshId; neither is probed through the other's members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently() {
+    let cell = "two_peer_meshes_lost_together_are_investigated_and_reborn_independently";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let shape = json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
+        {"name": "mesh3", "node_admin": 2, "rpc_node": 2},
+    ]});
+    let (status, a) = estate.post("/api/build", &shape).await;
+    assert_eq!(status, 202, "{a}");
+    let accepted = s(&a["build_id"]);
+    estate.await_attempt(&accepted, Estate::attempt_of(&a), Duration::from_secs(180)).await;
+    let want = names(&[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]);
+    let before = estate.settled(&want, Duration::from_secs(60)).await;
+    let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let fp_mesh = fp.split('.').next().unwrap().to_string();
+    let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();
+    let mut mesh_ids = BTreeMap::new();
+    for m in &lost {
+        let (_, v) = estate.get(&format!("/api/meshes/{m}")).await;
+        mesh_ids.insert(m.clone(), s(&v["id"]));
+    }
+    estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    let old = births(&before);
+    for (path, pid) in estate.live_runtimes() {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if lost.iter().any(|m| name.starts_with(&format!("{m}.admin."))) {
+            estate.kill_pid(pid);
+        }
+    }
+    if lost.iter().any(|m| m == "mesh1") {
+        estate.kill_bootstrap();
+    }
+    wait_for("both meshes are reborn", Duration::from_secs(300), || {
+        let (estate, old, lost) = (&estate, old.clone(), lost.clone());
+        async move {
+            let now = births(&estate.nodes().await);
+            lost.iter().all(|m| (1..=2).any(|i| { let n = format!("{m}.admin.{i}"); now.get(&n).is_some_and(|inc| old.get(&n) != Some(inc)) })).then_some(())
+        }
+    })
+    .await;
+    let after = estate.settled(&want, Duration::from_secs(120)).await;
+    for m in &lost {
+        let (_, v) = estate.get(&format!("/api/meshes/{m}")).await;
+        assert_eq!(s(&v["id"]), mesh_ids[m], "{m} is reborn under its own MeshId");
+    }
+    let _ = after;
+    let fabric_admin = estate.admin.clone();
+    estate.admin = fabric_admin;
+    estate.stop().await;
+    let spans = estate.spans();
+    for m in &lost {
+        let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
+        assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
+        for p in &probes {
+            assert_eq!(attr(p, "outcome"), "carrier-edge-lost", "{m}: {p:#?}");
+            assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
+        }
+        let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
+        assert_eq!(rebirths.len(), 1, "{m}: reborn once: {rebirths:#?}");
+    }
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "meshes": lost, "mesh_ids": mesh_ids}));
 }

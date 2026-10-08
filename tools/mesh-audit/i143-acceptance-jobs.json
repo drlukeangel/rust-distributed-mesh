@@ -735,6 +735,18 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect peer_mesh_whose_members_all_stay_silent_is_held_not_reborn -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn"
+        },
+        {
+          "name": "an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost"
+        },
+        {
+          "name": "two_peer_meshes_lost_together_are_investigated_and_reborn_independently",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect two_peer_meshes_lost_together_are_investigated_and_reborn_independently -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently"
         }
       ]
     }

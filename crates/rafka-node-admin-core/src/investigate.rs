@@ -319,6 +319,25 @@ fn verdict(w: &Watch, mesh: &str, outcome: &str, rounds: u64, _heard_at: u64, wh
     tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome, at = now_ms(), rounds).in_scope(|| tracing::info!("{why}"));
 }
 
+/// What the carried `ProbeNodeState` found. Any reply from the node-admin means it is there. Only the
+/// carrier saying its own edge to the node-admin is lost is `carrier-edge-lost`; a carrier that
+/// cannot be reached, refuses, or loses the call (it died after its Ping) says nothing of the
+/// node-admin, so it is `unreachable`.
+pub fn classify(out: &rafka_node_rpc_contract::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> (ProbeOutcome, String) {
+    use rafka_node_rpc_contract::outcome::RpcOutcome;
+    match out {
+        RpcOutcome::Reply(r) => match r.value() {
+            StatusReply::Current { state, .. } => (ProbeOutcome::AdminAlive, format!("{admin} answered: {state:?}")),
+            other => (ProbeOutcome::AdminAlive, format!("{admin} answered: {}", other.name())),
+        },
+        RpcOutcome::NotSent(ns) => match ns.reason() {
+            NotSentReason::CarrierEdgeLost(edge) => (ProbeOutcome::CarrierEdgeLost, edge.clone()),
+            other => (ProbeOutcome::Unreachable, format!("not sent: {other:?}")),
+        },
+        other => (ProbeOutcome::Unreachable, other.name().to_string()),
+    }
+}
+
 /// What one probe found, with what it asked.
 struct Found {
     outcome: ProbeOutcome,
@@ -360,17 +379,7 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
     let opts = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
     let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts).await;
-    let (outcome, detail) = match &out {
-        rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::Current { state, .. } => (ProbeOutcome::AdminAlive, format!("{} answered: {state:?}", admin.name)),
-            other => (ProbeOutcome::AdminAlive, format!("{} answered: {}", admin.name, other.name())),
-        },
-        rafka_node_rpc_contract::outcome::RpcOutcome::NotSent(ns) => match ns.reason() {
-            NotSentReason::CarrierEdgeLost(edge) => (ProbeOutcome::CarrierEdgeLost, edge.clone()),
-            other => (ProbeOutcome::Unreachable, format!("not sent: {other:?}")),
-        },
-        other => (ProbeOutcome::Unreachable, format!("{}", other.name())),
-    };
+    let (outcome, detail) = classify(&out, &admin.name);
     Found { outcome, target: admin.name.to_string(), members: members_asked, carrier: carrier.name.to_string(), detail }
 }
 
@@ -494,5 +503,55 @@ mod tests {
         assert!(held.defers_rebirth("mesh2"), "a hold keeps the rebirth back");
         held.forget("mesh2");
         assert!(!held.defers_rebirth("mesh2"));
+    }
+
+    /// CONTRACT (#2803 detection): a carrier that answered the Ping and is gone (or refuses) before the
+    /// Forward completes says nothing of the node-admin: the probe is `unreachable`, never
+    /// `carrier-edge-lost`, so the decision holds. Only the carrier's own edge-lost answer is one,
+    /// and any reply of the node-admin is `admin-alive`.
+    #[test]
+    fn a_carrier_lost_after_its_ping_is_unreachable_and_only_its_edge_lost_answer_is_a_rebirth() {
+        use rafka_node_rpc_contract::outcome::{PreCommit, RpcOutcome};
+        let admin: PathName = "mesh2.admin.1".parse().unwrap();
+        let not_sent = |r: NotSentReason| -> RpcOutcome<StatusReply> { PreCommit::begin(0x1B).not_sent(r) };
+        assert_eq!(classify(&not_sent(NotSentReason::CarrierEdgeLost("e".into())), &admin).0, CarrierEdgeLost);
+        for lost in [NotSentReason::Deadline, NotSentReason::Connection("reset".into()), NotSentReason::Carried("the carrier refused".into())] {
+            assert_eq!(classify(&not_sent(lost), &admin).0, Unreachable);
+        }
+    }
+
+    /// CONTRACT (#2803 detection): a fabric primary that loses its seat drops every investigation;
+    /// the next one starts from its own view, so nothing it decided is decided again, and a mesh it
+    /// never heard on the backbone is not held back at all.
+    #[test]
+    fn a_ladder_dropped_with_the_seat_starts_over_for_the_next_fabric_primary() {
+        let mut first = ladder();
+        walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
+        assert!(!first.defers_rebirth("mesh2"));
+        first.clear();
+        assert!(first.meshes().is_empty(), "nothing survives the seat");
+        let mut next = ladder();
+        assert!(!next.defers_rebirth("mesh2"), "the next primary has heard nothing yet");
+        let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30], "it decides once, from its own 30 rounds");
+    }
+
+    /// CONTRACT: two peer meshes unheard at once are two ladders; one mesh's probes, hold or
+    /// decision never move the other's.
+    #[test]
+    fn two_unheard_meshes_run_independent_ladders() {
+        let mut l = ladder();
+        for r in 0..=40 {
+            let a = l.step("mesh2", r);
+            for s in a {
+                if let Step::Probe { n, rounds } = s {
+                    l.probed("mesh2", n, CarrierEdgeLost, rounds);
+                }
+            }
+            // mesh3 is heard throughout.
+            assert!(l.step("mesh3", 0).is_empty());
+        }
+        assert!(!l.defers_rebirth("mesh2"));
+        assert!(l.defers_rebirth("mesh3"), "mesh3 was never decided");
     }
 }
