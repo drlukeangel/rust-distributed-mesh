@@ -309,7 +309,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false }
+    CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false, held_runtimes: Vec::new() }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.

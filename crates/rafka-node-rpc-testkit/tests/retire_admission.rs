@@ -139,6 +139,7 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
             restart_of: None,
             mesh_seeds: Vec::new(),
             mesh_primary: false,
+            held_runtimes: Vec::new(),
         })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
@@ -200,6 +201,7 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
         restart_of,
         mesh_seeds: Vec::new(),
         mesh_primary: false,
+        held_runtimes: Vec::new(),
     };
 
     // Birth A, then A exits.
@@ -270,7 +272,7 @@ async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
     let observer = DeparturesLost { live: &admin.observer };
     let pipeline = DeploymentPipeline { provider: &provider, joins: &admin.joins, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false })
+        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
@@ -296,7 +298,7 @@ async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
     let process = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline { provider: &process, joins: &admin.joins, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
     let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false })
+        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false, held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create: {e}"));
     let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;

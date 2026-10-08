@@ -404,4 +404,26 @@ mod tests {
         std::fs::write(d.join("meshes").join("mesh1.json"), br#"{"format":"mesh-record/9","record":{}}"#).unwrap();
         assert!(matches!(m.mesh("mesh1").await, Err(StorageError::Unrecognised { .. })));
     }
+
+    #[tokio::test]
+    async fn runtime_rows_are_one_keyed_row_per_birth_and_an_unrecognised_row_is_refused_by_name() {
+        let d = std::env::temp_dir().join(format!("rdm-runtime-rows-{}", rand::random::<u32>()));
+        let row = |inc: &str| RuntimeRow {
+            node_id: NodeId::mint(),
+            name: "mesh1.admin.2".parse().unwrap(),
+            incarnation_id: IncarnationId(inc.into()),
+            runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(),
+            data_dir: Some("/tmp/x".into()),
+        };
+        let (a, b) = (row("i1"), row("i2"));
+        let n = FileNodesStorage::open(&d).unwrap();
+        n.put_runtime(&a).await.unwrap();
+        n.put_runtime(&b).await.unwrap();
+        n.put_runtime(&a).await.unwrap();
+        let mut held = FileNodesStorage::open(&d).unwrap().runtimes().await.unwrap();
+        held.sort_by_key(|r| r.incarnation_id.0.clone());
+        assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
+        std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
+        assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
+    }
 }

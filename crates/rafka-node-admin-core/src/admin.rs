@@ -464,7 +464,6 @@ pub async fn reconcile_drift(
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
 ) -> Option<(crate::build::BuildId, u32)> {
-    let _ = durable;
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
     if matches!(current.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) {
@@ -474,14 +473,33 @@ pub async fn reconcile_drift(
     // proof carries (the provider's own, or the process runtime's record in its data dir).
     let mut exited = HashSet::new();
     let mut proven: std::collections::BTreeMap<PathName, crate::drift::ExitedBirth> = Default::default();
+    // The map this authority proves from: its view, plus every birth the durable runtime rows name
+    // at a path its view holds nothing at (a sibling this admin never heard). Such a birth is not
+    // reached, not dead: it is inspected like any unheard birth, and only an exited runtime counts.
+    let mut map = t.clone();
+    for row in durable {
+        if map.node(&row.name).is_none() && current.topology.contains(&row.name) {
+            let mut n = Node::allocated(row.name.clone());
+            n.node_id = row.node_id.clone();
+            n.incarnation_id = Some(row.incarnation_id.clone());
+            n.status = NodeStatus::PendingReconnect;
+            map.nodes.push(n);
+        }
+    }
+    let t = &map;
     for n in crate::drift::unheard(t) {
-        let Some((dg, _)) = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref()) else { continue };
-        let Some(fact) = dg.node.runtime.clone() else { continue };
+        let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
+        let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
+        let (fact, data_dir, birth) = match (&held, row) {
+            (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
+            (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
+            _ => continue,
+        };
         // Proof is the exact runtime's own terminal status, in this
         // provider's control domain; anything else proves nothing.
         let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
         let inspected = provider.inspect(&handle).await;
-        let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, dg.data_dir.as_deref().map(std::path::Path::new), &dg.node.incarnation.0);
+        let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
         if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
             let source = match (&inspected, code) {
                 (_, None) => "none",
@@ -1060,6 +1078,24 @@ impl AdminRunner {
         (seeds, recovering)
     }
 
+    /// The births' runtimes this admin holds, durable rows and the digests it hears now: the map
+    /// a node-admin it launches starts from (a successor fabric primary proves exits from it).
+    async fn held_runtimes(&self) -> Vec<crate::storage::RuntimeRow> {
+        let mut rows: BTreeMap<String, crate::storage::RuntimeRow> = BTreeMap::new();
+        if let Some(store) = self.records.contacts.get() {
+            for r in store.runtimes().await.unwrap_or_default() {
+                rows.insert(r.key(), r);
+            }
+        }
+        for d in self.book.all() {
+            if let Some(runtime) = d.node.runtime.clone() {
+                let r = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+                rows.insert(r.key(), r);
+            }
+        }
+        rows.into_values().collect()
+    }
+
     async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, restart_of: Option<Node>, replaces: Option<&IncarnationId>, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), String> {
         if restart_of.is_none() {
             match self.fence_predecessor(node).await {
@@ -1078,7 +1114,8 @@ impl AdminRunner {
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
         let (mesh_seeds, mesh_primary) = if node.kind == NodeKind::NodeAdmin && restart_of.is_none() { self.recovery_seeds(node).await } else { (Vec::new(), false) };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, mesh_seeds, mesh_primary };
+        let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
+        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, mesh_seeds, mesh_primary, held_runtimes };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
@@ -2010,11 +2047,22 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     let contacts_task = {
         let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
         tokio::spawn(async move {
+            let mut runtimes_written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
             let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
                 nodes_storage.contacts().await.unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
             loop {
                 let heard: Vec<MeshDigest> = book.current(book.staleness_floor()).into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me).collect();
                 for d in &heard {
+                    // The birth's exact runtime, once: its own keyed row, a blind put.
+                    if let (Some(runtime), false) = (&d.node.runtime, runtimes_written.contains(&(d.node.node_id.clone(), d.node.incarnation.clone()))) {
+                        let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: runtime.clone(), data_dir: d.data_dir.clone() };
+                        match nodes_storage.put_runtime(&row).await {
+                            Ok(()) => {
+                                runtimes_written.insert((row.node_id, row.incarnation_id));
+                            }
+                            Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
+                        }
+                    }
                     let mut r = crate::storage::NodeRecord {
                         node_id: d.node.node_id.clone(),
                         name: d.node.name.clone(),

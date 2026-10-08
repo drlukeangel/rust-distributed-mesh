@@ -567,6 +567,9 @@ pub struct CreateRequest {
     pub mesh_seeds: Vec<(String, SocketAddr)>,
     /// The node is a recovering mesh's first node-admin: the launch sets `RDM_MESH_PRIMARY`.
     pub mesh_primary: bool,
+    /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
+    /// starts: its durable map of the births a predecessor heard.
+    pub held_runtimes: Vec<crate::storage::RuntimeRow>,
 }
 
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
@@ -889,7 +892,17 @@ impl DeploymentPipeline<'_> {
             Some(d) => PathBuf::from(d),
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
-        let endpoint_id: EndpointId = self.step(&mut run, CreateStep::PrepareStorage.name(), async { ensure_transport_key(&data_dir) }).await?;
+        let endpoint_id: EndpointId = self.step(&mut run, CreateStep::PrepareStorage.name(), async {
+            let key = ensure_transport_key(&data_dir)?;
+            if !req.held_runtimes.is_empty() {
+                let store = crate::storage::FileNodesStorage::open(&data_dir).map_err(|e| e.to_string())?;
+                for row in &req.held_runtimes {
+                    crate::storage::NodesStorage::put_runtime(&store, row).await.map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(key)
+        })
+        .await?;
         // The process provider shares the host network namespace and the
         // container provider's network exists per fabric: nothing per node.
         self.step(&mut run, CreateStep::PrepareNetwork.name(), async { Ok(()) }).await?;

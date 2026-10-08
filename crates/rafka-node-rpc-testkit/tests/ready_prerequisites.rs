@@ -115,7 +115,7 @@ async fn create_losing(lose: Option<&'static str>) {
         template: &template,
         timeouts: Timeouts::default(),
     };
-    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false };
+    let req = CreateRequest { build_id: build_id.clone(), attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, mesh_seeds: Vec::new(), mesh_primary: false, held_runtimes: Vec::new() };
     let result = pipeline.create(&req).await;
     let view = builds.read_build(&build_id).await.unwrap();
     let complete = |s: CreateStep| view.steps.iter().any(|r| r.step == s.name() && r.outcome == StepOutcome::Complete);
