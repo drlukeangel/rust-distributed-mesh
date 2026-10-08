@@ -142,6 +142,12 @@
           "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
           "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 status_route_loss_never_synthesizes_dead -- --exact",
           "dir": "target/i143-acceptance/2805/unit/status_route_loss_never_synthesizes_dead"
+        },
+        {
+          "name": "pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape",
+          "source": "crates/rafka-node-admin-core/tests/i143_acceptance_2805.rs",
+          "command": "cargo test -p rafka-node-admin-core --test i143_acceptance_2805 pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape"
         }
       ]
     },
@@ -160,6 +166,12 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 sole_peer_admin_restarts_ready_from_its_durable_pending -- --exact",
           "dir": "target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending"
+        },
+        {
+          "name": "recovery_admin_receives_pending_under_the_existing_mesh_id",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 recovery_admin_receives_pending_under_the_existing_mesh_id -- --exact",
+          "dir": "target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id"
         }
       ]
     },

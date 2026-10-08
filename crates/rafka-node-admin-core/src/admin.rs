@@ -1338,7 +1338,8 @@ impl AdminRunner {
 }
 
 /// `ApplyMeshState(Pending)` at `target` (a mesh's first admin, just joined), from `me`.
-async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
+#[doc(hidden)]
+pub async fn apply_mesh_pending(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, target: &Node) -> Result<(), String> {
     use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
     // primary): this admin launched it and holds its birth exactly, so its resolver takes the

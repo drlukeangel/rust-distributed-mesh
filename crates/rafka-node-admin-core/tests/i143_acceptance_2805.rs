@@ -871,3 +871,96 @@ fn status_route_loss_never_synthesizes_dead() {
         assert!(spans.iter().all(|s| !s["name"].as_str().unwrap_or("").contains("dead")), "no span names a death");
     });
 }
+
+/// CONTRACT (#2805, acceptances 6 and 7): the fabric-primary's Pending hand-off at a mesh's first
+/// admin returns Ok only when the target answered Applied or AlreadyApplied. A target holding
+/// another MeshId refuses by name and no replacement id is minted; a target already past Pending
+/// refuses the backward move; a target that cannot be reached (NotSent every attempt) ends in an
+/// error saying Pending is not certain, with nothing applied at the target; and an Applied whose
+/// reply was lost (Indeterminate) is resolved by the same natural key answering AlreadyApplied.
+/// The create pipeline runs this as its ApplyMeshPending step and `?`s its error, so a non-Ok
+/// ends the birth before the shape proceeds. Every attempt is one pending-handoff span naming
+/// the target birth, the MeshId, the natural key and the outcome. This cell takes about half a
+/// minute: the Indeterminate arm waits the call's 10 s budget and the NotSent arm the hand-off's
+/// own 20 s bound.
+#[test]
+fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
+    let cell = "pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
+            let (topology, me) = (rig.authority.topology.clone(), fp.node.name.clone());
+            let ep_key = fp.key.clone();
+            async move {
+                let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+                let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+                let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+                rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await
+            }
+        };
+        let target_of = |rig: &Rig| {
+            let mut n = rig.me.node.clone();
+            n.transport_addr = Some(rig.resolved.transport_addr);
+            n
+        };
+
+        // Arm 1: the target holds another MeshId under mesh2's name.
+        let held = MeshId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), held.clone())].into_iter().collect();
+        let r1 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let other = MeshId::mint();
+        let e1 = handoff(&r1, other, target_of(&r1)).await.expect_err("a stale MeshId is refused");
+        assert!(e1.contains("no replacement id is minted") && e1.contains(&held.to_string()), "{e1}");
+        assert!(r1.authority.declared.lock().unwrap().meshes.is_empty(), "nothing applied under the wrong id");
+
+        // Arm 2: the target is already past Pending.
+        let mesh_id = MeshId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
+        let r2 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::ReadyForTraffic };
+        assert_eq!(reply(&call(&r2, &fp, &ahead, &CallOptions::default()).await), StatusReply::Applied);
+        let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after ReadyForTraffic is backward");
+        assert!(e2.contains("Pending is a backward move") && e2.contains("ReadyForTraffic"), "{e2}");
+
+        // Arm 3: applied, the reply lost; the retry of the same natural key is AlreadyApplied.
+        let mesh_id3 = MeshId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
+        let r3 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        r3.authority.hold_next_reply.store(true, Ordering::SeqCst);
+        let t3 = std::time::Instant::now();
+        handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect("the retry resolves the lost reply");
+        let lost_reply_wall = t3.elapsed();
+        assert_eq!(r3.authority.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");
+
+        // Arm 4: the target cannot be reached at all.
+        let mesh_id4 = MeshId::mint();
+        let r4 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], BTreeMap::new(), None).await;
+        let mut dark = target_of(&r4);
+        dark.transport_addr = Some("127.0.0.1:1".parse().unwrap());
+        let t4 = std::time::Instant::now();
+        let e4 = handoff(&r4, mesh_id4.clone(), dark).await.expect_err("an unreachable target is never certain");
+        let dark_wall = t4.elapsed();
+        assert!(e4.contains("Pending is not certain") && e4.contains("Build(shape) does not start under an assumed state"), "{e4}");
+        assert!(r4.authority.declared.lock().unwrap().meshes.is_empty(), "nothing applied at an unreached target");
+
+        let spans = finish(
+            &capture,
+            &dir,
+            json!({"cell": cell, "stale_mesh": e1, "backward": e2, "lost_reply_wall_ms": lost_reply_wall.as_millis() as u64, "unreachable": e4, "unreachable_wall_ms": dark_wall.as_millis() as u64}),
+        );
+        let hand = |outcome_prefix: &str, mesh_id: &MeshId| {
+            spans
+                .iter()
+                .filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-pending-handoff" && s["attributes"]["mesh_id"] == mesh_id.to_string().as_str() && s["attributes"]["outcome"].as_str().is_some_and(|o| o.starts_with(outcome_prefix)))
+                .count()
+        };
+        assert_eq!(hand("rejected-invalid-mesh-transition", &mesh_id), 1);
+        assert_eq!(hand("Indeterminate", &mesh_id3), 1, "the lost reply is spanned as Indeterminate");
+        assert_eq!(hand("applied", &mesh_id3) + hand("already-applied", &mesh_id3), 1, "and resolved once by the same key");
+        assert_eq!(hand("already-applied", &mesh_id3), 1);
+        assert!(hand("NotSent", &mesh_id4) >= 2, "an unreachable target is NotSent, attempt after attempt");
+        assert_eq!(hand("applied", &mesh_id4) + hand("already-applied", &mesh_id4), 0);
+    });
+}
