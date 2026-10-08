@@ -597,3 +597,146 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
     let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &|_| false).await;
     assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
+
+/// Two openers of one attempt number: the requested attempt (REST) and the proven-drift pass read the
+/// same settled Build, so both compute the next attempt as `k + 1`. The first append takes the number;
+/// the loser is told by name, never acknowledged for an attempt that carries someone else's action.
+mod one_attempt_number {
+    use super::*;
+    use axum::response::IntoResponse;
+    use rafka_node_admin_core::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome};
+    use rafka_node_admin_core::http::ControlPlane;
+    use tokio::sync::Notify;
+
+    /// The estate's Build log with one gate: an `open_attempt` of `reason` stops at the log's door
+    /// (after its caller computed the number) until the cell lets it write.
+    struct Gate {
+        inner: Arc<MemoryBuildStateAdapter>,
+        holds: AttemptReason,
+        arrived: Notify,
+        release: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for Gate {
+        async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+            self.inner.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
+            if o.reason == self.holds {
+                self.arrived.notify_one();
+                self.release.notified().await;
+            }
+            self.inner.open_attempt(o).await
+        }
+        async fn read_build(&self, b: &BuildId) -> Result<BuildProjection, BuildStateError> {
+            self.inner.read_build(b).await
+        }
+        async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+            self.inner.list_active().await
+        }
+        async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+            self.inner.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+            self.inner.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+            self.inner.append_step_receipt(r).await
+        }
+        async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+            self.inner.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+            self.inner.facts().await
+        }
+        async fn forget(&self, b: &BuildId) -> Result<(), BuildStateError> {
+            self.inner.forget(b).await
+        }
+    }
+
+    fn gate(e: &Estate, holds: AttemptReason) -> Arc<Gate> {
+        Arc::new(Gate { inner: e.builds.clone(), holds, arrived: Notify::new(), release: Notify::new() })
+    }
+
+    /// The fabric-primary's REST door over `builds`, on the estate's view and accepted Build.
+    async fn door(e: &Estate, builds: Arc<dyn BuildStateAdapter>) -> Arc<ControlPlane> {
+        let me: PathName = e.fabric_primary().await.parse().unwrap();
+        let mut cp = ControlPlane::new(builds, e.accepted.clone(), me, e.view.read().await.clone());
+        cp.topology = e.view.clone();
+        Arc::new(cp)
+    }
+
+    /// `mesh1.rpc.2` is lost: its runtime exited and the view holds it unheard, so the drift pass has
+    /// a birth to prove. Returns the Build's attempt before anything opens.
+    async fn lose_a_node(e: &Estate) -> u32 {
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        e.world.kill(&e.node_id("mesh1.rpc.2").await);
+        e.unheard(&["mesh1.rpc.2"]).await;
+        before.attempt
+    }
+
+    async fn opened_facts(e: &Estate, attempt: u32) -> Vec<AttemptOpened> {
+        e.builds.facts().await.unwrap().into_iter().filter_map(|f| match f { BuildFact::Opened(o) if o.attempt == attempt => Some(o), _ => None }).collect()
+    }
+
+    async fn drift_pass(e: &Estate, builds: &dyn BuildStateAdapter) -> Option<(BuildId, u32)> {
+        let me: PathName = e.fabric_primary().await.parse().unwrap();
+        let t = e.view.read().await.clone();
+        let mut started = HashSet::new();
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started).await
+    }
+
+    /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
+    /// node when a requested restart of another node opens k+1 first. The restart holds the number:
+    /// the drift pass is told it lost, opens nothing and returns no attempt to execute, and the one
+    /// Opened fact of k+1 is the restart's. Canon: build_state.rs `AttemptOpened` (insert-and-fail on
+    /// `(build_id, attempt)`), CLAUDE.md "an acknowledged write is the write that executes".
+    #[tokio::test]
+    async fn a_drift_attempt_that_loses_its_number_to_a_requested_restart_opens_nothing() {
+        let e = estate().await;
+        let k = lose_a_node(&e).await;
+        let g = gate(&e, AttemptReason::ProvenDrift);
+        let cp = door(&e, e.builds.clone()).await;
+        let (drift, rest) = tokio::join!(drift_pass(&e, &*g), async {
+            g.arrived.notified().await;
+            let r = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), false).await;
+            g.release.notify_one();
+            r
+        });
+        let rest = rest.expect("the restart took the free number");
+        assert_eq!(rest.attempt, k + 1);
+        let held = opened_facts(&e, k + 1).await;
+        assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
+        assert_eq!((held[0].reason, held[0].opened_by.as_str()), (AttemptReason::Restart, cp.me.to_string().as_str()), "the number is the restart's: {held:?}");
+        assert_eq!(drift, None, "the drift pass lost the number: it opened nothing and has no attempt to execute");
+    }
+
+    /// CONTRACT: the requested restart has read the settled Build and computed attempt k+1 when the
+    /// proven-drift pass opens k+1 for a lost node first. The drift attempt holds the number: the
+    /// restart is refused 409 `attempt-taken` naming the attempt, never acknowledged 202 for an attempt
+    /// that replaces the lost node and restarts nothing, and no second fact is appended.
+    #[tokio::test]
+    async fn a_requested_restart_that_loses_its_number_to_a_drift_attempt_is_refused_by_name() {
+        let e = estate().await;
+        let k = lose_a_node(&e).await;
+        let g = gate(&e, AttemptReason::Restart);
+        let cp = door(&e, g.clone()).await;
+        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), false), async {
+            g.arrived.notified().await;
+            let d = drift_pass(&e, &*e.builds).await;
+            g.release.notify_one();
+            d
+        });
+        assert_eq!(drift, Some((e.accepted.build_id().await.unwrap(), k + 1)), "the drift pass took the free number");
+        let held = opened_facts(&e, k + 1).await;
+        assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
+        assert_eq!(held[0].reason, AttemptReason::ProvenDrift, "the number is the drift attempt's: {held:?}");
+        let refusal = rest.expect_err("the restart lost the number and was told so");
+        let response = refusal.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body: serde_json::Value = serde_json::from_slice(&http_body_util::BodyExt::collect(response.into_body()).await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["error"], "attempt-taken", "{body}");
+        assert!(body["detail"].as_str().unwrap().contains(&format!("{}", k + 1)), "the refusal names the attempt: {body}");
+    }
+}
