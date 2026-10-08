@@ -296,6 +296,13 @@ impl NodeAdminClient {
         Ok(a)
     }
 
+    /// `POST /api/nodes/{name}/replace?incarnation=`: [`replace`](Self::replace) of the exact birth
+    /// `incarnation`, for a node the Build names that the admin does not hear.
+    pub async fn replace_birth(&self, node: &PathName, incarnation: &str) -> Result<Accepted, ClientError> {
+        let a: Accepted = self.post(&format!("/api/nodes/{node}/replace?incarnation={incarnation}"), None).await?;
+        Ok(a)
+    }
+
     /// `POST /api/build`: reconcile the whole fabric to `desired`.
     pub async fn build(&self, desired: &FabricDesired) -> Result<Accepted, ClientError> {
         let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string() })?;

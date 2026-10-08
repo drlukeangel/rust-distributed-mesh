@@ -321,10 +321,10 @@ pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
                 continue;
             };
             let opened: Result<u32, String> = if fp.name == d.me {
-                d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), true).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
+                d.control.open_attempt("sweep decommission", crate::build_state::AttemptReason::Replace, n.name.clone(), true, Some(n.incarnation.clone())).await.map(|o| o.attempt).map_err(|r| format!("{r:?}"))
             } else {
                 match fp.admin_api_base.as_deref() {
-                    Some(base) => rafka_node_admin_client::NodeAdminClient::new(base).replace(&n.name).await.map(|a| a.attempt).map_err(|e| e.to_string()),
+                    Some(base) => rafka_node_admin_client::NodeAdminClient::new(base).replace_birth(&n.name, &n.incarnation.0).await.map(|a| a.attempt).map_err(|e| e.to_string()),
                     None => Err(format!("the fabric primary {} advertises no control API", fp.name)),
                 }
             };

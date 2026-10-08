@@ -156,9 +156,44 @@ impl ControlPlane {
         .await
     }
 
+    /// Open the next attempt of `current` with `action`, putting its context first.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_with(&self, current: &crate::build_state::BuildProjection, reason: AttemptReason, action: AttemptAction, route: &'static str, outer: &tracing::Span, node_name: &str, span: tracing::Span) -> Result<Opened, Refusal> {
+        let opened = AttemptOpened {
+            build_id: current.build_id.clone(),
+            attempt: current.attempt + 1,
+            reason,
+            action: Some(action),
+            opened_by: self.me.to_string(),
+            opened_at_ms: now_ms(),
+        };
+        span.record("build_id", current.build_id.0.as_str());
+        span.record("attempt", opened.attempt);
+        // The context is on this fabric-primary before the attempt is open to be claimed.
+        self.contexts
+            .put(&opened.build_id, opened.attempt, &crate::build_claim::current_context())
+            .await
+            .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
+        if let Err(e) = self.builds.open_attempt(&opened).await {
+            return Err(match e {
+                BuildStateError::AttemptTaken { .. } => {
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id, attempt = opened.attempt, node = %node_name, detail = %e)
+                            .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
+                    });
+                    Refusal::AttemptTaken(e.to_string())
+                }
+                e => Refusal::State(e),
+            });
+        }
+        tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
+        self.build_submitted.notify_waiters();
+        Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt })
+    }
+
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
-    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<Opened, Refusal> {
+    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
         let outer = tracing::Span::current();
         async {
@@ -175,6 +210,18 @@ impl ControlPlane {
                     None => self.topology.read().await.clone(),
                 };
                 let Some(n) = t.node(&path) else {
+                    // A node being replaced is the node nobody hears: the Build names it, the heard
+                    // view need not. The caller names the exact birth to retire.
+                    if let (true, Some(birth)) = (replace, named_birth) {
+                        drop(t);
+                        outer.in_scope(|| {
+                            tracing::info_span!("rdm.node_admin.build.update.via-named-birth", route, node = %path, incarnation_id = %birth.0)
+                                .in_scope(|| tracing::info!("the node is in the accepted Build and silent in the view: the caller's named birth is fenced"))
+                        });
+                        let named_path = path.to_string();
+                        let action = AttemptAction::Replace { path, from_incarnation: birth };
+                        return self.open_with(&current, reason, action, route, &outer, &named_path, span.clone()).await;
+                    }
                     let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
                     let reject = BuildReject::UnknownNode { node: path.to_string() };
                     drop(t);
@@ -198,36 +245,7 @@ impl ControlPlane {
             };
             let node_name = path.to_string();
             let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
-            let opened = AttemptOpened {
-                build_id: current.build_id.clone(),
-                attempt: current.attempt + 1,
-                reason,
-                action: Some(action),
-                opened_by: self.me.to_string(),
-                opened_at_ms: now_ms(),
-            };
-            span.record("build_id", current.build_id.0.as_str());
-            span.record("attempt", opened.attempt);
-            // The context is on this fabric-primary before the attempt is open to be claimed.
-            self.contexts
-                .put(&opened.build_id, opened.attempt, &crate::build_claim::current_context())
-                .await
-                .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
-            if let Err(e) = self.builds.open_attempt(&opened).await {
-                return Err(match e {
-                    BuildStateError::AttemptTaken { .. } => {
-                        outer.in_scope(|| {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id, attempt = opened.attempt, node = %node_name, detail = %e)
-                                .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
-                        });
-                        Refusal::AttemptTaken(e.to_string())
-                    }
-                    e => Refusal::State(e),
-                });
-            }
-            tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
-            self.build_submitted.notify_waiters();
-            Ok::<Opened, Refusal>(Opened { build_id: current.build_id, attempt: opened.attempt })
+            self.open_with(&current, reason, action, route, &outer, &node_name, span.clone()).await
         }
         .instrument(span.clone())
         .await
@@ -406,12 +424,19 @@ async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Resu
 
 async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, false).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, false, None).await?))
 }
 
-async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
+#[derive(Deserialize)]
+struct ReplaceQuery {
+    /// The exact birth to retire, for a node the Build names that the view does not hold.
+    incarnation: Option<String>,
+}
+
+async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(q): Query<ReplaceQuery>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, true).await?))
+    let birth = q.incarnation.map(crate::model::IncarnationId);
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, true, birth).await?))
 }
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
