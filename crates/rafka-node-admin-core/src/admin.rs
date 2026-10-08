@@ -924,7 +924,8 @@ impl AdminRunner {
         let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
         let shape = ShapeFacts { desired_meshes: self.topology.read().await.meshes.len() as u32 };
         let ready = self.observer.ready(node).await;
-        let t = Transition { transition_id: Transition::id_for(key, &node.name.to_string()), target: node.name.to_string(), key, shape: &shape };
+        let birth = node.incarnation_id.as_ref().ok_or_else(|| format!("{} has no known birth", node.name))?;
+        let t = Transition { transition_id: Transition::id_for_birth(key, &node.name.to_string(), &birth.0), target: node.name.to_string(), key, shape: &shape };
         match self.lifecycle.transition(t, || ready, || {}).await {
             TransitionResult::Committed => Ok(()),
             other => Err(format!("{}: {other:?}", node.name)),

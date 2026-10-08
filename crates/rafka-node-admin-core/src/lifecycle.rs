@@ -259,6 +259,13 @@ impl Transition<'_> {
     pub fn id_for(key: TransitionKey, target: &str) -> String {
         format!("{:?}:{target}:{:?}->{:?}", key.scope, key.from, key.to).to_ascii_lowercase()
     }
+
+    /// The id of a node's transition for ONE birth: its path (the target) and the exact incarnation.
+    /// A transition id keys once-only hook receipts, and a re-birth at the same path is a new
+    /// execution of the transition: its hooks run again. A retry of the same birth reuses its receipts.
+    pub fn id_for_birth(key: TransitionKey, path: &str, incarnation: &str) -> String {
+        format!("{}@{incarnation}", Self::id_for(key, path))
+    }
 }
 
 pub struct LifecycleTransitionPipeline {
@@ -496,6 +503,20 @@ mod tests {
 
     fn hooks_clone(h: &SealedHooks) -> SealedHooks {
         SealedHooks { hooks: h.hooks.iter().map(|(s, k)| (s.clone(), k.clone())).collect() }
+    }
+
+    /// CONTRACT: a node's Pending -> ReadyForTraffic transition has one id per birth. A retry of
+    /// the same birth keeps its id (so its Complete hook receipts are reused); a re-birth at the
+    /// same path is another execution (so its hooks run). Must NOT happen: two births of one path
+    /// sharing a transition id, which would skip the second birth's hooks.
+    #[test]
+    fn a_re_birth_at_the_same_path_is_another_transition_execution() {
+        let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
+        let first = Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a");
+        assert_eq!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-a"), "a retry of one birth keeps its id");
+        assert_ne!(first, Transition::id_for_birth(key, "mesh1.rpc.1", "inc-b"), "a re-birth at the path is another execution");
+        assert_ne!(first, Transition::id_for_birth(key, "mesh1.rpc.2", "inc-a"));
+        assert!(first.starts_with(&Transition::id_for(key, "mesh1.rpc.1")), "{first}");
     }
 
     #[tokio::test]
