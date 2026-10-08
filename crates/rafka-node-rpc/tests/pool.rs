@@ -241,3 +241,40 @@ async fn a_new_incarnation_evicts_its_predecessors_connection_without_a_failed_c
     assert!(!after.reused && after.connection != before.connection, "it rode a connection of the new birth");
     assert!(r.client.pooled().iter().all(|k| k.incarnation == r.record.incarnation));
 }
+
+/// CONTRACT: a dial is shared by every caller of a birth, and each caller's own budget bounds its
+/// own wait. A caller that joins a dial another caller started, with a longer budget, is not
+/// ended by the starter's shorter one: the starter ends `NotSent(Deadline)` at its own deadline
+/// and the joiner is answered once the network lets the dial complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_caller_joining_a_dial_is_not_ended_by_the_starters_shorter_budget() {
+    use rafka_test_scenario::sim::{Mode, Tap};
+    let n = node().await;
+    let tap = Tap::start(n.resolved.transport_addr).await.unwrap();
+    tap.set_to_server(Mode::Drop);
+    let mut behind = n.resolved.clone();
+    behind.transport_addr = tap.addr();
+    let r = rig(behind).await;
+    let short = CallOptions { budget: Budget::Split { send: Duration::from_millis(300), reply: Duration::from_secs(1) }, ..Default::default() };
+    let rr = &r;
+    let tapr = &tap;
+    let ((starter, starter_ended_ms), (joiner, joiner_ended_ms)) = tokio::join!(
+        async {
+            let started = Instant::now();
+            let out = rr.client.call::<Ping>(&rr.target, &echo(b"starter"), &short).await.0;
+            let ended = started.elapsed().as_millis();
+            // The network heals once the starter's budget is spent.
+            tapr.set_to_server(Mode::Pass);
+            (out, ended)
+        },
+        async {
+            until_dialing(&rr.client).await;
+            let started = Instant::now();
+            let out = rr.client.call::<Ping>(&rr.target, &echo(b"joiner"), &CallOptions::default()).await.0;
+            (out, started.elapsed().as_millis())
+        }
+    );
+    assert!(matches!(&starter, RpcOutcome::NotSent(x) if *x.reason() == NotSentReason::Deadline), "the starter ends at its own deadline: {starter:?}");
+    assert!(starter_ended_ms >= 300, "the starter waited its whole budget: {starter_ended_ms} ms");
+    assert!(joiner.reply().is_some(), "the joiner holds a 10 s budget; the starter's 300 ms does not end it (ended after {joiner_ended_ms} ms): {joiner:?} tap to_server (forwarded, held, dropped) = {:?}", tap.stats().to_server.snapshot());
+}
