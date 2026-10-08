@@ -343,8 +343,14 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
     // A live node of a kept mesh that the topology no longer names is retired; a mesh the
     // topology no longer names is retired whole (every member, dead or live, by the retire
     // pipeline), never member by member.
-    let mut extra: Vec<&PathName> =
-        observed.nodes.iter().filter(|n| n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name)).map(|n| &n.name).collect();
+    // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
+    // repairs exactly its birth.
+    let mut extra: Vec<&PathName> = observed
+        .nodes
+        .iter()
+        .filter(|n| action.is_none() && n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .map(|n| &n.name)
+        .collect();
     extra.sort();
     for p in extra {
         ops.push(BuildOperation::RetireNode { node: p.clone() });
@@ -632,6 +638,13 @@ mod tests {
             assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![], "{dead:?}");
             assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }], "no action: the generic create decides");
         }
+        // A surplus live birth is retired by an attempt of its own, never beside an action.
+        let mut surplus = mn();
+        surplus.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
+        let from = surplus.node(&path).unwrap().incarnation_id.clone().unwrap();
+        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from };
+        assert_eq!(plan(&cur, &surplus, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]);
+        assert_eq!(plan(&cur, &surplus, Some(&replace)).operations, vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
         let mut leaving = mn();
         leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;
         let from = leaving.node(&path).unwrap().incarnation_id.clone().unwrap();

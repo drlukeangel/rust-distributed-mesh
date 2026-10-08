@@ -2012,7 +2012,8 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
     // A refused replace is refused on the attempt-opening door (`build.update.via-rest`), every other refused write on the create door.
     let refused_replaces = a.refused_writes.iter().filter(|r| r["route"] == "replace").count();
     let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
-    assert_eq!(rejected_updates, refused_replaces, "every rejected attempt-opening write is a replace the cell sent to a non-writer to see it refused");
+    let refused_retired_restarts = a.events.iter().filter(|e| e["event"] == "retired.restart-refused").count();
+    assert_eq!(rejected_updates, refused_replaces + refused_retired_restarts, "every rejected attempt-opening write is a replace sent to a non-writer or a restart of a retired path, each asked for by the cell");
     assert_eq!(rejected_creates, probe_answers + a.refused_writes.len() - refused_replaces, "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
     let mut rounds = Vec::new();
     for p in &a.probes {
