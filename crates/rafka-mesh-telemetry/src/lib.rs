@@ -20,19 +20,27 @@ struct Exporters {
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
     drained: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The local evidence sink's writer, drained before anything waits on the collector.
+    evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>,
 }
 
 impl Exporters {
-    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> Self {
-        Self { provider, logs, drained: Default::default() }
+    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>) -> Self {
+        Self { provider, logs, drained: Default::default(), evidence }
     }
 
-    /// Shut the providers down (the shutdown drains what is queued), each on a thread of its own,
-    /// and wait at most [`export::DRAIN_BOUND`] for them together. The local evidence sink is the
-    /// provider's first processor, so it is drained before the collector's.
+    /// Drain the local evidence sink (a file write; every ended span is already queued to it),
+    /// then shut the providers down (the shutdown drains what is queued for the collector), each
+    /// on a thread of its own: waited for at most [`export::DRAIN_BOUND`] together, and not at
+    /// all while the collector is known to be down, because what is queued for it is dropped.
     fn drain(&self, what: &'static str) {
         if self.drained.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
+        }
+        if let Some(evidence) = &self.evidence {
+            if let Ok(mut writer) = evidence.lock() {
+                writer.shutdown();
+            }
         }
         let provider = self.provider.clone();
         let mut jobs: Vec<Box<dyn FnOnce() + Send>> = vec![Box::new(move || {
@@ -74,8 +82,8 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> TelemetryGuard {
-    let exporters = Exporters::new(provider, logs);
+fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<std::sync::Arc<std::sync::Mutex<EvidenceWriter>>>) -> TelemetryGuard {
+    let exporters = Exporters::new(provider, logs, evidence);
     let _ = EXIT_FLUSH.set(exporters.clone());
     TelemetryGuard { exporters }
 }
@@ -93,7 +101,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None)
+    guard(provider, None, None)
 }
 
 /// Initialize OTLP tracing for short-lived CLI processes (rfa, future rf).
@@ -108,7 +116,7 @@ pub fn init_telemetry_for_cli(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None)
+    guard(provider, None, None)
 }
 
 fn install_propagator() {
@@ -402,9 +410,11 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
     let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
+    let mut evidence = None;
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
             Ok(e) => {
+                evidence = Some(e.writer.clone());
                 builder = builder.with_span_processor(SimpleSpanProcessor::new(Box::new(e)));
                 any = true;
             }
@@ -460,5 +470,5 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .with(log_layer)
         .try_init();
     let _ = watchdog::spawn();
-    Some(guard(provider, logs))
+    Some(guard(provider, logs, evidence))
 }

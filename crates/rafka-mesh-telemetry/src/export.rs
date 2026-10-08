@@ -28,6 +28,15 @@ pub const EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Spans and log records an unreachable collector made the exporters drop, since process start.
 static DROPPED_BY_OUTAGE: AtomicU64 = AtomicU64::new(0);
 
+/// How many signals' exports are failing now.
+static SIGNALS_DOWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether the last export of any signal failed and none has succeeded since: what is queued for
+/// the collector is going to be dropped, so no exit waits for it.
+pub fn collector_is_down() -> bool {
+    SIGNALS_DOWN.load(Ordering::SeqCst) > 0
+}
+
 /// Spans and log records dropped because an export to the collector failed (an outage). Records
 /// dropped because a queue was full are named by the SDK's own one-time warning.
 pub fn dropped_by_outage() -> u64 {
@@ -114,11 +123,13 @@ impl Outage {
                 DROPPED_BY_OUTAGE.fetch_add(count as u64, Ordering::Relaxed);
                 self.dropped.fetch_add(count as u64, Ordering::Relaxed);
                 if !self.down.swap(true, Ordering::Relaxed) {
+                    SIGNALS_DOWN.fetch_add(1, Ordering::SeqCst);
                     eprintln!("telemetry: the OTLP {} export to {} is failing, dropping until it recovers: {why}", self.signal, self.endpoint);
                 }
             }
             None => {
                 if self.down.swap(false, Ordering::Relaxed) {
+                    SIGNALS_DOWN.fetch_sub(1, Ordering::SeqCst);
                     let dropped = self.dropped.swap(0, Ordering::Relaxed);
                     eprintln!("telemetry: the OTLP {} export to {} recovered after dropping {dropped}", self.signal, self.endpoint);
                 }
@@ -196,9 +207,9 @@ impl<E: LogExporter> LogExporter for WatchedLogs<E> {
     }
 }
 
-/// Run each job on a thread of its own and wait at most [`DRAIN_BOUND`] for all of them. Past the
-/// bound the threads are left behind (the process goes on, or exits and takes them) and the wait
-/// is named on stderr.
+/// Run each job on a thread of its own and wait at most [`DRAIN_BOUND`] for all of them; when the
+/// collector is known to be down they are not waited for at all. Past the bound the threads are
+/// left behind (the process goes on, or exits and takes them) and the wait is named on stderr.
 pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
     let (done, finished) = std::sync::mpsc::channel::<()>();
     let mut started = 0;
@@ -212,6 +223,9 @@ pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
             Ok(_) => started += 1,
             Err(e) => eprintln!("telemetry: {what} could not start a thread: {e}"),
         }
+    }
+    if collector_is_down() {
+        return;
     }
     let deadline = std::time::Instant::now() + DRAIN_BOUND;
     for _ in 0..started {
