@@ -16,15 +16,15 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 [workspace]
 
 [dependencies]
-rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
-rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
-rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
-rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
+rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
+rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
+rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
+rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
-rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
+rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "74d3ac0e2400ef5723db16ccca7cc408a14b7950" }
+rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "a0fb95ad6b4c919c29f791d46ae39700d6409584" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
