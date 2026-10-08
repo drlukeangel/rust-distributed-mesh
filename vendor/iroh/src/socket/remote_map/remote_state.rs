@@ -467,15 +467,18 @@ impl RemoteStateActor {
         };
         let removed = self.state.paths.retain_addrs(&keep);
         let mut retired_conns = Vec::new();
-        for (conn_id, conn_state) in self.connections.iter() {
+        for (conn_id, conn_state) in self.connections.iter_mut() {
             let Some(conn) = conn_state.handle.upgrade() else {
                 continue;
             };
+            let stale: Vec<PathId> = conn_state
+                .paths
+                .iter()
+                .filter(|(_, remote)| remote.is_ip() && !keep(&remote.remote()))
+                .map(|(path_id, _)| *path_id)
+                .collect();
             let mut closed_conn = false;
-            for (path_id, path_remote) in conn_state.paths.iter() {
-                if !path_remote.is_ip() || keep(&path_remote.remote()) {
-                    continue;
-                }
+            for path_id in &stale {
                 let Some(path) = conn.path(*path_id) else {
                     continue;
                 };
@@ -491,6 +494,17 @@ impl RemoteStateActor {
                         }
                     }
                 }
+            }
+            // The retired paths leave the connection's path map now, not when noq reports them
+            // abandoned: until then a path selection would still see them, and would select the
+            // very path that was retired. A closed connection keeps no path at all.
+            let leaving: Vec<PathId> = if closed_conn {
+                conn_state.paths.keys().copied().collect()
+            } else {
+                stale
+            };
+            for path_id in leaving {
+                conn_state.remove_path(&path_id, &conn);
             }
         }
         if let Some(selected) = self.state.selected_path.as_ref()
