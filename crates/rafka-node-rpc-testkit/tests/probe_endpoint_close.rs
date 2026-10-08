@@ -78,7 +78,7 @@ fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     let _ = std::fs::remove_dir_all(&evidence);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
         .args(["--admin", &admin, "put", "--target", &format!("exact:{present}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.9"])
-        .env("RAFKA_EVIDENCE_DIR", &evidence)
+        .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

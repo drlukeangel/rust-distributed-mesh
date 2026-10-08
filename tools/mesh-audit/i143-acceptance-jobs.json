@@ -561,19 +561,19 @@
         {
           "name": "mock_role_restarts_preserve_identity_and_replace_birth",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth"
         },
         {
           "name": "mock_node_replacement_creates_distinct_logical_identity",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity"
         },
         {
           "name": "mock_drain_and_retire_preserve_status_and_terminal_proof",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof"
         }
       ]
@@ -585,19 +585,19 @@
         {
           "name": "mock_role_restarts_preserve_identity_and_replace_birth",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth"
         },
         {
           "name": "mock_node_replacement_creates_distinct_logical_identity",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity"
         },
         {
           "name": "mock_drain_and_retire_preserve_status_and_terminal_proof",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RAFKA_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
           "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof"
         }
       ]

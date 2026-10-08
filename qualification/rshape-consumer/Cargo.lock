@@ -2915,7 +2915,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rafka-mesh-entity"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "blake3",
  "hex",
@@ -2928,7 +2928,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "futures-util",
  "http",
@@ -2948,7 +2948,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-transport"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2967,7 +2967,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-admin-client"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "rafka-mesh-entity",
  "reqwest",
@@ -2978,7 +2978,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-admin-core"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3007,7 +3007,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-base"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "anyhow",
  "iroh",
@@ -3026,7 +3026,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "anyhow",
  "iroh",
@@ -3041,7 +3041,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-contract"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "postcard",
  "rafka-mesh-entity",
@@ -3051,7 +3051,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-testkit"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=407a4ae23c94ba50cbb4af1dbbf557b7260a110d#407a4ae23c94ba50cbb4af1dbbf557b7260a110d"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=79025678a5a7a58b5a3aff85f188367a1b7a0f6e#79025678a5a7a58b5a3aff85f188367a1b7a0f6e"
 dependencies = [
  "anyhow",
  "async-trait",

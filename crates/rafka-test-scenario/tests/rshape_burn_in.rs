@@ -3118,7 +3118,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: Fabric.build_id names the retiring Build");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal retire + held removal, then absence: a full staleness window with the removal held.
-    let window = std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
+    let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = 0u32;
     while Instant::now() < until {
@@ -3351,7 +3351,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, 
     let held_bucket = bucket(&held_call);
     assert_ne!(held_bucket, Bucket::Reply, "{node}: a held runtime answered: {held_call}");
     // The silence window: two staleness windows with the node held. Silence is not death.
-    let window = 2 * std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
+    let window = 2 * std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = Vec::new();
     while Instant::now() < until {
@@ -3655,7 +3655,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     // The drain call the restart sends is a Node RPC with its default overall budget (10 s,
     // `CallOptions::default`); the observation outlasts it by two staleness windows, so what the attempt
     // does with a drain call that met a held runtime is seen, whichever way it goes.
-    let window = 10_000 + 2 * std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    let window = 10_000 + 2 * std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
     let until = Instant::now() + Duration::from_millis(window);
     let mut seen: Vec<Value> = Vec::new();
     let mut completed_while_held = false;
