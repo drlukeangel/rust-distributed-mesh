@@ -458,6 +458,12 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_network_partitions_heals_preserves_live_runtimes -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes"
+        },
+        {
+          "name": "container_node_unheard_heals_serves_same_birth",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2784.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth/estate cargo test -p rafka-test-scenario --test i143_acceptance_2784 container_node_unheard_heals_serves_same_birth -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth"
         }
       ]
     },

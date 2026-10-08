@@ -17,15 +17,24 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const CELL: &str = "container_network_partitions_heals_preserves_live_runtimes";
+const NODE_CELL: &str = "container_node_unheard_heals_serves_same_birth";
 
-fn owner() -> Owner {
+/// What is silenced: every container of the peer mesh without the fabric-primary seat, or one rpc
+/// node of it (its mesh-mates stay heard by the rest of the estate).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    PeerMesh,
+    Node,
+}
+
+fn owner(cell: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "i143-2784".into(),
         subfeature: "container-faults".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: CELL.into(),
+        test: cell.into(),
     }
 }
 
@@ -67,7 +76,12 @@ fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
 }
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
+/// A ViaPeer leg is held to whether it replied: its certainty is the carrier's own edge fact, which
+/// the first forward into the cut teaches the carrier (`ReplyDeadline`, then `CarrierEdgeLost`).
 fn leg_shape(l: &Value) -> Value {
+    if l["route"] == "via-peer" {
+        return json!({"replied": l["outcome"] == "Reply", "route": l["route"]});
+    }
     json!({"outcome": l["outcome"], "route": l["route"]})
 }
 
@@ -146,26 +160,43 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 }
 
 /// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two rpc nodes
-/// each), every container of the mesh that does not hold the fabric-primary seat is disconnected
-/// from the fabric's Docker network and later reconnected at the same addresses. While it is
-/// disconnected: `docker inspect` shows each of those containers still running (same id, same
-/// init, no restart, no exit) and off the network; the other mesh's view marks every one of them
-/// unheard; a Direct call and a ViaPeer call (through a node of the other mesh) to one of them
-/// each end without a reply and no serve span exists for them, a NoActiveRoute call is `NotSent`;
-/// the advertised seats equal what the public candidates compute, the fabric-primary stays put,
-/// and the Build gains no attempt and `Fabric.build_id` does not move; the control plane creates,
-/// retires and re-births nothing. After the reconnect every isolated node is back as the same
-/// birth (same incarnation, same container), every admin's view holds the same births and every
-/// mesh ready-for-traffic, and a Direct and a ViaPeer call to the isolated node are served by the
-/// same birth with the value stored before the cut (the healthy control, run before the cut as
-/// well). What must NOT happen: a container stopped, removed or replaced, a node declared dead and
-/// re-born, a terminate, a retire, or an election move because of the silence.
+/// each), every container of the peer mesh that does not hold the fabric-primary seat is silenced
+/// against the rest of the estate (a packet filter in each container's own network namespace) and
+/// later released. While it is silenced: `docker inspect` shows each of those containers still
+/// running (same id, same init, no restart, no exit) and attached to the fabric network; the other
+/// mesh's view marks every one of them unheard; a Direct call to one of them ends `NotSent`
+/// (deadline), a ViaPeer call through a node of the other mesh ends without a reply (first
+/// `Indeterminate` while the carrier still holds the edge, then `NotSent` naming the carrier's lost
+/// edge, and never `Indeterminate` again once the carrier has named it), a NoActiveRoute call is
+/// `NotSent`, and no serve span exists for them; the advertised seats equal what the public
+/// candidates compute, the fabric-primary stays put, and the Build gains no attempt and
+/// `Fabric.build_id` does not move; the control plane creates, retires and re-births nothing. After
+/// the release every silenced node is back as the same birth (same incarnation, same container),
+/// every admin's view holds the same births and every mesh ready-for-traffic, and a Direct and a
+/// ViaPeer call to the silenced node are served by the same birth with the value stored before the
+/// cut (the healthy control, run before the cut as well). What must NOT happen: a container
+/// stopped, removed or replaced, a node declared dead and re-born, a terminate, a retire, or an
+/// election move because of the silence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_network_partitions_heals_preserves_live_runtimes() {
+    run_isolation(CELL, Cut::PeerMesh).await;
+}
+
+/// CONTRACT (#2784): the same cut on ONE rpc node of the peer mesh without the seat. The node alone
+/// is unheard: its mesh-mates, both mesh's admins and the fabric-primary stay ready-for-traffic in
+/// the entry view, no admin and no other node is re-born, the silenced container runs throughout
+/// (same init, no restart), a Direct, ViaPeer and NoActiveRoute call to it end without a reply with
+/// no serve span, and after the release the same birth serves the value stored before the cut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn container_node_unheard_heals_serves_same_birth() {
+    run_isolation(NODE_CELL, Cut::Node).await;
+}
+
+async fn run_isolation(cell: &'static str, cut: Cut) {
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
-    let dir = acceptance_dir(CELL);
+    let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 2});
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1")]})).await;
     assert_eq!(status, 202, "{a}");
@@ -185,8 +216,13 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
     let kept_admin = nodes.iter().find(|n| n["mesh"] == kept_mesh.as_str() && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").and_then(|n| n["admin_api_base"].as_str()).expect("a kept admin answers").to_string();
     estate.admin = kept_admin;
     let nodes = estate.nodes().await;
-    let isolated_names: Vec<String> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
-    assert_eq!(isolated_names.len(), 4, "{cut_mesh} holds its four members ready: {isolated_names:?}");
+    let mesh_members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+    assert_eq!(mesh_members.len(), 4, "{cut_mesh} holds its four members ready: {mesh_members:?}");
+    let isolated_names: Vec<String> = match cut {
+        Cut::PeerMesh => mesh_members.clone(),
+        Cut::Node => vec![format!("{cut_mesh}.rpc.1")],
+    };
+    let silenced_subject = if cut == Cut::Node { isolated_names[0].clone() } else { cut_mesh.clone() };
     let target = node_in(&nodes, &format!("{cut_mesh}.rpc.1")).cloned().expect("the isolated mesh's rpc node");
     let (target_name, target_id, target_inc) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
     let carrier = format!("{kept_mesh}.rpc.1");
@@ -220,7 +256,7 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
     let cut_at = now_nanos();
     let rules_at_cut = silenced.rules().expect("the packet filters are listed");
     let primitive = json!({"docker": "run --net container:<id> --cap-add NET_ADMIN iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
-    let mut ev = Evidence::new(Family::PartitionHeal, format!("network:silence-{cut_mesh}"));
+    let mut ev = Evidence::new(Family::PartitionHeal, format!("network:silence-{silenced_subject}"));
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
     let after_cut = inspect_all(&silenced);
     for (n, i) in &after_cut {
@@ -238,7 +274,7 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
     // Reads while silent: provider state, the view, and the three legs.
     let mut reads = Vec::new();
     let mut silence = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         let l = legs(&estate, &target_id, &carrier);
         let inspected = inspect_all(&silenced);
         let rules = silenced.rules().expect("the packet filters are listed");
@@ -336,6 +372,7 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
     let served_in_silence: Vec<&&Value> = serves.iter().filter(|sp| silent_traces.contains(&s(&sp["trace_id"]))).collect();
     let silent_resolves: Vec<&&Value> = resolves.iter().filter(|sp| start(sp) > cut_at && start(sp) < healed_at).collect();
     let silent_by = |route: &str| silent_resolves.iter().filter(|sp| sp["attributes"]["route"] == route).count();
+    let reads_n = silence.len();
     let isolated_set: BTreeSet<&str> = isolated_names.iter().map(String::as_str).collect();
     let mutations: Vec<Value> = spans
         .iter()
@@ -357,17 +394,32 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
 
     let mut rec2 = ev.reconciliation.take().unwrap();
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
-    rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == 2 && silent_by("via-peer") == 2 && silent_by("no-active-route") == 2 && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
+    rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
+    // The ViaPeer certainty is the carrier's own edge fact: the first forward into the cut may end
+    // `Indeterminate(ReplyDeadline)`; once the carrier has named its lost edge no later leg is
+    // `Indeterminate` again, and the last leg names the carrier and the target.
+    let via: Vec<(String, String)> = silence.iter().map(|r| (s(&r["legs"]["via_peer"]["outcome"]), s(&r["legs"]["via_peer"]["reason"]))).collect();
+    let edge_named = |v: &(String, String)| v.0 == "NotSent" && v.1.contains("CarrierEdgeLost");
+    let first_named = via.iter().position(edge_named);
+    let via_ok = first_named.is_some_and(|i| via[i..].iter().all(edge_named))
+        && via[..first_named.unwrap_or(0)].iter().all(|v| v.0 == "Indeterminate" && v.1 == "ReplyDeadline")
+        && via.last().is_some_and(|v| v.1.contains(&format!("{carrier} -> {target_name}")));
+    rec2.check("each silent ViaPeer leg is Indeterminate(ReplyDeadline) until the carrier names its lost edge to the target, then NotSent(CarrierEdgeLost) every time", via_ok, format!("{via:?}"));
+    if cut == Cut::Node {
+        let still: BTreeSet<(String, String)> = births(&nodes_during).into_iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).collect();
+        let want_rest: BTreeSet<(String, String)> = want_births.iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).cloned().collect();
+        rec2.check("every node other than the silenced one stays ready-for-traffic as the same birth while it is silent", still == want_rest, format!("differ: {:?}", still.symmetric_difference(&want_rest).collect::<Vec<_>>()));
+    }
     rec2.check("the healthy legs before and after the silence replied Direct and ViaPeer", by("direct", true).len() >= 3 && by("via-peer", true).len() >= 2, format!("direct {} via-peer {}", by("direct", true).len(), by("via-peer", true).len()));
     rec2.check("the control plane created, retired, re-attempted and re-birthed nothing while the silence held", mutations.is_empty(), format!("{mutations:?}"));
     rec2.check("no kept-side admin named another fabric primary while the silence held", moved.is_empty(), format!("{} elections, {} by kept-side admins moved", elections_after_cut.len(), moved.len()));
-    let own_ok = silence.iter().all(|r| {
+    let own_ok = cut == Cut::Node || silence.iter().all(|r| {
         isolated_admins.iter().all(|(a, _)| {
             let v = &r["own_views"][a];
             isolated_names.iter().all(|n| v[n] == "ready-for-traffic") && v.as_object().is_some_and(|m| m.iter().filter(|(n, _)| !isolated_names.contains(n)).all(|(_, st)| st == "pending-reconnect" || st == "dead"))
         })
     });
-    rec2.check("each silenced admin hears its own mesh ready and the other mesh unheard", own_ok, silence.iter().map(|r| r["own_views"].to_string()).collect::<Vec<_>>().join(" | "));
+    rec2.check("each silenced admin hears its own mesh ready and the other mesh unheard (a whole-mesh cut)", own_ok, silence.iter().map(|r| r["own_views"].to_string()).collect::<Vec<_>>().join(" | "));
     ev.reconciliation = Some(rec2);
     for sp in serves.iter() {
         ev.dispatches.push(Dispatch { birth: s(&sp["attributes"]["incarnation_id"]), current_birth: target_inc.clone(), after_supersession: false });
@@ -379,11 +431,12 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
         Err(r) => (Value::Null, Some(r.to_string())),
     };
     let result = json!({
-        "cell": CELL,
+        "cell": cell,
         "provider": estate.owner.provider,
         "network": network,
         "kept_mesh": kept_mesh,
         "isolated_mesh": cut_mesh,
+        "silenced_subject": silenced_subject,
         "fabric_primary": fabric_primary,
         "target": {"name": target_name, "node_id": target_id, "incarnation_id": target_inc},
         "carrier": carrier,
@@ -412,6 +465,6 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     if let Err(r) = verdict {
-        panic!("the detector refused the isolation of {cut_mesh}:\n{r}");
+        panic!("the detector refused the isolation of {silenced_subject}:\n{r}");
     }
 }
