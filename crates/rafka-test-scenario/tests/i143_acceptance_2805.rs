@@ -137,9 +137,16 @@ async fn pending_contract(cell: &str) {
         .into_iter()
         .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["sender"] == mesh2_primary.as_str() && d["attributes"]["node"] == fabric_primary.as_str())
         .collect();
-    assert!(mesh_declared.iter().any(|d| d["attributes"]["outcome"] == "applied"), "the elected primary's Mesh declaration was applied by the fabric primary: {mesh_declared:?}");
+    assert!(mesh_declared.iter().any(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"))), "the elected primary's Mesh declaration was certain at the fabric primary: {mesh_declared:?}");
     assert!(mesh_declared.iter().all(|d| start(d) >= end(&elected_ready)), "a Mesh declaration comes from a primary that is already Ready: {mesh_declared:?}");
-    assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"))), "{mesh_declared:?}");
+    // A declaration made before the fabric primary's view holds the sender's seat is refused by name
+    // and is the only refusal there is; the Mesh is applied once, by whichever admin first held the seat.
+    assert!(mesh_declared.iter().all(|d| matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) || (d["attributes"]["outcome"] == "rejected-not-authority" && d["attributes"]["detail"] == "sender-not-subject")), "{mesh_declared:?}");
+    let mesh2_applied: Vec<&Value> = named(&spans, DECLARATION)
+        .into_iter()
+        .filter(|d| d["attributes"]["op"] == "declare-mesh-state" && d["attributes"]["node"] == fabric_primary.as_str() && d["attributes"]["sender"].as_str().is_some_and(|x| x.starts_with("mesh2.admin.")) && d["attributes"]["outcome"] == "applied")
+        .collect();
+    assert_eq!(mesh2_applied.len(), 1, "mesh2's Ready is applied once at the fabric primary, whoever declared it: {mesh2_applied:?}");
     let fabric_event: Vec<&Value> = named(&spans, DECLARATION)
         .into_iter()
         .filter(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && d["attributes"]["outcome"] == "applied")
@@ -174,6 +181,7 @@ async fn pending_contract(cell: &str) {
         "first_member_create": first_member_create,
         "mesh_declarations": mesh_declared.iter().map(|d| json!({"span_id": d["span_id"], "outcome": d["attributes"]["outcome"], "start": start(d)})).collect::<Vec<_>>(),
         "fabric_event": fabric_event[0]["span_id"],
+        "mesh_applied_span": mesh2_applied[0]["span_id"],
         "elected_ready_end": end(&elected_ready),
         "ready": {"span_id": ready["span_id"], "start": start(&ready)},
         "reconciles": reconciles.len(),
