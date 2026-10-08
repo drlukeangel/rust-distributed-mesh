@@ -3638,7 +3638,7 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
 /// The provider's action meets a held runtime: with the node's exact runtime held (acknowledged by the
 /// provider) the fabric-primary is asked to restart it. The Build's attempt cannot drain a runtime that
 /// does not answer; what it does is observed from the Build's own projection and the node's view, every
-/// 500 ms, for as long as the hold lasts (three staleness windows). Silence is never death: the node
+/// 500 ms, for as long as the hold lasts (the drain call's 10 s budget plus two staleness windows). Silence is never death: the node
 /// stays listed under its NodeId and no replacement is started. The hold is then released
 /// (acknowledged) and the Build must complete with the node ready under a new incarnation, within the
 /// 60 s a restart is given, as the same logical node.
@@ -3652,7 +3652,10 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].as_u64().unwrap());
     let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", "POST", &format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
-    let window = 3 * std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
+    // The drain call the restart sends is a Node RPC with its default overall budget (10 s,
+    // `CallOptions::default`); the observation outlasts it by two staleness windows, so what the attempt
+    // does with a drain call that met a held runtime is seen, whichever way it goes.
+    let window = 10_000 + 2 * std::env::var("RAFKA_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
     let until = Instant::now() + Duration::from_millis(window);
     let mut seen: Vec<Value> = Vec::new();
     let mut completed_while_held = false;
