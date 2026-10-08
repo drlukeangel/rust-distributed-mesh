@@ -78,6 +78,18 @@
           "evidence": "runner"
         }
       ]
+    },
+    "i143-2942-process": {
+      "issue": 2942,
+      "layer": "process",
+      "cells": [
+        {
+          "name": "retiring_admin_completes_five_leaving_announcements_within_linger",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
+          "command": "RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RAFKA_ARTIFACTS_DIR=target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 retiring_admin_completes_five_leaving_announcements_within_linger -- --exact",
+          "dir": "target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger"
+        }
+      ]
     }
   }
 }
