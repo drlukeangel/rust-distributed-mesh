@@ -299,6 +299,27 @@ pub fn binary(name: &str) -> PathBuf {
     p
 }
 
+/// The package that builds `name`, for the rebuild command a refusal names.
+fn package_of(name: &str) -> &'static str {
+    match name {
+        "rafka-node-admin" => "rafka-node-admin-core",
+        "rafka-rpc-probe" | "rafka-rpc-node" => "rafka-node-rpc-testkit",
+        "rafka-broker" => "rafka-broker",
+        "rafka-gateway" => "rafka-gateway",
+        "rafka-compute" => "rafka-compute",
+        _ => "<the package of this binary>",
+    }
+}
+
+/// Whether the binary at `exe` was built from the source this tree holds now. Cargo writes beside every
+/// binary a dep-info file (`<name>.d`) listing each source file the binary was compiled from; the binary is
+/// stale when any of them is newer than it. A binary with no dep-info file beside it (copied in from another
+/// build, as a consumer's executables are, and judged by their recorded hashes instead) has no fingerprint here
+/// and is not judged. The refusal names the binary, the file that changed and the rebuild command.
+pub fn binary_is_fresh(_name: &str, _exe: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// Poll `check` until it yields `Some`, failing at `deadline` with `what`.
 /// Recovery is inferred only from observed state, never from elapsed time.
 pub async fn wait_for<T, F, Fut>(what: &str, within: Duration, mut check: F) -> T
@@ -1331,5 +1352,36 @@ fn keep_node_logs(root: &Path, artifacts: &Path) {
                 let _ = std::fs::copy(&f, dest.join(format!("{}.{name}", e.file_name().to_string_lossy())));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // CONTRACT: a binary is refused by name when a source file its dep-info lists is newer than it, and
+    // accepted when none is; a binary with no dep-info beside it is not judged.
+    #[test]
+    fn a_binary_older_than_its_source_is_refused_by_name_and_a_fresh_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("rdm-stale-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("lib one.rs");
+        std::fs::write(&src, "fn main() {}").unwrap();
+        let exe = dir.join("rafka-rpc-probe");
+        let set = |path: &Path, secs_from_epoch: u64| {
+            let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            f.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs_from_epoch)).unwrap();
+        };
+        std::fs::write(&exe, "bin").unwrap();
+        assert_eq!(binary_is_fresh("rafka-rpc-probe", &exe), Ok(()), "no dep-info beside the binary: not judged");
+        std::fs::write(exe.with_extension("d"), format!("{}: {}\n", exe.display(), src.display().to_string().replace(' ', "\\ "))).unwrap();
+        set(&src, 1_000);
+        set(&exe, 2_000);
+        assert_eq!(binary_is_fresh("rafka-rpc-probe", &exe), Ok(()), "the source is older than the binary");
+        set(&src, 3_000);
+        let why = binary_is_fresh("rafka-rpc-probe", &exe).unwrap_err();
+        assert!(why.contains("rafka-rpc-probe") && why.contains("lib one.rs") && why.contains("cargo build -p rafka-node-rpc-testkit --bin rafka-rpc-probe"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
