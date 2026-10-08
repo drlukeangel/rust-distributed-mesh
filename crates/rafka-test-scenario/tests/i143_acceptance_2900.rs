@@ -14,9 +14,9 @@
 //! the stripped full mesh1's primary replays when it is heard again, and holds the version the
 //! source reached. A delta whose base the member does not hold (the frame a lost delta leaves
 //! behind, broadcast by the observer on mesh1's channel) desynchronizes that source alone: the
-//! member pulls the current fabric topology from mesh1's own primary through the entry service,
+//! member pulls the current fabric topology from mesh1's own primary by a topology read (Node RPC op 0x1E),
 //! installs it atomically at the version that primary last published into mesh1, and the next real
-//! delta applies at that baseline. mesh2's primary is never asked: no entry serve of mesh2 answers
+//! delta applies at that baseline. mesh2's primary is never asked: no topology read of mesh2 answers
 //! the member. The frames the member hears omit loads while the backbone aggregate carries them.
 
 use bytes::Bytes;
@@ -370,15 +370,19 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     // member to Draining, and the gap was the only one.
     let gaps = spans_of(&spans, "rdm.mesh.membership.update.via-version-gap", MEMBER, t_gap);
     assert_eq!(gaps.len(), 1, "exactly one gap after the injection, the injected one: {gaps:?}");
-    // The top-up asked the member's own primary and no other: every entry serve for the member is
-    // mesh1's admin's, and mesh2's admin answered none.
-    let serves: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| attr(sp, "node") == MEMBER).collect();
-    let by = |who: &str| serves.iter().filter(|sp| attr(sp, "served_by") == who).count();
-    assert!(by("mesh1.admin.1") >= 2, "the join pull and the top-up were both answered by mesh1's primary: {serves:?}");
-    assert_eq!(by("mesh2.admin.1"), 0, "the remote Mesh's primary is never queried");
-    assert_eq!(serves.len(), by("mesh1.admin.1"), "no other node answered the member: {serves:?}");
-    let topup_serve = serves.iter().filter(|sp| at(sp) >= t_gap).count();
-    assert_eq!(topup_serve, 1, "one top-up, one entry serve after the gap");
+    // The join was answered by mesh1's primary; the top-up is a topology read (op 0x1E) of the
+    // desynchronized mesh from the same primary and from no other: mesh2's admin served no read
+    // after the gap, and the member installed mesh2 at the version mesh1's primary last published.
+    let joins: Vec<&Value> = named(&spans, "rdm.mesh.entry.serve.via-pull").into_iter().filter(|sp| attr(sp, "node") == MEMBER).collect();
+    assert_eq!(joins.len(), 1, "the member joined once and re-read nothing through the join: {joins:?}");
+    assert_eq!(attr(joins[0], "served_by"), "mesh1.admin.1");
+    let reads_after_gap = |who: &str| -> Vec<&Value> { named(&spans, "rdm.mesh.topology.serve.via-read").into_iter().filter(|sp| attr(sp, "node") == who && at(sp) >= t_gap).collect() };
+    let by_mesh1 = reads_after_gap("mesh1.admin.1");
+    assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read after the gap: {by_mesh1:?}");
+    assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "snapshots")), ("mesh2".to_string(), "1".to_string()));
+    assert!(reads_after_gap("mesh2.admin.1").is_empty(), "the remote Mesh's primary is never queried");
+    let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == MEMBER && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
+    assert_eq!((attr(topup_install, "mesh"), num(topup_install, "topology_version")), ("mesh2".to_string(), latest));
     // The primary's evidence: the full it put in on a join, and its bytes.
     let admin_fulls: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-forwarded-full").into_iter().filter(|sp| attr(sp, "node") == "mesh1.admin.1").collect();
     assert!(!admin_fulls.is_empty(), "mesh1's primary put forwarded fulls into its Mesh");
@@ -398,7 +402,9 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
             "top_up_span": { "trace_id": topped["trace_id"], "span_id": topped["span_id"], "served_by": attr(&topped, "served_by"), "installed": attr(&topped, "installed") },
             "resumed_delta": { "base": delta_c.1, "to": delta_c.2, "member_applied_span": { "trace_id": applied_c["trace_id"], "span_id": applied_c["span_id"] } },
         },
-        "entry_serves_for_member": { "mesh1.admin.1": by("mesh1.admin.1"), "mesh2.admin.1": by("mesh2.admin.1") },
+        "join_serves_for_member": joins.len(),
+        "topology_reads_after_gap": { "mesh1.admin.1": by_mesh1.len(), "mesh2.admin.1": reads_after_gap("mesh2.admin.1").len() },
+        "top_up_install_span": { "trace_id": topup_install["trace_id"], "span_id": topup_install["span_id"], "topology_version": num(topup_install, "topology_version") },
         "forwarded_deltas_by_mesh1_primary": deltas_forwarded.len(),
         "topology_version_bumps_by_mesh2_primary": bumps,
         "measured_bytes": { "stripped_full_of_mesh2_on_mesh1_channel": stripped_full_bytes, "backbone_aggregate_of_mesh2_with_loads": backbone_full_bytes, "mesh2_members": 3, "forwarded_full_spans": admin_fulls.iter().map(|sp| json!({ "reason": attr(sp, "reason"), "chunks": attr(sp, "chunks"), "bytes": attr(sp, "bytes") })).collect::<Vec<_>>() },
