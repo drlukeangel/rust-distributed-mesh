@@ -178,7 +178,7 @@ impl BuildExecutor {
             }
             BuildState::Pending | BuildState::Failed => {}
         }
-        let ops = crate::accepted::plan(&build.topology, &t, build.action.as_ref()).operations;
+        let ops = crate::accepted::plan_for(&build.topology, &t, build.action.as_ref(), build.reason).operations;
         lead_for(&ops, &t).is_some_and(|l| l.to_string() == self.executor)
     }
 
@@ -237,7 +237,7 @@ impl BuildExecutor {
         }
         // The accepted topology is the Build's; observed is read now, never remembered.
         let observed = self.topology.read().await.clone();
-        let operations = crate::accepted::plan(&build.topology, &observed, build.action.as_ref()).operations;
+        let operations = crate::accepted::plan_for(&build.topology, &observed, build.action.as_ref(), build.reason).operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
             // The view moves as operations run (a new mesh's admins become

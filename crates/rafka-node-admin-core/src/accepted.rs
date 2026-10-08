@@ -294,6 +294,19 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
+    plan_with(topology, observed, action, false)
+}
+
+/// [`plan`] for an attempt of the Build's `reason`: a requested replacement (`Replace`) of a birth
+/// that does not answer is a decommission, so the exact runtime is retired first (drain when
+/// sendable, terminate and inspect, `NodeDeleted` only on proven exit) and a new node is created
+/// after it. Proven drift (`ProvenDrift`) names a runtime already proven exited, which needs no
+/// retirement.
+pub fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
+    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace)
+}
+
+fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool) -> BuildPlan {
     let mut ops = Vec::new();
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // The birth the attempt's action is fenced to, when the view still holds exactly it and it is
@@ -331,11 +344,11 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
             // way the same identity is re-created.
             AttemptAction::Restart { .. } => ops.push(BuildOperation::RestartNode { node: path.clone() }),
             // A live birth is retired, then a new one is created at the path.
-            AttemptAction::Replace { .. } if birth.status.is_live() => {
+            AttemptAction::Replace { .. } if birth.status.is_live() || decommission_unheard => {
                 ops.push(BuildOperation::RetireNode { node: path.clone() });
                 ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
             }
-            // An exited birth needs no retirement: the create publishes its departure from the
+            // A proven-exited birth needs no retirement: the create publishes its departure from the
             // provider's proof of that exact birth, then births the new node.
             AttemptAction::Replace { from_incarnation, .. } => ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: Some(from_incarnation.clone()) }),
         }
@@ -627,6 +640,14 @@ mod tests {
             assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
             let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
             assert_eq!(plan(&cur, &o, Some(&replace)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
+            // A requested replacement of a birth that does not answer is a decommission: retire the
+            // exact runtime, then create.
+            assert_eq!(
+                plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations,
+                vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }],
+                "{dead:?}"
+            );
+            assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
             // Another birth at the path: the action is satisfied, and the unheard birth is not swept
             // up by it (its own proven drift opens its own attempt).
             let other = AttemptAction::Replace { path: path.clone(), from_incarnation: IncarnationId::mint() };

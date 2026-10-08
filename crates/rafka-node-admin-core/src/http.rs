@@ -184,7 +184,10 @@ impl ControlPlane {
                     });
                     return Err(Refusal::Reject(reject));
                 };
-                if !n.status.is_live() {
+                // A requested replacement may name a birth that does not answer (PendingReconnect,
+                // Dead): the decommission retires its exact runtime before the new node is created.
+                let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
+                if !n.status.is_live() && !(replace && unheard) {
                     return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
                 }
                 n.incarnation_id.clone().ok_or_else(|| Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }))?
