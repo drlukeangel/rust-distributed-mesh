@@ -1227,10 +1227,12 @@ impl View {
                 (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
                 (Side::MeshChannel, true) => false,
                 (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
-                // A read installs topology and refreshes no liveness (R-G2): whoever answered
-                // heard its members at its own age, which the digest does not carry, so no member
-                // of a read, own mesh or peer, is heard here until its own digest arrives.
-                (Side::Read, _) => self.book.record_topology(d.clone()),
+                // A read installs topology and refreshes no liveness (R-G2). A peer mesh's member
+                // is held as topology. A member of this node's own mesh is held by hearing its own
+                // digest on the mesh channel, never by a read: whoever answered heard it at its own
+                // age, which the digest does not carry, so a read cannot say it is alive.
+                (Side::Read, true) => false,
+                (Side::Read, false) => self.book.record_topology(d.clone()),
             };
             if taken {
                 self.note(&d, side.via());

@@ -207,6 +207,25 @@ impl std::fmt::Display for TopologyFailure {
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+    read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c)).await
+}
+
+/// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
+/// or not at all, and returned. A recovering admin reads a local node's topology only to know
+/// whom to reach; what it holds as members stays what it hears itself.
+pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+    let mut receiver = rafka_mesh_transport::snapshot::SnapshotReceiver::default();
+    read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
+}
+
+async fn read_with(
+    client: &NodeRpcClient,
+    target: &NodeTarget,
+    node: &str,
+    mesh: Option<&str>,
+    since: Option<SourceVersion>,
+    mut take: impl FnMut(Chunk) -> Taken,
+) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
     let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
     let target_name = match target {
@@ -237,13 +256,13 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, membershi
                     in_flight,
                     departed,
                 };
-                match membership.take_read_chunk(chunk) {
+                match take(chunk) {
                     Taken::Waiting { .. } => {}
                     Taken::Installed(i) => {
                         let members = i.full.digests();
                         tracing::info_span!(
                             "rdm.mesh.topology.update.via-read-install",
-                            node = membership.node(),
+                            node = node,
                             mesh = %i.mesh,
                             publisher = %i.publisher,
                             topology_version = i.topology_version,

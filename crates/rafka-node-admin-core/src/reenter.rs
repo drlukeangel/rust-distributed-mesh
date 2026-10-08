@@ -84,10 +84,13 @@ pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mes
         .flat_map(|m| m.members.iter())
         .filter(|d| &d.fabric_id == fabric)
         .map(|d| {
-            let ready = d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic;
+            // A digest says what the node last reported, not that it is alive: whoever answered
+            // heard it at an age the digest does not carry. Every settled birth is therefore not
+            // yet reached (the sweep's ping, or its own digest, says more), never ready.
+            let settled = d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic;
             MapNode {
-                settled: ready,
-                ready,
+                settled,
+                ready: false,
                 data_dir: d.data_dir.clone(),
                 admin_api_base: d.admin_api_base.clone(),
                 node_id: d.node.node_id.clone(),
@@ -104,8 +107,8 @@ pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mes
 pub enum TopologySource<'a> {
     /// This admin's durable map (nodes.storage), with no maker.
     DurableMap(&'a [NodeRecord]),
-    /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E) and installed
-    /// (topology, never liveness), and this admin joins the mesh channel with it as the seed.
+    /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
+    /// nothing (the map is for reaching nodes, not for holding them), and this admin joins the mesh channel with it as the seed.
     LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership },
 }
 
@@ -120,7 +123,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             .collect()),
         TopologySource::LocalNode { node, client, membership } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
-            let read = crate::topology_read::get_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership, None, None)
+            let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership.node(), None, None)
                 .await
                 .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
             membership.join_peers(vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
