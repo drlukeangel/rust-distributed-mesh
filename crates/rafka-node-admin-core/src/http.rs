@@ -9,6 +9,7 @@
 //! handle in [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault
 //! routes are runtime administration, outside Build.
 
+use tracing::Instrument as _;
 use crate::accepted::{compile, AcceptedStore, AttemptAction, TopologyChange};
 use crate::build::{BuildId, BuildReject, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildState, BuildStateAdapter, BuildStateError};
@@ -104,84 +105,94 @@ impl ControlPlane {
             change = %serde_json::to_string(&change).unwrap_or_default(),
             previous_build_id = tracing::field::Empty,
         );
-        let _g = span.enter();
-        self.authority(route).await?;
-        let current = self.current_settled().await?;
-        let observed = self.topology.read().await.clone();
-        let topology = match compile(&current.topology, &change, &observed) {
-            Ok(t) => t,
-            Err(reject) => {
-                drop(_g);
-                reject_span(route, &reject);
-                return Err(Refusal::Reject(reject));
-            }
-        };
-        let build_id = BuildId::mint();
-        span.record("build_id", build_id.0.as_str());
-        span.record("previous_build_id", current.build_id.0.as_str());
-        let accepted = BuildAccepted {
-            build_id: build_id.clone(),
-            topology,
-            submitted_change: Some(change),
-            traceparent: rafka_mesh_telemetry::current_traceparent(),
-            submitted_at_ms: now_ms(),
-        };
-        // The Build is durable before the pointer names it (never the pointer first).
-        self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
-        let record = self.accepted.point(&build_id, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
-        self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
-        tracing::info!(build_id = %build_id, "build accepted");
-        self.build_submitted.notify_waiters();
-        Ok(build_id)
+        // The span is entered by the future on each poll, never by a guard held across an await
+        // (a guard stays entered on the worker while the task is parked). A refusal is reported
+        // beside the request span, in the caller's span.
+        let outer = tracing::Span::current();
+        async {
+            self.authority(route).await?;
+            let current = self.current_settled().await?;
+            let observed = self.topology.read().await.clone();
+            let topology = match compile(&current.topology, &change, &observed) {
+                Ok(t) => t,
+                Err(reject) => {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            };
+            let build_id = BuildId::mint();
+            span.record("build_id", build_id.0.as_str());
+            span.record("previous_build_id", current.build_id.0.as_str());
+            let accepted = BuildAccepted {
+                build_id: build_id.clone(),
+                topology,
+                submitted_change: Some(change),
+                traceparent: rafka_mesh_telemetry::current_traceparent(),
+                submitted_at_ms: now_ms(),
+            };
+            // The Build is durable before the pointer names it (never the pointer first).
+            self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
+            let record = self.accepted.point(&build_id, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+            self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
+            tracing::info!(build_id = %build_id, "build accepted");
+            self.build_submitted.notify_waiters();
+            Ok::<BuildId, Refusal>(build_id)
+        }
+        .instrument(span.clone())
+        .await
     }
 
     /// Open the next attempt of the accepted Build with a fenced action (a restart or a
     /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
     pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, replace: bool) -> Result<BuildId, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
-        let _g = span.enter();
-        self.authority(route).await?;
-        let current = self.current_settled().await?;
-        if !current.topology.contains(&path) {
-            let reject = BuildReject::UnknownNode { node: path.to_string() };
-            drop(_g);
-            reject_span(route, &reject);
-            return Err(Refusal::Reject(reject));
-        }
-        let from_incarnation = {
-            let t = match self.view_now.get() {
-                Some(project) => project(),
-                None => self.topology.read().await.clone(),
-            };
-            let Some(n) = t.node(&path) else {
-                let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
+        let outer = tracing::Span::current();
+        async {
+            self.authority(route).await?;
+            let current = self.current_settled().await?;
+            if !current.topology.contains(&path) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
-                drop(t);
-                drop(_g);
-                tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject, view = %why)
-                    .in_scope(|| tracing::info!(%reject, %why, "build refused: the live view lacks the node"));
+                outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
-            };
-            if !n.status.is_live() {
-                return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
             }
-            n.incarnation_id.clone().ok_or_else(|| Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }))?
-        };
-        let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
-        let opened = AttemptOpened {
-            build_id: current.build_id.clone(),
-            attempt: current.attempt + 1,
-            reason,
-            action: Some(action),
-            opened_by: self.me.to_string(),
-            opened_at_ms: now_ms(),
-        };
-        span.record("build_id", current.build_id.0.as_str());
-        span.record("attempt", opened.attempt);
-        self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
-        tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
-        self.build_submitted.notify_waiters();
-        Ok(current.build_id)
+            let from_incarnation = {
+                let t = match self.view_now.get() {
+                    Some(project) => project(),
+                    None => self.topology.read().await.clone(),
+                };
+                let Some(n) = t.node(&path) else {
+                    let why = self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string());
+                    let reject = BuildReject::UnknownNode { node: path.to_string() };
+                    drop(t);
+                    outer.in_scope(|| {
+                        tracing::info_span!("rdm.node_admin.build.reject.via-unknown-node", route, detail = %reject, view = %why)
+                            .in_scope(|| tracing::info!(%reject, %why, "build refused: the live view lacks the node"))
+                    });
+                    return Err(Refusal::Reject(reject));
+                };
+                if !n.status.is_live() {
+                    return Err(Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }));
+                }
+                n.incarnation_id.clone().ok_or_else(|| Refusal::Reject(BuildReject::NodeNotLive { node: path.to_string() }))?
+            };
+            let action = if replace { AttemptAction::Replace { path, from_incarnation } } else { AttemptAction::Restart { path, from_incarnation } };
+            let opened = AttemptOpened {
+                build_id: current.build_id.clone(),
+                attempt: current.attempt + 1,
+                reason,
+                action: Some(action),
+                opened_by: self.me.to_string(),
+                opened_at_ms: now_ms(),
+            };
+            span.record("build_id", current.build_id.0.as_str());
+            span.record("attempt", opened.attempt);
+            self.builds.open_attempt(&opened).await.map_err(Refusal::State)?;
+            tracing::info!(build_id = %current.build_id, attempt = opened.attempt, "attempt opened");
+            self.build_submitted.notify_waiters();
+            Ok::<BuildId, Refusal>(current.build_id)
+        }
+        .instrument(span.clone())
+        .await
     }
 }
 

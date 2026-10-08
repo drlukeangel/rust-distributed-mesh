@@ -707,38 +707,47 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        let _g = span.enter();
-        if let Err(e) = self.membership.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
+        async {
+            if let Err(e) = self.membership.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
+            }
+            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeDeleting not sent on the backbone");
+            }
+            tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
-        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeDeleting not sent on the backbone");
-        }
-        tracing::info!("the node is being removed: every mesh hears it is not routable");
+        .instrument(span)
+        .await
     }
     async fn restarting(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeRestarting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        let _g = span.enter();
-        if let Err(e) = self.membership.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
+        async {
+            if let Err(e) = self.membership.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
+            }
+            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeRestarting not sent on the backbone");
+            }
+            tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
-        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeRestarting not sent on the backbone");
-        }
-        tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
+        .instrument(span)
+        .await
     }
     async fn deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        let _g = span.enter();
-        if let Err(e) = self.membership.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
+        async {
+            if let Err(e) = self.membership.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
+            }
+            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
+                tracing::info!(error = %e, "NodeDeleted not sent on the backbone");
+            }
+            tracing::info!("the exact birth is proven terminal: it has left");
         }
-        if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-            tracing::info!(error = %e, "NodeDeleted not sent on the backbone");
-        }
-        tracing::info!("the exact birth is proven terminal: it has left");
+        .instrument(span)
+        .await
     }
 }
 
