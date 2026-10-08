@@ -40,6 +40,9 @@ pub struct MapNode {
     /// What the source knew: a birth the source holds ready is ready, anything else settled is
     /// not yet reached.
     pub ready: bool,
+    /// The birth's data dir and control API as the source held them.
+    pub data_dir: Option<String>,
+    pub admin_api_base: Option<String>,
 }
 
 impl MapNode {
@@ -64,6 +67,8 @@ impl MapNode {
         node.transport_addr = Some(self.transport_addr);
         node.provider = Some(provider);
         node.status = status;
+        node.data_dir = self.data_dir.clone();
+        node.admin_api_base = self.admin_api_base.clone();
         node
     }
 
@@ -94,13 +99,13 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
                 .filter_map(|n| {
                     let settled = matches!(n.status, crate::model::NodeStatus::ReadyForTraffic | crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                     let ready = n.status == crate::model::NodeStatus::ReadyForTraffic;
-                    Some(MapNode { node_id: n.node_id, name: n.name, endpoint_id: n.endpoint_id?, transport_addr: n.transport_addr?, incarnation: n.incarnation_id?, settled, ready })
+                    Some(MapNode { node_id: n.node_id, name: n.name, endpoint_id: n.endpoint_id?, transport_addr: n.transport_addr?, incarnation: n.incarnation_id?, settled, ready, data_dir: n.data_dir, admin_api_base: n.admin_api_base })
                 })
                 .collect())
         }
         TopologySource::DurableMap(rows) => Ok(rows
             .iter()
-            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false })
+            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false, data_dir: None, admin_api_base: None })
             .collect()),
         TopologySource::LocalNode { node, membership } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
@@ -115,6 +120,8 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
                         .map(|d| MapNode {
                             settled: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
                             ready: d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+                            data_dir: d.data_dir,
+                            admin_api_base: d.admin_api_base,
                             node_id: d.node.node_id,
                             name: d.node.name,
                             endpoint_id: d.node.endpoint_id,

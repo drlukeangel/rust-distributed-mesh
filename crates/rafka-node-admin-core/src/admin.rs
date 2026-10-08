@@ -1956,7 +1956,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let desired = accepted.current(&*builds_dyn).await.map(|b| b.topology);
         for r in nodes_storage.contacts().await.map_err(storage_err)? {
             if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
-                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false };
+                let m = crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None };
                 records.publish(m.as_node(NodeStatus::PendingReconnect, policy.provider));
             }
         }
