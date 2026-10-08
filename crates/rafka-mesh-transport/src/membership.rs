@@ -257,12 +257,15 @@ where
     }
 }
 
-/// What travels on a mesh channel or the backbone.
+/// What travels on a mesh channel or the backbone: one postcard frame ([`crate::wire`]). A digest
+/// travels as its wire shape (`#[serde(with)]`), never as the JSON-shaped `MeshDigest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "frame", rename_all = "kebab-case")]
 pub enum Frame {
     /// A member's own digest (its mesh channel only).
-    Digest { digest: MeshDigest },
+    Digest {
+        #[serde(with = "crate::wire::digest")]
+        digest: MeshDigest,
+    },
     /// One chunk of a snapshot of `mesh`'s members (gossip.md §3.1). On the backbone it is the
     /// complete Mesh with its loads, published by that Mesh's current primary (`publisher`, the
     /// exact birth that holds the seat, which is the epoch of `topology_version`); on a peer
@@ -283,10 +286,9 @@ pub enum Frame {
         snapshot_id: u64,
         chunk_index: u32,
         chunk_count: u32,
+        #[serde(with = "crate::wire::digests")]
         digests: Vec<MeshDigest>,
-        #[serde(default)]
         in_flight: Vec<LifecycleOp>,
-        #[serde(default)]
         departed: Vec<LifecycleOp>,
     },
     /// What moved a source Mesh's held projection from `base_version` to `topology_version`,
@@ -300,11 +302,10 @@ pub enum Frame {
         base_version: u64,
         topology_version: u64,
         published_at_rafka_ms: u64,
+        #[serde(with = "crate::wire::digests")]
         changed: Vec<MeshDigest>,
         removed: Vec<String>,
-        #[serde(default)]
         in_flight: Vec<LifecycleOp>,
-        #[serde(default)]
         departed: Vec<LifecycleOp>,
     },
     /// The mesh executor holding `op` has started removing its exact birth:
@@ -333,10 +334,11 @@ pub enum Frame {
 
 impl Frame {
     pub fn encode(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("frame serializes")
+        crate::wire::encode(self).expect("frame serializes")
     }
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
-        serde_json::from_slice(bytes).ok()
+    /// The frame `bytes` carry, or why they are not one.
+    pub fn decode(bytes: &[u8]) -> Result<Self, crate::wire::WireError> {
+        crate::wire::decode(bytes)
     }
 }
 
@@ -760,8 +762,19 @@ impl Channel {
                     let ev = receiver.next().await;
                     match &ev {
                         Some(Ok(Event::Received(m))) => {
-                            if let Some(f) = Frame::decode(&m.content) {
-                                on_frame(f);
+                            match Frame::decode(&m.content) {
+                                Ok(f) => on_frame(f),
+                                // A frame this build does not read is refused by name, with who
+                                // sent it, never dropped as if it had not arrived.
+                                Err(e) => tracing::info_span!(
+                                    "rdm.mesh.membership.reject.via-undecodable-frame",
+                                    node = %node,
+                                    channel = %channel,
+                                    sender = %m.delivered_from.fmt_short(),
+                                    bytes = m.content.len(),
+                                    error = %e
+                                )
+                                .in_scope(|| tracing::info!("a gossip frame does not decode")),
                             }
                             continue;
                         }

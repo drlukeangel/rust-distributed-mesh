@@ -648,7 +648,7 @@ pub struct Created {
 
 /// What `AllocateIdentity` decides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Identity {
+pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
     supersedes: Option<IncarnationId>,

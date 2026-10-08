@@ -123,7 +123,12 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
     all.extend(reg["rshape_jobs"].as_object().into_iter().flatten().filter(|(k, _)| !k.starts_with('_')).map(|(k, v)| (k, v, true)));
     assert!(!all.is_empty());
     for (job, j, rshape) in all {
-        let issue = j["issue"].as_u64().expect("issue");
+        // A job answers an issue (a number) or a ruling (its id, a string such as `rw1`).
+        let issue = match &j["issue"] {
+            Value::Number(n) => n.as_u64().expect("issue number").to_string(),
+            Value::String(ruling) => ruling.clone(),
+            other => panic!("{job}: issue is a number or a ruling id, not {other}"),
+        };
         let layer = j["layer"].as_str().expect("layer");
         if rshape {
             assert!(job.starts_with("i143-rshape-"), "{job}: an R-shape job id is i143-rshape-<name>");

@@ -184,14 +184,11 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         in_flight: vec![],
         departed: vec![],
     };
-    let encoded: Value = serde_json::from_slice(&members.encode()).unwrap();
-    let mut keys: Vec<&str> = encoded.as_object().unwrap().keys().map(|k| k.as_str()).collect();
-    keys.sort();
-    assert_eq!(
-        keys,
-        vec!["chunk_count", "chunk_index", "departed", "digests", "forwarded_by", "frame", "in_flight", "mesh", "published_at_rafka_ms", "publisher", "snapshot_id", "topology_version"],
-        "Members carries no status field"
-    );
+    // The frame is positional postcard: this pattern names every field the frame carries, and
+    // none of them is a status.
+    let Ok(Frame::Members { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, departed: _ }) = Frame::decode(&members.encode()) else {
+        panic!("Members round-trips as Members, carrying no status field");
+    };
 
     // The real Backbone: the publisher role is the span `via-status-publisher`, and a status the
     // primary announces is held under its own authorship at one instant.
@@ -263,7 +260,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         "unchanged_sends": unchanged_sends,
         "replaced_change_repeats_after_replacement": rest.len(),
         "forwarded": { "publisher": publisher_of(&fwd), "forwarded_by": peer, "changed_at_rafka_ms": ts(&fwd) },
-        "members_frame_keys": keys,
+        "members_frame_fields": ["mesh", "publisher", "forwarded_by", "topology_version", "published_at_rafka_ms", "snapshot_id", "chunk_index", "chunk_count", "digests", "in_flight", "departed"],
         "held_mesh_status": { "publisher": m.publisher, "status": m.status, "changed_at_rafka_ms": m.changed_at_rafka_ms },
         "held_fabric_status": { "publisher": f.publisher, "status": f.status, "changed_at_rafka_ms": f.changed_at_rafka_ms },
         "publisher_role_spans": roles.iter().map(|s| json!({ "role": s["attributes"]["role"], "trace_id": s["trace_id"], "span_id": s["span_id"] })).collect::<Vec<_>>(),

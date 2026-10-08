@@ -34,42 +34,49 @@ use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use std::sync::Arc;
 
-/// One message on the Build topic. The nonce makes every send distinct, so
-/// a catch-up resend is never taken for a message already seen.
+/// One message on the Build topic, one postcard frame (`rafka_mesh_transport::wire`). The nonce
+/// makes every send distinct, so a catch-up resend is never taken for a message already seen.
 ///
 /// `fabric` is the Fabric record (`Fabric.build_id`): Fabric control state of
 /// its own, sent alone when the pointer moves and to a new neighbour, never
 /// inside a run of Build facts. A neighbour's catch-up hands it the record and
-/// the facts of the Build it names and of every active Build.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Wire {
-    nonce: u64,
-    #[serde(default)]
-    facts: Vec<BuildFact>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    fabric: Option<FabricRecord>,
+/// the facts of the Build it names and of every active Build. Facts and the Fabric record
+/// travel in their wire shapes (`crate::wire`), never the JSON-shaped domain types.
+pub struct BuildMessage {
+    pub nonce: u64,
+    pub facts: Vec<BuildFact>,
+    pub fabric: Option<FabricRecord>,
     /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
     /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    shutdown: Option<crate::fabric_storage::FabricShutdown>,
+    pub shutdown: Option<crate::fabric_storage::FabricShutdown>,
+}
+
+impl BuildMessage {
+    /// This message as one gossip payload; the payload is not bounded here (see [`encode`]).
+    pub fn to_bytes(&self) -> Result<bytes::Bytes, BuildStateError> {
+        let wire = crate::wire::WireMessage::of(self).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
+        rafka_mesh_transport::wire::encode(&wire).map(Into::into).map_err(|e| BuildStateError::Unencodable(e.to_string()))
+    }
+
+    /// The message a gossip payload carries, or why it is not one.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, rafka_mesh_transport::wire::WireError> {
+        let wire: crate::wire::WireMessage = rafka_mesh_transport::wire::decode(bytes)?;
+        wire.into_message().map_err(|e| rafka_mesh_transport::wire::WireError::new(format!("a Build fact this build does not read: {e}")))
+    }
 }
 
 fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::Bytes, BuildStateError> {
-    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) })
-        .map(Into::into)
-        .map_err(|e| BuildStateError::Io(e.to_string()))
+    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) }.to_bytes()
 }
 
 fn encode_fabric(r: &FabricRecord) -> Result<bytes::Bytes, BuildStateError> {
-    serde_json::to_vec(&Wire { nonce: rand::random(), facts: Vec::new(), fabric: Some(r.clone()), shutdown: None })
-        .map(Into::into)
-        .map_err(|e| BuildStateError::Io(e.to_string()))
+    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(r.clone()), shutdown: None }.to_bytes()
 }
 
 pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = serde_json::to_vec(&Wire { nonce: rand::random(), facts, fabric: None, shutdown: None }).map_err(|e| BuildStateError::Io(e.to_string()))?;
+    let bytes = BuildMessage { nonce: rand::random(), facts, fabric: None, shutdown: None }.to_bytes()?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!(
             "a Build message of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
@@ -201,7 +208,7 @@ impl FabricBuildStateAdapter {
                 // closes a lagging subscriber and expects it to be re-opened.
                 let reason = loop {
                     match receiver.next().await {
-                        Some(Ok(Event::Received(m))) => match serde_json::from_slice::<Wire>(&m.content) {
+                        Some(Ok(Event::Received(m))) => match BuildMessage::from_bytes(&m.content) {
                             Ok(w) => {
                                 let heard_fabric = w.fabric;
                                 if let Some(sd) = w.shutdown {
@@ -217,7 +224,7 @@ impl FabricBuildStateAdapter {
                                     store.resolve_wanted(&*absorb).await;
                                 }
                             }
-                            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, error = %e)
+                            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), error = %e)
                                 .in_scope(|| tracing::info!("a Build fact from the fabric does not decode")),
                         },
                         Some(Ok(Event::NeighborUp(peer))) => {
@@ -246,8 +253,12 @@ impl FabricBuildStateAdapter {
                                 );
                                 let (messages, refused) = encode_chunks(facts);
                                 for e in refused {
-                                    tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
-                                        .in_scope(|| tracing::info!("a Build fact does not fit one gossip message"));
+                                    match &e {
+                                        BuildStateError::Unencodable(_) => tracing::info_span!("rdm.node_admin.build.reject.via-unencodable-fact", fabric = %fabric_name, detail = %e)
+                                            .in_scope(|| tracing::info!("a Build fact has no wire shape")),
+                                        _ => tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", fabric = %fabric_name, detail = %e)
+                                            .in_scope(|| tracing::info!("a Build fact does not fit one gossip message")),
+                                    }
                                 }
                                 let sender = shared.read().await.clone();
                                 for bytes in messages {
@@ -402,7 +413,7 @@ mod tests {
             let (messages, refused) = encode_chunks(facts);
             assert!(refused.is_empty());
             assert!(messages.iter().all(|m| m.len() <= MAX_MESSAGE_BYTES), "every message fits");
-            let sent: usize = messages.iter().map(|m| serde_json::from_slice::<serde_json::Value>(m).unwrap()["facts"].as_array().unwrap().len()).sum();
+            let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
             assert_eq!(sent, 60, "no fact lost");
         }
     }

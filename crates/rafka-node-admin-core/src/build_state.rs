@@ -203,6 +203,9 @@ pub enum BuildStateError {
     /// An intent was published twice for one id with different content.
     ConflictingIntent(BuildId),
     Io(String),
+    /// A fact that has no wire shape (a step output of a step that commits none, or of another
+    /// type than its step's): named with the Build, attempt and step.
+    Unencodable(String),
     /// A journal line that does not decode, named with its line number.
     CorruptJournal { line: usize, reason: String },
 }
@@ -213,6 +216,7 @@ impl std::fmt::Display for BuildStateError {
             Self::UnknownBuild(id) => write!(f, "no Build {id}"),
             Self::ConflictingIntent(id) => write!(f, "Build {id} was published with a different intent"),
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
+            Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
             Self::CorruptJournal { line, reason } => write!(f, "build journal line {line} does not decode: {reason}"),
         }
     }

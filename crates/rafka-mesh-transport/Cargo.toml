@@ -17,6 +17,7 @@ iroh-mdns-address-lookup = "0.6"
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 blake3 = "1"
 bytes = "1"

@@ -103,7 +103,13 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
             operation: format!("create-node:mesh1.rpc.{i}"),
             step: "AllocateEndpoints".into(),
             outcome: StepOutcome::Complete,
-            output: Some(serde_json::json!([{"slot": "rpc-0", "addr": format!("127.0.0.1:{}", 41000 + i), "freshness": "f".repeat(32)}])),
+            output: Some(
+                serde_json::to_value(rafka_node_admin_core::deployment::endpoint::Assignment {
+                    transport: format!("127.0.0.1:{}", 41000 + i).parse().unwrap(),
+                    listeners: (0..6).map(|l| (format!("listener-{l}-{}", "f".repeat(24)), format!("127.0.0.1:{}", 42000 + i * 8 + l).parse().unwrap())).collect(),
+                })
+                .unwrap(),
+            ),
             executor: None,
         })
         .await

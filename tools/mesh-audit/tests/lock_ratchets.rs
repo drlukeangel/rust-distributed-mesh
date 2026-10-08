@@ -1,5 +1,5 @@
 //! #2927 acceptance: every lock ratchet is an executable check, a planted violation fails
-//! exactly that ratchet, and the RDM tree is green under all eighteen.
+//! exactly that ratchet, and the RDM tree is green under all nineteen.
 
 use rafka_mesh_audit::lock::{check, check_one, Ratchet, Violation};
 use rafka_mesh_audit::workspace_root;
@@ -287,4 +287,43 @@ fn emit() { tracing::info_span!(target: "rafka.customer-target", "rdm.node_rpc.r
     assert!(check(t.root()).is_empty());
     t.write("crates/rafka-node-rpc/src/planted.rs", "#[tracing::instrument(name = \"rafka.node_rpc.request.serve.via-direct\")] fn emit() {}\n");
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
+}
+
+#[test]
+fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
+    let t = Planted::of_tree();
+    t.edit("crates/rafka-mesh-transport/src/membership.rs", "crate::wire::encode(self).expect(\"frame serializes\")", "serde_json::to_vec(self).expect(\"frame serializes\")");
+    let v = only(check(t.root()), Ratchet::NoJsonOnTheWire);
+    assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("membership.rs") && token == "serde_json::to_vec")), "{v:?}");
+
+    // The Build topic too, and a direct postcard call beside the shared codec.
+    let t = Planted::of_tree();
+    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rafka_mesh_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rafka_mesh_transport::wire::WireError::new(e.to_string()))");
+    only(check(t.root()), Ratchet::NoJsonOnTheWire);
+    let t = Planted::of_tree();
+    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rafka_mesh_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rafka_mesh_transport::wire::WireError::new(e.to_string()))");
+    only(check(t.root()), Ratchet::NoJsonOnTheWire);
+
+    // A Node RPC source takes no JSON either.
+    let t = Planted::of_tree();
+    t.write("crates/rafka-node-rpc-contract/src/planted.rs", "fn frame(v: &Req) -> Vec<u8> { serde_json::to_vec(v).unwrap() }\n");
+    only(check(t.root()), Ratchet::NoJsonOnTheWire);
+}
+
+#[test]
+fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
+    // A test module may build a JSON expectation: the scan stops at `#[cfg(test)]`.
+    let t = Planted::of_tree();
+    let clean = std::fs::read_to_string(t.root().join("crates/rafka-mesh-transport/src/wire.rs")).unwrap();
+    t.write("crates/rafka-mesh-transport/src/wire.rs", &format!("{clean}\n#[cfg(test)]\nmod tests {{ fn json() {{ let _ = serde_json::json!(1); }} }}\n"));
+    assert!(check_one(t.root(), Ratchet::NoJsonOnTheWire).is_empty());
+
+    // Deleting or renaming the proof cell is itself a violation.
+    let t = Planted::of_tree();
+    t.edit(
+        "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs",
+        "fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling",
+        "fn every_frame_round_trips",
+    );
+    only(check(t.root()), Ratchet::NoJsonOnTheWire);
 }

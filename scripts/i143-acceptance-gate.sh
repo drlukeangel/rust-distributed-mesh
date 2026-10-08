@@ -73,7 +73,7 @@ JOBFILE=$(mktemp)
 trap 'rm -f "$JOBFILE"' EXIT
 jq --arg j "$JOB" '(.jobs[$j] // .rshape_jobs[$j])' "$REG" > "$JOBFILE"
 [ "$(jq -r type "$JOBFILE")" = object ] || { refuse "$JOB: not a job in $REG"; exit 2; }
-ISSUE=$(jq -r --arg j "$JOB" '.issue' "$JOBFILE")
+ISSUE=$(jq -c '.issue' "$JOBFILE")
 LAYER=$(jq -r --arg j "$JOB" '.layer' "$JOBFILE")
 NCELLS=$(jq -r --arg j "$JOB" '.cells | length' "$JOBFILE")
 [ "$NCELLS" -gt 0 ] || { refuse "$JOB: registers no cell"; exit 2; }

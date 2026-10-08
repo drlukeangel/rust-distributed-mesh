@@ -12,7 +12,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The seventeen #2927 ratchets followed by the telemetry ownership ratchet.
+/// The seventeen #2927 ratchets, the telemetry ownership ratchet and R-W1's wire ratchet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ratchet {
     TagIsDescriptiveOnly,
@@ -33,10 +33,11 @@ pub enum Ratchet {
     StatusResealIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
+    NoJsonOnTheWire,
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 18] = [
+    pub const ALL: [Ratchet; 19] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeMeta,
@@ -55,6 +56,7 @@ impl Ratchet {
         Self::StatusResealIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
+        Self::NoJsonOnTheWire,
     ];
 
     /// The name the issue gives the ratchet.
@@ -78,6 +80,7 @@ impl Ratchet {
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
+            Self::NoJsonOnTheWire => "no_json_on_the_wire",
         }
     }
 }
@@ -175,6 +178,41 @@ pub const PROVIDER_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/deployment/container.rs",
 ];
 pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeMeta", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
+
+/// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
+/// postcard. These sources carry no JSON codec in their non-test code.
+pub const WIRE_SOURCES: &[&str] = &[
+    "crates/rafka-mesh-transport/src/membership.rs",
+    "crates/rafka-mesh-transport/src/snapshot.rs",
+    "crates/rafka-mesh-transport/src/chunking.rs",
+    "crates/rafka-mesh-transport/src/wire.rs",
+    "crates/rafka-node-admin-core/src/fabric_builds.rs",
+    "crates/rafka-node-admin-core/src/wire.rs",
+    "crates/rafka-node-rpc-contract/src",
+    "crates/rafka-node-rpc/src",
+];
+/// A JSON codec: bytes or text produced or read as JSON. `serde_json::to_value`/`from_value`
+/// convert between structures and put no JSON on a wire, so they are not in this list.
+pub const JSON_CODEC_TOKENS: &[&str] = &[
+    "use serde_json",
+    "serde_json::to_vec",
+    "serde_json::to_string",
+    "serde_json::to_writer",
+    "serde_json::from_slice",
+    "serde_json::from_str",
+    "serde_json::from_reader",
+    "serde_json::Serializer",
+    "serde_json::Deserializer",
+];
+
+/// The one source that converts a step receipt's JSON `output` (the REST and journal shape) to the
+/// typed result its step produced: it names `serde_json::Value` and nothing else may.
+pub const JSON_VALUE_EDGE: &str = "crates/rafka-node-admin-core/src/wire.rs";
+
+/// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rafka-mesh-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
+pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
+pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -287,6 +325,24 @@ fn enum_arms(text: &str, name: &str) -> Option<Vec<String>> {
         }
     }
     Some(arms)
+}
+
+/// `scan_tokens` over the code before each file's `#[cfg(test)]` module.
+fn scan_non_test_tokens(root: &Path, files: &[PathBuf], tokens: &[&str], ratchet: Ratchet, out: &mut Vec<Violation>) {
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(f) else { continue };
+        for (i, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            let c = code(line);
+            for t in tokens {
+                if c.contains(t) {
+                    out.push(Violation::Token { ratchet, file: rel(root, f), line: i + 1, token: (*t).to_string() });
+                }
+            }
+        }
+    }
 }
 
 /// Every violation of `ratchet` in the workspace at `root`.
@@ -438,6 +494,20 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 ratchet,
                 &mut out,
             );
+        }
+        Ratchet::NoJsonOnTheWire => {
+            let files = files_in(root, WIRE_SOURCES);
+            if files.is_empty() {
+                out.push(Violation::Missing { ratchet, file: WIRE_SOURCES.join(", "), what: "the wire sources themselves".into() });
+            }
+            scan_non_test_tokens(root, &files, JSON_CODEC_TOKENS, ratchet, &mut out);
+            let no_edge: Vec<PathBuf> = files.iter().filter(|f| rel(root, f) != JSON_VALUE_EDGE).cloned().collect();
+            scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
+            scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
+            require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
+            require(root, "crates/rafka-mesh-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame"], ratchet, &mut out);
+            require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rafka_mesh_transport::wire::encode", "rafka_mesh_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
+            require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {
             // Echo (0x11) is retired forever and peer-tickle (0x19) is a product's transitional

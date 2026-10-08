@@ -24,6 +24,9 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Members in the receiver cell's snapshot: enough to span more than two gossip messages.
+const BIG: u32 = 150;
+
 const CELL: &str = "members_receiver_commits_complete_snapshot_before_advancing_version";
 
 fn acceptance_dir() -> PathBuf {
@@ -232,21 +235,31 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     result.insert("topology_version_by_observation".into(), json!(bumps.iter().map(|(w, n)| json!({ "observation": w, "topology_version": n })).collect::<Vec<_>>()));
 
     // ---- 2. a snapshot is chunked under one snapshot_id, every chunk fits one message ------
-    let big = Mesh::new("mesh2", 60);
-    let mut with_overlays: Vec<LifecycleOp> = Vec::new();
-    for d in big.digests(3).iter().take(12) {
-        with_overlays.push(op(d, "retire-node:mesh2.rpc.1"));
-    }
-    let big_full = Full::new(big.digests(3), with_overlays.clone(), with_overlays.iter().take(5).cloned().collect());
+    // Sixty members with overlays: the number of chunks postcard needs is recorded as evidence.
+    let sixty = Mesh::new("mesh2", 60);
+    let overlays_of = |m: &Mesh| -> Vec<LifecycleOp> { m.digests(3).iter().take(12).map(|d| op(d, "retire-node:mesh2.rpc.1")).collect() };
+    let sixty_overlays = overlays_of(&sixty);
+    let sixty_full = Full::new(sixty.digests(3), sixty_overlays.clone(), sixty_overlays.iter().take(5).cloned().collect());
     let p = publisher("mesh2.admin.1");
-    let chunks = members_chunks(&big_full, &p, 5, 9, None);
-    assert!(chunks.len() > 2, "sixty members with overlays do not fit one message: {} chunks", chunks.len());
-    for c in &chunks {
+    let sixty_chunks = members_chunks(&sixty_full, &p, 5, 9, None);
+    assert!(sixty_chunks.len() > 1, "sixty members with overlays do not fit one message: {} chunks", sixty_chunks.len());
+    for c in &sixty_chunks {
         assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
     }
     let empty = members_chunks(&Full::default(), &p, 1, 1, None);
     assert_eq!(empty.len(), 1, "an empty Mesh is one empty chunk, a complete snapshot");
-    result.insert("chunks_of_sixty_members".into(), json!({ "chunks": chunks.len(), "largest_chunk_bytes": chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
+    result.insert("chunks_of_sixty_members".into(), json!({ "chunks": sixty_chunks.len(), "largest_chunk_bytes": sixty_chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
+
+    // The receiver below needs a snapshot that spans more than two chunks.
+    let big = Mesh::new("mesh2", BIG);
+    let with_overlays = overlays_of(&big);
+    let big_full = Full::new(big.digests(3), with_overlays.clone(), with_overlays.iter().take(5).cloned().collect());
+    let chunks = members_chunks(&big_full, &p, 5, 9, None);
+    assert!(chunks.len() > 2, "{BIG} members with overlays span more than two messages: {} chunks", chunks.len());
+    for c in &chunks {
+        assert!(c.encode().len() <= MAX_FRAME, "a chunk fits one gossip message");
+    }
+    result.insert("chunks_of_receiver_snapshot".into(), json!({ "members": BIG, "chunks": chunks.len(), "largest_chunk_bytes": chunks.iter().map(|c| c.encode().len()).max(), "max_frame": MAX_FRAME }));
 
     // ---- 3. the receiver: no partial install, no version move, no delta from a partial ----
     let mut rx = SnapshotReceiver::default();
@@ -268,7 +281,7 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     }
     // The delta above desynchronized the source; the complete snapshot resumes it.
     let i = installed(rx.take_chunk(chunk_of(&chunks[last - 1])));
-    assert_eq!((i.topology_version, i.full.member_count(), i.resumed), (5, 60, true));
+    assert_eq!((i.topology_version, i.full.member_count(), i.resumed), (5, BIG as usize, true));
     assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 5)));
     assert!(i.full.same_topology(&big_full), "the installed projection is exactly the published one");
     assert!(rx.desynced().is_empty());

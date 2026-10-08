@@ -137,7 +137,9 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rdm.mesh.membership.update.via-resubscribe` / `rdm.node_admin.build.update.via-resubscribe` (a topic subscription lagged or ended and was re-opened) | `fabric`, `reason`, `peers` |
 | `rdm.node_admin.build.reject.via-oversized-fact` (a Build fact larger than one gossip message's payload, 4032 bytes: iroh-gossip refuses a frame of 4096 bytes or more, envelope included) | `fabric`, `detail` |
 | `rdm.node_admin.build.update.via-neighbor-up` (active Build facts sent to a new neighbour on the fabric Build topic) | `fabric`, `peer`, `facts` |
-| `rdm.node_admin.build.reject.via-undecodable-fact` | `fabric`, `error` |
+| `rdm.node_admin.build.reject.via-undecodable-fact` (a Build-topic message that is not a postcard `BuildMessage` this build reads) | `fabric`, `sender`, `bytes`, `error` |
+| `rdm.node_admin.build.reject.via-unencodable-fact` (a Build fact whose step output has no wire shape: the step commits none, or the output is not its step's type) | `fabric`, `detail` (names the Build, attempt, step) |
+| `rdm.mesh.membership.reject.via-undecodable-frame` (a membership-channel gossip message that is not a postcard `Frame` this build reads) | `node`, `channel`, `sender`, `bytes`, `error` |
 | `rdm.node_admin.fabric.update.via-shutdown` | — |
 | `rdm.ui.build.create.via-node-admin` (the Admin UI submitted a Build) | `what`, `build_id` |
 | `rdm.node_admin.lifecycle.update.via-transition` | `transition_id`, `target`, `from`, `to` |

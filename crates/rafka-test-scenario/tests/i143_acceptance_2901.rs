@@ -83,7 +83,7 @@ impl Observer {
                 let _keep = _sender;
                 while let Some(ev) = receiver.next().await {
                     if let Ok(Event::Received(m)) = ev {
-                        if let Some(frame) = Frame::decode(&Bytes::copy_from_slice(&m.content)) {
+                        if let Ok(frame) = Frame::decode(&Bytes::copy_from_slice(&m.content)) {
                             seen.lock().unwrap().push(Seen { at: Instant::now(), channel, frame });
                         }
                     }
