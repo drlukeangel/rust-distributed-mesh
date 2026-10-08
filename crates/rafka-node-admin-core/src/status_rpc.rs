@@ -349,8 +349,8 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 pub type Drain = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>> + Send + Sync>>>;
 
 /// The downward exact-node operations, answered by the subject itself. `Some(reply)` when `req`
-/// names this node and comes from a node-admin other than itself; `None` for every other
-/// request.
+/// names this node and comes from a fabric member other than itself (a probe) or from a node-admin
+/// other than itself (an apply); `None` for every other request.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition.
@@ -362,7 +362,12 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
         StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
     };
-    if me.node_id != *node_id || !sender.is_some_and(|s| s.kind == NodeKind::NodeAdmin && s.name != me.name) {
+    // A probe changes nothing: it asks this node to say it is here, so any fabric member other than
+    // the subject may ask, and a node-admin's probe from another mesh arrives through a carrier (a
+    // forward carries no origin identity: the target authenticates the carrier, node-rpc.md 36.1).
+    // An apply changes the node: only a node-admin may ask.
+    let sender_may = |s: &crate::model::Node| s.name != me.name && (matches!(req, StatusRequest::ProbeNodeState { .. }) || s.kind == NodeKind::NodeAdmin);
+    if me.node_id != *node_id || !sender.is_some_and(sender_may) {
         return None;
     }
     let Some(held) = me.incarnation_id.as_ref() else {
@@ -438,4 +443,35 @@ fn _assert_send_sync() {
     fn f<T: Send + Sync>() {}
     f::<StatusAuthority>();
     let _ = RwLock::new(());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_node_rpc_contract::status::StatusReply as R;
+
+    fn node(name: &str) -> crate::model::Node {
+        let mut n = crate::model::Node::allocated(name.parse().unwrap());
+        n.incarnation_id = Some(IncarnationId::mint());
+        n
+    }
+
+    /// CONTRACT (#2803 detection): a fabric primary probes ANOTHER mesh's node-admin through a
+    /// member of that mesh (Forward carries no origin identity, so the node-admin authenticates the
+    /// member). The probe is answered with the node-admin's current state; the same sender cannot
+    /// apply a state to it, and the node-admin itself is never its own sender.
+    #[tokio::test]
+    async fn a_probe_carried_by_a_member_is_answered_and_an_apply_from_it_is_not() {
+        let admin = node("mesh2.admin.1");
+        let carrier = node("mesh2.rpc.1");
+        let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
+        let (republish, drain) = (Republish::default(), Drain::default());
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &drain).await;
+        assert!(matches!(answered, Some(R::Current { .. })), "{answered:?}");
+        let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
+        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &drain).await.is_none(), "an apply from a member is not the subject's to answer");
+        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &drain).await.is_none(), "a node-admin is not its own sender");
+        assert!(self_subject(&admin, None, &probe, &republish, &drain).await.is_none(), "an unresolved peer is answered by no one");
+    }
 }
