@@ -283,18 +283,22 @@ pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
             };
             match opened {
                 Ok(attempt) => {
-                    // The attempt is the Build's: wait until it is complete.
-                    loop {
-                        let done = d.accepted.current(&*d.builds).await.is_some_and(|b| b.attempt >= attempt && b.state == crate::build_state::BuildState::Complete);
-                        if done {
-                            break;
+                    // The attempt is the Build's: wait until it has ended, complete or failed.
+                    let ended = loop {
+                        let b = d.accepted.current(&*d.builds).await;
+                        if let Some(b) = b.filter(|b| b.attempt >= attempt && matches!(b.state, crate::build_state::BuildState::Complete | crate::build_state::BuildState::Failed)) {
+                            break Some(b);
                         }
                         if started.elapsed() > DECOMMISSION_WAIT {
-                            break;
+                            break None;
                         }
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                    break format!("attempt {attempt}");
+                    };
+                    break match ended {
+                        Some(b) if b.state == crate::build_state::BuildState::Failed => format!("attempt {attempt} failed: {}", b.last_failure.unwrap_or_default()),
+                        Some(_) => format!("attempt {attempt}"),
+                        None => format!("attempt {attempt} did not end within {} s", DECOMMISSION_WAIT.as_secs()),
+                    };
                 }
                 // One Build in flight, or the seat is moving: wait and ask again.
                 Err(e) if e.contains("BuildInProgress") || e.contains("409") || e.contains("NotAuthority") || e.contains("Unavailable") || e.contains("build-in-progress") => {

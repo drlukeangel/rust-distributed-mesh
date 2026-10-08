@@ -2132,7 +2132,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             // Every mesh this admin hears of, by name, as its own keyed row in mesh.storage: the
             // durable map a restart takes the existing MeshIds from (a recovery never mints one).
             let mut meshes_written: HashMap<String, MeshId> = mesh_storage.meshes().await.unwrap_or_default().into_iter().map(|m| (m.name, m.mesh_id)).collect();
-            let mut runtimes_written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
             let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
                 nodes_storage.contacts().await.unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
             loop {
@@ -2147,16 +2146,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                                 }
                                 Err(e) => tracing::info!(mesh = %d.node.name.mesh, error = %e, "a heard mesh's id could not be stored"),
                             }
-                        }
-                    }
-                    // The birth's exact runtime, once: its own keyed row, a blind put.
-                    if let (Some(runtime), false) = (&d.node.runtime, runtimes_written.contains(&(d.node.node_id.clone(), d.node.incarnation.clone()))) {
-                        let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: runtime.clone(), data_dir: d.data_dir.clone() };
-                        match nodes_storage.put_runtime(&row).await {
-                            Ok(()) => {
-                                runtimes_written.insert((row.node_id, row.incarnation_id));
-                            }
-                            Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
                         }
                     }
                     let mut r = crate::storage::NodeRecord {
@@ -2251,7 +2240,36 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         });
         let _ = join_slot.set(door);
     }
-    let mut tasks = vec![contacts_task, node_rpc_feed];
+    // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
+    // a blind put (a successor fabric primary proves an exit from it).
+    let runtime_rows_task = {
+        let (book, nodes_storage, me, fabric_id) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone());
+        tokio::spawn(async move {
+            let mut written: HashSet<(NodeId, IncarnationId)> = nodes_storage.runtimes().await.unwrap_or_default().into_iter().map(|r| (r.node_id, r.incarnation_id)).collect();
+            let mut births = book.birth_changes();
+            loop {
+                births.borrow_and_update();
+                for d in book.all().into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me) {
+                    let key = (d.node.node_id.clone(), d.node.incarnation.clone());
+                    let Some(runtime) = d.node.runtime.clone() else { continue };
+                    if written.contains(&key) {
+                        continue;
+                    }
+                    let row = crate::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime, data_dir: d.data_dir.clone() };
+                    match nodes_storage.put_runtime(&row).await {
+                        Ok(()) => {
+                            written.insert(key);
+                        }
+                        Err(e) => tracing::info!(node = %d.node.name, error = %e, "a heard birth's runtime could not be stored"),
+                    }
+                }
+                if births.changed().await.is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task];
     // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
     // primary reborn into its mesh from its durable map): connect to a local node, read its
     // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that

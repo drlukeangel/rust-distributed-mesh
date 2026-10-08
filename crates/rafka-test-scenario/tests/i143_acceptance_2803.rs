@@ -11,6 +11,7 @@ use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -107,10 +108,14 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         killed.push(json!({"node": "mesh1.admin.1", "pid": "bootstrap"}));
     }
     assert_eq!(killed.len(), 2, "both admins of {lost} were lost: {killed:?}");
+    // The member is frozen (SIGSTOP): its exact runtime still runs but it answers nothing, so no
+    // proof of exit exists and only the decommission, which may terminate, can replace it.
+    let mut frozen_pid = 0u32;
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy().starts_with(&format!("{window_victim}-")) {
-            estate.kill_pid(pid);
-            killed.push(json!({"node": window_victim, "pid": pid}));
+            assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
+            frozen_pid = pid;
+            killed.push(json!({"node": window_victim, "pid": pid, "signal": "STOP"}));
         }
     }
     assert_eq!(killed.len(), 3, "the member died in the admin-less window: {killed:?}");
@@ -171,22 +176,28 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     for m in &survivors {
         assert!(!silent.contains(m), "{m} answered the sweep: {silent:?}");
     }
-    // Not reached starts the standard decommission, one attempt per node in path order. The
-    // sibling admin is retired by the pipeline (drain, terminate and inspect, NodeDeleted on the
-    // proven exit) and created again; the member is replaced under the same Build, by this queue or
-    // by the drift check that proves the same exit, whichever opened its attempt first.
+    // Not reached starts the standard decommission, one attempt per node in path order. The frozen
+    // member has no exit to prove, so only the decommission replaces it: its retire pipeline drains
+    // when sendable, terminates and inspects the exact runtime, and publishes NodeDeleted on that
+    // proven exit; the node is then created again under the same Build. The dead sibling admin is
+    // replaced by this queue or by the drift check that proves the same exit, whichever opened its
+    // attempt first.
     let decommissions: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-sweep-decommission").into_iter().filter(|sp| attr(sp, "sweeper") == recovery_admin).collect();
     for dead in [&window_victim, &sibling] {
         assert!(decommissions.iter().any(|sp| attr(sp, "node") == *dead), "{dead} entered the decommission queue: {decommissions:?}");
     }
-    let sibling_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
+    let victim = decommissions.iter().find(|sp| attr(sp, "node") == window_victim).expect("checked above");
+    assert!(attr(victim, "outcome").starts_with("attempt ") && !attr(victim, "outcome").contains("failed"), "the frozen member's decommission ended complete: {victim:?}");
+    let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == sibling && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
+        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
     for step in ["MarkDraining", "TerminateRuntime", "NodeDeleted"] {
-        assert!(sibling_steps.iter().any(|n| n == step), "the standard retire ran {step} for {sibling}: {sibling_steps:?}");
+        assert!(victim_steps.iter().any(|n| n == step), "the standard retire ran {step} for {window_victim}: {victim_steps:?}");
     }
+    let gone = !std::path::Path::new(&format!("/proc/{frozen_pid}")).exists() || std::fs::read_to_string(format!("/proc/{frozen_pid}/stat")).unwrap_or_default().contains(") Z ");
+    assert!(gone, "the frozen member's exact runtime (pid {frozen_pid}) was terminated and inspected as exited");
     // The members that answered are never retired or created again.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
