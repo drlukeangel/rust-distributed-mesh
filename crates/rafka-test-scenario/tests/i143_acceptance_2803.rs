@@ -186,8 +186,13 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     for dead in [&window_victim, &sibling] {
         assert!(decommissions.iter().any(|sp| attr(sp, "node") == *dead), "{dead} entered the decommission queue: {decommissions:?}");
     }
-    let victim = decommissions.iter().find(|sp| attr(sp, "node") == window_victim).expect("checked above");
-    assert!(attr(victim, "outcome").starts_with("attempt ") && !attr(victim, "outcome").contains("failed"), "the frozen member's decommission ended complete: {victim:?}");
+    // Both admins of the mesh sweep, so two spans name the member: the admin whose attempt ran it
+    // ends `attempt N`, the other finds it replaced (`heard-or-replaced`). The one that ran is the one asserted.
+    let victim: Vec<&&Value> = decommissions.iter().filter(|sp| attr(sp, "node") == window_victim).collect();
+    assert!(
+        victim.iter().any(|sp| attr(sp, "outcome").starts_with("attempt ") && !attr(sp, "outcome").contains("failed")),
+        "the frozen member's decommission ended complete in the attempt that ran it: {victim:?}"
+    );
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
