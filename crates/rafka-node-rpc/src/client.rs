@@ -246,6 +246,11 @@ impl NodeRpcClient {
             target: target.clone(),
             addr: node.transport_addr,
             failpoint: opts.after_connect.clone(),
+            // The dial that opens the connection reports it, once, whoever is waiting for it.
+            opened: self.observer.clone().map(|o| {
+                let node = node.clone();
+                Arc::new(move || o.direct_connected(&node)) as Arc<dyn Fn() + Send + Sync>
+            }),
         };
         let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
@@ -253,11 +258,6 @@ impl NodeRpcClient {
                 tracing::info!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
                 evidence.connection = Some(c.stable_id());
                 evidence.reused = reused;
-                if !reused {
-                    if let Some(o) = &self.observer {
-                        o.direct_connected(&node);
-                    }
-                }
                 c
             }
             Err(DialError::Superseded) => {

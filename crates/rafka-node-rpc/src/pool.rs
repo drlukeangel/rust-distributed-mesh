@@ -109,6 +109,8 @@ pub struct DialSpec {
     pub target: NodeTarget,
     pub addr: SocketAddr,
     pub failpoint: Option<Arc<Failpoint>>,
+    /// Told once, when the dial's connection enters the pool, whoever is or is not waiting for it.
+    pub opened: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
@@ -248,6 +250,9 @@ impl Pool {
             return Err(DialError::Superseded);
         }
         self.inner.conns.lock().unwrap().insert(key.clone(), conn.clone());
+        if let Some(opened) = &spec.opened {
+            opened();
+        }
         Ok(conn)
     }
 
