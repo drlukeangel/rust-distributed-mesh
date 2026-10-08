@@ -21,3 +21,7 @@ tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 serde = { workspace = true }
+# i143_acceptance_2781: the seeded scheduler and the UDP tap live in the scenario crate; each
+# acceptance cell writes its result.json.
+rafka-test-scenario = { path = "../rafka-test-scenario" }
+serde_json = { workspace = true }

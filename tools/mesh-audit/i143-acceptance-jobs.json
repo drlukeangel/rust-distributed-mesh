@@ -286,6 +286,30 @@
           "evidence": "model"
         }
       ]
+    },
+    "i143-2781-unit": {
+      "issue": 2781,
+      "layer": "unit",
+      "cells": [
+        {
+          "name": "network_scheduler_replays_incomplete_send_as_not_sent",
+          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
+          "command": "cargo test -p rafka-node-rpc --test i143_acceptance_2781 network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
+          "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_incomplete_send_as_not_sent"
+        },
+        {
+          "name": "network_scheduler_replays_lost_reply_as_indeterminate",
+          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
+          "command": "cargo test -p rafka-node-rpc --test i143_acceptance_2781 network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
+          "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_lost_reply_as_indeterminate"
+        },
+        {
+          "name": "pool_scheduler_supersedes_birth_preserves_current_sibling",
+          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
+          "command": "cargo test -p rafka-node-rpc --test i143_acceptance_2781 pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
+          "dir": "target/i143-acceptance/2781/unit/pool_scheduler_supersedes_birth_preserves_current_sibling"
+        }
+      ]
     }
   },
   "rshape_jobs": {
