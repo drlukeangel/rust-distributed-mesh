@@ -1446,6 +1446,8 @@ pub struct Running {
     executor: tokio::task::JoinHandle<()>,
     hierarchy: tokio::task::JoinHandle<()>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
+    leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
 }
 
 impl Running {
@@ -1494,13 +1496,20 @@ impl Running {
         let said = announce_leaving(leave_linger_from_env(), LEAVE_EVERY, || {
             let d = say(MemberStatus::Leaving);
             let n = announcement.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            let (m, bb, me) = (self.membership.clone(), self.backbone.clone(), me.clone());
+            let (m, bb, me, seam) = (self.membership.clone(), self.backbone.clone(), me.clone(), self.leave_seam.clone());
             async move {
+                let withheld = |channel: &'static str| seam.as_ref().is_some_and(|s| s.withholds(&me, n, channel));
                 let started = std::time::Instant::now();
                 let mesh_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                let r = m.publish(&d).instrument(mesh_span.clone()).await;
+                let outcome = if withheld("mesh") {
+                    "withheld"
+                } else if m.publish(&d).instrument(mesh_span.clone()).await.is_ok() {
+                    "sent"
+                } else {
+                    "refused"
+                };
                 mesh_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                mesh_span.record("outcome", if r.is_ok() { "sent" } else { "refused" });
+                mesh_span.record("outcome", outcome);
                 mesh_span.in_scope(|| tracing::info!("said Leaving on the mesh channel"));
                 let mesh = d.node.name.mesh.clone();
                 let started = std::time::Instant::now();
@@ -1511,9 +1520,14 @@ impl Running {
                 view_span.in_scope(|| tracing::info!(members = mine.len(), "read this mesh's members for the backbone frame"));
                 let started = std::time::Instant::now();
                 let bb_span = tracing::info_span!("rdm.mesh.node.update.via-leave-announcement", node = %me, announcement = n, channel = "backbone", publishing = bb.is_mesh_primary(), members = mine.len(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
-                bb.publish(&m, mine).instrument(bb_span.clone()).await;
+                let outcome = if withheld("backbone") {
+                    "withheld"
+                } else {
+                    bb.publish(&m, mine).instrument(bb_span.clone()).await;
+                    "sent"
+                };
                 bb_span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-                bb_span.record("outcome", "sent");
+                bb_span.record("outcome", outcome);
                 bb_span.in_scope(|| tracing::info!("said Leaving among this mesh's members on the backbone"));
             }
         })
@@ -2736,7 +2750,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks })
+    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take() })
 }
 
 #[cfg(test)]

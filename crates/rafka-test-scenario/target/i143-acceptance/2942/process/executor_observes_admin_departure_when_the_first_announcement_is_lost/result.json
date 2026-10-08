@@ -1,0 +1,138 @@
+{
+  "arm_ack": {
+    "armed": "lose-leaving",
+    "node": "mesh1.admin.1",
+    "spec": {
+      "announcements": [
+        1
+      ],
+      "channel": "any",
+      "kind": "leave-announcement"
+    }
+  },
+  "build_id": "bld-480cda1316639073262a93e5",
+  "cell": "executor_observes_admin_departure_when_the_first_announcement_is_lost",
+  "control_admin": "mesh1.admin.2",
+  "cut": {
+    "announcements": [
+      1
+    ],
+    "channel": "any",
+    "kind": "leave-announcement"
+  },
+  "door_last_reading": {
+    "armed": true,
+    "held": true,
+    "held_for_ms": 1006,
+    "hit": {
+      "announcement": 1,
+      "channel": "mesh",
+      "node": "mesh1.admin.1"
+    },
+    "released": false,
+    "seen_while_held": 2,
+    "spec": {
+      "announcements": [
+        1
+      ],
+      "channel": "any",
+      "kind": "leave-announcement"
+    }
+  },
+  "executor": {
+    "bound_ms": 10000,
+    "elapsed_ms": 0,
+    "node": "mesh1.admin.1",
+    "outcome": "complete",
+    "span_id": "fa0d9064da6724cd",
+    "step": "ObserveDeparture",
+    "trace_id": "fc010ef0c859f2502ea4799044fce70e"
+  },
+  "legs": [
+    {
+      "announcement": 1,
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "outcome": "withheld",
+      "span_id": "c1a6cb21b2e83219",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 2,
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "4ee14442d0ab5b12",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 3,
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "2317259f7316ec29",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 4,
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "117da4b6aa957e91",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 5,
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "fb86d83ef52fbeb2",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 1,
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "outcome": "withheld",
+      "span_id": "8ce1368e4e01f5ab",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 2,
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "2702dc5de5f5ec3b",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 3,
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "083f0dc0e330f8b9",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 4,
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "1d7efbf092c857bd",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    },
+    {
+      "announcement": 5,
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "outcome": "sent",
+      "span_id": "7a3b4b80e6c9111a",
+      "trace_id": "c5654cbbf007bc96437236fa74497964"
+    }
+  ],
+  "linger_ms": 1000,
+  "models": "announcements withheld at the retiring admin's send seam; not peer-queue pressure in iroh-gossip",
+  "retiring_admin": "mesh1.admin.1",
+  "spans_read": 1389,
+  "withheld_publishes": 2
+}

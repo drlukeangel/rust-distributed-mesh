@@ -68,19 +68,20 @@ fn alive(pid: u64) -> bool {
 
 /// A mesh1 retirement through the whole-mesh retire, run to its end and read back: every span.
 async fn retire_mesh1(test: &str) -> (String, Vec<Value>) {
-    let (b, spans, _) = retire_mesh1_with(test, None).await;
+    let (b, spans, _) = retire_mesh1_with(test, &[]).await;
     (b, spans)
 }
 
-/// What a faulted retirement armed on one admin, and the door's last word on it.
+/// What a faulted retirement armed on one admin.
 struct Cut {
     admin: &'static str,
     id: &'static str,
     spec: Value,
 }
 
-/// The door's reading of a cut after the retirement: the acknowledgement that it was active.
+/// A cut's door: the acknowledgement of the arm, and the door's last reading of the cut.
 struct Fired {
+    admin: &'static str,
     arm_ack: Value,
     after: Value,
 }
@@ -88,45 +89,40 @@ struct Fired {
 /// A mesh1 retirement under `cut`, when there is one. With a cut, every admin of the estate is the
 /// testkit's faulted node-admin; the cut is armed on its admin's door before the retire Build is
 /// posted, and its door state is read after the retired runtime is gone.
-async fn retire_mesh1_with(test: &str, cut: Option<&Cut>) -> (String, Vec<Value>, Option<Fired>) {
-    let mut estate = match cut {
-        None => Estate::bootstrap(owner(test), "fabric1", "mesh1").await,
-        Some(_) => {
-            let sha = candidate_sha();
-            Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted")
-        }
+async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (String, Vec<Value>, Vec<Fired>) {
+    let mut estate = if cuts.is_empty() {
+        Estate::bootstrap(owner(test), "fabric1", "mesh1").await
+    } else {
+        let sha = candidate_sha();
+        Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted")
     };
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
     let before = estate.settled(&names(&["mesh1", "mesh2"]), Duration::from_secs(30)).await;
-    let door = match cut {
-        None => None,
-        Some(c) => {
-            let api = before.iter().find(|n| n["name"] == c.admin).map(|n| s(&n["admin_api_base"])).unwrap_or_else(|| panic!("{} advertises its control API", c.admin));
-            Some(Door::open(&estate.root, c.admin, &api).await)
-        }
-    };
-    let arm_ack = match (&door, cut) {
-        (Some(d), Some(c)) => Some(d.arm(c.id, c.spec.clone()).await),
-        _ => None,
-    };
-    // The retiring admin's door dies with its runtime: its last reading is the one taken while the
+    // Each armed admin's door dies with its runtime: the last reading is the one taken while its
     // leave was running (the transport shutdown after the linger keeps the door up for seconds).
-    let last_reading = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
-    let poller = door.clone().map(|d| {
-        let last = last_reading.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Ok(r) = d.http.get(format!("{}/faults", d.base)).send().await {
-                    if let Ok(v) = r.json::<Value>().await {
-                        *last.lock().unwrap() = v;
+    let mut armed = Vec::new();
+    for c in cuts {
+        let api = before.iter().find(|n| n["name"] == c.admin).map(|n| s(&n["admin_api_base"])).unwrap_or_else(|| panic!("{} advertises its control API", c.admin));
+        let d = Door::open(&estate.root, c.admin, &api).await;
+        let arm_ack = d.arm(c.id, c.spec.clone()).await;
+        let last = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
+        let poller = {
+            let (d, last) = (d.clone(), last.clone());
+            tokio::spawn(async move {
+                loop {
+                    if let Ok(r) = d.http.get(format!("{}/faults", d.base)).send().await {
+                        if let Ok(v) = r.json::<Value>().await {
+                            *last.lock().unwrap() = v;
+                        }
                     }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        })
-    });
+            })
+        };
+        armed.push((c, arm_ack, last, poller));
+    }
     let mut pids: Vec<(String, u64)> = Vec::new();
     for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
         let name = s(&n["name"]);
@@ -152,13 +148,14 @@ async fn retire_mesh1_with(test: &str, cut: Option<&Cut>) -> (String, Vec<Value>
     }
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);
-    if let Some(p) = poller {
-        p.abort();
-    }
-    let fired = match (arm_ack, cut) {
-        (Some(arm_ack), Some(c)) => Some(Fired { arm_ack, after: last_reading.lock().unwrap()["cuts"][c.id].clone() }),
-        _ => None,
-    };
+    let fired: Vec<Fired> = armed
+        .into_iter()
+        .map(|(c, arm_ack, last, poller)| {
+            poller.abort();
+            let after = last.lock().unwrap()["cuts"][c.id].clone();
+            Fired { admin: c.admin, arm_ack, after }
+        })
+        .collect();
     estate.stop().await;
     (b, estate.spans(), fired)
 }
@@ -260,23 +257,27 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
 // the channel). This models a lost announcement at the send seam; it is not pressure on a peer
 // queue, which no door of the product or the testkit can apply without touching iroh-gossip.
 
-/// The last admin of mesh1 in a retirement whose leave withholds `announcements` on `channel`
-/// (`mesh`, `backbone` or `any`): the legs withheld are exactly the armed ones, the cut's door
-/// acknowledged it active, and the executor's ObserveDeparture for that exact birth still
-/// completed inside the unchanged bound. A same-run healthy leave of mesh1's other admin is the
-/// control.
+/// A retirement whose mesh1 admins both withhold `announcements` on `channel` (`mesh`, `backbone`
+/// or `any`) from their leaves. Whichever admin of mesh1 is retired last, its legs withheld are
+/// exactly the armed ones, its door acknowledged the cut active and counted the publishes it
+/// withheld, and the executor's ObserveDeparture for that exact birth still completed inside the
+/// unchanged bound. The matched healthy control is cell 1 of this job (the same retirement
+/// unarmed); a cut with nothing left to repair it is the retire Build's failure, which is Luke's
+/// to rule and has no cell here.
 async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32], channel: &'static str) {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let cut = Cut { admin: "mesh1.admin.1", id: "lose-leaving", spec: json!({"kind": "leave-announcement", "announcements": announcements, "channel": channel}) };
-    let (b, spans, fired) = retire_mesh1_with(cell, Some(&cut)).await;
-    let fired = fired.expect("a faulted retirement reads its cut back");
-    assert_eq!(fired.arm_ack["armed"], cut.id, "the door acknowledged the arm: {}", fired.arm_ack);
+    let spec = json!({"kind": "leave-announcement", "announcements": announcements, "channel": channel});
+    let cuts = [Cut { admin: "mesh1.admin.1", id: "lose-leaving", spec: spec.clone() }, Cut { admin: "mesh1.admin.2", id: "lose-leaving", spec: spec.clone() }];
+    let (b, spans, fired) = retire_mesh1_with(cell, &cuts).await;
+    for f in &fired {
+        assert_eq!(f.arm_ack["armed"], "lose-leaving", "the door of {} acknowledged the arm: {}", f.admin, f.arm_ack);
+    }
 
     let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "ObserveDeparture" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")).collect();
     let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the whole-mesh retire observed a mesh1 departure");
     let last = s(&obs["attributes"]["node"]);
-    assert_eq!(last, cut.admin, "the admin whose departure was observed last is the one the cut is armed on");
+    assert!(last.starts_with("mesh1.admin."), "the departure observed last is an admin's: {last}");
     let obs_elapsed = attr_u64(obs, "elapsed_ms");
     assert_eq!(obs["attributes"]["outcome"], "complete", "ObserveDeparture of {last} completed: {obs}");
     assert!(obs_elapsed < OBSERVE_BOUND_MS, "ObserveDeparture of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
@@ -300,21 +301,18 @@ async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32
             rows.push(json!({"channel": ch, "announcement": n, "outcome": sp["attributes"]["outcome"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "span_id": sp["span_id"], "trace_id": sp["trace_id"]}));
         }
     }
-    // The injection was active, and the door counted exactly the publishes it withheld.
-    assert_eq!(fired.after["held"], true, "the cut was active when last read: {}", fired.after);
-    assert!(!fired.after["hit"].is_null(), "the cut names the first publish it withheld: {}", fired.after);
-    assert_eq!(fired.after["seen_while_held"], withheld_total, "the door counted every publish the leave spans show withheld: {}", fired.after);
-
-    // The control: mesh1's other admin left in the same retirement with nothing armed.
-    let control = if last == "mesh1.admin.1" { "mesh1.admin.2" } else { "mesh1.admin.1" };
-    let control_mesh = legs_of(control, "mesh");
-    assert_eq!(control_mesh.len(), ANNOUNCEMENTS, "the unarmed {control} said Leaving {ANNOUNCEMENTS} times on the mesh channel: {control_mesh:#?}");
-    assert!(control_mesh.iter().all(|sp| sp["attributes"]["outcome"] == "sent"), "nothing of the unarmed {control} was withheld");
+    // The injection was active on the retired-last admin's door, and the door counted exactly the
+    // publishes the leave spans show withheld.
+    let door = fired.iter().find(|f| f.admin == last).unwrap_or_else(|| panic!("{last} was armed"));
+    assert_eq!(door.after["held"], true, "the cut was active when last read: {}", door.after);
+    assert!(!door.after["hit"].is_null(), "the cut names the first publish it withheld: {}", door.after);
+    assert_eq!(door.after["seen_while_held"], withheld_total, "the door counted every publish the leave spans show withheld: {}", door.after);
 
     let result = json!({
-        "cell": cell, "build_id": b, "retiring_admin": last, "control_admin": control, "cut": cut.spec, "linger_ms": LINGER_MS,
+        "cell": cell, "build_id": b, "retiring_admin": last, "cut": spec, "linger_ms": LINGER_MS,
         "models": "announcements withheld at the retiring admin's send seam; not peer-queue pressure in iroh-gossip",
-        "arm_ack": fired.arm_ack, "door_last_reading": fired.after, "withheld_publishes": withheld_total, "legs": rows,
+        "arm_acks": fired.iter().map(|f| json!({"admin": f.admin, "ack": f.arm_ack})).collect::<Vec<_>>(),
+        "door_last_reading": door.after, "withheld_publishes": withheld_total, "legs": rows,
         "executor": { "step": "ObserveDeparture", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"] },
         "spans_read": spans.len(),
     });
@@ -350,12 +348,12 @@ async fn executor_observes_admin_departure_when_the_first_announcement_is_lost()
     retire_with_lost_announcements("executor_observes_admin_departure_when_the_first_announcement_is_lost", &[1], "any").await;
 }
 
-/// Every mesh-channel announcement is lost; the backbone carries the departure alone.
+/// The backbone loses announcements one through four; the mesh channel is whole.
 ///
 /// CONTRACT: the executor, in the peer mesh, hears the retiring admin's departure through the
-/// backbone aggregate; with all five mesh-channel announcements withheld it is observed anyway,
-/// inside the unchanged 10 s.
+/// backbone aggregate; with its first four backbone announcements withheld the fifth alone carries
+/// it, and it is observed inside the unchanged 10 s.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn executor_observes_admin_departure_when_every_mesh_channel_announcement_is_lost() {
-    retire_with_lost_announcements("executor_observes_admin_departure_when_every_mesh_channel_announcement_is_lost", &[1, 2, 3, 4, 5], "mesh").await;
+async fn executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost() {
+    retire_with_lost_announcements("executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost", &[1, 2, 3, 4], "backbone").await;
 }

@@ -18,8 +18,18 @@ use std::sync::Arc;
 /// One decorator: takes the part the admin built and returns the part it will use.
 pub type Wrap<T> = Box<dyn FnOnce(Arc<T>) -> Arc<T> + Send>;
 
+/// Whether an executable that IS a node-admin withholds one of its own leave announcements. The
+/// leave asks it before each publish on each channel (`"mesh"` or `"backbone"`); a `true` answer
+/// skips that one publish call and nothing else: the frame, the topic and the delivery path are
+/// untouched. The product passes none, so every announcement is published.
+pub trait LeaveSeam: Send + Sync {
+    fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool;
+}
+
 #[derive(Default)]
 pub struct Wiring {
+    /// Asked by the leave before each announcement publish.
+    pub leave_seam: Option<Arc<dyn LeaveSeam>>,
     /// Wraps `fabric.storage` before the accepted-Build pointer and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

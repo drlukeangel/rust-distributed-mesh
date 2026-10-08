@@ -88,6 +88,30 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 retiring_admin_completes_five_leaving_announcements_within_linger -- --exact",
           "dir": "target/i143-acceptance/2942/process/retiring_admin_completes_five_leaving_announcements_within_linger"
+        },
+        {
+          "name": "retire_executor_observes_exact_admin_departure_after_peer_queue_cut",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/retire_executor_observes_exact_admin_departure_after_peer_queue_cut/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 retire_executor_observes_exact_admin_departure_after_peer_queue_cut -- --exact",
+          "dir": "target/i143-acceptance/2942/process/retire_executor_observes_exact_admin_departure_after_peer_queue_cut"
+        },
+        {
+          "name": "executor_observes_admin_departure_when_the_last_announcement_is_lost",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_last_announcement_is_lost/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 executor_observes_admin_departure_when_the_last_announcement_is_lost -- --exact",
+          "dir": "target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_last_announcement_is_lost"
+        },
+        {
+          "name": "executor_observes_admin_departure_when_the_first_announcement_is_lost",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_first_announcement_is_lost/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 executor_observes_admin_departure_when_the_first_announcement_is_lost -- --exact",
+          "dir": "target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_first_announcement_is_lost"
+        },
+        {
+          "name": "executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2942.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost/estate cargo test -p rafka-test-scenario --test i143_acceptance_2942 executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost -- --exact",
+          "dir": "target/i143-acceptance/2942/process/executor_observes_admin_departure_when_the_first_four_backbone_announcements_are_lost"
         }
       ]
     },

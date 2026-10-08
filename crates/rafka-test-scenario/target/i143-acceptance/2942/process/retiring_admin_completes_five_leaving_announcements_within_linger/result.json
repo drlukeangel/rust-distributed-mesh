@@ -1,0 +1,204 @@
+{
+  "announcements": [
+    {
+      "after_first_ms": 0,
+      "announcement": "1",
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498043874643369,
+      "members": null,
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": null,
+      "span_id": "6702f6c80b2f7dbf",
+      "start_unix_nano": 1791498043874581465,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 202,
+      "announcement": "2",
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044076808348,
+      "members": null,
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": null,
+      "span_id": "15b170d2fd1fafeb",
+      "start_unix_nano": 1791498044076590397,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 404,
+      "announcement": "3",
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044278890991,
+      "members": null,
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": null,
+      "span_id": "c5d2b615afaf0d02",
+      "start_unix_nano": 1791498044278719216,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 605,
+      "announcement": "4",
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044480067687,
+      "members": null,
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": null,
+      "span_id": "f78006f5f4b82d5f",
+      "start_unix_nano": 1791498044479893575,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 807,
+      "announcement": "5",
+      "channel": "mesh",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044682526873,
+      "members": null,
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": null,
+      "span_id": "0fc808f884a0807e",
+      "start_unix_nano": 1791498044682284538,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 0,
+      "announcement": "1",
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498043875115974,
+      "members": "1",
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": "true",
+      "span_id": "de0b0c88aefbdd43",
+      "start_unix_nano": 1791498043874703464,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 202,
+      "announcement": "2",
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044077086922,
+      "members": "1",
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": "true",
+      "span_id": "725004fb07ded1fb",
+      "start_unix_nano": 1791498044076876427,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 404,
+      "announcement": "3",
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044279136830,
+      "members": "1",
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": "true",
+      "span_id": "4da7315f45893170",
+      "start_unix_nano": 1791498044278954831,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 605,
+      "announcement": "4",
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044480318214,
+      "members": "1",
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": "true",
+      "span_id": "12b03ee6ddf776bc",
+      "start_unix_nano": 1791498044480139270,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    },
+    {
+      "after_first_ms": 808,
+      "announcement": "5",
+      "channel": "backbone",
+      "elapsed_ms": "0",
+      "end_unix_nano": 1791498044683091910,
+      "members": "1",
+      "outcome": "sent",
+      "parent_span_id": "623df7d08dd379c0",
+      "publishing": "true",
+      "span_id": "5221ff88384ac538",
+      "start_unix_nano": 1791498044682690232,
+      "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+    }
+  ],
+  "build_id": "bld-9dcb1b273083636403cbfce2",
+  "cell": "retiring_admin_completes_five_leaving_announcements_within_linger",
+  "draining": {
+    "elapsed_ms": "0",
+    "outcome": "sent",
+    "span_id": "562b8112472ad602",
+    "start_unix_nano": 1791498043874202890
+  },
+  "executor": {
+    "bound_ms": 10000,
+    "elapsed_ms": 0,
+    "node": "mesh1.admin.1",
+    "outcome": "complete",
+    "pipeline_span_id": "4f2d92ad2e45d82b",
+    "span_id": "c72c46c13b46ff7f",
+    "step": "ObserveDeparture",
+    "trace_id": "af9ac5dbe2f1af0ddfebdf369b9c3898"
+  },
+  "leave": {
+    "end_unix_nano": 1791498044879347923,
+    "signal_span_id": "623df7d08dd379c0",
+    "start_unix_nano": 1791498043874170651,
+    "trace_id": "0d7f49de2f920519fc0671daa4bc52fa"
+  },
+  "linger_ms": 1000,
+  "retiring_admin": "mesh1.admin.1",
+  "shutdown": {
+    "elapsed_ms": "2",
+    "outcome": "closed",
+    "span_id": "2b39f469c09c7b1e",
+    "start_unix_nano": 1791498044876558511
+  },
+  "spans_read": 1339,
+  "topology_reads": [
+    {
+      "announcement": "1",
+      "elapsed_ms": "0",
+      "span_id": "921bae86de6de016"
+    },
+    {
+      "announcement": "2",
+      "elapsed_ms": "0",
+      "span_id": "164f3917865bec51"
+    },
+    {
+      "announcement": "3",
+      "elapsed_ms": "0",
+      "span_id": "8885717933b02fde"
+    },
+    {
+      "announcement": "4",
+      "elapsed_ms": "0",
+      "span_id": "812d7ef44d5a6578"
+    },
+    {
+      "announcement": "5",
+      "elapsed_ms": "0",
+      "span_id": "35f047d1fcc7be75"
+    }
+  ]
+}
