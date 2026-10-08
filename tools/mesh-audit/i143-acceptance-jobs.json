@@ -118,6 +118,12 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
           "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
           "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
+        },
+        {
+          "name": "sole_peer_admin_restarts_ready_from_its_durable_pending",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2805.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rafka-test-scenario --test i143_acceptance_2805 sole_peer_admin_restarts_ready_from_its_durable_pending -- --exact",
+          "dir": "target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending"
         }
       ]
     },

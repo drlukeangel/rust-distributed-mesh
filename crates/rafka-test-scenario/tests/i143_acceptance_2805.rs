@@ -159,3 +159,64 @@ async fn pending_contract(cell: &str) {
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
+
+/// CONTRACT (#2805, acceptance 8): the sole node-admin of a peer mesh is restarted through the
+/// Build rectifier (never the fabric-primary): it comes back as the same node with a new
+/// incarnation and reaches Ready without a fabric-primary hand-off, because the Pending it was
+/// applied before the restart is its own durable status row, folded at boot. Ready is never
+/// granted by election authority it lacks; mesh2's primary is the restarted admin only through
+/// the ordinary election afterwards. What must NOT happen: the restarted admin stuck holding its
+/// Ready for a Pending nobody will re-apply, or a second Pending hand-off applied for the same
+/// MeshId, or a replacement MeshId.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
+    let cell = "sole_peer_admin_restarts_ready_from_its_durable_pending";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let mesh = |m: &str, admins: u32| json!({"name": m, "node_admin": admins, "rpc_node": 1});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2)]})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1", 2), mesh("mesh2", 1)]})).await;
+    assert_eq!(status, 202, "{a}");
+    let create = s(&a["build_id"]);
+    estate.await_build(&create, Duration::from_secs(120)).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh2.admin.1", "mesh2.rpc.1"].iter().map(|s| s.to_string()).collect();
+    estate.settled(&want, Duration::from_secs(30)).await;
+    let before = estate.node("mesh2.admin.1").await;
+
+    // The restart, through the rectifier: an attempt of the accepted Build.
+    let (status, restart) = estate.post("/api/nodes/mesh2.admin.1/restart", &json!({})).await;
+    assert_eq!(status, 202, "restart route: {restart}");
+    let restart_build = s(&restart["build_id"]);
+    estate.await_attempt(&restart_build, Estate::attempt_of(&restart), Duration::from_secs(120)).await;
+    let after = estate.settled(&want, Duration::from_secs(60)).await;
+    let after = after.iter().find(|n| n["name"] == "mesh2.admin.1").cloned().expect("mesh2.admin.1 in the view");
+    estate.stop().await;
+    let spans = estate.spans();
+
+    assert_eq!(after["node_id"], before["node_id"], "the same node");
+    assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
+    assert_eq!(after["status"], "ready-for-traffic", "{after}");
+    let readies: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|r| r["attributes"]["node"] == "mesh2.admin.1").collect();
+    assert_eq!(readies.len(), 2, "Ready at birth and again after the restart: {readies:?}");
+    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == "mesh2").collect();
+    let mesh_ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
+    assert_eq!(mesh_ids.len(), 1, "one MeshId for mesh2 in every hand-off, none minted: {mesh_ids:?}");
+    let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
+        .into_iter()
+        .filter(|b| b["attributes"]["node"] == "mesh2.admin.1" && s(&b["attributes"]["detail"]).contains("Pending has not been applied"))
+        .collect();
+    let result = json!({
+        "cell": cell,
+        "restart_build": restart_build,
+        "before_incarnation": before["incarnation_id"],
+        "after_incarnation": after["incarnation_id"],
+        "ready_spans": readies.len(),
+        "handoff_spans": handoffs.len(),
+        "mesh_ids": mesh_ids,
+        "held_for_pending_spans": blocked.len(),
+    });
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
