@@ -378,7 +378,10 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let spans = estate.spans();
 
     // Evidence from the exported spans.
-    let resolves: Vec<&Value> = spans.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections" && sp["attributes"]["target"] == target_id.as_str()).collect();
+    let all_resolves: Vec<&Value> = spans.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections" && sp["attributes"]["target"] == target_id.as_str()).collect();
+    // The cell's own legs are the probe's; the control plane's calls to the same node are recorded apart.
+    let resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] == "rafka-rpc-probe").collect();
+    let control_plane_resolves: Vec<&Value> = all_resolves.iter().copied().filter(|sp| sp["service"] != "rafka-rpc-probe" && start(sp) > cut_at && start(sp) < healed_at).collect();
     let by = |route: &str, replied: bool| resolves.iter().filter(|sp| sp["attributes"]["route"] == route && (sp["attributes"]["outcome"] == "Reply") == replied).cloned().collect::<Vec<_>>();
     let serves: Vec<&Value> = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").into_iter().filter(|sp| sp["attributes"]["node_id"] == target_id.as_str()).collect();
     let silent_traces: BTreeSet<String> = resolves.iter().filter(|sp| sp["attributes"]["outcome"] != "Reply" && start(sp) > cut_at && start(sp) < healed_at).map(|sp| s(&sp["trace_id"])).collect();
@@ -463,6 +466,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         "attempts": [attempt_before, attempt_during, attempt_after],
         "cut_unix_nano": cut_at,
         "healed_unix_nano": healed_at,
+        "control_plane_resolves_during_silence": control_plane_resolves.iter().map(|sp| span_row(sp, &["target", "route", "outcome", "carrier", "protocol"])).collect::<Vec<_>>(),
         "route_resolve_spans": resolves.iter().map(|sp| span_row(sp, &["target", "route", "outcome", "carrier"])).collect::<Vec<_>>(),
         "carried_inner_spans": named(&spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| sp["attributes"]["target"] == target_id.as_str()).map(|sp| span_row(sp, &["target"])).collect::<Vec<_>>(),
         "serve_spans": serves.iter().map(|sp| span_row(sp, &["node_id", "incarnation_id", "op", "outcome"])).collect::<Vec<_>>(),
