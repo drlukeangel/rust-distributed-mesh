@@ -279,8 +279,18 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
                 }
             }
             drop(partition);
+            // A view cut off from a side is already "settled" on the seats it computes from the
+            // members it hears; it has healed only once it holds every pre-cut member as live
+            // and ready. Wait for that fact (the same member set in both views), then for the
+            // computed seats over it.
+            let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
             let mut healed = Vec::new();
             for base in [&base_p, &base2] {
+                wait_for(&format!("{base} holds every pre-cut member ready"), Duration::from_secs(30), || async {
+                    let view = live(&estate.nodes_at(base).await);
+                    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic")).then_some(())
+                })
+                .await;
                 healed.push(settle(&estate, base, &format!("{base} heals")).await);
             }
             assert_eq!(advertised_primaries(&healed[0]), advertised_primaries(&healed[1]), "healed views agree");
