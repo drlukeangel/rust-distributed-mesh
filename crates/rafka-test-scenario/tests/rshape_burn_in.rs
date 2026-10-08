@@ -25,6 +25,7 @@ use rafka_test_scenario::elections::seats_as_expected;
 use rafka_test_scenario::estate::{binding_set_from_build_manifest, descends_from, named, wait_for, Estate, Owner, RUNTIME_IMAGE};
 use rafka_test_scenario::ledger::Bucket;
 use rafka_test_scenario::model::Rng;
+use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault as SigFault, Refusal as SigRefusal};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -406,7 +407,10 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let fresh: Vec<PathBuf> = probe_files(estate).difference(&before).cloned().collect();
     assert_eq!(fresh.len(), 1, "one probe invocation leaves exactly one span file: {fresh:?} for {args:?}");
     let spans: Vec<Value> = std::fs::read_to_string(&fresh[0]).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let trace_id = spans.iter().find(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").map(|sp| s(&sp["trace_id"])).unwrap_or_else(|| panic!("the probe {args:?} left no `via-probe` span in {}", fresh[0].display()));
+    // The probe's root span is exported when it closes; a connection task the call started under it can hold it
+    // open past the process's exit, so the probe's trace is read from any span of its file (all one trace).
+    let trace_id = spans.iter().find(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").or_else(|| spans.first()).map(|sp| s(&sp["trace_id"])).unwrap_or_else(|| panic!("the probe {args:?} left no span in {}", fresh[0].display()));
+    assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id), "one probe invocation is one trace: {args:?}");
     Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms }
 }
 
@@ -502,10 +506,19 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
     let rest = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == bid).cloned().expect("the formation Build's REST request span");
     let reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == bid).collect();
     assert!(!reconciles.is_empty(), "the formation Build was reconciled");
+    // An attempt the accepting fabric-primary decided descends from the REST request; an attempt a successor
+    // executor takes up after the seat moved is its own trace (R-X1: the attempt carries its own context), and
+    // is never the Build's first attempt.
+    let mut own_trace = Vec::new();
     for r in &reconciles {
-        assert!(descends_from(spans, r, &rest), "every attempt of the formation Build descends from its REST request: {r}");
+        if descends_from(spans, r, &rest) {
+            continue;
+        }
+        assert!(r["parent_span_id"] == "" && r["attributes"]["attempt"] != "1", "every attempt of the formation Build descends from its REST request, or is a later attempt on its own trace: {r}");
+        own_trace.push(json!({"attempt": r["attributes"]["attempt"], "executor": r["attributes"]["executor"], "previous_executor": r["attributes"]["previous_executor"], "reason": r["attributes"]["reason"], "span_id": r["span_id"]}));
     }
-    inv.holds("every reconcile attempt of the formation Build descends from its REST request", true, json!({"reconciles": reconciles.len(), "rest_span": rest["span_id"], "trace_id": rest["trace_id"]}));
+    assert!(reconciles.iter().any(|r| r["attributes"]["attempt"] == "1" && descends_from(spans, r, &rest)), "the formation Build's first attempt descends from its REST request");
+    inv.holds("every reconcile attempt of the formation Build descends from its REST request, or is a later attempt on its own trace after the executor seat moved", true, json!({"reconciles": reconciles.len(), "own_trace_attempts": own_trace, "rest_span": rest["span_id"], "trace_id": rest["trace_id"]}));
     let mut chains = Vec::new();
     for name in f.shape.names().into_iter().filter(|n| n != "mesh1.admin.1") {
         let creates: Vec<&Value> = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|c| c["attributes"]["build_id"] == bid && c["attributes"]["node"] == name.as_str()).collect();
@@ -2734,7 +2747,9 @@ fn originate_op(f: &Formed, a: &mut Authority, holder: &str, dest: &Value, windo
         window,
     };
     let c = probe_call(&f.estate, &["originate", "--target", &format!("path:{holder}"), "--destination", &format!("path:{}", s(&dest["name"])), "--key", &op.key, "--value", &op.value]);
-    assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("direct"), Some("reply")), "{holder} originating to {}: {}", dest["name"], c.out);
+    // `direct-unknown` is a pair with no Direct fact: the call dials directly (connections.md section 5).
+    assert!(matches!(c.out["route"].as_str(), Some("direct" | "direct-unknown")), "{holder} originating to {}: {}", dest["name"], c.out);
+    assert_eq!((c.out["outcome"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("reply")), "{holder} originating to {}: {}", dest["name"], c.out);
     assert_eq!(c.out["destination_node_id"], dest["node_id"], "{}", c.out);
     assert_eq!(c.out["reply"]["executing_node"], dest["node_id"], "{}", c.out);
     assert_eq!(c.out["reply"]["incarnation_id"], dest["incarnation_id"], "the originated call reached the current birth: {}", c.out);
@@ -3935,4 +3950,536 @@ async fn drain_run(cell: &str, shape: Shape) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_drain_and_retire_preserve_status_and_terminal_proof() {
     drain_run("mock_drain_and_retire_preserve_status_and_terminal_proof", any_tier()).await;
+}
+
+
+// ---- s3 (#2946): routing and connection churn ----------------------------------------------------
+
+/// The end of every routing cell: the final stable checkpoint, the shape check, the verification
+/// reads, the stop, the cell's own span checks (`checks`, run on the whole estate's spans) and the
+/// evidence views. `extra` carries what the cell recorded as it went; `checks` returns what the
+/// spans proved.
+#[allow(clippy::too_many_arguments)]
+async fn close_run(
+    mut f: Formed,
+    mut a: Authority,
+    mut inv: Invariants,
+    nodes: Vec<Value>,
+    launches: Vec<Value>,
+    authorities: Value,
+    connections: Value,
+    scenarios: &[&str],
+    extra: Value,
+    checks: impl FnOnce(&Formed, &[Value], &mut Invariants) -> Value,
+) {
+    let st = a.stable(&mut f, "final", &both(2), &mut inv).await;
+    let nodes_end = st.nodes.clone();
+    let names_final: BTreeSet<String> = nodes_end.iter().map(|n| s(&n["name"])).collect();
+    assert_eq!(names_final, f.shape.names(), "the topology is what it was: the same path.names, nothing added or removed");
+    let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
+    let (final_state, verification) = final_reads(&f, &a, &nodes_end, &BTreeSet::new());
+    let fabric_end = a.get(&mut f, "/api/fabric").await.expect("an admin answers /api/fabric");
+    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    let stop_t = Instant::now();
+    f.estate.stop().await;
+    let left = provider_left(&f, stop_t, &mut inv).await;
+    let spans = f.estate.spans();
+    let accounted = account(&spans, &a.traffic.ops, &final_state, &mut inv);
+    let claims = claim_rows(&spans);
+    let attempts = check_one_executor_per_attempt(&claims, &mut inv);
+    let fence = check_writes_and_fence(&f, &a, &spans, &mut inv);
+    let elections = check_election_history(&a, &spans, &mut inv);
+    let imported = check_imported_mechanism(&f, &spans, &mut inv);
+    let services = check_services(&spans, &mut inv);
+    let formation = check_formation_chain(&f, &spans, &mut inv);
+    let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
+    let proved = checks(&f, &spans, &mut inv);
+    let index = copy_spans(&f.estate, &f.dir);
+    let mut actions = std::mem::take(&mut f.actions);
+    actions.extend(a.actions.iter().cloned());
+    actions.extend(a.traffic.ops.iter().map(|(_, c)| action_row(c)));
+    actions.extend(verification.iter().map(action_row));
+    actions.sort_by_key(|r| r["t_ms"].as_u64().unwrap_or(0));
+    let mut history = std::mem::take(&mut a.history);
+    history.extend(claims.iter().cloned());
+    history.extend(a.build_obs.iter().map(|o| json!({"phase": "build-projection", "observation": o})));
+    let base = json!({
+        "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
+        "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
+        "final_launches": launches_end, "scenarios": scenarios, "span_checks": proved,
+        "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
+        "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)"},
+    });
+    let mut merged = base;
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        merged[k] = v;
+    }
+    write_views(
+        Views { f: &f, topology_final: nodes_end, actions, operations: accounted.operations, outcomes: accounted.outcomes, authority_history: history, route_history: Vec::new(), runtime_history: runtime, inv, extra: merged },
+        index,
+        &spans,
+    );
+}
+
+/// An originate call that reads (`get`): the source answers with the typed outcome of its own call.
+fn orig_get(f: &Formed, holder: &str, dest: &str, key: &str) -> Call {
+    probe_call(&f.estate, &["originate", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", key])
+}
+
+/// `holder` dials `dest` (a core Ping outside route resolution, as a node's own background traffic
+/// reaches a peer): the pooled connection it opens is a Direct Connected fact of its own.
+fn dial(f: &Formed, holder: &str, dest: &str) -> Call {
+    let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{holder}"), "--destination", &format!("path:{dest}"), "--key", "x"]);
+    assert_eq!(c.out["dialed"], "Reply", "{holder} dials {dest}: {}", c.out);
+    c
+}
+
+/// `holder`'s latest Direct fact toward the node named `dest`, from its own snapshot.
+fn latest_direct(snap: &Value, dest: &str) -> Option<Value> {
+    snap["own_latest_directs"].as_array().into_iter().flatten().find(|d| d["destination"]["name"] == dest).cloned()
+}
+
+/// Wait (a bound that fires is the finding) until `holder`'s latest Direct toward `dest` satisfies `ok`.
+async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bound: Duration, ok: impl Fn(&Value) -> bool) -> Value {
+    let until = Instant::now() + bound;
+    let t0 = Instant::now();
+    loop {
+        let snap = snapshot(estate, holder);
+        if let Some(d) = latest_direct(&snap, dest) {
+            if ok(&d) {
+                return json!({"holder": holder, "destination": dest, "waited_ms": t0.elapsed().as_millis() as u64, "direct": d});
+            }
+        }
+        assert!(Instant::now() < until, "{holder}'s Direct fact toward {dest} never became `{what}` within {bound:?}: {}", latest_direct(&snap, dest).map(|d| d.to_string()).unwrap_or_else(|| "no Direct fact".into()));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// The cut between two nodes' transport sockets: UDP dropped both ways, installed by `iptables`;
+/// `Partition::start` returning is the host's acknowledgement that every rule is in. The fabric-primary
+/// is never one of the two. Held until the returned value drops.
+fn cut_between(nodes: &[Value], a: &str, b: &str, fabric_primary: &str) -> (Partition, Value) {
+    assert!(a != fabric_primary && b != fabric_primary, "REFUSED: the cut {a} <-> {b} names the fabric-primary {fabric_primary}");
+    assert_eq!(provider(), "process", "REFUSED: the per-pair UDP cut is the process provider's; the container provider cuts through its own network namespaces");
+    let (pa, pb) = (udp_ports(nodes, &[a.to_string()]), udp_ports(nodes, &[b.to_string()]));
+    assert!(pa.len() == 1 && pb.len() == 1, "one transport socket each: {pa:?} {pb:?}");
+    let cut = Partition::start(&pa, &pb).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {a} and {b}: {why}"));
+    (cut, json!({"fault": "udp-drop", "between": [a, b], "udp_ports": [pa[0], pb[0]], "acknowledged_at_ms": now_ms()}))
+}
+
+/// The source's spans about its fact toward `dest`: every `connection.update.via-observed`.
+fn observed_facts(spans: &[Value], source: &str, dest: &str) -> Vec<Value> {
+    let mut v: Vec<Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == source && sp["attributes"]["destination"] == dest).cloned().collect();
+    v.sort_by_key(start_ns);
+    v
+}
+
+async fn supersession_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    let (src, dst, other_src) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.gateway.1".to_string());
+    let d0 = st.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
+    let (d_id, d_inc0) = (s(&d0["node_id"]), s(&d0["incarnation_id"]));
+    let fp = st.fp_name();
+    let mut events = Vec::new();
+
+    // Healthy control, same family as every absence below: both gateways reach the broker Direct and the
+    // source holds a Connected edge to its exact birth.
+    for from in [&src, &other_src] {
+        let d = dial(&f, from, &dst);
+        f.actions.push(action_row(&d));
+    }
+    let healthy = originate_op(&f, &mut a, &src, &d0, "healthy-control");
+    let edge0 = await_edge(&f.estate, &src, &d_id, &d_inc0, None).await;
+    let control_other = originate_op(&f, &mut a, &other_src, &d0, "healthy-control");
+    events.push(json!({"event": "healthy-control", "ledger_ops": [healthy, control_other], "edge": edge0}));
+
+    // C11, an established connection lost: the host acknowledges the drop rules; the call written on the dead
+    // connection has no reply coming. It is never a Reply and never replayed; the other gateway still reaches
+    // the broker (the cut is selected, not global). What the source's fact toward the broker says afterwards is
+    // recorded as observed.
+    let (cut1, ack1) = cut_between(&st.nodes, &src, &dst, &fp);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack1}));
+    let t_cut1 = now_ns();
+    let under = orig_get(&f, &src, &dst, "under-cut-established");
+    let out1 = under.out["call_outcome"].clone();
+    assert!(under.out["outcome"] == "Reply" && matches!(out1.as_str(), Some("Indeterminate" | "NotSent")), "a call on a connection the cut killed is Indeterminate or NotSent, never a reply: {}", under.out);
+    let fact_after = latest_direct(&snapshot(&f.estate, &src), &dst);
+    let still = originate_op(&f, &mut a, &other_src, &d0, "during-cut-other-source");
+    f.actions.push(action_row(&under));
+    drop(cut1);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    events.push(json!({"event": "established-connection-lost", "ack": ack1, "call_outcome": out1, "source_fact_after": fact_after, "other_source_op": still, "t_cut_ns": t_cut1}));
+
+    // Inbound acceptance: a compute dials the source gateway; the source accepts and records the same Connected evidence.
+    let t_in0 = now_ns();
+    let inbound_from = "mesh1.compute.1".to_string();
+    let inbound = probe_call(&f.estate, &["dial", "--target", &format!("path:{inbound_from}"), "--destination", &format!("path:{src}"), "--key", "x"]);
+    assert_eq!((inbound.out["dialed"].as_str(), inbound.out["outcome"].as_str()), (Some("Reply"), Some("Reply")), "{}", inbound.out);
+    f.actions.push(action_row(&inbound));
+    events.push(json!({"event": "inbound-accepted", "from": inbound_from, "dial": inbound.out, "t0_ns": t_in0}));
+
+    // Birth supersession: the broker restarts (same logical node, a new exact birth on a new socket).
+    a.traffic.aim = Some(dst.clone());
+    let restart = restart_node(&mut f, &mut a, &st, &dst, "C11 destination birth supersession").await;
+    a.traffic.aim = None;
+    let st2 = a.stable(&mut f, "C11: destination reborn", &both(2), &mut inv).await;
+    let d1 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
+    let d_inc1 = s(&d1["incarnation_id"]);
+    assert_eq!((s(&d1["node_id"]), d_inc1 != d_inc0), (d_id.clone(), true), "a restart is the same logical node in a new exact birth");
+    assert_ne!(udp_ports(&st.nodes, &[dst.clone()]), udp_ports(&st2.nodes, &[dst.clone()]), "the new birth is on a new socket (the OS assigns it)");
+
+    // C11, a dial lost: a node that has never connected to the new birth (another mesh's compute) dials it
+    // while the cut covers the new birth's socket, so its dial ends without a connection.
+    let lost_src = "mesh2.compute.1".to_string();
+    let (cut2, ack2) = cut_between(&st2.nodes, &lost_src, &dst, &fp);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack2}));
+    let t_cut2 = now_ns();
+    let failed_call = orig_get(&f, &lost_src, &dst, "dial-under-cut");
+    assert!(failed_call.out["outcome"] == "Reply" && failed_call.out["call_outcome"] == "NotSent", "a dial that ends without a connection sends nothing: {}", failed_call.out);
+    f.actions.push(action_row(&failed_call));
+    let failed = await_direct(&f.estate, &lost_src, &dst, "Failed on the new birth", Duration::from_secs(30), |d| d["state"] == "Failed" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
+    drop(cut2);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    let t_release = now_ns();
+    events.push(json!({"event": "dial-lost", "source": lost_src, "ack": ack2, "failed_fact": failed, "call": failed_call.out, "t_cut_ns": t_cut2, "t_release_ns": t_release}));
+
+    // Recovery: a call over the projection while the latest Direct is Failed has no active route and sends
+    // nothing; the redial is the node's own dial; then the route is Direct again and the new birth answers.
+    let refused = orig_get(&f, &lost_src, &dst, "failed-fact-before-redial");
+    f.actions.push(action_row(&refused));
+    assert_eq!((refused.out["route"].as_str(), refused.out["call_outcome"].as_str()), (Some("no-active-route"), Some("NotSent")), "a Failed Direct is no route and nothing is sent: {}", refused.out);
+    let mut attempts = Vec::new();
+    loop {
+        let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{lost_src}"), "--destination", &format!("path:{dst}"), "--key", "x"]);
+        attempts.push(json!({"dial": c.out["dialed"], "trace_id": c.trace_id}));
+        f.actions.push(action_row(&c));
+        if c.out["dialed"] == "Reply" {
+            break;
+        }
+        assert!(attempts.len() < 120 && (now_ns() - t_release) < 30_000_000_000, "{lost_src} did not redial {dst} within 30 s of the release: {attempts:?}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let edge1 = await_direct(&f.estate, &lost_src, &dst, "Connected on the new birth", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == d_inc1.as_str()).await;
+    let recovered_op = originate_op(&f, &mut a, &lost_src, &d1, "after-recovery");
+
+    // The source whose connection was lost earlier: its pool holds nothing of the superseded birth.
+    let d = dial(&f, &src, &dst);
+    f.actions.push(action_row(&d));
+    let after = originate_op(&f, &mut a, &src, &d1, "after-supersession");
+    let pooled: Vec<String> = a.traffic.ops[after].1.out["pooled"].as_array().into_iter().flatten().map(s).collect();
+    assert!(!pooled.iter().any(|k| k.contains(&d_inc0)), "the source's pool names nothing of the superseded birth {d_inc0}: {pooled:?}");
+    assert!(pooled.iter().any(|k| k.contains(&d_inc1)), "the source's pool holds a connection to the current birth {d_inc1}: {pooled:?}");
+    let edge2 = await_edge(&f.estate, &src, &d_id, &d_inc1, Some(&d_inc0)).await;
+    events.push(json!({"event": "recovered", "redial_attempts": attempts, "edge": edge1, "recovered_op": recovered_op, "old_incarnation": d_inc0, "new_incarnation": d_inc1, "restart": restart, "pooled_after": pooled, "superseded_edge_gone": edge2, "ledger_after": after}));
+    a.events.extend(events.iter().cloned());
+    let (s0, dname, inc1, comp, lsrc) = (src.clone(), dst.clone(), d_inc1.clone(), inbound_from.clone(), lost_src.clone());
+    let marks = (t_cut2, t_release, t_in0);
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), move |_f, spans, inv| {
+        let facts = observed_facts(spans, &lsrc, &dname);
+        let label = |sp: &Value| format!("{}/{}/{}@{}", sp["attributes"]["state"].as_str().unwrap_or(""), sp["attributes"]["origin"].as_str().unwrap_or(""), sp["attributes"]["reason"].as_str().unwrap_or(""), start_ns(sp));
+        let seq: Vec<String> = facts.iter().map(&label).collect();
+        let failed: Vec<&Value> = facts.iter().filter(|sp| sp["attributes"]["state"] == "failed" && start_ns(sp) >= marks.0).collect();
+        assert!(!failed.is_empty(), "the lost dial produced a Failed fact toward {dname}: {seq:?}");
+        let _ = &s0;
+        let regained = facts.iter().find(|sp| sp["attributes"]["state"] == "connected" && start_ns(sp) >= marks.1).unwrap_or_else(|| panic!("a Connected fact after the release: {seq:?}"));
+        assert!(start_ns(regained) > start_ns(failed[0]), "the recovery follows the loss: {seq:?}");
+        let accepted = named(spans, "rdm.node_admin.connection.update.via-observed")
+            .into_iter()
+            .filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == comp.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= marks.2)
+            .count();
+        assert!(accepted >= 1, "{s0} recorded the accepted inbound connection from {comp} as a fact of origin accept");
+        inv.holds(
+            "C11: a dial lost under an acknowledged cut is a Failed fact toward the exact new birth and sends nothing; the Failed Direct is no route; a redial after the release is a Connected fact and the route recovers on the new birth; an inbound connection is an accepted fact; the superseded birth leaves the pool",
+            true,
+            json!({"facts": seq, "new_incarnation": inc1}),
+        );
+        json!({"facts_toward_destination": seq, "accepted": accepted})
+    })
+    .await;
+}
+
+/// CONTRACT: in the formed estate a gateway holds a Connected Direct edge to a broker's exact birth and
+/// a healthy control proves the route (a second gateway also reaches that broker). The UDP between those
+/// two nodes' sockets is then dropped (acknowledged by the host's rule install): the gateway's call to the
+/// broker does not reply, its latest Direct fact toward the broker is no longer Connected, and the other
+/// gateway still reaches the broker (the cut is selected, not global). Released, the gateway redials and its
+/// next call is answered by the same birth, the fact Connected again. The broker dialling the gateway is an
+/// accepted fact at the gateway. The cut is installed again and the broker is restarted by the Build
+/// rectifier (a new exact birth on a new socket); once released, the gateway's pool names nothing of the
+/// superseded birth, holds a connection to the new one, its edge to the old birth is not Connected, and its
+/// call is answered by the new birth. What must NOT happen: a reply under the cut, a call answered by a
+/// superseded birth, a pooled connection to the old birth after the supersession, a topology write other
+/// than the one restart attempt.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_routes_survive_connection_and_birth_supersession() {
+    supersession_run("mock_routes_survive_connection_and_birth_supersession", any_tier()).await;
+}
+
+/// The source's durable raw connection log: every fact it wrote, in order.
+async fn durable_history(f: &Formed, node: &str) -> Vec<Value> {
+    let dir = f.estate.data_dir_of(node).await;
+    std::fs::read_to_string(format!("{dir}/connections/history.jsonl")).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
+}
+
+async fn proxy_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    // The source is a compute (it originates), the carrier a gateway of its mesh (the shape's carrier kind),
+    // the destination the other mesh's gateway (it serves the originate door, so it can dial the source).
+    let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
+    let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
+    let (dn, cn) = (node(&dst), node(&car));
+    let mut events = Vec::new();
+
+    // The carrier's own Direct edge to the destination is the evidence a carrier is eligible (connections.md 8).
+    let carrier_edge = dial(&f, &car, &dst);
+    f.actions.push(action_row(&carrier_edge));
+    await_direct(&f.estate, &car, &dst, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == dn["incarnation_id"]).await;
+
+    // C12: the source holds Direct Failed(1) and Proxy Connected via the carrier (the facts a proven carried path
+    // leaves). Its call to the destination is carried: one hop, the destination's own birth executes it.
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    assert_eq!(seeded.out["proxy_recorded"], true, "the source recorded the Proxy: {}", seeded.out);
+    assert_eq!((seeded.out["carrier_node_id"].as_str(), seeded.out["destination_node_id"].as_str()), (cn["node_id"].as_str(), dn["node_id"].as_str()), "{}", seeded.out);
+    f.actions.push(action_row(&seeded));
+    let t_car0 = now_ns();
+    let carried = orig_get(&f, &src, &dst, "carried");
+    let t_car1 = now_ns();
+    f.actions.push(action_row(&carried));
+    assert_eq!((carried.out["route"].as_str(), carried.out["carrier"].as_str(), carried.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the call is carried by the gateway: {}", carried.out);
+    assert_eq!((carried.out["reply"]["executing_node"].as_str(), carried.out["reply"]["incarnation_id"].as_str()), (dn["node_id"].as_str(), dn["incarnation_id"].as_str()), "the destination's exact birth executed it: {}", carried.out);
+    let pooled: Vec<String> = carried.out["pooled"].as_array().into_iter().flatten().map(s).collect();
+    assert!(!pooled.iter().any(|k| k.contains(&s(&dn["incarnation_id"]))), "the source holds no connection to the destination while carried: {pooled:?}");
+    events.push(json!({"event": "carried", "seeded": seeded.out, "call": carried.out, "t0_ns": t_car0, "t1_ns": t_car1}));
+
+    // C13: Direct returns while the Proxy is proven. The retirement write is refused (the accepted Direct's own
+    // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
+    // then is Direct effective.
+    let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
+    assert_eq!(armed.out["fault"], "armed", "{}", armed.out);
+    f.actions.push(action_row(&armed));
+    let t_in0 = now_ns();
+    let inbound = dial(&f, &dst, &src);
+    let t_in1 = now_ns();
+    f.actions.push(action_row(&inbound));
+    let mut owed_refused = Value::Null;
+    let until = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < until {
+        let snap = snapshot(&f.estate, &src);
+        if snap["owed"].as_array().map(Vec::len) == Some(1) && snap["fault_refused"].as_u64().unwrap_or(0) >= 2 {
+            owed_refused = snap;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(!owed_refused.is_null(), "the source owes the retirement and its write was refused within 15 s");
+    assert_eq!(owed_refused["own_active_proxies"].as_array().map(Vec::len), Some(1), "the Proxy is still held while the retirement is owed: {owed_refused}");
+    let t_dur0 = now_ns();
+    let during = orig_get(&f, &src, &dst, "while-refused");
+    let t_dur1 = now_ns();
+    f.actions.push(action_row(&during));
+    assert_eq!((during.out["route"].as_str(), during.out["carrier"].as_str(), during.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the Proxy is still the route while the retirement is refused: {}", during.out);
+    let durable_during = durable_history(&f, &src).await;
+    assert!(!durable_during.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected"), "nothing durable says the Proxy retired: {} rows", durable_during.len());
+    let released = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--release", "--key", "x"]);
+    assert_eq!(released.out["fault"], "released", "{}", released.out);
+    f.actions.push(action_row(&released));
+    let until = Instant::now() + Duration::from_secs(15);
+    let landed = loop {
+        let snap = snapshot(&f.estate, &src);
+        if snap["owed"].as_array().map(Vec::len) == Some(0) && snap["own_active_proxies"].as_array().map(Vec::len) == Some(0) {
+            break snap;
+        }
+        assert!(Instant::now() < until, "the owed retirement did not land within 15 s of the release: {snap}");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let durable_after = durable_history(&f, &src).await;
+    let retirement: Vec<&Value> = durable_after.iter().filter(|r| r["kind"] == "Proxy" && r["state"] == "Disconnected").collect();
+    assert_eq!(retirement.len(), 1, "exactly one durable retirement");
+    assert_eq!(retirement[0]["reason"], "direct-restored");
+    let t_cut0 = now_ns();
+    let cut = orig_get(&f, &src, &dst, "after-retirement");
+    let t_cut1 = now_ns();
+    f.actions.push(action_row(&cut));
+    assert_eq!((cut.out["route"].as_str(), cut.out["call_outcome"].as_str()), (Some("direct"), Some("reply")), "{}", cut.out);
+    assert_eq!(cut.out["reply"]["incarnation_id"], dn["incarnation_id"], "{}", cut.out);
+    events.push(json!({"event": "cutback", "armed": armed.out, "inbound": inbound.out, "owed_refused": owed_refused, "call_while_refused": during.out, "released": released.out, "landed": landed, "durable_retirement": retirement[0], "call_after": cut.out, "t_inbound_ns": [t_in0, t_in1]}));
+    a.events.extend(events.iter().cloned());
+    let (s0, d0, c0) = (src.clone(), dst.clone(), car.clone());
+    let w = (t_car0, t_car1, t_dur0, t_dur1, t_cut0, t_cut1, t_in0);
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C12", "C13"], json!({"events": events}), move |_f, spans, inv| {
+        let in_window = |sp: &Value, a: u64, b: u64| start_ns(sp) >= a && start_ns(sp) <= b;
+        let route = |a: u64, b: u64| named(spans, "rdm.node_rpc.route.resolve.via-held-projection").into_iter().find(|sp| sp["attributes"]["own"] == s0.as_str() && in_window(sp, a, b)).cloned();
+        let carried_route = route(w.0, w.1).unwrap_or_else(|| panic!("no held-projection route span for the carried call"));
+        assert_eq!((carried_route["attributes"]["route"].as_str(), carried_route["attributes"]["destination"].as_str()), (Some("via-peer"), Some(d0.as_str())), "{carried_route}");
+        let _ = &c0;
+        let inner = named(spans, "rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| in_window(sp, w.0, w.1)).count();
+        assert_eq!(inner, 1, "the carrier made exactly one inner call for the carried call (one hop, never forwarded again)");
+        let during_route = route(w.2, w.3).unwrap_or_else(|| panic!("no route span for the call while the retirement was refused"));
+        let cut_route = route(w.4, w.5).unwrap_or_else(|| panic!("no route span for the call after the retirement"));
+        assert_eq!(during_route["attributes"]["route"], "via-peer");
+        assert_eq!(cut_route["attributes"]["route"], "direct");
+        let mut ret: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-retirement").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str()).collect();
+        ret.sort_by_key(|sp| start_ns(sp));
+        let (refused, lands): (Vec<&Value>, Vec<&Value>) = ret.iter().partition(|sp| sp["attributes"]["outcome"] == "refused");
+        assert!(!refused.is_empty(), "the refused retirement write is named on a span");
+        assert_eq!(lands.len(), 1, "one landed retirement");
+        assert!(refused.iter().all(|sp| start_ns(sp) <= start_ns(lands[0])), "every refusal precedes the landing");
+        assert!(start_ns(&during_route) < start_ns(lands[0]), "the call during the refusal chose its route before the landing");
+        assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
+        let accepted = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= w.6).count();
+        assert_eq!(accepted, 1, "one accepted connection, one fact");
+        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; Direct returning does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
+        json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_retirement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
+    })
+    .await;
+}
+
+/// CONTRACT: in the formed estate a compute holds Direct Failed and Proxy Connected via its mesh's gateway
+/// toward the other mesh's gateway (the carrier's own Direct edge to it is Active). The compute's call is
+/// carried: the route is via-peer through that gateway, the gateway makes exactly one inner call (it never
+/// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
+/// connection to it. The destination then dials the compute while the compute's retirement write is refused
+/// (the accepted Direct's own append goes through): the retirement is owed, refused by name, the Proxy
+/// stays the route, nothing durable says it retired; released, the retirement lands durably once, and only
+/// then does a call go Direct. What must NOT happen: a Direct leg while the Proxy is owed, a second
+/// forward, a Direct route chosen before the durable retirement, a retirement without a durable row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_proxy_cutback_requires_durable_retirement() {
+    proxy_run("mock_proxy_cutback_requires_durable_retirement", any_tier()).await;
+}
+
+/// The descriptors a process holds, read from `/proc/<pid>/fd`: the total and the sockets among them.
+fn fd_census(pid: u64) -> Value {
+    let (mut total, mut sockets) = (0u64, 0u64);
+    for e in std::fs::read_dir(format!("/proc/{pid}/fd")).into_iter().flatten().flatten() {
+        total += 1;
+        if std::fs::read_link(e.path()).is_ok_and(|l| l.to_string_lossy().starts_with("socket:")) {
+            sockets += 1;
+        }
+    }
+    json!({"pid": pid, "fds": total, "sockets": sockets})
+}
+
+async fn churn_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    assert_eq!(provider(), "process", "REFUSED: the descriptor census reads /proc of the process provider; the container provider counts through its own namespace");
+    let (src, d1n, d2n, dialer) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh1.compute.1".to_string());
+    let fp = st.fp_name();
+    let src_pid = node_pid(&f, &src).await;
+    let cur = |st: &Stable, n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
+    let mut events = Vec::new();
+
+    // Baseline, after every peer of the churn has been dialled once: the source's descriptors, the processes
+    // the provider runs, the source's pool.
+    for d in [&d1n, &d2n] {
+        let x = dial(&f, &src, d);
+        f.actions.push(action_row(&x));
+        let n = cur(&st, d);
+        originate_op(&f, &mut a, &src, &n, "baseline");
+    }
+    let base_census = fd_census(src_pid);
+    let base_procs = provider_actions(&f.bound)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(base_procs, f.shape.total(), "one runtime per node of the shape at the baseline");
+    events.push(json!({"event": "baseline", "fd_census": base_census, "provider_processes": base_procs}));
+
+    // Loss and recovery, three rounds: the established connection to the first broker is lost under an
+    // acknowledged cut, released, an inbound connection is accepted, and the source dials again.
+    let mut rounds = Vec::new();
+    for round in 0..3u32 {
+        let (cut, ack) = cut_between(&st.nodes, &src, &d1n, &fp);
+        f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack}));
+        let under = orig_get(&f, &src, &d1n, &format!("churn-cut-{round}"));
+        assert!(under.out["outcome"] == "Reply" && matches!(under.out["call_outcome"].as_str(), Some("Indeterminate" | "NotSent")), "a call on a cut connection is never a reply: {}", under.out);
+        f.actions.push(action_row(&under));
+        drop(cut);
+        let inbound = dial(&f, &dialer, &src);
+        f.actions.push(action_row(&inbound));
+        let redial = dial(&f, &src, &d1n);
+        f.actions.push(action_row(&redial));
+        rounds.push(json!({"round": round, "cut": ack, "under_cut": under.out["call_outcome"], "census_after": fd_census(src_pid)}));
+    }
+    events.push(json!({"event": "loss-rounds", "rounds": rounds}));
+
+    // Supersession: each broker is restarted in turn; the source reaches the new birth and its pool and
+    // facts name nothing of the old one.
+    let mut superseded = Vec::new();
+    let mut restarts = Vec::new();
+    for d in [&d1n, &d2n] {
+        let old = cur(&st, d);
+        a.traffic.aim = Some(d.clone());
+        let ev = restart_node(&mut f, &mut a, &st, d, "C18 superseding restart").await;
+        a.traffic.aim = None;
+        st = a.stable(&mut f, &format!("C18: {d} reborn"), &both(2), &mut inv).await;
+        let new = cur(&st, d);
+        assert_ne!(old["incarnation_id"], new["incarnation_id"]);
+        superseded.push(s(&old["incarnation_id"]));
+        let x = dial(&f, &src, d);
+        f.actions.push(action_row(&x));
+        let i = originate_op(&f, &mut a, &src, &new, "after-supersession");
+        let edge = await_edge(&f.estate, &src, &s(&new["node_id"]), &s(&new["incarnation_id"]), Some(&s(&old["incarnation_id"]))).await;
+        restarts.push(json!({"node": d, "old_incarnation": old["incarnation_id"], "new_incarnation": new["incarnation_id"], "restart": ev, "ledger_op": i, "edge": edge}));
+    }
+    events.push(json!({"event": "supersessions", "restarts": restarts}));
+
+    // Terminal teardown: every pooled connection names a current birth, none a superseded one; the source's
+    // descriptors are no more than the baseline's; the provider runs exactly the shape's runtimes.
+    let probe_op = originate_op(&f, &mut a, &src, &cur(&st, &d1n), "terminal");
+    let pooled: Vec<String> = a.traffic.ops[probe_op].1.out["pooled"].as_array().into_iter().flatten().map(s).collect();
+    let current: BTreeSet<String> = st.nodes.iter().map(|n| s(&n["incarnation_id"])).collect();
+    for inc in &superseded {
+        assert!(!pooled.iter().any(|k| k.contains(inc)), "the source's pool holds a connection to the superseded birth {inc}: {pooled:?}");
+    }
+    for k in &pooled {
+        assert!(current.iter().any(|c| k.contains(c)), "a pooled connection names no current birth: {k}");
+    }
+    let keys: BTreeSet<&String> = pooled.iter().collect();
+    assert_eq!(keys.len(), pooled.len(), "one pooled connection per peer birth: {pooled:?}");
+    let end_census = fd_census(src_pid);
+    assert!(end_census["sockets"].as_u64() <= base_census["sockets"].as_u64(), "the source holds no more sockets than at the baseline: base {base_census} end {end_census}");
+    assert!(end_census["fds"].as_u64() <= base_census["fds"].as_u64(), "the source holds no more descriptors than at the baseline: base {base_census} end {end_census}");
+    let end_procs = provider_actions(&f.bound)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(end_procs, f.shape.total(), "the provider runs one runtime per node: the superseded births' runtimes are gone");
+    events.push(json!({"event": "terminal", "pooled": pooled, "superseded": superseded, "fd_census_baseline": base_census, "fd_census_end": end_census, "provider_processes": end_procs}));
+    inv.holds(
+        "C18: after loss rounds, inbound acceptance, redials and two superseding restarts, the source's pool names only current births, it holds no more sockets or descriptors than at its baseline, and the provider runs exactly the shape's runtimes",
+        true,
+        json!({"baseline": base_census, "end": end_census, "pooled": pooled.len(), "superseded": superseded}),
+    );
+    a.events.extend(events.iter().cloned());
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C18"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
+}
+
+/// CONTRACT: a gateway's connections are churned in a formed estate: its connection to a broker is lost
+/// under an acknowledged UDP cut and released three times, a compute dials it (an accepted connection) and
+/// it dials again, then each of two brokers is restarted by the Build rectifier (a new exact birth) and
+/// reached again. At the baseline (every peer dialled once) and at the end the gateway's descriptors and
+/// sockets are read from the process table and the provider's runtimes are counted. The end shows no more
+/// descriptors or sockets than the baseline, a pool whose every connection names a current birth and none a
+/// superseded one (one per peer birth), a Connected edge to each new birth and none to the old, and exactly
+/// the shape's runtimes. What must NOT happen: a pooled connection to a superseded birth, a leaked
+/// descriptor, a runtime of a superseded birth, a call answered by a superseded birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_connection_churn_releases_superseded_resources() {
+    churn_run("mock_connection_churn_releases_superseded_resources", any_tier()).await;
 }

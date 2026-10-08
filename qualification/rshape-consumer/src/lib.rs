@@ -6,9 +6,15 @@
 //! defines them. No opcode is allocated here.
 
 use anyhow::{anyhow, Result};
+use rafka_mesh_entity::connections::CarrierPolicy;
+use rafka_mesh_entity::NodeKind;
 use rafka_node_base::{compose, drain_deadline_from_env, launch_for, leave_linger_from_env, Oracles, Role};
 use rafka_node_rpc_testkit::{node, originate};
 use tracing::Instrument;
+
+/// The carrier policy of this shape: an originated call may travel over a Proxy whose carrier is a
+/// gateway (connections.md section 6).
+pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::Gateway };
 
 /// Whether `role` serves the originate door (0x73): the roles work enters through. A compute node
 /// originates opaque calls; a gateway accepts them and routes by the supplied RDM mechanisms. A
@@ -39,7 +45,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         let client = seams.client.clone();
         let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone());
         if originates {
-            originate::serve(b, seams, &launch)
+            originate::serve_with_policy(b, seams, &launch, CARRIER_POLICY)
         } else {
             b
         }
