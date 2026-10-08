@@ -32,7 +32,8 @@ async fn retire_runs_every_step_in_order_and_a_new_create_reuses_the_released_po
     let template = template(&fabric, admin.seed.clone());
     let builds = MemoryBuildStateAdapter::new();
     // Exactly one rpc node's worth of ports.
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58600, 58600));
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("retire_pipeline", 1);
+    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let sink = Published::default();
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {

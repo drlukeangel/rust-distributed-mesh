@@ -443,6 +443,22 @@ pub fn lease_port_block(hint: u16, count: u16, ceiling: u16, held: &std::collect
     ))
 }
 
+/// A free block of `count` contiguous ports from this lane's range (`RAFKA_ENDPOINT_PORT_RANGE`)
+/// for a cell named `name`: [`lease_port_block`] with [`port_bindable`], searched from a point
+/// derived from the name so cells leasing at once start apart, then once around the range. A cell
+/// never names a host port of its own: the lane's block is the only range its ports come from.
+pub fn lease_block_for(name: &str, count: u16) -> (u16, u16) {
+    let (first, last) = port_range_from_env();
+    let span = (last - first).saturating_add(1).saturating_sub(count).max(1) as u64;
+    let offset = name.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211)) % span;
+    let hint = first + offset as u16;
+    let none = std::collections::BTreeSet::new();
+    let base = lease_port_block(hint, count, last, &none, port_bindable)
+        .or_else(|_| lease_port_block(first, count, last, &none, port_bindable))
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    (base, base + count - 1)
+}
+
 /// Whether `port` can be bound right now on every interface, over TCP AND UDP: a node binds
 /// its mesh port over UDP and a listener over TCP, so a port free on one protocol only is not
 /// free. (rafka-v2 node-admin's `port_bindable`, the system check of its one port search.)

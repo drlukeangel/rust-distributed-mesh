@@ -69,7 +69,8 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         })
         .await
         .unwrap();
-    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), 58200, 58299));
+    let (first, last) = rafka_node_admin_core::deployment::endpoint::lease_block_for("process_pipeline_failure", 100);
+    let allocator = Mutex::new(EndpointAllocator::new(IpAddr::from([127, 0, 0, 1]), first, last));
     let provider = ProcessDeploymentProvider::new();
     let pipeline = DeploymentPipeline {
         provider: &provider,

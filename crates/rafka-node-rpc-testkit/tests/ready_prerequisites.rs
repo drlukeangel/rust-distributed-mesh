@@ -153,12 +153,12 @@ async fn create_losing(lose: Option<&'static str>, ports: (u16, u16)) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ready_waits_on_a_complete_receipt_for_every_runtime_prerequisite() {
     for (i, lost) in READY_PREREQUISITES.iter().enumerate() {
-        let base = 28000 + 10 * i as u16;
+        let (base, _) = rafka_node_admin_core::deployment::endpoint::lease_block_for(&format!("ready_prerequisites-{i}"), 10);
         create_losing(Some(lost.name()), (base, base + 9)).await;
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ready_follows_every_runtime_prerequisite_receipt() {
-    create_losing(None, (28100, 28109)).await;
+    create_losing(None, rafka_node_admin_core::deployment::endpoint::lease_block_for("ready_prerequisites-all", 10)).await;
 }
