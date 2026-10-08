@@ -764,6 +764,42 @@
           "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources"
         }
       ]
+    },
+    "i143-rshape-partition-chaos-process": {
+      "issue": 2948,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_partition_heal_recovers_coverage_and_routes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_partition_heal_recovers_coverage_and_routes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-partition-chaos-process/mock_partition_heal_recovers_coverage_and_routes"
+        },
+        {
+          "name": "mock_control_loss_recovers_without_status_heartbeat",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_recovers_without_status_heartbeat -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-partition-chaos-process/mock_control_loss_recovers_without_status_heartbeat"
+        }
+      ]
+    },
+    "i143-rshape-partition-chaos-container": {
+      "issue": 2948,
+      "layer": "chaos-container",
+      "cells": [
+        {
+          "name": "mock_partition_heal_recovers_coverage_and_routes",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_partition_heal_recovers_coverage_and_routes -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-partition-chaos-container/mock_partition_heal_recovers_coverage_and_routes"
+        },
+        {
+          "name": "mock_control_loss_recovers_without_status_heartbeat",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_recovers_without_status_heartbeat -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat"
+        }
+      ]
     }
   }
 }

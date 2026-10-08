@@ -520,6 +520,25 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
             v.push(format!("rshape-definition-orphan-job: {job} (issue #{issue}) is in the matrix but not registered in rshape_jobs"));
         }
     }
+    // Every built cell has its registry row and its test function; a cell the matrix declares pending (a story
+    // not yet built) has neither, so a half-built cell fails on whichever side is missing.
+    for c in &cells {
+        let (job, test, source) = (s(c, "job"), s(c, "test"), s(c, "source"));
+        let row = rjobs.get(job).is_some_and(|j| j["cells"].as_array().into_iter().flatten().any(|rc| s(rc, "name") == test));
+        let has_fn = std::fs::read_to_string(root().join(source)).is_ok_and(|text| text.contains(&format!("fn {test}(")));
+        if c.get("pending").is_some() {
+            if row || has_fn {
+                v.push(format!("rshape-definition-pending-cell-built: {job}/{test} is declared pending but has a registry row ({row}) or a test function ({has_fn})"));
+            }
+            continue;
+        }
+        if !row {
+            v.push(format!("rshape-definition-unregistered-cell: {job}/{test} is in the matrix but has no registry row"));
+        }
+        if matches!(s(c, "tier"), "canonical" | "fast") && !has_fn {
+            v.push(format!("rshape-definition-cell-without-test: {job}/{test} has a registry row or matrix cell but no `fn {test}(` in {source}"));
+        }
+    }
     v
 }
 
@@ -550,6 +569,15 @@ fn rshape_definition_covers_every_scenario_without_business_dependencies() {
         assert_names(rule, &check_matrix(m, r), what);
         planted.entry(rule).or_insert_with(Vec::new).push(what);
     };
+    let mut r = reg.clone();
+    r["rshape_jobs"]["i143-rshape-partition-chaos-process"]["cells"].as_array_mut().unwrap().pop();
+    plant("rshape-definition-unregistered-cell", "a matrix cell with no registry row", &matrix, &r);
+    let mut m = matrix.clone();
+    m["cells"].as_array_mut().unwrap().iter_mut().find(|c| s(c, "test") == "mock_partition_heal_recovers_coverage_and_routes").unwrap()["test"] = Value::from("mock_no_such_cell");
+    plant("rshape-definition-cell-without-test", "a matrix cell naming a test no source holds", &m, &reg);
+    let mut m = matrix.clone();
+    m["cells"].as_array_mut().unwrap().iter_mut().find(|c| s(c, "test") == "mock_partition_heal_recovers_coverage_and_routes").unwrap()["pending"] = Value::from(2948);
+    plant("rshape-definition-pending-cell-built", "a pending cell that has a test function and a row", &m, &reg);
     let mut m = matrix.clone();
     m["scenarios"].as_object_mut().unwrap().remove("C7");
     plant("rshape-definition-uncovered-scenario", "a scenario with no cell (C7)", &m, &reg);

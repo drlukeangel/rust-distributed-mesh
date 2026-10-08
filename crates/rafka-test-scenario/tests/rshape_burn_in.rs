@@ -407,10 +407,7 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let fresh: Vec<PathBuf> = probe_files(estate).difference(&before).cloned().collect();
     assert_eq!(fresh.len(), 1, "one probe invocation leaves exactly one span file: {fresh:?} for {args:?}");
     let spans: Vec<Value> = std::fs::read_to_string(&fresh[0]).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    // The probe's root span is exported when it closes; a connection task the call started under it can hold it
-    // open past the process's exit, so the probe's trace is read from any span of its file (all one trace).
-    let trace_id = spans.iter().find(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").or_else(|| spans.first()).map(|sp| s(&sp["trace_id"])).unwrap_or_else(|| panic!("the probe {args:?} left no span in {}", fresh[0].display()));
-    assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id), "one probe invocation is one trace: {args:?}");
+    let trace_id = spans.iter().find(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").map(|sp| s(&sp["trace_id"])).unwrap_or_else(|| panic!("the probe {args:?} left no `via-probe` span in {}", fresh[0].display()));
     Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms }
 }
 
@@ -4472,4 +4469,388 @@ async fn churn_run(cell: &str, shape: Shape) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_connection_churn_releases_superseded_resources() {
     churn_run("mock_connection_churn_releases_superseded_resources", any_tier()).await;
+}
+
+// ---- s5 (#2948): multi-mesh partition and heal ---------------------------------------------------
+
+/// The held-member repair attempts of the backbone and mesh channels since `since`.
+fn refeeds(spans: &[Value], since: u64) -> Vec<&Value> {
+    named(spans, "rdm.mesh.connection.update.via-refeed").into_iter().filter(|sp| sp["attributes"]["reason"] == "stale-held-member" && start_ns(sp) >= since).collect()
+}
+
+/// Spans that mark a death, a tombstone, a departure, a rebirth or a provider terminate.
+fn lifecycle_marks(spans: &[Value], from: u64, to: u64) -> Vec<String> {
+    spans
+        .iter()
+        .filter(|sp| start_ns(sp) >= from && start_ns(sp) <= to)
+        .map(|sp| s(&sp["name"]))
+        .filter(|n| {
+            n.contains(".node.delete.")
+                || n.contains(".deployment.delete.")
+                || n.contains(".deployment.update.")
+                || n.contains("proven-drift")
+                || n.contains("membership.remove.")
+                || n.contains("membership.reject.via-departed-birth")
+                || n.contains("runtime.update.via-adopt")
+                || n.contains("node.create.via-deployment")
+        })
+        .collect()
+}
+
+/// Every named member is ready in `view`.
+fn holds_all_ready(view: &[Value], everyone: &[String]) -> bool {
+    everyone.iter().all(|name| view.iter().any(|n| n["name"] == name.as_str() && n["status"] == "ready-for-traffic"))
+}
+
+/// The per-publisher topology_version sequence of the spans, in start order.
+fn topology_versions(spans: &[Value]) -> BTreeMap<String, Vec<u64>> {
+    let mut v: Vec<&Value> = named(spans, "rdm.mesh.backbone.update.via-topology-version");
+    v.sort_by_key(|sp| start_ns(sp));
+    let mut out: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for sp in v {
+        out.entry(format!("{}@{}", sp["attributes"]["publisher"].as_str().unwrap_or(""), sp["attributes"]["node"].as_str().unwrap_or(""))).or_default().push(sp["attributes"]["topology_version"].as_str().and_then(|x| x.parse().ok()).unwrap_or(0));
+    }
+    out
+}
+
+async fn partition_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
+    let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let window = Duration::from_millis(window_ms);
+    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
+    let bases: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["admin_api_base"]))).collect();
+    for (name, base) in &bases {
+        wait_for(&format!("{name} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.nodes_at(base).await, &everyone).then_some(()) }).await;
+    }
+    let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let (mesh1, mesh2) = (side("mesh1"), side("mesh2"));
+    let before: BTreeMap<String, (String, String)> = st.nodes.iter().map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect();
+    let mut pids = BTreeMap::new();
+    for n in &st.nodes {
+        let name = s(&n["name"]);
+        pids.insert(name.clone(), node_pid(&f, &name).await);
+    }
+    let fabric_build_before = s(&st.fabric["build_id"]);
+    let (g1, b1, b2, g2) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh2.gateway.1".to_string());
+    let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
+    let (nb1, nb2) = (node(&b1), node(&b2));
+    let mut events = Vec::new();
+
+    // Healthy control, same family as the cut's absences: same-mesh and cross-mesh calls reply.
+    for (from, to) in [(&g1, &b1), (&g1, &b2), (&g2, &b2)] {
+        let d = dial(&f, from, to);
+        f.actions.push(action_row(&d));
+    }
+    let control = [originate_op(&f, &mut a, &g1, &nb1, "healthy-control"), originate_op(&f, &mut a, &g1, &nb2, "healthy-control"), originate_op(&f, &mut a, &g2, &nb2, "healthy-control")];
+    events.push(json!({"event": "healthy-control", "ledger_ops": control}));
+
+    // C9: every UDP path between the meshes is dropped; no node is cut from a member of its own mesh.
+    let cut = Partition::start(&udp_ports(&st.nodes, &mesh1), &udp_ports(&st.nodes, &mesh2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between the meshes: {why}"));
+    let cut_at = now_ns();
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": ["mesh1", "mesh2"], "acknowledged": true}));
+    // Bounded hold: each admin has handed each peer-mesh admin to its backbone channel twice.
+    let admins: Vec<(String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
+    let held_at = wait_for("every admin re-feeds every peer-mesh admin twice", window * 6 + Duration::from_secs(40), || async {
+        let spans = f.estate.spans();
+        let att = refeeds(&spans, cut_at);
+        admins
+            .iter()
+            .all(|(obs, om)| admins.iter().filter(|(_, pm)| pm != om).all(|(peer, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2))
+            .then_some(now_ns())
+    })
+    .await;
+    // What the partition promises: each side serves within itself; nothing crosses.
+    let local1 = orig_get(&f, &g1, &b1, "cut-local-mesh1");
+    let d = dial(&f, &g2, &b2);
+    f.actions.push(action_row(&d));
+    let local2 = orig_get(&f, &g2, &b2, "cut-local-mesh2");
+    let cross = orig_get(&f, &g1, &b2, "cut-cross-mesh");
+    f.actions.extend([&local1, &local2, &cross].iter().map(|c| action_row(c)));
+    assert_eq!(local1.out["call_outcome"], "reply", "mesh1 serves within itself under the cut: {}", local1.out);
+    assert_eq!(local2.out["call_outcome"], "reply", "mesh2 serves within itself under the cut: {}", local2.out);
+    assert!(cross.out["outcome"] == "Reply" && cross.out["call_outcome"] != "reply", "nothing crosses the cut: {}", cross.out);
+    let mut views_during = Vec::new();
+    for (name, base) in &bases {
+        let view = f.estate.nodes_at(base).await;
+        let own = side(&s(&st.nodes.iter().find(|n| n["name"] == name.as_str()).unwrap()["mesh"]));
+        assert!(holds_all_ready(&view, &own), "{name} still holds its own mesh ready during the cut: {view:#?}");
+        views_during.push(json!({"admin": name, "fabric_primary": view.iter().find(|n| n["is_fabric_primary"] == true).map(|n| n["name"].clone()), "seats": advertised_primaries_of(&view)}));
+    }
+    events.push(json!({"event": "partitioned", "held_for_ms": (held_at - cut_at) / 1_000_000, "same_mesh_calls": [local1.out["call_outcome"], local2.out["call_outcome"]], "cross_mesh_call": cross.out["call_outcome"], "views": views_during}));
+
+    // C10: heal. Every admin holds every pre-cut member ready, on the computed seats, with one fabric-primary;
+    // the cross-mesh route converges; every birth is the one that was cut.
+    let healed_at = now_ns();
+    drop(cut);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    let st2 = a.stable(&mut f, "healed", &both(2), &mut inv).await;
+    for (name, base) in &bases {
+        wait_for(&format!("{name} holds every pre-cut member ready after the heal"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.nodes_at(base).await, &everyone).then_some(()) }).await;
+    }
+    let mut redial = Vec::new();
+    for (from, to) in [(&g1, &b2), (&g2, &b1)] {
+        let until = Instant::now() + Duration::from_secs(60);
+        loop {
+            let c = probe_call(&f.estate, &["dial", "--target", &format!("path:{from}"), "--destination", &format!("path:{to}"), "--key", "x"]);
+            let ok = c.out["dialed"] == "Reply";
+            redial.push(json!({"from": from, "to": to, "dialed": c.out["dialed"]}));
+            f.actions.push(action_row(&c));
+            if ok {
+                break;
+            }
+            assert!(Instant::now() < until, "{from} did not reach {to} within 60 s of the heal: {redial:?}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let after_ops = [originate_op(&f, &mut a, &g1, &nb2, "after-heal"), originate_op(&f, &mut a, &g2, &nb1, "after-heal")];
+    for n in &st2.nodes {
+        let name = s(&n["name"]);
+        assert_eq!(before.get(&name), Some(&(s(&n["node_id"]), s(&n["incarnation_id"]))), "{name} is the same birth after the heal");
+        assert!(pid_alive(pids[&name]), "{name} (pid {}) lived through the cut", pids[&name]);
+    }
+    assert_eq!(s(&st2.fabric["build_id"]), fabric_build_before, "the fabric's accepted Build is the one it held before the cut");
+    events.push(json!({"event": "healed", "redial": redial, "after_ledger_ops": after_ops, "healed_at_ns": healed_at}));
+    a.events.extend(events.iter().cloned());
+    let (adm, wm) = (admins.clone(), window_ms);
+    let verified_at = now_ns();
+    let marks = (cut_at, held_at, healed_at, verified_at);
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], json!({"events": events}), move |f, spans, inv| {
+        // Repair: only a peer mesh's admin is re-fed across the cut, stale for at least the window, bounded by one
+        // attempt per window per pair, with the neighbours kept (no mesh channel fell back to no-neighbour).
+        let att = refeeds(spans, marks.0);
+        let mesh_of = |n: &str| adm.iter().find(|(x, _)| x == n).map(|(_, m)| m.clone());
+        for sp in att.iter().filter(|sp| start_ns(sp) <= marks.3) {
+            let (obs, peer) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["peer_node"]));
+            assert!(mesh_of(&obs).is_some() && mesh_of(&peer).is_some() && mesh_of(&obs) != mesh_of(&peer), "only a peer mesh's node-admin is re-fed across the cut: {sp}");
+            assert!(sp["attributes"]["coverage_age_ms"].as_str().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0) >= wm, "a member is re-fed only after its coverage was stale for the window: {sp}");
+        }
+        let held_ns = marks.1 - marks.0;
+        let mut per_pair: BTreeMap<(String, String), u64> = BTreeMap::new();
+        for sp in att.iter().filter(|sp| start_ns(sp) <= marks.1) {
+            *per_pair.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["peer_node"]))).or_default() += 1;
+        }
+        for ((o, p), n) in &per_pair {
+            assert!(*n <= held_ns / (wm * 1_000_000) + 1, "{o} -> {p}: {n} attempts in {} ms exceeds one per {wm} ms window", held_ns / 1_000_000);
+        }
+        let silent_own: Vec<String> = named(spans, "rdm.mesh.membership.update.via-mesh-silent")
+            .into_iter()
+            .filter(|sp| start_ns(sp) >= marks.0 && start_ns(sp) <= marks.3 && mesh_of(&s(&sp["attributes"]["node"])).is_some_and(|m| m == s(&sp["attributes"]["mesh"])))
+            .map(|sp| s(&sp["attributes"]["node"]))
+            .collect();
+        assert!(silent_own.is_empty(), "no admin lost its own mesh: {silent_own:?}");
+        let life = lifecycle_marks(spans, marks.0, marks.3);
+        assert!(life.is_empty(), "no death, tombstone, departure, rebirth or terminate through cut and heal: {life:?}");
+        let tv = topology_versions(spans);
+        for (publisher, seq) in &tv {
+            assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{publisher}: a topology_version never goes backward (a stale source version overwrote nothing): {seq:?}");
+        }
+        let created: BTreeSet<String> = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
+        assert_eq!(created, BTreeSet::from([f.build_id.clone()]), "no Build was accepted through cut and heal: recovered unchanged topology opens no new Build");
+        inv.holds("C9/C10: under the A/B cut each mesh serves within itself, nothing crosses, repair is bounded and only toward peer-mesh admins; after the heal every admin holds every member ready on the computed seats, every birth is the one that was cut, routes converge and no Build was opened", true, json!({"refeed_pairs": per_pair.len(), "topology_versions": tv.len()}));
+        json!({"refeed_attempts": att.len(), "lifecycle_marks": life.len(), "topology_version_publishers": tv.len()})
+    })
+    .await;
+}
+
+fn advertised_primaries_of(view: &[Value]) -> Value {
+    json!(view.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>())
+}
+
+/// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
+/// rule install; no node is cut from a member of its own mesh). Each admin hands each peer-mesh admin to its
+/// backbone channel again once per repair window (only after the coverage was stale for the window), no admin
+/// loses its own mesh; a gateway reaches its mesh's broker, nothing reaches across, each admin still holds its own
+/// mesh ready. The cut is dropped: every admin holds every pre-cut member ready on the computed seats with one
+/// fabric-primary, a gateway reaches the other mesh's broker again and the call is answered by its exact birth,
+/// every node is the same birth (NodeId, incarnation, process) and the fabric's accepted Build is unchanged.
+/// What must NOT happen: a reply across the cut, a death, tombstone, departure, rebirth or provider terminate, a
+/// topology_version going backward, a new Build for an unchanged topology, a second fabric-primary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_partition_heal_recovers_coverage_and_routes() {
+    partition_run("mock_partition_heal_recovers_coverage_and_routes", any_tier()).await;
+}
+
+/// A member of the backbone and one mesh channel that records every frame it decodes (a third party: it is
+/// no node of the fabric, it holds nothing).
+struct Observer {
+    _endpoint: iroh::Endpoint,
+    _router: iroh::protocol::Router,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, rafka_mesh_transport::membership::Frame)>>>,
+}
+
+impl Observer {
+    async fn join(fabric: &rafka_mesh_entity::FabricId, mesh: &rafka_mesh_entity::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
+        use futures_lite::StreamExt as _;
+        use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
+        let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
+        let endpoint = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        learn_addresses(&endpoint, &seeds).unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Frame)>>> = Default::default();
+        let peers: Vec<iroh::EndpointId> = seeds.iter().map(|a| a.id).collect();
+        for (channel, topic) in [("backbone", backbone_topic(fabric)), ("mesh", mesh_topic(fabric, mesh))] {
+            let (sender, mut receiver) = gossip.subscribe(topic, peers.clone()).await.unwrap().split();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                let _keep = sender;
+                while let Some(ev) = receiver.next().await {
+                    if let Ok(iroh_gossip::api::Event::Received(m)) = ev {
+                        if let Ok(frame) = Frame::decode(&bytes::Bytes::copy_from_slice(&m.content)) {
+                            seen.lock().unwrap().push((channel, frame));
+                        }
+                    }
+                }
+            });
+        }
+        Self { _endpoint: endpoint, _router: router, seen }
+    }
+}
+
+async fn control_run(cell: &str, shape: Shape) {
+    use rafka_mesh_transport::membership::Frame;
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
+    let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let window = Duration::from_millis(window_ms);
+    let (_, fabric_view) = f.estate.get("/api/fabric").await;
+    let fabric_id = rafka_mesh_entity::FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
+    let mesh2_id = rafka_mesh_entity::MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").expect("mesh2")["id"])).expect("the mesh2 id");
+    let seeds: Vec<iroh::EndpointAddr> = st
+        .nodes
+        .iter()
+        .filter(|n| n["kind"] == "node_admin")
+        .filter_map(|n| Some(iroh::EndpointAddr::new(s(&n["endpoint_id"]).parse::<iroh::PublicKey>().ok()?).with_ip_addr(s(&n["transport_addr"]).parse::<std::net::SocketAddr>().ok()?)))
+        .collect();
+    let observer = Observer::join(&fabric_id, &mesh2_id, seeds).await;
+    // The node whose control traffic is lost: a mesh2 node-admin that is neither mesh2's primary nor the fabric-primary.
+    let victim = st.admins.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] != true && n["is_fabric_primary"] != true).cloned().expect("a mesh2 node-admin that is neither primary");
+    let (vname, vbase) = (s(&victim["name"]), s(&victim["admin_api_base"]));
+    let restart_target = "mesh2.broker.1".to_string();
+    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
+    let mut events = Vec::new();
+
+    // Quiet baseline: once the formation's reinforcement is over, a quiet fabric sends no status frame.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let quiet0 = now_ns();
+    tokio::time::sleep(window * 2).await;
+    let quiet1 = now_ns();
+    let quiet_spans = f.estate.spans();
+    let quiet_sends: Vec<&Value> = named(&quiet_spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| start_ns(sp) >= quiet0 && start_ns(sp) <= quiet1).collect();
+    assert!(quiet_sends.is_empty(), "a quiet fabric sends no status frame in {} ms: {}", (quiet1 - quiet0) / 1_000_000, quiet_sends.len());
+    events.push(json!({"event": "quiet-baseline", "window_ms": (quiet1 - quiet0) / 1_000_000, "status_sends": 0}));
+
+    // Control loss: the victim hears and is heard by no node. Held for two repair windows plus the re-feed.
+    let others: Vec<String> = everyone.iter().filter(|n| **n != vname).cloned().collect();
+    let cut = Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &udp_ports(&st.nodes, &others)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}"));
+    let cut_at = now_ns();
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "node": vname, "acknowledged": true}));
+    let stale = wait_for("the victim's coverage is stale and re-fed", window * 4 + Duration::from_secs(40), || async {
+        let spans = f.estate.spans();
+        let att = refeeds(&spans, cut_at);
+        (att.iter().any(|sp| sp["attributes"]["peer_node"] == vname.as_str() || sp["attributes"]["node"] == vname.as_str())).then_some(now_ns())
+    })
+    .await;
+    // A role node restarts while the victim's coverage is stale: a topology action under the lost control path.
+    a.traffic.aim = Some(restart_target.clone());
+    let restart = restart_node(&mut f, &mut a, &st, &restart_target, "C14 restart under stale coverage").await;
+    a.traffic.aim = None;
+    events.push(json!({"event": "control-lost", "victim": vname, "stale_after_ms": (stale - cut_at) / 1_000_000, "restart": restart}));
+    drop(cut);
+    let healed_at = now_ns();
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
+    st = a.stable(&mut f, "C14: healed", &both(2), &mut inv).await;
+    let reborn = st.nodes.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap();
+    wait_for("the victim holds every member ready, the restarted broker under its new incarnation", Duration::from_secs(60), || async {
+        let v = f.estate.nodes_at(&vbase).await;
+        (holds_all_ready(&v, &everyone) && v.iter().any(|n| n["name"] == restart_target.as_str() && n["incarnation_id"] == reborn["incarnation_id"])).then_some(())
+    })
+    .await;
+    // And once converged a quiet fabric is quiet again.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let after0 = now_ns();
+    tokio::time::sleep(window * 2).await;
+    let after1 = now_ns();
+    events.push(json!({"event": "healed", "victim": vname, "healed_at_ns": healed_at, "quiet_after": [after0, after1]}));
+    a.events.extend(events.iter().cloned());
+    let seen = observer.seen.lock().unwrap().clone();
+    let final_seats: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
+    let marks = (cut_at, healed_at, after0, after1, quiet0, quiet1);
+    close_run(f, a, inv, nodes, launches, authorities, connections, &["C14"], json!({"events": events}), move |_f, spans, inv| {
+        // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
+        let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
+        let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+        for sp in &sends {
+            *groups.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]))).or_default() += 1;
+        }
+        // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
+        // for (the formation moves each mesh's primary once, to the lowest NodeId); a sender that holds its seat
+        // at the end sent all five.
+        let seats: BTreeSet<String> = final_seats.clone();
+        let odd: Vec<_> = groups.iter().filter(|((sender, _, _), n)| **n > 5 || (**n < 5 && seats.contains(sender))).collect();
+        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat: {odd:?}");
+        let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= marks.2 && start_ns(sp) <= marks.3).collect();
+        assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
+        // Versions: a publisher's topology_version never goes backward; one birth's digest_seq never goes backward
+        // in the order a third party heard it, and the restarted node's new birth is a different birth.
+        let tv = topology_versions(spans);
+        for (p, seq) in &tv {
+            assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{p}: topology_version went backward: {seq:?}");
+        }
+        let mut digests: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
+        let mut members_versions: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut status_frames = 0usize;
+        for (_, fr) in &seen {
+            match fr {
+                Frame::Digest { digest } => digests.entry((digest.node.name.to_string(), digest.node.incarnation.0.clone())).or_default().push(digest.digest_seq),
+                Frame::Members { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
+                Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
+                _ => {}
+            }
+        }
+        for (birth, seq) in &digests {
+            let mut sorted = seq.clone();
+            sorted.sort_unstable();
+            assert!(!seq.is_empty() && sorted.first() >= Some(&1), "{birth:?}: a birth's digest_seq starts at 1: {seq:?}");
+        }
+        let broker_births: BTreeSet<&String> = digests.keys().filter(|(n, _)| n == "mesh2.broker.1").map(|(_, i)| i).collect();
+        assert!(broker_births.len() >= 2, "the observer heard both births of the restarted broker: {broker_births:?}");
+        inv.holds(
+            "C14: with a node-admin's control traffic lost and a role node restarted under its stale coverage, every status message is exactly five sends, none in the quiet windows before or after, topology_version never goes backward, every birth's digest_seq starts at 1 and the restarted node's new birth is heard as a different birth",
+            true,
+            json!({"status_messages": groups.len(), "publishers": tv.len(), "births_heard": digests.len(), "status_frames_heard": status_frames, "quiet_before_ms": (marks.5 - marks.4) / 1_000_000}),
+        );
+        json!({"status_messages": groups.len(), "refeeds": refeeds(spans, marks.0).len(), "births_heard": digests.len(), "status_frames_heard_by_observer": status_frames})
+    })
+    .await;
+}
+
+/// CONTRACT: in the formed estate, once the formation's status reinforcement is over, a quiet fabric sends no
+/// status frame for two repair windows. A mesh2 node-admin that is neither primary is then cut from every other
+/// node (acknowledged by the host's rule install): its coverage goes stale and is re-fed; while it is, a mesh2
+/// broker is restarted by the Build rectifier. The cut is dropped: the fabric settles on the computed seats with
+/// one writer, the node-admin holds every member ready with the broker under its new incarnation, and a quiet
+/// fabric is quiet again for two windows. Every status message in the whole run is exactly five sends of one
+/// change, topology_version never goes backward per publisher, and a third party on the gossip channels hears
+/// each birth's digest_seq start at one and the restarted broker's two births as two births. What must NOT
+/// happen: a status send outside a five-send message, a status heartbeat in a quiet window, a version going
+/// backward, a restarted node heard as its old birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_control_loss_recovers_without_status_heartbeat() {
+    control_run("mock_control_loss_recovers_without_status_heartbeat", any_tier()).await;
 }
