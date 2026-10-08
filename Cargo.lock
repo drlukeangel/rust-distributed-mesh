@@ -3886,6 +3886,7 @@ dependencies = [
  "rafka-mesh-entity",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
+ "rafka-node-admin-core",
  "rafka-node-rpc-contract",
  "reqwest",
  "serde",

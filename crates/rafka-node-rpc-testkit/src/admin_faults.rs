@@ -54,8 +54,9 @@ pub enum CutSpec {
     Hook { phase: String, #[serde(default)] node: Option<String> },
     /// An accepted Build is durable (`publish_accepted` returned) and `Fabric.build_id` has not moved.
     AcceptedBuild,
-    /// The `Fabric.build_id` pointer write to `fabric.storage` has begun and is not durable.
-    PointerWrite,
+    /// A write of the Fabric record to `fabric.storage` has begun and is not durable. With
+    /// `moves_pointer`, only a write that names a Build (the `Fabric.build_id` pointer moving).
+    PointerWrite { #[serde(default)] moves_pointer: bool },
     /// The deployment provider reports a control domain no held birth's runtime fact is in: the
     /// admin cannot adopt what it hears, so its Ready gate stays blocked until the release.
     ProviderDomain,
@@ -82,7 +83,7 @@ impl CutSpec {
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node_is(node, &op.name.to_string()),
             (CutSpec::Hook { phase, node }, Probe::Hook { phase: ph, target, .. }) => phase == ph && node_is(node, target),
             (CutSpec::AcceptedBuild, Probe::Accepted { .. }) => true,
-            (CutSpec::PointerWrite, Probe::Pointer { .. }) => true,
+            (CutSpec::PointerWrite { moves_pointer }, Probe::Pointer { build_id }) => !*moves_pointer || build_id.is_some(),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             _ => false,
         }
@@ -145,6 +146,7 @@ impl AdminFaults {
         let mut cuts = self.cuts.lock().unwrap();
         let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.name))?;
         let was_held = c.held;
+        let held_so_far = c.held_since.map(|t| t.elapsed().as_millis() as u64);
         c.release.notify_one();
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
@@ -153,7 +155,7 @@ impl AdminFaults {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
         }
-        let held_ms = c.held_ms;
+        let held_ms = c.held_ms.or(held_so_far);
         tracing::info_span!("rdm.testkit.fault.update.via-release", node = %self.name, cut = id, was_held)
             .in_scope(|| tracing::info!("cut released"));
         Ok(json!({"released": id, "node": self.name, "was_held": was_held, "held_ms": held_ms}))

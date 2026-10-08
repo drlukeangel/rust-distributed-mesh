@@ -17,6 +17,8 @@ rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 [dev-dependencies]
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+# i143_acceptance_2780 derives its cut list from the product's own documented step orders.
+rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 
 [[bin]]
 name = "rafka-scenario"
