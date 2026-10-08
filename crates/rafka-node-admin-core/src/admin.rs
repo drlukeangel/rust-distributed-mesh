@@ -1655,28 +1655,31 @@ pub async fn start(mut cfg: AdminConfig) -> Result<Running, String> {
     let runner = Arc::new(AdminRunner {
         provider: prepared.provider.clone(),
         // The record check (rafka-v2 node-admin's ports_held): every socket the topology names is
-        // taken, whichever process reserved it and however that reservation ended.
+        // taken, whichever process reserved it and however that reservation ended; and every
+        // socket a birth this admin launched names, read from its launch records directly (the
+        // spawn-record table), not through the view: a launched birth runs, and binds, before it
+        // joins the mesh, and while another birth of its name is still heard (a restart's, a
+        // replacement's) the view shows that one, not the launch.
         allocator: Mutex::new(prepared.allocator.with_held_sockets(crate::deployment::endpoint::HeldSockets::new({
             let topology = control.topology.clone();
+            let launched = records.clone();
             // The view is read without waiting (the allocator is used under its own mutex, inside
             // the pipeline's steps); when a writer holds or awaits it, the last snapshot read
             // answers, never an empty one: the records only ever grow between two reads.
             let last: std::sync::Mutex<Vec<(crate::model::PathName, std::net::SocketAddr)>> = std::sync::Mutex::new(Vec::new());
+            let sockets_of = |n: &Node| -> Vec<(crate::model::PathName, std::net::SocketAddr)> {
+                n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(|a| (n.name.clone(), a)).collect()
+            };
             move || {
-                if let Ok(view) = topology.try_read() {
-                    let now: Vec<_> = view
-                        .nodes
-                        .iter()
-                        .flat_map(|n| {
-                            let name = n.name.clone();
-                            n.transport_addr.into_iter().chain(n.listeners.iter().map(|(_, a)| *a)).map(move |a| (name.clone(), a))
-                        })
-                        .collect();
-                    *last.lock().unwrap() = now.clone();
-                    now
+                let mut now = if let Ok(view) = topology.try_read() {
+                    let v: Vec<_> = view.nodes.iter().flat_map(sockets_of).collect();
+                    *last.lock().unwrap() = v.clone();
+                    v
                 } else {
                     last.lock().unwrap().clone()
-                }
+                };
+                now.extend(launched.nodes.lock().unwrap().values().flat_map(sockets_of));
+                now
             }
         }))),
         observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
