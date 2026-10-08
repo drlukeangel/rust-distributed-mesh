@@ -513,7 +513,9 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
         }
         // A later attempt is opened by a REST request of the same Build (a restart, a replace) and descends from it.
         let from_later_request = named(spans, "rdm.node_admin.build.update.via-rest").into_iter().any(|q| q["attributes"]["build_id"] == bid && descends_from(spans, r, q));
-        assert!((from_later_request || r["parent_span_id"] == "") && r["attributes"]["attempt"] != "1", "every attempt of the formation Build descends from a REST request of the Build, or is a later attempt on its own trace: {r}");
+        // Or a later attempt the rectifier opened itself, on its own trace, naming why (a proven drift, a takeover).
+        let own_reason = r["attributes"]["reason"].as_str().is_some_and(|x| !x.is_empty());
+        assert!((from_later_request || r["parent_span_id"] == "" || own_reason) && r["attributes"]["attempt"] != "1", "every attempt of the formation Build descends from a REST request of the Build, or is a later attempt on its own trace that names its reason: {r}");
         own_trace.push(json!({"attempt": r["attributes"]["attempt"], "executor": r["attributes"]["executor"], "previous_executor": r["attributes"]["previous_executor"], "reason": r["attributes"]["reason"], "span_id": r["span_id"]}));
     }
     assert!(reconciles.iter().any(|r| r["attributes"]["attempt"] == "1" && descends_from(spans, r, &rest)), "the formation Build's first attempt descends from its REST request");
@@ -919,15 +921,16 @@ impl RouteRun {
             leg(self, &format!("gateway-originates-{kind}"), c, g1, &json!(format!("path:{dest}")), &resolved(d));
         }
 
-        // 6. the negative control for the leg above: a compute holds no edge to the broker, so its
-        //    originate is `no-active-route`, not sent, and the broker serves nothing for it.
-        let c = probe_call(e, &["originate", "--target", "path:mesh1.compute.1", "--destination", "path:mesh1.broker.1", "--key", "orig-no-route", "--value", &value("no-route")]);
-        assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("no-active-route"), Some("NotSent")), "{}", c.out);
-        leg(self, "compute-originates-without-edge", c, "mesh1.compute.1", &json!("path:mesh1.broker.1"), &resolved(&b1));
-        let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--key", "orig-no-route"]);
-        assert_eq!(c.out["reply"]["result"], json!({"found": false}), "nothing was applied for the call that was not sent: {}", c.out);
-        leg(self, "no-route-key-absent", c, "controller", &json!(exact(&b1_id)), &resolved(&b1));
-        inv.holds("same-mesh, cross-mesh, carried, gateway-originated and exact-node legs each reached exactly the requested birth; an unknown NodeId and a compute without an edge sent nothing", true, json!({"legs": self.legs.len()}));
+        // 6. a compute holds no Direct fact toward the broker: with no fact the call dials directly
+        //    (`direct-unknown`, connections.md section 5), the broker serves it, and the key is applied.
+        let c = probe_call(e, &["originate", "--target", "path:mesh1.compute.1", "--destination", "path:mesh1.broker.1", "--key", "orig-no-fact", "--value", &value("no-fact")]);
+        assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("direct-unknown"), Some("reply")), "{}", c.out);
+        assert_eq!(c.out["reply"]["executing_node"], b1_id, "{}", c.out);
+        leg(self, "compute-originates-without-fact", c, "mesh1.compute.1", &json!("path:mesh1.broker.1"), &resolved(&b1));
+        let c = probe_call(e, &["get", "--target", &exact(&b1_id), "--key", "orig-no-fact"]);
+        assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": value("no-fact")}), "the dialled call was applied: {}", c.out);
+        leg(self, "no-fact-key-applied", c, "controller", &json!(exact(&b1_id)), &resolved(&b1));
+        inv.holds("same-mesh, cross-mesh, carried, gateway-originated and exact-node legs each reached exactly the requested birth; an unknown NodeId sent nothing, and a compute with no Direct fact dialled directly", true, json!({"legs": self.legs.len()}));
     }
 
     /// The spans of each leg: the call's trace holds the probe's call span, the server's request
@@ -944,16 +947,10 @@ impl RouteRun {
             let mut record = json!({"leg": name, "trace_id": trace, "spans_in_trace": in_trace.len(), "proof_store_serves": served.len()});
             let routes: Vec<&&Value> = in_trace.iter().filter(|sp| sp["name"] == "rdm.node_rpc.route.resolve.via-connections").collect();
             match name.as_str() {
-                "exact-unknown-node" | "compute-originates-without-edge" => {
+                "exact-unknown-node" => {
                     assert!(served.is_empty(), "{name}: nothing was served: {served:?}");
-                    if name == "compute-originates-without-edge" {
-                        assert_eq!(routes.len(), 1, "{name}: one route resolution: {routes:?}");
-                        assert_eq!((routes[0]["attributes"]["route"].as_str(), routes[0]["attributes"]["outcome"].as_str()), (Some("no-active-route"), Some("NotSent")));
-                        assert_eq!(routes[0]["service"], "rshape-compute");
-                        record["route_span"] = routes[0]["span_id"].clone();
-                    }
                 }
-                n if n.ends_with("-absent") => {
+                n if n.ends_with("-applied") => {
                     assert_eq!(served.len(), 1, "{name}: the read was served once: {served:?}");
                 }
                 _ => {
@@ -986,6 +983,12 @@ impl RouteRun {
                         leg["carrier"] = a["carrier"].clone();
                         record["route_span"] = routes[0]["span_id"].clone();
                     }
+                    if name == "compute-originates-without-fact" {
+                        assert_eq!(routes.len(), 1, "{name}: one route resolution: {routes:?}");
+                        assert_eq!((routes[0]["attributes"]["route"].as_str(), routes[0]["attributes"]["outcome"].as_str()), (Some("direct-unknown"), Some("Reply")));
+                        assert_eq!(routes[0]["service"], "rshape-compute");
+                        record["route_span"] = routes[0]["span_id"].clone();
+                    }
                     if name.starts_with("gateway-originates") {
                         assert_eq!(routes.len(), 1, "{name}: one route resolution: {routes:?}");
                         assert_eq!((routes[0]["attributes"]["route"].as_str(), routes[0]["attributes"]["outcome"].as_str()), (Some("direct"), Some("Reply")));
@@ -1010,8 +1013,8 @@ impl RouteRun {
 /// write); the same two carried through a mesh1 gateway are `via-peer` with exactly one carried
 /// inner call to the exact target; after carrying, that gateway holds a Connected Direct edge to
 /// each broker it dialed and originates calls to them itself, `direct`, with the replying broker's
-/// NodeId and incarnation; a compute that holds no edge to the broker gets `no-active-route` /
-/// NotSent and the broker applies nothing for it; an exact NodeId the fabric never held is
+/// NodeId and incarnation; a compute that holds no Direct fact toward the broker dials it directly
+/// (`direct-unknown`) and the broker applies the write; an exact NodeId the fabric never held is
 /// NotSent `Resolve(Unknown)`. What must NOT happen: a reply from any node but the requested one, a
 /// handler execution for a call that was not sent, or a route the connections projection does not
 /// hold.
