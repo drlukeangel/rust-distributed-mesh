@@ -99,6 +99,22 @@ impl FileRecords {
         blocking_io(move || write_file(&dir, &tmp, &path, &bytes)).await
     }
 
+    /// Store `record` under `key` only if no record is there: the claim is the filesystem's own
+    /// atomic link of the finished temp file to the key, which fails when the key is live. Returns
+    /// whether this call created it.
+    pub async fn insert<T: Serialize>(&self, key: &str, format: &str, record: &T) -> Result<bool, StorageError> {
+        let path = self.path(key);
+        let bytes = serde_json::to_vec(&Stored { format: format.to_string(), record }).map_err(|e| StorageError::Io { file: path.display().to_string(), reason: e.to_string() })?;
+        let (dir, tmp) = (self.dir.clone(), self.dir.join(format!(".{key}.json.tmp")));
+        let _g = self.write.lock().await;
+        blocking_io(move || insert_file(&dir, &tmp, &path, &bytes)).await
+    }
+
+    /// Whether a file under `key` exists, whatever it holds.
+    pub fn holds(&self, key: &str) -> bool {
+        self.path(key).exists()
+    }
+
     /// Remove the record under `key`, if any.
     pub async fn remove(&self, key: &str) -> Result<(), StorageError> {
         let path = self.path(key);
@@ -123,6 +139,26 @@ fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), S
         let _ = d.sync_all();
     }
     Ok(())
+}
+
+fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, StorageError> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
+    let mut f = std::fs::File::create(tmp).map_err(io)?;
+    f.write_all(bytes).map_err(io)?;
+    f.sync_all().map_err(io)?;
+    let linked = std::fs::hard_link(tmp, path);
+    let _ = std::fs::remove_file(tmp);
+    match linked {
+        Ok(()) => {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(io(e)),
+    }
 }
 
 /// Run `f`, a blocking disk call (a write that ends in an fsync), on tokio's blocking pool. No

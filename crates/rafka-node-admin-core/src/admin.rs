@@ -1669,10 +1669,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         .map_err(|e| format!("backbone: {e}"))?;
     // fabric.storage: this admin's Fabric control state. A shutdown already held there (a restart
     // or a join during one) is in force from the start (fabric-mesh-lifecycle.md §11.1).
-    if fabric_storage.fabric().await.map_err(|e| e.to_string())?.is_none() {
-        fabric_storage
-            .put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone(), build_id: None })
-            .await.map_err(|e| e.to_string())?;
+    let held = fabric_storage
+        .put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: cfg.fabric_id.clone(), name: cfg.fabric.clone() })
+        .await.map_err(|e| e.to_string())?;
+    if held.fabric_id != cfg.fabric_id {
+        return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
     }
     let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
     // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
@@ -1766,7 +1767,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 };
                 attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                 builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
-                accepted.point(&b0.build_id, "day-0").await.map_err(|e| e.to_string())?;
+                accepted.point(&b0.build_id, b0.submitted_at_ms, "day-0").await.map_err(|e| e.to_string())?;
             }
             FabricPolicy::bootstrap(cfg.spawn_type.as_deref()).map_err(|e| e.to_string())?
         }
@@ -2664,13 +2665,13 @@ mod tests {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         use crate::fabric_storage::FabricStorage as _;
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        storage.put_fabric(&crate::fabric_storage::FabricRecord { fabric_id: fabric1(), name: "fabric1".into(), build_id: None }).await.unwrap();
+        storage.put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
         let store = AcceptedStore::new(storage.clone(), "mesh1.admin.2");
         let builds = MemoryBuildStateAdapter::new();
         let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while unhydrated");
         assert!(blocked.starts_with("mesh1.admin.2: holds no Fabric.build_id"), "{blocked}");
         let id = crate::build::BuildId("bld-0".into());
-        store.point(&id, "test").await.unwrap();
+        store.point(&id, 0, "test").await.unwrap();
         let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while the pointed Build is not held");
         assert!(blocked.contains("bld-0") && blocked.contains("cannot read it"), "{blocked}");
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();

@@ -14,7 +14,7 @@
 use rafka_mesh_entity::meta::NodeMeta;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired};
 use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
-use crate::fabric_storage::{FabricRecord, FabricStorage, FabricStorageError};
+use crate::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use tracing::Instrument as _;
@@ -366,8 +366,8 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// `Fabric.build_id` as this admin holds it: the pointer in `fabric.storage`, and the Build it
 /// names in `builds.storage`. The fabric-primary moves it on acceptance (Build persisted first);
 /// every other admin learns the record on the Build topic and persists its own copy. A learned
-/// record is taken only once its Build is held locally and is not older than the one held, so a
-/// lagging peer's copy never moves the pointer back.
+/// record is taken only once its Build is held locally. Each move is its own pointer row ordered by
+/// its Build's submission time, so a lagging copy never moves the pointer back.
 pub struct AcceptedStore {
     storage: Arc<dyn FabricStorage>,
     /// A learned record whose Build is not held yet.
@@ -394,34 +394,34 @@ impl AcceptedStore {
         builds.read_build(&id).await.ok()
     }
 
-    /// Move the pointer to `build_id` (its Build is already durable in `builds.storage`), persisting
-    /// the record. Returns the record now held.
-    pub async fn point(&self, build_id: &BuildId, via: &str) -> Result<FabricRecord, FabricStorageError> {
-        let mut record = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "fabric.json".into(), reason: "no Fabric record to point".into() })?;
-        let previous = record.build_id.clone();
-        record.build_id = Some(build_id.clone());
+    /// Move the pointer to `build_id` (its Build is already durable in `builds.storage`;
+    /// `submitted_at_ms` is that Build's submission time, the order of pointer rows): a blind put of
+    /// the move's own row. Returns the record now held, the identity and the newest pointer folded.
+    pub async fn point(&self, build_id: &BuildId, submitted_at_ms: u64, via: &str) -> Result<FabricRecord, FabricStorageError> {
+        let before = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
         // The span opens BEFORE the write: the pointer is readable (by the Ready guard, by a
-        // reader) the moment the record is renamed into place, which is before `put_fabric`
+        // reader) the moment the row is renamed into place, which is before `put_pointer`
         // returns, so a span opened after the write can start later than a read that already saw it.
         let span = tracing::info_span!(
             "rdm.node_admin.fabric.update.via-build-accepted",
             node = %self.node,
-            fabric_id = %record.fabric_id,
+            fabric_id = %before.fabric_id,
             build_id = %build_id,
-            previous_build_id = %previous.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
+            previous_build_id = %before.build_id.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
             via,
         );
-        let put = self.storage.put_fabric(&record).instrument(span.clone()).await;
+        let put = self.storage.put_pointer(&FabricPointer { build_id: build_id.clone(), submitted_at_ms }).instrument(span.clone()).await;
         match &put {
             Ok(()) => span.in_scope(|| tracing::info!("Fabric.build_id moved")),
             Err(e) => span.in_scope(|| tracing::info!(error = %e, "Fabric.build_id could not be moved")),
         }
         put?;
-        Ok(record)
+        self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
     }
 
-    /// A Fabric record heard on the Build topic (`from`). Taken when its Build is held and is not
-    /// older than the current one; otherwise remembered until the Build's facts arrive.
+    /// A Fabric record heard on the Build topic (`from`). Taken when its Build is held; otherwise
+    /// remembered until the Build's facts arrive. A pointer row older than the one held is ordered
+    /// out by every reader's fold.
     pub async fn learn(&self, record: FabricRecord, builds: &dyn BuildStateAdapter, from: &str) {
         let Some(id) = record.build_id.clone() else { return };
         match self.storage.fabric().await {
@@ -434,12 +434,7 @@ impl AcceptedStore {
             *self.wanted.lock().unwrap() = Some(record);
             return;
         };
-        if let Some(cur) = self.current(builds).await {
-            if named.submitted_at_ms < cur.submitted_at_ms {
-                return;
-            }
-        }
-        let _ = self.point(&id, &format!("gossip:{from}")).await;
+        let _ = self.point(&id, named.submitted_at_ms, &format!("gossip:{from}")).await;
         *self.wanted.lock().unwrap() = None;
     }
 
@@ -459,7 +454,7 @@ impl AcceptedStore {
     pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &str) -> Result<Arc<Self>, BuildStateError> {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         storage
-            .put_fabric(&FabricRecord { fabric_id, name: topology.fabric.clone(), build_id: None })
+            .put_identity(&FabricIdentity { fabric_id, name: topology.fabric.clone() })
             .await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         let store = Arc::new(Self::new(storage, me));
         let build_id = BuildId::mint();
@@ -468,7 +463,7 @@ impl AcceptedStore {
         builds
             .append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged })
             .await?;
-        store.point(&build_id, "seeded").await.map_err(|e| BuildStateError::Io(e.to_string()))?;
+        store.point(&build_id, 0, "seeded").await.map_err(|e| BuildStateError::Io(e.to_string()))?;
         Ok(store)
     }
 }

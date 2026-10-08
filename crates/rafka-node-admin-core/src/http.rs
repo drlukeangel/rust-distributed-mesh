@@ -136,7 +136,8 @@ impl ControlPlane {
                 build_id: build_id.clone(),
                 topology,
                 submitted_change: Some(change),
-                submitted_at_ms: now_ms(),
+                // Strictly after the Build it succeeds: pointer rows are ordered by this stamp.
+                submitted_at_ms: now_ms().max(current.submitted_at_ms + 1),
             };
             // The attempt's context is on this fabric-primary before the Build exists to be claimed.
             self.contexts
@@ -145,7 +146,7 @@ impl ControlPlane {
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is durable before the pointer names it (never the pointer first).
             self.builds.publish_accepted(&accepted).await.map_err(Refusal::State)?;
-            let record = self.accepted.point(&build_id, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
+            let record = self.accepted.point(&build_id, accepted.submitted_at_ms, "accepted").await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))?;
             self.builds.publish_fabric(&record).await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id, "build accepted");
             self.build_submitted.notify_waiters();

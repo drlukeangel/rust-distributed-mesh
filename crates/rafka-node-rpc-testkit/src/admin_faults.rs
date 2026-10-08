@@ -26,7 +26,7 @@ use rafka_node_admin_core::build_state::{
 };
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::fabric_storage::{FabricRecord, FabricShutdown, FabricStorage, FabricStorageError};
+use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError};
 use rafka_node_admin_core::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_admin_core::wiring::Wiring;
@@ -297,9 +297,13 @@ impl FabricStorage for FaultedFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         self.inner.fabric().await
     }
-    async fn put_fabric(&self, record: &FabricRecord) -> Result<(), FabricStorageError> {
-        self.faults.hold(Probe::Pointer { build_id: record.build_id.as_ref().map(|b| b.to_string()) }).await;
-        self.inner.put_fabric(record).await
+    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
+        self.faults.hold(Probe::Pointer { build_id: None }).await;
+        self.inner.put_identity(identity).await
+    }
+    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
+        self.faults.hold(Probe::Pointer { build_id: Some(pointer.build_id.to_string()) }).await;
+        self.inner.put_pointer(pointer).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.inner.shutdown().await

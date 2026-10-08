@@ -150,7 +150,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     // As a started admin: its fabric.storage holds the Fabric record (no Build named yet).
     let storage = Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new());
-    rafka_node_admin_core::fabric_storage::FabricStorage::put_fabric(&*storage, &rafka_node_admin_core::fabric_storage::FabricRecord { fabric_id: fabric1(), name: "fabric1".into(), build_id: None }).await.unwrap();
+    rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &endpoint, &fabric1(), peers, Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()), accepted.clone(), rafka_node_admin_core::shutdown::ShutdownControl::memory("test-admin").await, "test-admin".into()).await.unwrap());
     Admin { endpoint, router, builds, accepted }
@@ -199,7 +199,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: seed.clone(), attempt: 1, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
         .await
         .unwrap();
-    a.accepted.point(&seed, "seeded").await.unwrap();
+    a.accepted.point(&seed, 0, "seeded").await.unwrap();
     let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed());
     cp.topology = topology.clone();
     let build_id = cp
