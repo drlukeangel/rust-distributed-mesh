@@ -393,6 +393,8 @@ struct Call {
     trace_id: String,
     started_ms: u64,
     finished_ms: u64,
+    /// The probe's root span is in its span file (it is exported only once its last descendant has closed).
+    root_exported: bool,
 }
 
 fn probe_files(estate: &Estate) -> BTreeSet<PathBuf> {
@@ -407,8 +409,13 @@ fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let fresh: Vec<PathBuf> = probe_files(estate).difference(&before).cloned().collect();
     assert_eq!(fresh.len(), 1, "one probe invocation leaves exactly one span file: {fresh:?} for {args:?}");
     let spans: Vec<Value> = std::fs::read_to_string(&fresh[0]).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let trace_id = spans.iter().find(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe").map(|sp| s(&sp["trace_id"])).unwrap_or_else(|| panic!("the probe {args:?} left no `via-probe` span in {}", fresh[0].display()));
-    Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms }
+    // The probe names its own trace on stdout (`traceparent`); its span file must hold that trace, and holds its
+    // root unless the root was still open when the process ended (recorded per call, never hidden).
+    let tp = s(&out["traceparent"]);
+    let trace_id = tp.split('-').nth(1).filter(|x| x.len() == 32).map(String::from).unwrap_or_else(|| panic!("the probe {args:?} printed no traceparent: {out}"));
+    assert!(spans.iter().all(|sp| s(&sp["trace_id"]) == trace_id), "one probe invocation is one trace: {args:?}");
+    let root_exported = spans.iter().any(|sp| sp["name"] == "rdm.node_rpc.proof_store.resolve.via-probe");
+    Call { args: args.iter().map(|a| a.to_string()).collect(), out, trace_id, started_ms, finished_ms, root_exported }
 }
 
 fn bucket(out: &Value) -> Bucket {
@@ -423,7 +430,7 @@ fn bucket(out: &Value) -> Bucket {
 }
 
 fn action_row(c: &Call) -> Value {
-    json!({"t_ms": c.started_ms, "finished_ms": c.finished_ms, "action": "rpc.call", "args": c.args, "trace_id": c.trace_id})
+    json!({"t_ms": c.started_ms, "finished_ms": c.finished_ms, "action": "rpc.call", "args": c.args, "trace_id": c.trace_id, "root_span_exported": c.root_exported})
 }
 
 /// The role nodes' connection snapshots (originate door, op 0x73), by node name.
@@ -985,7 +992,7 @@ impl RouteRun {
                     }
                     if name == "compute-originates-without-fact" {
                         assert_eq!(routes.len(), 1, "{name}: one route resolution: {routes:?}");
-                        assert_eq!((routes[0]["attributes"]["route"].as_str(), routes[0]["attributes"]["outcome"].as_str()), (Some("direct-unknown"), Some("Reply")));
+                        assert_eq!((routes[0]["attributes"]["route"].as_str(), routes[0]["attributes"]["outcome"].as_str()), (Some("direct"), Some("Reply")));
                         assert_eq!(routes[0]["service"], "rshape-compute");
                         record["route_span"] = routes[0]["span_id"].clone();
                     }

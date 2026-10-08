@@ -302,7 +302,12 @@ async fn main() -> std::process::ExitCode {
         run(args).instrument(span.clone()).await
     };
     match out {
-        Ok(v) => {
+        Ok(mut v) => {
+            // The invocation's trace, named by the probe itself: a scenario reads it here, never from the
+            // span file, whose root is exported only when its last descendant has closed.
+            if let Some(tp) = span.in_scope(rafka_mesh_telemetry::current_traceparent) {
+                v["traceparent"] = json!(tp);
+            }
             println!("{v}");
             std::process::ExitCode::SUCCESS
         }
