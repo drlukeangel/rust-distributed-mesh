@@ -294,6 +294,13 @@ fn write_result(job: &str, file: &str, v: &Value) {
     let dir = root().join("target/i143-rshape").join(job);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(file), serde_json::to_vec_pretty(v).unwrap()).unwrap();
+    // Run by the acceptance runner, the cell's own directory is `I143_ACCEPTANCE_DIR` and the
+    // runner requires its `result.json` there: the same record, beside the job-level file above.
+    if let Ok(cell) = std::env::var("I143_ACCEPTANCE_DIR") {
+        std::fs::create_dir_all(&cell).unwrap();
+        std::fs::write(std::path::Path::new(&cell).join("result.json"), serde_json::to_vec_pretty(v).unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&cell).join(file), serde_json::to_vec_pretty(v).unwrap()).unwrap();
+    }
 }
 
 #[test]
