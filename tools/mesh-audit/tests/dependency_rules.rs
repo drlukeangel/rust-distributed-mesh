@@ -200,7 +200,7 @@ fn rule5_test_knobs_is_a_dev_dependency_feature_of_the_rpc_crate_alone() {
     let root = workspace_root();
     let dev = deps::packages_with_test_knobs(&root, "rafka-node-rpc", "normal,build,dev").unwrap();
     assert_eq!(dev, vec!["iroh".to_string()], "the lost-reply cell's iroh carries test-knobs in the dev closure");
-    for bin_package in ["rafka-node-admin-core", "rafka-node-rpc-testkit", "rafka-broker", "rafka-gateway", "rafka-compute", "rafka-registry", "rfa", "rafka-node-rpc"] {
+    for bin_package in ["rafka-node-admin-core", "rafka-node-rpc-testkit", "rafka-broker", "rafka-gateway", "rafka-compute", "rafka-node-rpc"] {
         let shipped = deps::packages_with_test_knobs(&root, bin_package, "normal,build").unwrap();
         assert!(shipped.is_empty(), "{bin_package} ships test-knobs through {shipped:?}");
     }

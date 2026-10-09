@@ -85,6 +85,14 @@ struct Harness {
 /// This admin (`mesh1.admin.1`, the fabric-primary) holds a settled accepted Build of the
 /// observed topology: the one every change compiles against.
 async fn harness(runtime_routes: Router) -> Harness {
+    // Every test in this binary installs its own thread-local dispatcher, and a callsite caches
+    // the interest of the dispatchers that existed when it registered; a callsite registered
+    // while no dispatcher wanted it stays disabled and its `record` never reaches a layer. One
+    // process-wide dispatcher that enables everything keeps every callsite enabled.
+    static ENABLED_EVERYWHERE: std::sync::Once = std::sync::Once::new();
+    ENABLED_EVERYWHERE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+    });
     let spans = SpanNames::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
