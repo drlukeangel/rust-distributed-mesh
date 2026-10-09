@@ -26,12 +26,16 @@ use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub use rafka_mesh_entity::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
+
+/// How often a node's publish loop marks its heartbeat in the trace (the digest itself goes out
+/// every gossip interval).
+pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 
 /// The largest encoded frame: the payload that fits iroh-gossip's frame limit with its framing.
 pub const MAX_FRAME: usize = crate::chunking::MAX_MESSAGE_BYTES;
@@ -1635,8 +1639,19 @@ impl Membership {
         tokio::spawn(async move {
             let mut held: BTreeSet<String> = BTreeSet::new();
             let mut heard_others = false;
+            let mut heard: BTreeMap<String, (String, bool)> = BTreeMap::new();
             loop {
                 let current = book.current(book.staleness_floor());
+                let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rafka_mesh_entity::MemberStatus::Leaving))).collect();
+                for (id, (name, leaving)) in heard.iter().filter(|(id, _)| !now_heard.contains_key(*id)) {
+                    if *leaving || *name == node || book.is_departed(id) {
+                        continue;
+                    }
+                    let silent_ms = book.get(id).map(|(_, silent)| silent.as_millis() as u64).unwrap_or(0);
+                    tracing::info_span!("rdm.mesh.membership.update.via-member-stale", node = %node, member = %name, member_id = %id, silent_ms, staleness_ms = book.staleness_floor().as_millis() as u64)
+                        .in_scope(|| tracing::info!("a member is no longer heard within the staleness floor: held, not current"));
+                }
+                heard = now_heard;
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
                 heard_others |= others > 0;
                 let off = heard_others && others == 0;
@@ -1933,11 +1948,38 @@ impl Membership {
     {
         let me = self.clone();
         tokio::spawn(async move {
+            let mut last_heartbeat: Option<Instant> = None;
             loop {
-                let _ = me.publish(&digest()).await;
+                let d = digest();
+                let _ = me.publish(&d).await;
+                if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
+                    last_heartbeat = Some(Instant::now());
+                    me.heartbeat(&d);
+                }
                 tokio::time::sleep(every).await;
             }
         })
+    }
+
+    /// One heartbeat span, a root of its own: this node is alive and publishing, how many other
+    /// members its book holds as heard, and what its clock reads against the host's wall clock.
+    fn heartbeat(&self, d: &MeshDigest) {
+        let peer_count = self.book.current(self.book.staleness_floor()).iter().filter(|m| m.node.node_id != d.node.node_id).count() as u64;
+        let wall_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_millis() as i64).unwrap_or(0);
+        let rafka_time_ms = self.clock.now_rafka_ms() as i64;
+        tracing::info_span!(
+            parent: None,
+            "rdm.mesh.node.update.via-heartbeat",
+            node = %d.node.name,
+            node_id = %d.node.node_id,
+            mesh = %d.node.name.mesh,
+            peer_count,
+            wall_time_ms,
+            rafka_time_ms,
+            clock_skew_ms = rafka_time_ms - wall_time_ms,
+            digest_seq = self.digest_seq.load(Ordering::SeqCst),
+        )
+        .in_scope(|| tracing::info!("heartbeat"));
     }
 
     /// Join this mesh channel through more peers (its members, once known).
