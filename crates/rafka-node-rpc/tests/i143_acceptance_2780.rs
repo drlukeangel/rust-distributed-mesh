@@ -127,7 +127,10 @@ struct Rig {
 }
 
 async fn rig(dir: &std::path::Path) -> Rig {
-    let data_dir = dir.join("data");
+    // The store file is this process's own: the artifact dir is shared by every process running the
+    // cell (a second run starts while the first is mid-call), and a sibling's `remove_dir_all` or
+    // tmp-file rename under one data dir fails the other's persist. `Rig` removes it on drop.
+    let data_dir = dir.join(format!("data.{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
     std::fs::create_dir_all(&data_dir).unwrap();
     let key = SecretKey::generate();
@@ -158,6 +161,12 @@ async fn rig(dir: &std::path::Path) -> Rig {
     resolver.insert(ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
     let client = NodeRpcClient::new(rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
     Rig { _router: router, store, cuts, stats, client, target: NodeTarget::ExactNode(launch.node_id.clone()), launch }
+}
+
+impl Drop for Rig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.launch.data_dir);
+    }
 }
 
 impl Rig {
