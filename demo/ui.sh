@@ -14,9 +14,15 @@ if [ -f "$HOME_DIR/admin-ui.pid" ]; then
     if kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid"; for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done; kill -0 "$pid" 2>/dev/null && kill -KILL "$pid"; fi
     rm -f "$HOME_DIR/admin-ui.pid"
 fi
+# The Tests tab's runner (tools/test-runner), restarted with the UI; it lists and runs this checkout's tests.
+RUNNER=${RDM_TEST_RUNNER_BIND_ADDR:-127.0.0.1:19190}
+if [ -f "$HOME_DIR/test-runner.pid" ] && kill -0 "$(cat "$HOME_DIR/test-runner.pid")" 2>/dev/null; then :; else
+    RDM_TESTS_TREE="$ROOT" RDM_TEST_RUNNER_BIND_ADDR="$RUNNER" setsid nohup "$ROOT/target/debug/rdm-test-runner" > "$HOME_DIR/test-runner.log" 2>&1 < /dev/null &
+    echo $! > "$HOME_DIR/test-runner.pid"
+fi
 ADMIN=$(jq -r .node_admin_api_base "$HOME_DIR/estate.json")
 echo "[demo/ui] starting the admin UI on $BIND against $ADMIN"
-RDM_CPU_ALERT_THRESHOLD=${RDM_CPU_ALERT_THRESHOLD:-1.0} RDM_NODE_ADMIN_API_BASE="$ADMIN" RDM_EVIDENCE_DIR=$(jq -r .evidence_dir "$HOME_DIR/estate.json") RDM_ESTATE_ROOT=$(jq -r .estate_root "$HOME_DIR/estate.json") RSHAPE_DEMO_STATE="$HOME_DIR" \
+RDM_TEST_RUNNER_URL="http://$RUNNER" RDM_CPU_ALERT_THRESHOLD=${RDM_CPU_ALERT_THRESHOLD:-1.0} RDM_NODE_ADMIN_API_BASE="$ADMIN" RDM_EVIDENCE_DIR=$(jq -r .evidence_dir "$HOME_DIR/estate.json") RDM_ESTATE_ROOT=$(jq -r .estate_root "$HOME_DIR/estate.json") RSHAPE_DEMO_STATE="$HOME_DIR" \
 RDM_ADMIN_UI_BIND_ADDR="$BIND" RDM_UI_STATIC_DIR="$ROOT/demo/admin-ui/web/dist" \
     setsid nohup "$ROOT/target/i143-rshape/consumer-bin/rafka-admin-ui" > "$HOME_DIR/admin-ui.log" 2>&1 < /dev/null &
 echo $! > "$HOME_DIR/admin-ui.pid"

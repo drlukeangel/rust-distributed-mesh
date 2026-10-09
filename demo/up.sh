@@ -41,6 +41,7 @@ bash scripts/i143-rshape-build-consumer.sh --candidate-sha "$SHA" --workspace ta
 say "building the estate driver and the probe"
 cargo build -q -p rafka-test-scenario --bin rshape-demo
 cargo build -q -p rafka-node-rpc-testkit --bin rafka-rpc-probe
+cargo build -q -p rdm-test-runner
 if [ ! -d demo/admin-ui/web/dist ] || [ -n "$(find demo/admin-ui/web/src -newer demo/admin-ui/web/dist/index.html -type f | head -1)" ]; then
     say "building the web app"
     (cd demo/admin-ui/web && { [ -d node_modules ] || npm ci --silent; } && npm run build --silent)

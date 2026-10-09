@@ -19,4 +19,5 @@ stop() { # <pidfile> <label> <seconds>
     rm -f "$1"
 }
 stop "$HOME_DIR/admin-ui.pid" "admin-ui" 10
+stop "$HOME_DIR/test-runner.pid" "test-runner" 10
 stop "$HOME_DIR/rshape-demo.pid" "rshape-demo" 120
