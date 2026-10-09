@@ -1912,8 +1912,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
     let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone(), Some(connections.clone()));
-    // Closed until the Status authority is filled: the router refuses every op, ping included,
-    // with a typed NotReady before then.
+    // Closed until the Status authority is filled and its view holds this admin (it decides from
+    // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let rpc_server = crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone())
         .with_ready_gate(rpc_ready.clone())
@@ -2226,7 +2226,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
         }));
-        rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     // The deployment hand (used while this admin is fabric primary). A provider's host-wide
@@ -2884,6 +2883,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
         let elections = ElectionLog::new(name.clone());
         let me = name.clone();
+        let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
         tasks.push(tokio::spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             loop {
@@ -2897,7 +2897,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                         .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
                 }
                 held = now;
+                // The router serves once the Status authority is filled and the view it decides
+                // from holds this admin.
                 records.install_view(&topology, t).await;
+                if authority.get().is_some() && held.contains(&me) {
+                    rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }));
