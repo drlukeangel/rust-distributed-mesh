@@ -210,6 +210,9 @@ pub struct Watch {
     pub membership: Membership,
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     pub records: Arc<Records>,
+    /// Is the accepted Build settled (not pending, not running)? A mesh the Build is still birthing
+    /// is not unheard.
+    pub settled: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>,
     pub client: Arc<NodeRpcClient>,
     /// Does this node hold an Active Direct connection to the exact node?
     pub connected: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
@@ -237,10 +240,16 @@ pub async fn run(w: Watch) {
             seat_since = None;
             continue;
         }
-        let since = *seat_since.get_or_insert_with(Instant::now);
+        // The clock of a mesh never heard runs while the accepted Build is settled: from the seat, and
+        // from each settling, because a mesh the Build is still birthing has not had its chance to be heard.
+        if (w.settled)().await {
+            seat_since.get_or_insert_with(Instant::now);
+        } else {
+            seat_since = None;
+        }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        let never = never_heard(&view, &w.me.mesh, &heard);
+        let never = if seat_since.is_some() { never_heard(&view, &w.me.mesh, &heard) } else { BTreeSet::new() };
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let round_ms = w.round.as_millis().max(1) as u64;
         let mut tasks = Vec::new();
@@ -250,7 +259,7 @@ pub async fn run(w: Watch) {
             tasks.push(investigate(&w, &view, mesh, rounds, unheard));
         }
         for mesh in never {
-            let unheard = since.elapsed();
+            let unheard = seat_since.expect("never is empty without it").elapsed();
             let rounds = unheard.as_millis() as u64 / round_ms;
             tasks.push(investigate(&w, &view, mesh, rounds, unheard));
         }

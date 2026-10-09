@@ -634,10 +634,17 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     for m in &lost {
         // The fabric primary that decided the rebirth probed the mesh: the seat can move to a reborn
         // admin while the other mesh is still unheard, and its ladder starts over from the seat.
+        // A fabric primary that loses the seat takes its ladder with it, so the next holder decides
+        // again for a mesh it has not yet heard: a mesh is reborn at least once and by any one
+        // fabric primary at most once.
         let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
-        assert_eq!(rebirths.len(), 1, "{m}: reborn once: {rebirths:#?}");
-        let decider = attr(rebirths[0], "node");
-        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m).collect();
+        assert!(!rebirths.is_empty(), "{m}: reborn: {rebirths:#?}");
+        for r in &rebirths {
+            assert_eq!(rebirths.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: reborn once per fabric primary: {rebirths:#?}");
+        }
+        let first = rebirths.iter().min_by_key(|sp| at_ns(sp)).unwrap();
+        let decider = attr(first, "node");
+        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
         probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
         for (i, p) in probes.iter().enumerate() {

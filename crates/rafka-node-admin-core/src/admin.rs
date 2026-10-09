@@ -2933,6 +2933,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             membership: membership.clone(),
             topology: control.topology.clone(),
             records: records.clone(),
+            settled: { let (accepted, builds) = (accepted.clone(), builds_dyn.clone()); Arc::new(move || { let (accepted, builds) = (accepted.clone(), builds.clone()); Box::pin(async move { accepted.current(&*builds).await.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)) }) }) },
             client: node_rpc.client.clone(),
             connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
             ladder: ladder.clone(),
