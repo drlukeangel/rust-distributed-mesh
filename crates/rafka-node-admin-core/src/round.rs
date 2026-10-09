@@ -133,6 +133,23 @@ pub struct Complete {
     pub fabric: bool,
 }
 
+/// What the fabric-primary's view held of a mesh primary when it sent that primary the down op:
+/// the facts the primary's declaration is decided against (its birth, the endpoint it is resolved
+/// by, and its mesh's id). The down op goes again when any of them changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Addressed {
+    node_id: crate::model::NodeId,
+    incarnation: Option<IncarnationId>,
+    endpoint: Option<crate::model::EndpointId>,
+    mesh_id: Option<crate::model::MeshId>,
+}
+
+impl Addressed {
+    fn of(p: &crate::model::Node, mesh: &crate::model::Mesh) -> Self {
+        Self { node_id: p.node_id.clone(), incarnation: p.incarnation_id.clone(), endpoint: p.endpoint_id.clone(), mesh_id: mesh.id.clone() }
+    }
+}
+
 struct Round {
     began: Instant,
     held: Option<String>,
@@ -146,7 +163,7 @@ pub struct RoundDriver {
     fabric: Option<Round>,
     /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
     /// view's primary changing from this is what sends it again (R-S2).
-    addressed: BTreeMap<String, (crate::model::NodeId, Option<IncarnationId>)>,
+    addressed: BTreeMap<String, Addressed>,
 }
 
 impl RoundDriver {
@@ -176,7 +193,7 @@ impl RoundDriver {
         for m in &view.meshes {
             let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.name != self.me) else { continue };
             present.push(m.name.clone());
-            let now = (p.node_id.clone(), p.incarnation_id.clone());
+            let now = Addressed::of(p, m);
             if self.addressed.get(&m.name) != Some(&now) {
                 self.addressed.insert(m.name.clone(), now);
                 targets.push((m.name.clone(), Some(p.clone())));
@@ -245,8 +262,8 @@ impl RoundDriver {
             if first {
                 let targets: Vec<(String, Option<crate::model::Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
                 for (mesh, p) in &targets {
-                    if let Some(p) = p {
-                        self.addressed.insert(mesh.clone(), (p.node_id.clone(), p.incarnation_id.clone()));
+                    if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
+                        self.addressed.insert(mesh.clone(), Addressed::of(p, m));
                     }
                 }
                 send_down(&self.me, "fabric", &i.view.fabric.name, targets, i.client);
@@ -435,8 +452,20 @@ mod tests {
         let v2 = view(vec![me.clone(), reborn]);
         assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
 
-        assert!(driver.changed_mesh_primaries(&v2, false).is_empty(), "a node that is not the fabric-primary addresses nobody");
-        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "and addresses the primaries afresh when it becomes the fabric-primary");
+        // The primary was in view before its endpoint was: gaining the endpoint it is resolved by
+        // is a change, so the down op goes again once the receiver can resolve the sender.
+        let mut early = first.clone();
+        early.endpoint_id = None;
+        let mut v_early = view(vec![me.clone(), early.clone()]);
+        let mut driver = RoundDriver::new(me.name.clone());
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
+        assert!(driver.changed_mesh_primaries(&v_early, true).is_empty());
+        for n in &mut v_early.nodes {
+            if n.name == early.name {
+                n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
+            }
+        }
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
     }
 
     const NONE: Announced = Announced { mesh_awaiting_round: false, fabric_awaiting_round: false };
