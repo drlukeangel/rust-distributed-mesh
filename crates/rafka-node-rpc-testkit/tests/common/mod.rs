@@ -37,7 +37,7 @@ use tracing_subscriber::layer::SubscriberExt;
 
 /// Every span: name, parent name, and its recorded fields.
 #[derive(Clone, Default)]
-pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>);
+pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>);
 
 struct Fields<'a>(&'a mut BTreeMap<String, String>);
 impl tracing::field::Visit for Fields<'_> {
@@ -63,11 +63,23 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
         let mut fields = BTreeMap::new();
         attrs.record(&mut Fields(&mut fields));
         let parent = ctx.span(id).and_then(|s| s.parent().map(|p| p.name().to_string()));
-        self.0.lock().unwrap().insert(id.into_u64(), (attrs.metadata().name().into(), parent, fields));
+        // The registry recycles a closed span's id: a span is kept under its own sequence number,
+        // never under an id a later span may take.
+        let key = {
+            let mut live = self.1.lock().unwrap();
+            live.0 += 1;
+            let key = live.0;
+            live.1.insert(id.into_u64(), key);
+            key
+        };
+        self.0.lock().unwrap().insert(key, (attrs.metadata().name().into(), parent, fields));
     }
     fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if let Some((_, _, fields)) = self.0.lock().unwrap().get_mut(&id.into_u64()) {
-            values.record(&mut Fields(fields));
+        let key = self.1.lock().unwrap().1.get(&id.into_u64()).copied();
+        if let Some(key) = key {
+            if let Some((_, _, fields)) = self.0.lock().unwrap().get_mut(&key) {
+                values.record(&mut Fields(fields));
+            }
         }
     }
 }

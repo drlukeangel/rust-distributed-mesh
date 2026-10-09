@@ -97,16 +97,16 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     }
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
         && f.get("pipeline").map(String::as_str) == Some("retire")));
-    // Each command was sent under its own operation, and each completion call was decided by the
-    // commanding side for that operation.
+    // Each command was sent under its own operation, and the birth's completion call for that
+    // operation reached the commanding side (the server handler's own spans run on its tasks).
     for (command, completion, operation) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1")] {
         assert!(
             all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some("admitted") && f.get("command").map(String::as_str) == Some(command)),
             "no admitted {command} span"
         );
         assert!(
-            all.values().any(|(n, _, f)| n == "rdm.node_admin.status.update.via-completion-accepted" && f.get("operation").map(String::as_str) == Some(operation) && f.get("outcome").map(String::as_str) == Some("applied") && f.get("op").map(String::as_str) == Some(completion)),
-            "no accepted {completion} span"
+            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some(completion)),
+            "no received {completion} span"
         );
     }
 

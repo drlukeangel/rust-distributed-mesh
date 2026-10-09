@@ -151,7 +151,7 @@ fn retire_attempts_rpc_drain_first_fails_when_termination_precedes_the_drain() {
 #[test]
 fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
