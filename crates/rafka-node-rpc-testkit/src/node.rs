@@ -186,17 +186,37 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
 /// [`start_with_seams`], stamping every gossip frame this node publishes with `clock`: the
 /// Rafka-time the executable composes (an RDM executable supplies the OS clock).
 pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
+    // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
+    // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
+    let started = start_booted(launch, clock, register, &boot).await;
+    if let Err(e) = &started {
+        boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
+    }
+    started
+}
+
+async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder, boot: &tracing::Span) -> Result<RunningNode> {
+    let identity_exists = launch.data_dir.join("node-key").exists();
+    let step = if identity_exists {
+        tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node = %launch.name)
+    } else {
+        tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-identity-minted", node = %launch.name)
+    };
     let key = load_or_mint_key(&launch.data_dir)?;
+    drop(step);
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // membership is joined.
     let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
     // This birth's exact runtime, as its provider recorded it: published with
     // the birth so any admin can manage it, whoever launched it.
     let dir = launch.data_dir.clone();
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-runtime-record", node = %launch.name);
     let runtime = tokio::task::spawn_blocking(move || rafka_mesh_entity::runtime::await_own_record(&dir, Duration::from_secs(10)))
         .await
         .map_err(|e| anyhow!("reading the runtime record: {e}"))?
         .map_err(|e| anyhow!("{e}"))?;
+    drop(step);
     // The identity this process records its intentional exit under (a transport that stopped).
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
         data_dir: launch.data_dir.clone(),
@@ -204,18 +224,22 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
         incarnation: launch.incarnation.0.clone(),
     });
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty);
     let ep0 = rafka_node_rpc::endpoint::bind(key.clone(), launch.bind_addr)
         .await
         .with_context(|| format!("the node cannot bind {}", launch.bind_addr))?;
     // The operating system assigned the port: the address the node reports is the one the bound
     // endpoint holds, never one anybody chose.
     let bound_addr = ep0.bound_sockets().into_iter().find(|a| a.is_ipv4()).ok_or_else(|| anyhow!("the endpoint bound at {} holds no IPv4 socket", launch.bind_addr))?;
+    step.record("bound", tracing::field::display(bound_addr));
+    drop(step);
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
     // This node's own connections: hydrated from its data dir, then kept by what its client
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the product's file storage,
     // decorated.
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name);
     let fault = Arc::new(crate::faults::StorageFault::default());
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
@@ -229,6 +253,7 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
     // destination and carrier, and a Direct fact's destination (connections.md section 8).
     connections.held().lock().unwrap().set_membership(resolver.clone());
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
+    drop(step);
     // An owed Proxy retirement whose write was refused is attempted again while owed
     // (connections.md §10); the task ends with the process.
     let _retirements = connections.spawn_retirement_reconciler(rafka_node_admin_core::connections_writer::RETIREMENT_RETRY);
@@ -242,14 +267,21 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
     let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
+    drop(step);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node = %launch.name);
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
+    drop(step);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node = %launch.name, alpns = "node-rpc,gossip");
     let routers = vec![Router::builder(ep0.clone()).accept(rafka_node_rpc::ALPN, server.clone()).accept(iroh_gossip::ALPN, g.clone()).spawn()];
+    drop(step);
+    tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node = %launch.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seeds: Vec<EndpointAddr> = launch
         .seeds
         .iter()
@@ -283,6 +315,7 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
     // admin that deployed it; the admin verifies it against the deployment and answers what it
     // holds. An admin that refuses the digest by name ends this node by that name.
     let mut joined = None;
+    let join_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-join-admitted", node = %launch.name, launcher = launch.launcher.as_ref().map(|l| l.name.to_string()).unwrap_or_default());
     if let (Some(launcher), Some(seed)) = (&launch.launcher, seeds.first()) {
         let launcher_ref = rafka_node_rpc::ResolvedNode {
             node_id: launcher.node_id.clone(),
@@ -305,7 +338,10 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
         (Some(id), _) => id.clone(),
         (None, _) => return Err(anyhow!("a node needs its mesh's id from its launch")),
     };
+    drop(join_step);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
+    drop(step);
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
     // This node serves the topology it holds from here on (until now a read is `NotReady`).
     let status = Arc::new(Mutex::new(MemberStatus::Pending));
@@ -324,6 +360,7 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
     // state; `GetTopology` reads the topology from the same admin, installed per mesh only when
     // its snapshot is complete.
     if let (Some(answer), Some(launcher)) = (joined, &launch.launcher) {
+        let _topology_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-topology-taken", node = %launch.name, launcher = %launcher.name);
         membership.learn_statuses(&answer.statuses);
         let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
             .await
@@ -357,6 +394,7 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
     }
     // Born full: this node is published only now, its entry taken.
     tracing::info_span!(
+        parent: boot,
         "rdm.mesh.node.update.via-ready",
         node = %name,
         kind = launch.name.kind.name(),

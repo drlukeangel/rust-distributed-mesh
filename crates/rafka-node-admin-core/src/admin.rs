@@ -1962,11 +1962,29 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built from.
-pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring) -> Result<Running, String> {
+pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
+    // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
+    // step is a child that lives exactly as long as the step, and `via-ready` closes it.
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
+    let started = start_booted(cfg, wiring, boot.clone()).await;
+    if let Err(e) = &started {
+        boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
+    }
+    started
+}
+
+async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, boot: tracing::Span) -> Result<Running, String> {
     // The Rafka-time this process composes: the product's adopted source when its wiring supplies
     // one, else the OS clock. Every gossip stamp this admin puts on a frame reads it.
     let clock: rafka_mesh_transport::clock::SharedClock = wiring.clock.take().unwrap_or_else(rafka_mesh_transport::clock::os_clock);
+    let step = if cfg.data_dir.join("node-key").exists() {
+        tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
+    } else {
+        tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-identity-minted")
+    };
     let key = load_or_mint_key(&cfg.data_dir)?;
+    drop(step);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display());
     // The node-admin storage boundaries, in its own data dir. An admin that finds its own row in
     // nodes.storage was here before: it restarts as the same logical node, in the same Mesh and
     // Fabric, holding the same Builds.
@@ -2013,6 +2031,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     }
     crate::investigate::check_idle_below_probe2(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval())
         .map_err(|e| format!("refusing to start: {e}"))?;
+    drop(storage_step);
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
     // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
@@ -2061,6 +2080,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         ),
     };
 
+    boot.record("node", tracing::field::display(&name));
+    boot.record("node_id", tracing::field::display(&node_id));
+    boot.record("incarnation_id", tracing::field::display(&incarnation.0));
     // A container fabric's node-admin is a host process its containers reach only through the
     // fabric network's gateway (a host address, reachable from host processes too): the provider is
     // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. A launched admin
@@ -2083,11 +2105,16 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // The mesh endpoint: gossip for membership and Build facts.
     // The transport is the one every node kind binds with (`rafka_node_rpc::endpoint::transport_config`).
     let alpns = vec![iroh_gossip::ALPN.to_vec(), rafka_node_rpc::ALPN.to_vec()];
+    let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-endpoint-bound", node = %name, requested = %mesh_addr, bound = tracing::field::Empty);
     let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), rafka_node_rpc::endpoint::transport_config())
         .await
         .map_err(|e| format!("mesh address {mesh_addr}: {e}"))?;
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);
+    step.record("bound", tracing::field::display(mesh_addr));
+    drop(step);
+    let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-gossip-started", node = %name);
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+    drop(step);
     // Entry: what this admin holds, for a node it launched (filled once the
     // admin's own digest exists; until then a join is told it is not ready).
     let entry: Arc<std::sync::OnceLock<EntryState>> = Arc::new(std::sync::OnceLock::new());
@@ -2128,10 +2155,13 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         .with_ready_gate(rpc_ready.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
+    let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");
     let iroh_router = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(rafka_node_rpc::ALPN, rpc_server)
         .spawn();
+    drop(step);
+    tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-accept-loop-started", node = %name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seed_addrs: Vec<EndpointAddr> = seeds
         .iter()
         .filter_map(|(k, a)| k.parse::<iroh::PublicKey>().ok().map(|pk| EndpointAddr::new(pk).with_ip_addr(*a)))
@@ -2228,9 +2258,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     };
     // Subscribe first, pull second: what changes during the pull arrives by
     // gossip, and the book keeps the newer copy.
+    let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = %mesh_id, seeds = seed_addrs.len());
     let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("membership: {e}"))?;
+    drop(step);
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
@@ -2849,6 +2881,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let sweep_slot_gate = sweep_slot.clone();
         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
         let runtime = runtime.clone();
+        let boot = boot.clone();
         let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
         tasks.push(tokio::spawn(async move {
             let mut reported = None;
@@ -2897,6 +2930,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     drop(d);
                     records.wake.poke();
                     tracing::info_span!(
+                        parent: &boot,
                         "rdm.mesh.node.update.via-ready",
                         node = %me,
                         incarnation_id = %incarnation.0,
