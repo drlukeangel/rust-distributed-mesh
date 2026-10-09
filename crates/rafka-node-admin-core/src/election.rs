@@ -1,27 +1,41 @@
-//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2).
+//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2; ruling R-A2).
 //!
-//! An election is a projection of converged topology facts, not a voting
-//! protocol: no ballot, term, quorum or election message exists. Every
-//! election applies one function: among the candidates that are
-//! `ReadyForTraffic`, the one with the lowest complete `NodeId` wins. A
-//! canonical NodeId is a fixed-width Crockford value, so comparing the
-//! strings compares the values. The id is random; its order means nothing
-//! but itself. Ready time, ordinal, path, mesh name, MeshId, FabricId,
-//! incarnation, transport identity and incumbency are not election inputs.
+//! An election is a projection of converged facts, not a voting protocol: no ballot, term, quorum,
+//! timer or election message exists. A seat stays with its holder until that holder is proven
+//! unable to hold it. The facts an election takes are the topology's nodes and their statuses, the
+//! HOLDER RECORDS this observer holds ([`Incumbency`]: a seat's exact birth, gossiped when a seat
+//! changes hands and handed to a joiner in its entry), and the births proven gone.
+//!
+//! The rules, one function ([`resolve_with`]):
+//! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
+//!   exact birth is in the view and is not yielding (`Draining`, `Leaving`, `Restarting`), not
+//!   replaced by a later birth of its NodeId, and not proven gone. Silent (`PendingReconnect`),
+//!   an observer-inferred `Dead` and an unheard route are NOT proof: the holder keeps the seat.
+//! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
+//! - A holder that yields, or whose exact birth is proven gone, hands the seat to its own mesh:
+//!   the lowest `ReadyForTraffic` NodeId among that mesh's node-admins fills it. A canonical
+//!   NodeId is a fixed-width Crockford value, so comparing the strings compares the values; the id
+//!   is random and its order means nothing but itself. If only Pending admins survive, the seat
+//!   waits and the mesh keeps priority.
+//! - The fabric seat leaves the incumbent mesh only when EVERY node-admin birth of that mesh is
+//!   proven gone (or has left). Then the lowest NodeId among the remaining mesh primaries wins and
+//!   its mesh is the incumbent. Nothing reclaims the seat for the mesh that lost it.
+//! - A seat with no record (a fabric's first election) is filled by the lowest Ready NodeId.
+//!
+//! Ready time, ordinal, path, mesh name, MeshId, FabricId, incarnation order and transport identity
+//! are not election inputs. The other cohorts (rpc, gateway, ...) are elected by the lowest Ready
+//! NodeId alone.
 //!
 //! The hierarchy:
-//! - node-type (cohort) election: a cohort is the members of one kind in one
-//!   mesh; node-admin owns the elections of its own mesh's cohorts, ordinary
-//!   nodes only publish their facts;
-//! - mesh primary: the winner of the mesh's node-admin cohort, the same seat
-//!   (no second election);
-//! - fabric-primary election: the candidates are the mesh primaries, the
-//!   function is the same; mesh primaries own it.
+//! - node-type (cohort) election: a cohort is the members of one kind in one mesh; node-admin owns
+//!   the elections of its own mesh's cohorts, ordinary nodes only publish their facts;
+//! - mesh primary: the holder of the mesh's node-admin cohort, the same seat (no second election);
+//! - fabric-primary election: the candidates are the mesh primaries, mesh primaries own it.
 //!
-//! Every observer holding the same facts computes the same winners. A
-//! partition lets each side elect from what it hears; when the views heal
-//! they agree again. A restarted node keeps its NodeId and may retake a seat;
-//! a replacement has a new NodeId and wins or not by that id.
+//! Every observer holding the same records and facts computes the same winners; an observer that
+//! lacks a record learns it from the new holder's announcement, from an entry read, or from a
+//! neighbour's replay. A restarted node keeps its NodeId but is a later birth: the seat it held is
+//! filled by its mesh, and it holds none until a vacancy finds it the lowest Ready.
 //!
 //! An admin reports each change it owns (`ElectionLog`):
 //! `rdm.mesh.election.resolve.via-recompute` (its mesh's cohorts),
@@ -60,34 +74,6 @@ fn candidate(n: &Node) -> Candidate<'_> {
     Candidate { node_id: &n.node_id, ready: n.status == NodeStatus::ReadyForTraffic }
 }
 
-/// Mark each cohort's primary and the fabric primary in `nodes`.
-pub fn resolve(nodes: &mut [Node]) {
-    for n in nodes.iter_mut() {
-        n.is_primary = false;
-        n.is_fabric_primary = false;
-    }
-    let mut cohorts: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
-    for (i, n) in nodes.iter().enumerate() {
-        cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
-    }
-    let mut winners = Vec::new();
-    for members in cohorts.values() {
-        let c: Vec<Candidate<'_>> = members.iter().map(|&i| candidate(&nodes[i])).collect();
-        if let Some(k) = elect(&c) {
-            winners.push(members[k]);
-        }
-    }
-    for &i in &winners {
-        nodes[i].is_primary = true;
-    }
-    // The fabric's candidates: every mesh primary.
-    let mesh_primaries: Vec<usize> = winners.into_iter().filter(|&i| nodes[i].kind == NodeKind::NodeAdmin).collect();
-    let c: Vec<Candidate<'_>> = mesh_primaries.iter().map(|&i| candidate(&nodes[i])).collect();
-    if let Some(k) = elect(&c) {
-        nodes[mesh_primaries[k]].is_fabric_primary = true;
-    }
-}
-
 /// What an election takes beside the nodes: the seat holders this observer holds, and the births
 /// proven gone.
 #[derive(Debug, Clone, Default)]
@@ -101,9 +87,111 @@ pub struct Incumbency {
     pub lost: HashSet<(NodeId, IncarnationId)>,
 }
 
-/// Mark each cohort's primary and the fabric primary in `nodes`, given the seat holders held.
-pub fn resolve_with(nodes: &mut [Node], _incumbency: &Incumbency) {
-    resolve(nodes)
+impl Incumbency {
+    fn is_lost(&self, n: &Node) -> bool {
+        n.incarnation_id.as_ref().is_some_and(|i| self.lost.contains(&(n.node_id.clone(), i.clone())))
+    }
+}
+
+/// What a view shows of a seat's recorded holder.
+enum Holding {
+    /// The exact birth is in the view and keeps the seat.
+    Living(usize),
+    /// The birth yields, was replaced by a later one, or is proven gone.
+    Yielded,
+    /// The view has not heard the birth the record names.
+    Unseen,
+}
+
+fn holding(nodes: &[Node], h: &SeatHolder, inc: &Incumbency) -> Holding {
+    if inc.lost.contains(&(h.node_id.clone(), h.incarnation.clone())) {
+        return Holding::Yielded;
+    }
+    let Some(i) = nodes.iter().position(|n| n.node_id == h.node_id) else { return Holding::Unseen };
+    let n = &nodes[i];
+    if n.incarnation_id.as_ref().is_some_and(|inc| *inc != h.incarnation) {
+        return Holding::Yielded;
+    }
+    match n.status {
+        NodeStatus::Draining | NodeStatus::Leaving | NodeStatus::Restarting => Holding::Yielded,
+        _ => Holding::Living(i),
+    }
+}
+
+/// The lowest Ready node among `members` that is not proven gone.
+fn lowest_ready(nodes: &[Node], members: &[usize], inc: &Incumbency) -> Option<usize> {
+    let c: Vec<Candidate<'_>> = members.iter().map(|&i| Candidate { node_id: &nodes[i].node_id, ready: nodes[i].status == NodeStatus::ReadyForTraffic && !inc.is_lost(&nodes[i]) }).collect();
+    elect(&c).map(|k| members[k])
+}
+
+/// Mark each cohort's primary and the fabric primary in `nodes`, with no holder record held: a
+/// fabric's first election, and a hypothetical (a successor asked for before any drain).
+pub fn resolve(nodes: &mut [Node]) {
+    resolve_with(nodes, &Incumbency::default())
+}
+
+/// Mark each cohort's primary and the fabric primary in `nodes` by the rules in the module docs,
+/// given the seat holders held and the births proven gone.
+pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
+    for n in nodes.iter_mut() {
+        n.is_primary = false;
+        n.is_fabric_primary = false;
+    }
+    let mut cohorts: BTreeMap<(String, NodeKind), Vec<usize>> = BTreeMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
+    }
+    // Mesh primary of each mesh: the node-admin cohort's seat. Every other cohort: lowest Ready.
+    let mut winners = Vec::new();
+    let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
+    for ((mesh, kind), members) in &cohorts {
+        let winner = if *kind == NodeKind::NodeAdmin {
+            match inc.meshes.get(mesh) {
+                Some(h) => match holding(nodes, h, inc) {
+                    Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == NodeKind::NodeAdmin => Some(i),
+                    Holding::Unseen => None,
+                    _ => lowest_ready(nodes, members, inc),
+                },
+                None => lowest_ready(nodes, members, inc),
+            }
+        } else {
+            lowest_ready(nodes, members, inc)
+        };
+        if let Some(i) = winner {
+            winners.push(i);
+            if *kind == NodeKind::NodeAdmin {
+                mesh_primary.insert(mesh.clone(), i);
+            }
+        }
+    }
+    for &i in &winners {
+        nodes[i].is_primary = true;
+    }
+    if let Some(i) = fabric_seat(nodes, inc, &mesh_primary) {
+        nodes[i].is_fabric_primary = true;
+    }
+}
+
+/// The fabric seat: the recorded holder while it lives, its own mesh while that mesh has an admin
+/// that is not proven gone, another mesh only once the whole incumbent mesh is.
+fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String, usize>) -> Option<usize> {
+    let lowest_primary = |except: Option<&str>| {
+        let members: Vec<usize> = mesh_primary.iter().filter(|(m, _)| Some(m.as_str()) != except).map(|(_, &i)| i).collect();
+        lowest_ready(nodes, &members, inc)
+    };
+    let Some(h) = inc.fabric.as_ref() else { return lowest_primary(None) };
+    match holding(nodes, h, inc) {
+        Holding::Living(i) if mesh_primary.get(&nodes[i].mesh) == Some(&i) => return Some(i),
+        Holding::Unseen => return None,
+        _ => {}
+    }
+    // The holder yielded, or is no longer its mesh's primary. Its mesh keeps priority while any
+    // node-admin birth of it is not proven gone or departed.
+    let survives = |n: &Node| n.kind == NodeKind::NodeAdmin && n.mesh == h.mesh && !inc.is_lost(n) && n.status != NodeStatus::Leaving && !(n.node_id == h.node_id && n.incarnation_id.as_ref() == Some(&h.incarnation));
+    if nodes.iter().any(survives) {
+        return mesh_primary.get(&h.mesh).copied().filter(|&i| nodes[i].status == NodeStatus::ReadyForTraffic && !inc.is_lost(&nodes[i]) && !(nodes[i].node_id == h.node_id && nodes[i].incarnation_id.as_ref() == Some(&h.incarnation)));
+    }
+    lowest_primary(Some(h.mesh.as_str()))
 }
 
 /// A seat's holder as a span names it.
