@@ -1134,10 +1134,14 @@ impl View {
                     in_flight: in_flight.clone(),
                     departed: departed.clone(),
                 };
-                let taken = self.receiver(side).lock().unwrap().take_chunk(chunk);
+                // The receiver's lock is held until the book holds what the version names: a reader of
+                // the held version never sees a version ahead of the book it describes.
+                let mut rx = self.receiver(side).lock().unwrap();
+                let taken = rx.take_chunk(chunk);
                 match taken {
                     Taken::Waiting { .. } => SnapshotTaken::default(),
                     Taken::Refused(r) => {
+                        drop(rx);
                         tracing::info_span!(
                             "rdm.mesh.membership.reject.via-snapshot",
                             node = %self.node,
@@ -1151,7 +1155,11 @@ impl View {
                         .in_scope(|| tracing::info!("a snapshot chunk refused: the held projection stands"));
                         SnapshotTaken::default()
                     }
-                    Taken::Installed(i) => self.installed(&i, fabric, side),
+                    Taken::Installed(i) => {
+                        let installed = self.installed(&i, fabric, side);
+                        drop(rx);
+                        installed
+                    }
                 }
             }
             Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, departed, .. } => {
@@ -1161,7 +1169,8 @@ impl View {
                     return SnapshotTaken::default();
                 }
                 let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), departed: departed.clone() };
-                let moved = self.mesh_rx.lock().unwrap().take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
+                let mut rx = self.mesh_rx.lock().unwrap();
+                let moved = rx.take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
                 match moved {
                     Moved::Applied { delta, .. } => {
                         tracing::info_span!(
@@ -1178,14 +1187,18 @@ impl View {
                         )
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
-                        SnapshotTaken { carried: self.apply_full(mesh, &full, fabric, side), source: None }
+                        let carried = self.apply_full(mesh, &full, fabric, side);
+                        drop(rx);
+                        SnapshotTaken { carried, source: None }
                     }
                     Moved::Duplicate { held_version } => {
+                        drop(rx);
                         tracing::info_span!("rdm.mesh.membership.update.via-delta-already-held", node = %self.node, mesh = %mesh, held_version, topology_version = *topology_version)
                             .in_scope(|| tracing::info!("a delta at or below the held version: a copy already applied"));
                         SnapshotTaken::default()
                     }
                     Moved::Desynced { gap, .. } => {
+                        drop(rx);
                         let (held_version, held_publisher) = match &gap {
                             Gap::Version { held, .. } => (*held as i64, String::new()),
                             Gap::OtherEpoch { held } => (-1, held.to_string()),
@@ -1543,10 +1556,12 @@ impl Membership {
     /// install into; a source it ends the desynchronization of is resumed. Every member the
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
-        let taken = self.view.mesh_rx.lock().unwrap().take_read_chunk(chunk);
+        let mut rx = self.view.mesh_rx.lock().unwrap();
+        let taken = rx.take_read_chunk(chunk);
         if let Taken::Installed(i) = &taken {
             let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
             self.view.installed(i, &self.fabric, side);
+            drop(rx);
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
                 self.mesh.register(&d);
             }
