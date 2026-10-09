@@ -72,3 +72,21 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
         assert!(served.iter().any(|sp| sp["attributes"]["complete"] == "true" && sp["attributes"]["outcome"] == "served"), "{joiner}'s responder served a complete snapshot: {served:#?}");
     }
 }
+
+/// CONTRACT: the reduced stem of the mesh-create race, with nothing withheld: bootstrap, one Build of
+/// mesh1 with three node-admins and no rpc node, and the Build completes with both joining admins Ready.
+/// However the Build topic's catch-up fares for a joiner (delivered, or lost to a duplicate connection
+/// closing), the joiner hydrates its Build's facts, so the Build is never left waiting on an admin that
+/// reports Pending. Run in a loop of thousands by the release campaign (`RG6_STEM_RUNS` is the loop's
+/// own count, not read here: each run is one process).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_of_three_node_admins_completes_with_every_joiner_ready() {
+    let mut estate = Estate::bootstrap(owner("a_build_of_three_node_admins_completes_with_every_joiner_ready"), "fabric1", "mesh1").await;
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 0}]})).await;
+    assert_eq!(status, 202, "{a}");
+    let build = s(&a["build_id"]);
+    estate.await_build(&build, Duration::from_secs(60)).await;
+    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.admin.3"].iter().map(|n| n.to_string()).collect();
+    estate.settled(&names, Duration::from_secs(30)).await;
+    estate.stop().await;
+}
