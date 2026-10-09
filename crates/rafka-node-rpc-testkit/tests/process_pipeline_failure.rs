@@ -6,7 +6,7 @@
 //! subscriber, and tracing's process-wide callsite interest cache must not be
 //! shared with a test that runs the same callsites without one.
 
-mod common;
+use crate::common;
 
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;

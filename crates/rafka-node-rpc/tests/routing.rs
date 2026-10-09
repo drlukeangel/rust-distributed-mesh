@@ -7,7 +7,7 @@
 //! reachability change the selection, never lets a selection change fabricate connection
 //! state, and hands certainty outcomes back without replaying them anywhere else.
 
-mod common;
+use crate::common;
 use common::*;
 use rafka_mesh_entity::connections::{resolve, CarrierPolicy, ConnectionKind, ConnectionState, EffectiveRoute};
 use rafka_mesh_entity::{NodeId, NodeKind, PathName};

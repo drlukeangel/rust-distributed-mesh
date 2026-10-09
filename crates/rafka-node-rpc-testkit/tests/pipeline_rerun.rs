@@ -5,7 +5,7 @@
 //! The kill drops the pipeline's future at a chosen point (the executor
 //! dying), so nothing after that point runs, not even the receipt.
 
-mod common;
+use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};

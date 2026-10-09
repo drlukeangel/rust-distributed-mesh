@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2021"
 description = "Node RPC protocol contract: framing, outcomes, reserved codes, protocol traits (no transport dependency)"
 publish = false
+autotests = false
 
 [dependencies]
 serde = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

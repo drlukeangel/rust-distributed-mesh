@@ -6,7 +6,7 @@
 //! skips by name and nothing container-shaped is started. With `RDM_REQUIRE_CONTAINER=1` a host
 //! that cannot run containers fails instead of skipping.
 
-mod common;
+use crate::common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn admin_deploys_a_container_node_through_every_pipeline_step() {

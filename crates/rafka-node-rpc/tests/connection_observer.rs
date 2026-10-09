@@ -3,7 +3,7 @@
 //! decides nothing: a new pooled connection is `direct_connected` once, a reused one is not
 //! reported, and a dial that ends with no connection is `direct_failed` with its reason.
 
-mod common;
+use crate::common;
 use common::*;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallOptions, ConnectionObserver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};

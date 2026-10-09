@@ -1,0 +1,7 @@
+//! The crate's one integration-test executable: every file in this directory is a module
+//! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
+
+mod i143_acceptance_2900;
+mod i143_acceptance_2901;
+mod i143_acceptance_2902;
+mod seat_frames_wire;
