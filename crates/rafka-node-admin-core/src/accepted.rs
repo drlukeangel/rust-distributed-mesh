@@ -669,6 +669,26 @@ mod tests {
         }
     }
 
+    /// CONTRACT (node-admin-lifecycle.md 4.2): a replacement of a birth the view does not hold at
+    /// all (it is silent past every window the view keeps) is still the standard decommission: the
+    /// exact runtime is retired, then the node is created. The generic create alone would find the
+    /// runtime still running and hold the path forever. A view that holds another birth at the path
+    /// satisfies the action, and a restart of an absent birth plans nothing (its identity is not
+    /// held to re-create).
+    #[test]
+    fn a_replace_of_a_birth_the_view_lacks_retires_then_creates() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let mut o = mn();
+        o.nodes.retain(|x| x.name != path);
+        let from = IncarnationId::mint();
+        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+        let want = vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }];
+        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
+        // Proven drift names a runtime already proven exited: no retire.
+        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
+    }
+
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's
     /// migration default; a grow mints meta with the path and a shrink drops it; a path without
     /// meta, or meta without a path, is refused by name; meta set explicitly stands.
