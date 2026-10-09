@@ -20,7 +20,7 @@
 //! Nothing here gates gossip or readiness: the admin's own `ReadyForTraffic` is published by
 //! membership as before; the declaration is certainty on top of it.
 
-use crate::model::{NodeId, NodeKind, PathName};
+use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -62,7 +62,7 @@ pub struct Pending {
 #[derive(Debug, Default)]
 pub struct Declarer {
     pending: Mutex<BTreeMap<Key, Pending>>,
-    done: Mutex<BTreeMap<Key, (String, NodeId)>>,
+    done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
     requests: Mutex<BTreeMap<Key, (Authority, StatusRequest)>>,
 }
@@ -82,11 +82,38 @@ impl Declarer {
     }
 
     pub fn answered(&self, key: &Key) -> Option<String> {
-        self.done.lock().unwrap().get(key).map(|(o, _)| o.clone())
+        self.done.lock().unwrap().get(key).map(|(o, _, _)| o.clone())
     }
 
     pub fn owed(&self) -> usize {
         self.pending.lock().unwrap().len()
+    }
+
+    /// A key answered by an authority the view no longer names is owed to the current one.
+    pub fn reowe_moved(&self, me: &PathName, view: &Topology) {
+        let mut done = self.done.lock().unwrap();
+        let mut pending = self.pending.lock().unwrap();
+        let moved: Vec<Key> = done
+            .iter()
+            .filter(|(key, (_, by, _))| {
+                let now = match key {
+                    Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
+                    Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
+                };
+                now.is_some_and(|n| &n.node_id != by)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in moved {
+            if let Some((_, by, _)) = done.remove(&key) {
+                let (to, request) = match self.requests.lock().unwrap().get(&key) {
+                    Some(r) => r.clone(),
+                    None => continue,
+                };
+                tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
+                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None });
+            }
+        }
     }
 
     /// One round: send every owed declaration to its authority as the view names it now. When the
@@ -94,32 +121,7 @@ impl Declarer {
     /// decided exactly as a peer's would be; no seat is assumed.
     pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>) {
         self.withdraw_unowned(me, view);
-        // A key answered by an authority the view no longer names is owed to the current one.
-        {
-            let mut done = self.done.lock().unwrap();
-            let mut pending = self.pending.lock().unwrap();
-            let moved: Vec<Key> = done
-                .iter()
-                .filter(|(key, (_, by))| {
-                    let now = match key {
-                        Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
-                        Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
-                    };
-                    now.is_some_and(|n| &n.node_id != by)
-                })
-                .map(|(k, _)| k.clone())
-                .collect();
-            for key in moved {
-                if let Some((_, by)) = done.remove(&key) {
-                    let (to, request) = match self.requests.lock().unwrap().get(&key) {
-                        Some(r) => r.clone(),
-                        None => continue,
-                    };
-                    tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
-                    pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None });
-                }
-            }
-        }
+        self.reowe_moved(me, view);
         let owed: Vec<Pending> = self.pending.lock().unwrap().values().cloned().collect();
         for p in owed {
             let target = match &p.to {
@@ -172,7 +174,7 @@ impl Declarer {
             .in_scope(|| tracing::info!("declared to the authority"));
             if finished {
                 self.pending.lock().unwrap().remove(&p.key);
-                self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone()));
+                self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));
             } else {
                 self.note(&p.key, 1, &outcome);
             }
@@ -308,7 +310,7 @@ mod tests {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let d = Declarer::new();
         owe_all(&d);
-        d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), ("applied".into(), NodeId::mint()));
+        d.done.lock().unwrap().insert(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), ("applied".into(), NodeId::mint(), None));
         d.pending.lock().unwrap().remove(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic));
         d.withdraw_unowned(&me, &view("mesh1.admin.2", "mesh1.admin.1"));
         assert_eq!(d.answered(&Key::Mesh("m1".into(), MeshState::ReadyForTraffic)), None, "forgotten whole");
@@ -328,5 +330,78 @@ mod tests {
         }
         d.withdraw_unowned(&me, &v);
         assert_eq!(d.owed(), 3);
+    }
+
+    fn answered_by(d: &Declarer, key: &Key, who: &Node) {
+        d.pending.lock().unwrap().remove(key);
+        d.done.lock().unwrap().insert(key.clone(), ("applied".into(), who.node_id.clone(), who.incarnation_id.clone()));
+    }
+
+    #[test]
+    fn a_restarted_authority_is_owed_every_declaration_again() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        let mut v = view("mesh2.admin.1", "mesh1.admin.1");
+        for n in &mut v.nodes {
+            n.incarnation_id = Some(IncarnationId::mint());
+        }
+        let fp = v.nodes.iter().find(|n| n.is_fabric_primary).unwrap().clone();
+        let own = Key::OwnState("inc".into(), NodeState::ReadyForTraffic);
+        let mesh = Key::Mesh("m1".into(), MeshState::ReadyForTraffic);
+        answered_by(&d, &own, &fp);
+        answered_by(&d, &mesh, &fp);
+
+        d.reowe_moved(&me, &v);
+        assert!(!d.pending.lock().unwrap().contains_key(&mesh), "the same birth of the same authority answered it: nothing is re-owed");
+
+        for n in &mut v.nodes {
+            if n.is_fabric_primary {
+                n.incarnation_id = Some(IncarnationId::mint());
+            }
+        }
+        d.reowe_moved(&me, &v);
+        let owed: Vec<Key> = d.pending.lock().unwrap().keys().cloned().collect();
+        assert!(owed.contains(&own) && owed.contains(&mesh), "a new birth of the same authority rebuilt its applied state: {owed:?}");
+        assert_eq!(d.answered(&mesh), None);
+    }
+
+    #[test]
+    fn a_restart_of_another_admin_re_owes_nothing() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        let mut v = view("mesh2.admin.1", "mesh1.admin.1");
+        for n in &mut v.nodes {
+            n.incarnation_id = Some(IncarnationId::mint());
+        }
+        let fp = v.nodes.iter().find(|n| n.is_fabric_primary).unwrap().clone();
+        let mesh = Key::Mesh("m1".into(), MeshState::ReadyForTraffic);
+        answered_by(&d, &mesh, &fp);
+        for n in &mut v.nodes {
+            if !n.is_fabric_primary {
+                n.incarnation_id = Some(IncarnationId::mint());
+            }
+        }
+        d.reowe_moved(&me, &v);
+        assert!(!d.pending.lock().unwrap().contains_key(&mesh));
+        assert!(d.answered(&mesh).is_some());
+    }
+
+    #[test]
+    fn a_seat_moved_to_another_node_is_owed_again() {
+        let me: PathName = "mesh2.admin.1".parse().unwrap();
+        let d = Declarer::new();
+        owe_all(&d);
+        let v = view("mesh2.admin.1", "mesh1.admin.1");
+        let old = v.nodes.iter().find(|n| n.is_fabric_primary).unwrap().clone();
+        let mesh = Key::Mesh("m1".into(), MeshState::ReadyForTraffic);
+        answered_by(&d, &mesh, &old);
+        let mut moved = v.clone();
+        for n in &mut moved.nodes {
+            n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
+        }
+        d.reowe_moved(&me, &moved);
+        assert!(d.pending.lock().unwrap().contains_key(&mesh));
     }
 }
