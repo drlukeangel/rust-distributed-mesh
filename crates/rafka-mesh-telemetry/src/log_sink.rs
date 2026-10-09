@@ -1,42 +1,82 @@
 //! Where the fmt log lines go. The node's diagnostic log is a file (stderr redirected by the
 //! launcher) on a disk the kernel may hold for seconds; a line written by the thread that logged it
-//! stalls that thread, which is a runtime worker.
+//! stalls that thread, which is a runtime worker. A line is handed to a thread of its own over an
+//! unbounded channel, so a held disk delays the file and nothing else; the lines are written in
+//! the order they were handed over and [`LogSink::flush`] returns once every earlier one is in the sink.
 
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::mpsc::{channel, Sender};
+
+enum Msg {
+    Line(Vec<u8>),
+    Flush(Sender<()>),
+}
 
 /// The fmt layer's writer over `sink`.
 #[derive(Clone)]
 pub(crate) struct LogSink {
-    sink: std::sync::Arc<Mutex<Box<dyn Write + Send>>>,
+    tx: Sender<Msg>,
 }
 
 impl LogSink {
-    pub(crate) fn start<W: Write + Send + 'static>(sink: W) -> Self {
-        Self { sink: std::sync::Arc::new(Mutex::new(Box::new(sink))) }
+    pub(crate) fn start<W: Write + Send + 'static>(mut sink: W) -> Self {
+        let (tx, rx) = channel::<Msg>();
+        let spawned = std::thread::Builder::new().name("rdm-log".into()).spawn(move || {
+            for msg in rx {
+                match msg {
+                    Msg::Line(bytes) => {
+                        let _ = sink.write_all(&bytes);
+                    }
+                    Msg::Flush(ack) => {
+                        let _ = sink.flush();
+                        let _ = ack.send(());
+                    }
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            eprintln!("telemetry: the log thread could not start: {e}; log lines are dropped");
+        }
+        Self { tx }
     }
 
     /// Returns once every line handed over before the call is in the sink.
     pub(crate) fn flush(&self) {
-        let _ = self.sink.lock().map(|mut s| s.flush());
+        let (ack, done) = channel();
+        if self.tx.send(Msg::Flush(ack)).is_ok() {
+            let _ = done.recv();
+        }
     }
 }
 
-pub(crate) struct LogLine(LogSink);
+/// One event's bytes, handed over when the fmt layer drops it.
+pub(crate) struct LogLine {
+    tx: Sender<Msg>,
+    buf: Vec<u8>,
+}
 
 impl Write for LogLine {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.sink.lock().map_err(|e| std::io::Error::other(e.to_string()))?.write(buf)
+        self.buf.extend_from_slice(buf);
+        Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.sink.lock().map_err(|e| std::io::Error::other(e.to_string()))?.flush()
+        Ok(())
+    }
+}
+
+impl Drop for LogLine {
+    fn drop(&mut self) {
+        if !self.buf.is_empty() {
+            let _ = self.tx.send(Msg::Line(std::mem::take(&mut self.buf)));
+        }
     }
 }
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
     type Writer = LogLine;
     fn make_writer(&'a self) -> LogLine {
-        LogLine(self.clone())
+        LogLine { tx: self.tx.clone(), buf: Vec::new() }
     }
 }
 

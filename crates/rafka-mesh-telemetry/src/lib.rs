@@ -57,6 +57,9 @@ impl Exporters {
             }));
         }
         export::bounded(what, jobs);
+        if let Some(sink) = STDERR_SINK.get() {
+            sink.flush();
+        }
     }
 }
 
@@ -65,6 +68,9 @@ pub struct TelemetryGuard {
 }
 
 /// What an intentional `process::exit` drains: the exporters the guard owns, which `exit` never drops.
+/// The fmt log's writer, drained with the exporters: its lines are queued to a thread of their own.
+static STDERR_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
+
 static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
 
 /// Drain and shut down the exporters before a deliberate `process::exit`, which skips the guard's
@@ -443,6 +449,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         any = true;
     }
     let stderr_sink = log_sink::LogSink::start(std::io::stderr());
+    let _ = STDERR_SINK.set(stderr_sink.clone());
     let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source));
     if !any {
         let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter)).try_init();
