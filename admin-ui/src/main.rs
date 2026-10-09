@@ -6,7 +6,7 @@
 use anyhow::Result;
 use axum::{
     Router,
-    extract::{Json, Query, Request, State},
+    extract::{Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -1064,16 +1064,12 @@ impl EventRing {
 struct AppState {
     http: reqwest::Client,
     jaeger_url: String,
-    cargo_target_dir: String,
     /// The node-admin this UI drives (`RDM_NODE_ADMIN_API_BASE`).
     admin: Option<NodeAdminClient>,
     /// Node-admin's nodes, by path.name (read-only projection of `GET /api/nodes`).
     known: Arc<DashMap<String, KnownNode>>,
     chaos: Arc<ChaosController>,
     events: Arc<EventRing>,
-    /// Red-team A#8: serialize concurrent /api/tests/run calls for the same
-    /// test name. Map entry exists while a test is running.
-    running_tests: Arc<DashMap<String, ()>>,
 }
 
 #[derive(Deserialize)]
@@ -1936,156 +1932,6 @@ async fn handle_chaos_state(State(state): State<AppState>) -> impl IntoResponse 
     chaos_state_json(&state).into_response()
 }
 
-#[derive(Deserialize)]
-struct RunTestRequest {
-    name: String,
-    #[serde(default)]
-    seed: Option<u64>,
-}
-
-/// POST /api/tests/run — invoke `rfa.exe mesh test run <name> --seed <s>` and
-/// return the resulting report. Spawns rfa as a subprocess (it owns the per-test
-/// runners) and reads back the JSON written to E:/tmp/rafka-tests/<name>-<s>.json.
-
-async fn handle_test_run(
-    State(state): State<AppState>,
-    Json(body): Json<RunTestRequest>,
-) -> impl IntoResponse {
-    let seed = body.seed.unwrap_or(42);
-    let rfa_bin = format!("{}/debug/rfa{}", state.cargo_target_dir, std::env::consts::EXE_SUFFIX);
-    if !std::path::Path::new(&rfa_bin).exists() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": format!("rfa binary not found at {rfa_bin}")})),
-        )
-            .into_response();
-    }
-
-    // Red-team round-2 F#3: validate test name before using it as CLI arg
-    // AND as file-path component. tokio Command::args doesn't shell-expand,
-    // so the arg itself is safe — but the file-path format string can be
-    // exploited with `../`.
-    if body.name.is_empty()
-        || body.name.len() > 64
-        || !body.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        || body.name.starts_with('-')
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            axum::Json(json!({"error": format!("invalid test name '{}' — must match ^[a-z0-9][a-z0-9-]*$", body.name)})),
-        )
-            .into_response();
-    }
-
-    // Red-team A#8: serialize concurrent runs of the same test. Two parallel
-    // calls used to both succeed and return stale reports from disk.
-    if state.running_tests.insert(body.name.clone(), ()).is_some() {
-        return (
-            StatusCode::CONFLICT,
-            axum::Json(json!({"error": format!("test '{}' already running", body.name)})),
-        )
-            .into_response();
-    }
-    // Guard that ensures the entry is removed even on early return / panic.
-    struct RunGuard {
-        map: Arc<DashMap<String, ()>>,
-        name: String,
-    }
-    impl Drop for RunGuard {
-        fn drop(&mut self) {
-            self.map.remove(&self.name);
-        }
-    }
-    let _guard = RunGuard {
-        map: Arc::clone(&state.running_tests),
-        name: body.name.clone(),
-    };
-
-    state.events.push(LocalEvent {
-        ts_us: now_us(),
-        kind: "test.start".to_string(),
-        node_name: Some(body.name.clone()),
-        node_type: None,
-        mesh_id: None,
-        detail: Some(format!("seed={seed}")),
-    });
-
-    // Pass through whichever bind addr admin-ui is actually serving on so
-    // rfa hits THIS instance, not a stale port.
-    let bind_addr = std::env::var("RDM_ADMIN_UI_BIND_ADDR")
-        .or_else(|_| std::env::var("RDM_TOPOLOGY_UI_BIND_ADDR"))
-        .unwrap_or_else(|_| "127.0.0.1:19090".to_string());
-    let api_url = format!("http://{bind_addr}");
-    let mut cmd = tokio::process::Command::new(&rfa_bin);
-    cmd.args([
-        "--api-url",
-        &api_url,
-        "mesh",
-        "test",
-        "run",
-        &body.name,
-        "--seed",
-        &seed.to_string(),
-    ])
-    .env("CARGO_TARGET_DIR", &state.cargo_target_dir)
-    .current_dir("E:/dev/rafka-V2-new-mesh");
-
-    let output = match tokio::time::timeout(
-        Duration::from_secs(600),
-        cmd.output(),
-    )
-    .await
-    {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": format!("rfa spawn failed: {e}")})),
-            )
-                .into_response();
-        }
-        Err(_) => {
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                axum::Json(json!({"error": "test exceeded 10 min wall clock"})),
-            )
-                .into_response();
-        }
-    };
-
-    let report_path = format!("E:/tmp/rafka-tests/{}-{seed}.json", body.name);
-    let report: Value = std::fs::read_to_string(&report_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| {
-            json!({
-                "name": body.name,
-                "seed": seed,
-                "status": if output.status.success() { "passed" } else { "failed" },
-                "detail": format!(
-                    "no report file; exit={:?} stdout={} stderr={}",
-                    output.status.code(),
-                    String::from_utf8_lossy(&output.stdout).chars().take(400).collect::<String>(),
-                    String::from_utf8_lossy(&output.stderr).chars().take(400).collect::<String>(),
-                ),
-            })
-        });
-
-    state.events.push(LocalEvent {
-        ts_us: now_us(),
-        kind: "test.end".to_string(),
-        node_name: Some(body.name.clone()),
-        node_type: None,
-        mesh_id: None,
-        detail: Some(format!(
-            "{} (exit={:?})",
-            report["status"].as_str().unwrap_or("?"),
-            output.status.code()
-        )),
-    });
-
-    (StatusCode::OK, axum::Json(report)).into_response()
-}
 
 fn chaos_state_json(state: &AppState) -> axum::Json<Value> {
     let last = state.chaos.last_event_ts_us.load(Ordering::SeqCst);
@@ -2311,17 +2157,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     let jaeger_url = std::env::var("JAEGER_QUERY_URL")
         .unwrap_or_else(|_| "http://localhost:16686".to_string());
 
-    // CARGO_TARGET_DIR env wins. Otherwise: derive from our own exe path so spawned
-    // siblings match the build that produced us. Falls back to "./target" only if exe
-    // path lookup fails.
-    let cargo_target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().and_then(|d| d.parent()).map(|p| p.to_path_buf()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "./target".to_string())
-    });
-    tracing::info!(cargo_target_dir = %cargo_target_dir, "subprocess binary search root");
 
 
     let addr: SocketAddr = bind_addr.parse()?;
@@ -2338,12 +2173,10 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
     let state = AppState {
         http,
         jaeger_url,
-        cargo_target_dir,
         admin: std::env::var("RDM_NODE_ADMIN_API_BASE").ok().filter(|b| !b.trim().is_empty()).map(NodeAdminClient::new),
         known: Arc::new(DashMap::new()),
         chaos: Arc::new(ChaosController::default()),
         events: Arc::new(EventRing::default()),
-        running_tests: Arc::new(DashMap::new()),
     };
 
     // SPEC §7 #1: panic-resilient background-task supervisor. If a long-
@@ -2404,7 +2237,6 @@ async fn async_main(panic_log_path: std::path::PathBuf) -> Result<()> {
         .route("/api/chaos/start", post(handle_chaos_start))
         .route("/api/chaos/stop", post(handle_chaos_stop))
         .route("/api/chaos/state", get(handle_chaos_state))
-        .route("/api/tests/run", post(handle_test_run))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state.clone())
         .merge(control::router(state.admin.clone(), Arc::new(TimelineEvents(state.events.clone()))))

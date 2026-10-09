@@ -8,7 +8,7 @@
 #       --bin-dir   target/i143-rshape/consumer-bin \
 #       --output    target/i143-rshape/consumer-build
 #
-# The fixture is qualification/rshape-consumer (its own Cargo.toml and Cargo.lock; excluded from
+# The fixture is demo (its own Cargo.toml and Cargo.lock; excluded from
 # the RDM root workspace). Its RDM dependencies are git dependencies pinned to ONE rev. The
 # workspace is a clean copy of the fixture with that rev set to the candidate in Cargo.toml and
 # Cargo.lock, then `cargo build --locked --bins`. A lockfile the candidate's dependency set no
@@ -24,7 +24,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 unset CARGO_TARGET_DIR
-FIXTURE=qualification/rshape-consumer
+FIXTURE=demo
 RDM_URL=https://github.com/drlukeangel/rust-distributed-mesh
 BINS="rshape-node-admin rshape-compute rshape-gateway rshape-broker"
 refuse() { echo "i143-rshape-build-consumer: REFUSED $*" >&2; exit 1; }

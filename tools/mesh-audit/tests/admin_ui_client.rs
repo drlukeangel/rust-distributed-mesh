@@ -17,7 +17,7 @@ fn the_ratchet_names_every_kind_of_violation() {
     std::fs::write(dir.join("admin-ui/Cargo.toml"), "[dependencies]\nrafka-node-admin-core = { path = \"x\" }\n\n[dev-dependencies]\nrafka-node-admin-client = { path = \"y\" }\n").unwrap();
     std::fs::write(
         src.join("main.rs"),
-        "use rafka_node_admin_core::process_table::ProcessTable;\nfn f(c: &mut std::process::Child) { let _ = c.kill(); let _ = std::process::Command::new(\"rafka-rpc-node\"); }\n// Command::new(\"in a comment\") is fine\nfn g() { tokio::process::Command::new(&rfa_bin); }\n",
+        "use rafka_node_admin_core::process_table::ProcessTable;\nfn f(c: &mut std::process::Child) { let _ = c.kill(); let _ = std::process::Command::new(\"rafka-rpc-node\"); }\n// Command::new(\"in a comment\") is fine\n",
     )
     .unwrap();
     let v = lifecycle_violations(&dir);
@@ -26,6 +26,6 @@ fn the_ratchet_names_every_kind_of_violation() {
     assert!(has("does not depend on rafka-node-admin-client"), "{v:#?}");
     assert!(has("`ProcessTable`") && has("`rafka_node_admin_core`") && has("`.kill(`") && has("`process::Child`"), "{v:#?}");
     assert!(has("main.rs:2: starts a process"), "{v:#?}");
-    assert!(!v.iter().any(|x| x.contains("main.rs:3") || x.contains("main.rs:4")), "comments and the rfa runner pass: {v:#?}");
+    assert!(!v.iter().any(|x| x.contains("main.rs:3")), "comments pass: {v:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

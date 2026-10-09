@@ -8,5 +8,5 @@ name = "rafka-gateway"
 path = "src/main.rs"
 
 [dependencies]
-rafka-node-base = { path = "../crates/rafka-node-base" }
+rafka-node-base = { path = "../../rafka-node-base" }
 tokio = { workspace = true }

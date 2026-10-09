@@ -1,7 +1,7 @@
 {
   "contract": "The i143 R-shape qualification matrix (epic #2943): every scenario C1-C20 and S1-S5, every runtime cell with its provider, tier and job, and the static cells. Commands are the issues' own, verbatim. `cargo test -p rafka-mesh-audit --test rshape_definition` ratchets it against the registry (tools/mesh-audit/i143-acceptance-jobs.json `rshape_jobs`) and against the consumer fixture.",
   "candidate_import": {
-    "consumer": "qualification/rshape-consumer",
+    "consumer": "demo",
     "rdm_url": "https://github.com/drlukeangel/rust-distributed-mesh",
     "binaries": [
       "rshape-node-admin",

@@ -113,7 +113,7 @@ fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerP
 /// of close, well before Jaeger's index window.
 ///
 /// Also installs the W3C TraceContext propagator globally so cross-service trace
-/// chains link via `traceparent` HTTP headers (e.g. rfa → topology-ui).
+/// chains link via `traceparent` HTTP headers (e.g. a client → node-admin).
 ///
 /// Returns a guard whose `Drop` flushes and shuts down the exporter.
 pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
@@ -123,7 +123,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     guard(provider, None, None)
 }
 
-/// Initialize OTLP tracing for short-lived CLI processes (rfa, future rf).
+/// Initialize OTLP tracing for short-lived CLI processes.
 /// Spans export in the background like a service's; the guard's `Drop` and
 /// [`flush_before_exit`] drain what is queued, each waiting at most [`export::DRAIN_BOUND`],
 /// so a CLI never waits on a collector that is down.

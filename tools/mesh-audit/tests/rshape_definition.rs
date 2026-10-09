@@ -1,7 +1,7 @@
 //! i143.e11 static ratchets over the R-shape qualification definition (epic #2943, story #2944).
 //!
 //! - `rshape_consumer_imports_exact_candidate_without_private_paths`: the independent consumer
-//!   workspace (`qualification/rshape-consumer`) imports RDM only by git dependency pinned to one
+//!   workspace (`demo`) imports RDM only by git dependency pinned to one
 //!   exact rev, has no path / [patch] / [replace] shortcut, no Rafka business crate, and is
 //!   excluded from the RDM root workspace. Every rule has a planted failure that names it.
 //! - `rshape_definition_covers_every_scenario_without_business_dependencies`: the matrix
@@ -24,7 +24,7 @@ const FORK_URLS: [&str; 4] = [
     "https://github.com/drlukeangel/netwatch",
     "https://github.com/drlukeangel/noq",
 ];
-const CONSUMER: &str = "qualification/rshape-consumer";
+const CONSUMER: &str = "demo";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
 /// resolves to. Anything else named `rafka-*` is a business crate.

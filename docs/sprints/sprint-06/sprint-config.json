@@ -9,7 +9,7 @@
   "objective": "Add rafka-registry binary — 4th and final node type. Joins mesh as passive peer, completes gateway/broker/compute/registry lattice.",
   "size": "tiny — 1 day",
   "in_scope": [
-    "registry/ binary — clone of compute/; name=rafka-registry, bin=rafka-registry",
+    "the registry node binary (name=rafka-registry, bin=rafka-registry), a clone of the compute binary",
     "init_telemetry(\"registry\"), NODE_TYPE=\"registry\"",
     "4-service Jaeger: broker, compute, gateway, registry all visible",
     "registry peers with all 3 other nodes (full mesh)"

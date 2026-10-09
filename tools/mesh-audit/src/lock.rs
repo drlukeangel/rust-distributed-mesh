@@ -223,7 +223,7 @@ pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rafka-mesh-transport/src/mem
 pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
-pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "admin-ui/", "cli/", "gateway/", "broker/", "compute/", "registry/", "qualification/", "tools/"];
+pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "admin-ui/", "demo/", "tools/"];
 /// The join (`JoinNode`, 0x1D): its serve and call sites, and the cell that proves its postcard shape.
 pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";

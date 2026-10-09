@@ -4,14 +4,11 @@
 //! Over admin-ui's sources and manifest it refuses, by name:
 //! - any reach into node-admin core or its old process table;
 //! - any process-control primitive (kill, child handles);
-//! - any process spawn other than the `rfa` test runner;
+//! - any process spawn;
 //! - a runtime dependency on node-admin core, or none on the client crate
 //!   (a test may serve the real control API as a dev-dependency).
 
 use std::path::Path;
-
-/// The one process admin-ui may start: the `rfa` test runner (not a node).
-const ALLOWED_COMMAND: &str = "Command::new(&rfa_bin)";
 
 const FORBIDDEN: &[(&str, &str)] = &[
     ("ProcessTable", "the process table is node-admin lifecycle"),
@@ -52,7 +49,7 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
                     out.push(format!("{}:{}: `{needle}`: {why}", f.display(), n + 1));
                 }
             }
-            if code.contains("Command::new") && !code.contains(ALLOWED_COMMAND) {
+            if code.contains("Command::new") {
                 out.push(format!("{}:{}: starts a process; topology changes are Build requests to node-admin", f.display(), n + 1));
             }
         }

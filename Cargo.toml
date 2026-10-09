@@ -13,18 +13,16 @@ members = [
     "crates/rafka-mesh-entity",
     "crates/rafka-test-scenario",
     "crates/rafka-consumer-fixture",
-    "gateway",
-    "broker",
-    "compute",
-    "registry",
+    "crates/test-roles/gateway",
+    "crates/test-roles/broker",
+    "crates/test-roles/compute",
     "admin-ui",
-    "cli/rfa",
     "tools/mesh-audit",
     "crates/scratch-json-dumper",
 ]
 # The R-shape qualification consumer is an independent customer: its own workspace root and
 # lockfile, importing RDM by git rev (scripts/i143-rshape-build-consumer.sh).
-exclude = ["qualification/rshape-consumer"]
+exclude = ["demo"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -73,10 +71,6 @@ dashmap = "6"
 # iroh-quinn-proto patch block removed on the iroh 0.98 bump: the
 # GSO/TLP segment-size assertion is fixed upstream as of 0.98's bundled
 # iroh-quinn-proto, so the local fork override is no longer needed.
-
-# The Windows-host churn-memory-leak forks (E:/iroh, E:/iroh-gossip, E:/noq)
-# are opted into per host, never from this file: a path patch that does not
-# exist breaks cargo everywhere else. See deployment/dev/windows-iroh-patches.toml.
 
 # Debug builds keep line tables only: backtraces and span file:line stay exact, while each test
 # binary is a fraction of a full-debuginfo one (a gate links hundreds of them per lane).

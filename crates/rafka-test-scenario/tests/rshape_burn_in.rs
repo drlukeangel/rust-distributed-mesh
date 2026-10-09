@@ -1,7 +1,7 @@
 //! i143.e11.s1 (rafka-v2 #2944): the R-shape mock composition and traffic cells. The twenty-node
 //! estate (node-admin / compute / gateway / broker = 2 / 2 / 3 / 3 x 2 meshes) is born from empty
 //! provider state on the four executables of an independent consumer workspace
-//! (`qualification/rshape-consumer`, built by `scripts/i143-rshape-build-consumer.sh`, bound
+//! (`demo`, built by `scripts/i143-rshape-build-consumer.sh`, bound
 //! explicitly through `Estate::bootstrap_external`), and typed opaque work is routed through it.
 //!
 //! Run by `scripts/i143-acceptance-gate.sh i143-rshape-{composition,fast}-{process,container}`,
