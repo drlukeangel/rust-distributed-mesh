@@ -483,6 +483,22 @@ async fn the_forward_frame_carries_the_budget_that_remains_never_the_default() {
     assert_eq!(seen[1], 700, "split: the reply budget, not the 10 s send bound or the default: {seen:?}");
 }
 
+/// CONTRACT: a bounded carried call forwards the inner bound plus the reply reserve, never more
+/// than the origin has left: the carrier's inner call ends before the origin's deadline by the
+/// margin the origin's budget holds beyond the bound.
+#[tokio::test]
+async fn a_bounded_carried_call_forwards_its_inner_bound_plus_the_reserve_under_the_origins_deadline() {
+    let (origin, carrier, seen, _node) = spy_carrier().await;
+    let stranger = NodeId::mint();
+    let _ = origin.call_via_bounded::<Probe>(&carrier, &stranger, &probe(b"x"), &overall(Duration::from_millis(5000)), Some(Duration::from_millis(2000))).await;
+    let _ = origin.call_via_bounded::<Probe>(&carrier, &stranger, &probe(b"y"), &overall(Duration::from_millis(1000)), Some(Duration::from_millis(2000))).await;
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    let reserve = FORWARD_REPLY_RESERVE.as_millis() as u64;
+    assert!((2_000..=2_000 + reserve).contains(&seen[0]), "the bound plus the reserve, not the 5 s the origin has: {seen:?}");
+    assert!(seen[1] <= 1_000, "never more than the origin has left: {seen:?}");
+}
+
 /// CONTRACT: a forward naming Forward is refused `NotForwardable` and a draining carrier refuses
 /// a forward `Draining`, each before any inner call.
 #[tokio::test]

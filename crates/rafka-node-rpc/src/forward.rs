@@ -177,6 +177,22 @@ impl NodeRpcClient {
         req: &P::Request,
         opts: &CallOptions,
     ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>) {
+        self.call_via_bounded::<P>(carrier, target, req, opts, None).await
+    }
+
+    /// [`Self::call_via`] with the carrier's one inner call bounded by `inner` (plus the reply
+    /// reserve) instead of by everything the origin has left. The origin's own deadline then
+    /// outlasts the carrier's inner call by what `opts` allows beyond `inner`, so a carrier whose
+    /// inner call runs to its whole bound (a dial to a dead node) still has that margin to
+    /// answer in, carrier-edge-lost included, before the origin gives up.
+    pub async fn call_via_bounded<P: NodeProtocol>(
+        &self,
+        carrier: &NodeTarget,
+        target: &NodeId,
+        req: &P::Request,
+        opts: &CallOptions,
+        inner_bound: Option<std::time::Duration>,
+    ) -> (RpcOutcome<P::Reply>, Option<CallEvidence>) {
         let pre = PreCommit::begin(P::OP);
         if !P::FORWARDABLE {
             return (pre.not_sent(NotSentReason::NotForwardable { op: P::OP }), None);
@@ -187,6 +203,10 @@ impl NodeRpcClient {
         };
         let target = target.clone();
         let build = move |remaining: std::time::Duration| {
+            let remaining = match inner_bound {
+                Some(b) => remaining.min(b + FORWARD_REPLY_RESERVE),
+                None => remaining,
+            };
             let forward = ForwardRequest::Forward { target, inner_op: P::OP, inner, remaining_ms: remaining.as_millis() as u64 };
             Forward::encode_request(&forward).map_err(|e| e.0)
         };
