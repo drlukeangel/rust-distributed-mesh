@@ -126,17 +126,21 @@ impl NodeSelf {
             event_at_rafka_ms: self.membership.clock().now_rafka_ms(),
         };
         let (me, commander) = (self.clone(), commander.clone());
+        // The command's serve span carries the caller's propagated trace; the work this command
+        // starts continues it, so the completion call and its spans join the outer trace.
+        let parent = tracing::Span::current();
         if stop {
-            tokio::spawn(async move { me.stop(commander, op).await });
+            tokio::spawn(async move { me.stop(commander, op, parent).await });
         } else {
-            tokio::spawn(async move { me.drain(commander, op).await });
+            tokio::spawn(async move { me.drain(commander, op, parent).await });
         }
         Some(StatusReply::Applied)
     }
 
-    async fn drain(self: Arc<Self>, commander: NodeId, op: LifecycleOp) {
+    async fn drain(self: Arc<Self>, commander: NodeId, op: LifecycleOp, parent: tracing::Span) {
         use tracing::Instrument;
         let span = tracing::info_span!(
+            parent: &parent,
             "rdm.node_admin.status.update.via-drain-node",
             node = %self.name, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
             commander = %commander, in_flight_at_zero = tracing::field::Empty, "otel.kind" = "internal"
@@ -170,9 +174,10 @@ impl NodeSelf {
         .await
     }
 
-    async fn stop(self: Arc<Self>, commander: NodeId, op: LifecycleOp) {
+    async fn stop(self: Arc<Self>, commander: NodeId, op: LifecycleOp, parent: tracing::Span) {
         use tracing::Instrument;
         let span = tracing::info_span!(
+            parent: &parent,
             "rdm.node_admin.status.update.via-stop-node",
             node = %self.name, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
             commander = %commander, state = "Leaving", "otel.kind" = "internal"
