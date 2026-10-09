@@ -286,8 +286,7 @@ impl Records {
 
     /// A birth whose exit the fabric authority proved.
     pub fn mark_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) {
-        // stub
-        let _ = (node_id, incarnation);
+        self.exited.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
     }
 
     pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
@@ -444,6 +443,8 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
         n.status = if restarting {
             NodeStatus::Restarting
+        } else if records.is_exited(&d.node.node_id, &d.node.incarnation) {
+            NodeStatus::Dead
         } else if !silent {
             node_status(d.status)
         } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
@@ -2983,7 +2984,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| (book.backbone_meshes().contains(mesh) || ladder.lock().unwrap().meshes().contains(mesh)) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| (book.backbone_meshes().contains(mesh) || ladder.lock().unwrap().meshes().contains(mesh)) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+                    // The proofs the pass just took are in the view the attempt is planned from: a birth
+                    // proven exited is not live there, and holds no seat.
+                    if opened.is_some() {
+                        *topology.write().await = project(&fabric, &fabric_id, provider, &book, &records);
+                    }
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
