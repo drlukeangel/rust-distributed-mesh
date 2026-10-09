@@ -7,7 +7,9 @@
 //! starts), verifies the digest against it, and on a match installs the address for that key
 //! (membership's `register_location`, the live resolver, which cancels every dial aimed at the
 //! key's old address) and completes `WaitForBind` from the node's own report. A disagreement is
-//! refused by name with both values.
+//! refused by name with both values. A join for a birth whose create ended without hearing it is
+//! refused as `DeploymentAbandoned`, naming the Build, the attempt and the exact birth: this admin
+//! is the birth's authority and never answers `NotAuthority` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use rafka_mesh_entity::wire::WireDigest;
@@ -17,7 +19,7 @@ use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tracing::Instrument as _;
 use std::future::Future;
 use std::pin::Pin;
@@ -81,10 +83,26 @@ struct Slot {
     reported: watch::Sender<Option<MeshDigest>>,
 }
 
-/// The births this admin deployed and is waiting to hear from.
+/// A deployment whose create ended before its birth reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Abandoned {
+    /// The Build whose create deployed the birth.
+    pub build_id: String,
+    /// The attempt of that Build.
+    pub attempt: u32,
+    /// What was deployed.
+    pub deployed: Deployed,
+}
+
+/// How many abandoned deployments an admin remembers by name; the oldest is forgotten first.
+const ABANDONED_KEPT: usize = 256;
+
+/// The births this admin deployed and is waiting to hear from, and the deployments it ended
+/// without hearing from them.
 #[derive(Default)]
 pub struct Joins {
     slots: Mutex<HashMap<NodeId, Slot>>,
+    abandoned: Mutex<VecDeque<Abandoned>>,
 }
 
 /// What a digest is to the births this admin deployed.
@@ -94,6 +112,8 @@ pub enum Standing {
     Deployed,
     /// The node is deployed here and the digest disagrees.
     Mismatch(Mismatch),
+    /// The digest is a birth this admin deployed and whose create ended without hearing it.
+    Abandoned(Abandoned),
     /// This admin deployed no birth of that node.
     Unknown,
 }
@@ -113,17 +133,34 @@ impl Joins {
         rx
     }
 
-    /// Stop holding `node_id`'s deployment (it joined, or its create ended).
-    pub fn forget(&self, node_id: &NodeId) {
-        self.slots.lock().unwrap().remove(node_id);
+    /// The create of `node_id`'s deployment (`build_id`, `attempt`) ended: stop holding it. A
+    /// deployment that never heard its birth is remembered as abandoned, so a late `JoinNode` is
+    /// refused by name.
+    pub fn end(&self, node_id: &NodeId, build_id: &str, attempt: u32) {
+        let Some(slot) = self.slots.lock().unwrap().remove(node_id) else { return };
+        if slot.reported.borrow().is_some() {
+            return;
+        }
+        let mut kept = self.abandoned.lock().unwrap();
+        kept.retain(|a| a.deployed.node_id != *node_id);
+        if kept.len() == ABANDONED_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back(Abandoned { build_id: build_id.into(), attempt, deployed: slot.deployed });
     }
 
     /// How the deploying admin stands toward the birth `d` reports.
     pub fn standing(&self, d: &MeshDigest) -> Standing {
-        match self.slots.lock().unwrap().get(&d.node.node_id) {
-            None => Standing::Unknown,
-            Some(s) => match s.deployed.verify(d) {
+        if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
+            return match s.deployed.verify(d) {
                 Ok(()) => Standing::Deployed,
+                Err(m) => Standing::Mismatch(m),
+            };
+        }
+        match self.abandoned.lock().unwrap().iter().find(|a| a.deployed.node_id == d.node.node_id) {
+            None => Standing::Unknown,
+            Some(a) => match a.deployed.verify(d) {
+                Ok(()) => Standing::Abandoned(a.clone()),
                 Err(m) => Standing::Mismatch(m),
             },
         }
@@ -173,6 +210,8 @@ impl JoinDoor {
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
             outcome = tracing::field::Empty,
+            build_id = tracing::field::Empty,
+            attempt = tracing::field::Empty,
         );
         self.decide(peer, d, span.clone()).instrument(span).await
     }
@@ -196,6 +235,13 @@ impl JoinDoor {
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
                 self.joined(&d.node.name).await
+            }
+            Standing::Abandoned(a) => {
+                span.record("outcome", "deployment-abandoned");
+                span.record("build_id", a.build_id.as_str());
+                span.record("attempt", a.attempt);
+                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.0, "this admin ended the deployment of this birth before it reported");
+                JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id.to_string(), incarnation: a.deployed.incarnation.0 }
             }
             Standing::Unknown => {
                 span.record("outcome", "not-authority");
@@ -271,6 +317,9 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
                 },
                 JoinReply::JoinMismatch { field, deployed, reported } => ("refused", Err(JoinFailure::Refused(format!("{field}: deployed {deployed}, reported {reported}")))),
                 JoinReply::NotAuthority { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
+                JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
+                    ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
+                }
                 JoinReply::Unauthorized { reason } => ("refused", Err(JoinFailure::Refused(reason))),
                 other => ("not-ready", Err(JoinFailure::Unreached(format!("{}: {other:?}", other.name())))),
             },
