@@ -32,8 +32,9 @@
 
 use crate::model::{Node, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::ids::NodeId;
-use std::collections::BTreeMap;
+use rafka_mesh_entity::ids::{IncarnationId, NodeId};
+use rafka_mesh_entity::SeatHolder;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 
 /// The election key every span names.
@@ -85,6 +86,24 @@ pub fn resolve(nodes: &mut [Node]) {
     if let Some(k) = elect(&c) {
         nodes[mesh_primaries[k]].is_fabric_primary = true;
     }
+}
+
+/// What an election takes beside the nodes: the seat holders this observer holds, and the births
+/// proven gone.
+#[derive(Debug, Clone, Default)]
+pub struct Incumbency {
+    /// The fabric primary's holder record.
+    pub fabric: Option<SeatHolder>,
+    /// Each mesh's node-admin primary holder record, by mesh name.
+    pub meshes: BTreeMap<String, SeatHolder>,
+    /// Exact births proven gone: the provider found their runtime exited, or a departure was
+    /// heard. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
+    pub lost: HashSet<(NodeId, IncarnationId)>,
+}
+
+/// Mark each cohort's primary and the fabric primary in `nodes`, given the seat holders held.
+pub fn resolve_with(nodes: &mut [Node], _incumbency: &Incumbency) {
+    resolve(nodes)
 }
 
 /// A seat's holder as a span names it.
@@ -372,5 +391,208 @@ mod tests {
         pb.sort();
         assert_eq!(pa, pb);
         assert_eq!(fabric(&a), fabric(&b));
+    }
+
+    // ---- Sticky seats (R-A2): a living holder keeps its seat; the holder record is an input. ----
+
+    fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
+        let mut n = Node::allocated(path.parse().unwrap());
+        n.node_id = id(node_id);
+        n.incarnation_id = Some(IncarnationId(inc.into()));
+        n.status = status;
+        n
+    }
+
+    fn holder(mesh: &str, node_id: &str, inc: &str, epoch: u64) -> SeatHolder {
+        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId(inc.into()), epoch }
+    }
+
+    fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
+        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), lost: HashSet::new() }
+    }
+
+    fn lose(inc: &mut Incumbency, node_id: &str, incarnation: &str) {
+        inc.lost.insert((id(node_id), IncarnationId(incarnation.into())));
+    }
+
+    fn fabric_name(nodes: &[Node]) -> Option<String> {
+        nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string())
+    }
+
+    fn mesh_primary(nodes: &[Node], mesh: &str) -> Option<String> {
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string())
+    }
+
+    use NodeStatus::{Draining, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready, Restarting};
+
+    /// CONTRACT (R-A2 cell 1): an admin with a lower NodeId appearing in another mesh leaves the
+    /// fabric primary where it is. Must NOT happen: the lower id taking the seat.
+    #[test]
+    fn a_lower_node_id_in_another_mesh_never_displaces_the_fabric_primary() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", Ready), born("mesh3.admin.1", "100000000000", "c1", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.1"));
+        assert_eq!(mesh_primary(&nodes, "mesh3").as_deref(), Some("mesh3.admin.1"), "the other mesh still has its own primary");
+    }
+
+    /// CONTRACT (R-A2 cell 2): a lower NodeId appearing inside the incumbent mesh leaves the
+    /// healthy holder as the mesh primary and the fabric primary.
+    #[test]
+    fn a_lower_node_id_inside_the_incumbent_mesh_never_displaces_the_healthy_holder() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", Ready), born("mesh1.admin.2", "100000000000", "a2", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"));
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.1"));
+    }
+
+    /// CONTRACT (R-A2 cell 3): the holder's exact birth is proven lost with another admin
+    /// surviving in its mesh: the lowest Ready NodeId of THAT mesh fills the seat, not a lower id
+    /// of another mesh.
+    #[test]
+    fn a_lost_holder_is_replaced_by_the_lowest_ready_admin_of_its_own_mesh() {
+        let mut inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        lose(&mut inc, "500000000000", "a1");
+        let mut nodes = vec![
+            born("mesh1.admin.1", "500000000000", "a1", PendingReconnect),
+            born("mesh1.admin.2", "800000000000", "a2", Ready),
+            born("mesh1.admin.3", "700000000000", "a3", Ready),
+            born("mesh2.admin.1", "100000000000", "b1", Ready),
+        ];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.3"));
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.3"), "the lowest Ready NodeId of the SAME mesh");
+    }
+
+    /// CONTRACT (R-A2 cell 4): only Pending admins survive in the incumbent mesh: the seat waits
+    /// and no other mesh takes it; the first of them to be Ready fills it.
+    #[test]
+    fn a_seat_waits_for_a_ready_admin_of_the_incumbent_mesh_while_only_pending_ones_survive() {
+        let mut inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        lose(&mut inc, "500000000000", "a1");
+        let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", PendingReconnect), born("mesh1.admin.2", "800000000000", "a2", Pending), born("mesh2.admin.1", "100000000000", "b1", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes), None, "no fabric primary while the incumbent mesh has only Pending admins");
+        assert_eq!(mesh_primary(&nodes, "mesh1"), None);
+        nodes[1].status = Ready;
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"));
+    }
+
+    /// CONTRACT (R-A2 cell 7): every node-admin birth of the incumbent mesh is proven lost: the
+    /// lowest NodeId among the remaining mesh primaries wins.
+    #[test]
+    fn the_lowest_remaining_mesh_primary_wins_when_every_admin_of_the_incumbent_mesh_is_lost() {
+        let mut inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        lose(&mut inc, "500000000000", "a1");
+        lose(&mut inc, "600000000000", "a2");
+        let mut nodes = vec![
+            born("mesh1.admin.1", "500000000000", "a1", PendingReconnect),
+            born("mesh1.admin.2", "600000000000", "a2", PendingReconnect),
+            born("mesh2.admin.1", "900000000000", "b1", Ready),
+            born("mesh3.admin.1", "700000000000", "c1", Ready),
+            born("mesh3.admin.2", "100000000000", "c2", Ready),
+        ];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh3.admin.2"), "the lowest NodeId among mesh2 and mesh3's primaries");
+    }
+
+    /// CONTRACT (R-A2 cell 8): one incumbent admin still runs, Pending or silent included: no
+    /// other mesh takes the seat.
+    #[test]
+    fn one_surviving_incumbent_admin_blocks_a_cross_mesh_takeover() {
+        for survivor in [Pending, PendingReconnect, Restarting] {
+            let mut inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+            lose(&mut inc, "500000000000", "a1");
+            let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", PendingReconnect), born("mesh1.admin.2", "600000000000", "a2", survivor), born("mesh2.admin.1", "100000000000", "b1", Ready)];
+            resolve_with(&mut nodes, &inc);
+            assert_eq!(fabric_name(&nodes), None, "{survivor:?} survives in the incumbent mesh");
+        }
+    }
+
+    /// CONTRACT (R-A2 cell 10): the old mesh recovers after another mesh took the seat: the new
+    /// holder keeps it, whatever ids the recovered admins hold.
+    #[test]
+    fn the_old_mesh_recovering_never_reclaims_the_seat() {
+        let inc = incumbency(holder("mesh3", "700000000000", "c1", 2), &[holder("mesh3", "700000000000", "c1", 1), holder("mesh1", "500000000000", "a1", 1)]);
+        let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", Ready), born("mesh3.admin.1", "700000000000", "c1", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh3.admin.1"));
+        assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"), "the old mesh still has its own mesh primary");
+    }
+
+    /// CONTRACT (R-A2 cell 12): two admins survive in the incumbent mesh when the holder dies:
+    /// exactly one is the primary, the lowest Ready NodeId, on every observer's order of facts.
+    #[test]
+    fn two_survivors_of_the_incumbent_mesh_yield_exactly_one_holder() {
+        let mut inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        lose(&mut inc, "500000000000", "a1");
+        let base = vec![born("mesh1.admin.1", "500000000000", "a1", PendingReconnect), born("mesh1.admin.2", "800000000000", "a2", Ready), born("mesh1.admin.3", "700000000000", "a3", Ready)];
+        let mut reversed: Vec<Node> = base.iter().cloned().rev().collect();
+        let mut forward = base;
+        resolve_with(&mut forward, &inc);
+        resolve_with(&mut reversed, &inc);
+        for nodes in [&forward, &reversed] {
+            assert_eq!(nodes.iter().filter(|n| n.is_fabric_primary).count(), 1);
+            assert_eq!(fabric_name(nodes).as_deref(), Some("mesh1.admin.3"));
+        }
+    }
+
+    /// CONTRACT (R-A2 cell 6, election side): a holder that is silent but not proven lost keeps
+    /// the seat; observer-inferred `Dead` is not proof either. Nobody else takes it.
+    #[test]
+    fn a_silent_or_inferred_dead_holder_keeps_the_seat() {
+        for status in [PendingReconnect, NodeStatus::Dead] {
+            let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+            let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", status), born("mesh1.admin.2", "600000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
+            resolve_with(&mut nodes, &inc);
+            assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.1"), "{status:?}");
+            assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"), "{status:?}");
+        }
+    }
+
+    /// CONTRACT (R-A2): a holder that yields (Draining, Leaving, Restarting) or whose birth a
+    /// later birth of the same NodeId replaced no longer holds; its mesh fills the seat.
+    #[test]
+    fn a_yielding_or_replaced_holder_hands_the_seat_to_its_own_mesh() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        for yielded in [Draining, Leaving, Restarting] {
+            let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", yielded), born("mesh1.admin.2", "800000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
+            resolve_with(&mut nodes, &inc);
+            assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"), "{yielded:?}");
+        }
+        // The same NodeId, a later birth: the recorded birth is gone.
+        let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a9", Pending), born("mesh1.admin.2", "800000000000", "a2", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes).as_deref(), Some("mesh1.admin.2"));
+    }
+
+    /// CONTRACT (R-A2): a holder record names a birth this view has not heard: the seat waits for
+    /// it. A joiner that knows the record but not yet the holder's digest takes nothing.
+    #[test]
+    fn a_holder_this_view_has_not_heard_keeps_its_seat_vacant_for_it() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
+        let mut nodes = vec![born("mesh2.admin.1", "100000000000", "b1", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(fabric_name(&nodes), None);
+    }
+
+    /// CONTRACT (R-A2): mesh-primary seats follow the same rule in every mesh: a living holder
+    /// keeps it against a lower id; a vacancy is filled by the lowest Ready NodeId.
+    #[test]
+    fn a_mesh_primary_seat_follows_the_same_rule_in_every_mesh() {
+        let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1), holder("mesh2", "900000000000", "b1", 1)]);
+        let mut nodes = vec![
+            born("mesh1.admin.1", "500000000000", "a1", Ready),
+            born("mesh2.admin.1", "900000000000", "b1", Ready),
+            born("mesh2.admin.2", "200000000000", "b2", Ready),
+        ];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(mesh_primary(&nodes, "mesh2").as_deref(), Some("mesh2.admin.1"), "the living holder of a non-fabric mesh keeps its seat too");
+        // With no record for a mesh, the lowest Ready NodeId fills it.
+        let mut fresh = vec![born("mesh2.admin.1", "900000000000", "b1", Ready), born("mesh2.admin.2", "200000000000", "b2", Ready)];
+        resolve_with(&mut fresh, &Incumbency::default());
+        assert_eq!(mesh_primary(&fresh, "mesh2").as_deref(), Some("mesh2.admin.2"));
     }
 }

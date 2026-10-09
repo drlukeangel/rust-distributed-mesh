@@ -18,6 +18,7 @@ pub mod path;
 pub mod publisher;
 pub mod reconnect;
 pub mod runtime;
+pub mod seat;
 pub mod wire;
 
 pub use connections::{
@@ -29,4 +30,5 @@ pub use lifecycle::{LifecycleOp, DEPARTED_RETENTION};
 pub use ids::{EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, ID_FORMAT};
 pub use publisher::PublisherId;
 pub use path::{NodeKind, PathName, PathNameError};
+pub use seat::{Seat, SeatHolder};
 pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};
