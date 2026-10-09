@@ -570,7 +570,8 @@ pub async fn reconcile_drift(
     // reached, not dead: it is inspected like any unheard birth, and only an exited runtime counts.
     let mut map = t.clone();
     for row in durable {
-        if map.node(&row.name).is_none() && current.topology.contains(&row.name) {
+        // A birth whose proven departure is held left on purpose: its row is history, not drift.
+        if map.node(&row.name).is_none() && current.topology.contains(&row.name) && !book.is_departed(row.node_id.as_str()) {
             let mut n = Node::allocated(row.name.clone());
             n.node_id = row.node_id.clone();
             n.incarnation_id = Some(row.incarnation_id.clone());
