@@ -571,14 +571,33 @@ pub async fn reconcile_drift(
         }
         let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
+        // A silent birth this authority cannot prove is named once, with what it lacks: it is not
+        // drift until its exact runtime is inspected, and an authority that holds no fact for it
+        // can never inspect it.
+        let mut unprovable = |why: String| {
+            let key = (current.build_id.clone(), 0u32, vec![n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(), why.clone()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-drift-unprovable", node = %me, birth = %n.name, node_id = %n.node_id, status = ?n.status, reason = %why)
+                    .in_scope(|| tracing::info!("a silent birth the accepted topology names cannot be proven exited by this authority"));
+            }
+        };
         let (fact, data_dir, birth) = match (&held, row) {
             (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
             (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-            _ => continue,
+            _ => {
+                unprovable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held.is_some() { "a digest without a runtime" } else { "no digest of this birth" }));
+                continue;
+            }
         };
         // Proof is the exact runtime's own terminal status, in this
         // provider's control domain; anything else proves nothing.
-        let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
+        let handle = match crate::deployment::provider::adopt(provider, &fact) {
+            Ok(h) => h,
+            Err(e) => {
+                unprovable(format!("the provider refused to adopt its runtime: {e}"));
+                continue;
+            }
+        };
         let inspected = provider.inspect(&handle).await;
         let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
         if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
@@ -590,6 +609,8 @@ pub async fn reconcile_drift(
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
+        } else {
+            unprovable(format!("its runtime is not proven exited: {status:?}"));
         }
     }
     let short = crate::drift::shortfall(&current.topology, t, &exited);
