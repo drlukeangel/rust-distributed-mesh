@@ -356,7 +356,16 @@ mod tests {
         assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.compute.1".parse().unwrap() }, &t), "mesh2.admin.1");
         assert_eq!(who(&create("mesh2.admin.2"), &t), "mesh2.admin.1", "a mesh's missing admin is created by that mesh's primary");
         assert_eq!(who(&create("mesh1.admin.2"), &t), "mesh1.admin.1", "its own mesh's primary, which is the fabric primary here");
-        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap() }, &t), "mesh1.admin.1", "an admin's retire stays the fabric primary's");
+        assert_eq!(who(&BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap() }, &t), "mesh1.admin.1", "mesh2.admin.1 is mesh2's only admin: no successor, the fabric primary");
+        let mut t3 = mm(true);
+        t3.nodes.push(node("mesh2.admin.2", false, false));
+        crate::election::resolve(&mut t3.nodes);
+        let p2 = t3.cohort_primary("mesh2", NodeKind::NodeAdmin).expect("mesh2 has a primary").name.clone();
+        let m2 = if p2.to_string() == "mesh2.admin.1" { "mesh2.admin.2" } else { "mesh2.admin.1" };
+        assert_eq!(who(&BuildOperation::RetireNode { node: m2.parse().unwrap() }, &t3), p2.to_string(), "a non-primary admin's retire is its mesh primary's");
+        assert_eq!(who(&BuildOperation::RestartNode { node: m2.parse().unwrap() }, &t3), p2.to_string(), "a non-primary admin's restart is its mesh primary's");
+        assert_eq!(who(&BuildOperation::RestartNode { node: p2.clone() }, &t3), m2, "a mesh primary's own restart is handed to the admin its mesh seats once it drains");
+        assert_eq!(who(&BuildOperation::RetireNode { node: p2 }, &t3), m2, "a mesh primary's own retire is handed to the admin its mesh seats once it drains");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
     }
@@ -374,7 +383,7 @@ mod tests {
         for op in [BuildOperation::RetireNode { node: fp.clone() }, BuildOperation::RestartNode { node: fp.clone() }] {
             assert_eq!(executor_for(&op, &t), Some(other.clone()), "{op:?}: executed by the successor, never by {fp}");
         }
-        assert_eq!(executor_for(&BuildOperation::RetireNode { node: other.clone() }, &t), Some(fp.clone()), "another admin's retire stays the fabric primary's");
+        assert_eq!(executor_for(&BuildOperation::RetireNode { node: other.clone() }, &t), Some(fp.clone()), "mesh2's only admin has no mesh primary beside it: the fabric primary retires it");
         // Alone, the fabric primary has no successor: nobody executes its retire.
         let mut alone = mm(false);
         crate::election::resolve(&mut alone.nodes);
