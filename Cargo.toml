@@ -17,6 +17,7 @@ members = [
     "crates/test-roles/broker",
     "crates/test-roles/compute",
     "tools/mesh-audit",
+    "tools/test-runner",
     "crates/scratch-json-dumper",
 ]
 # The R-shape qualification consumer is an independent customer: its own workspace root and

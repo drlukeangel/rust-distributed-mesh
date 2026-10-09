@@ -1,0 +1,20 @@
+[package]
+name = "rdm-test-runner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Lists every test executable the tree has built and runs them, one process per stem, behind a small HTTP API"
+
+[lib]
+name = "rdm_test_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rdm-test-runner"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

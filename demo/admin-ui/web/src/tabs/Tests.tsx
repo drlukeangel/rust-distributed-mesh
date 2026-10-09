@@ -430,8 +430,8 @@ function JobRows({ j, files, onFiles, onView, runId }: { j: Job; files?: { path:
       <tr style={{ cursor: "pointer", verticalAlign: "top" }} onClick={() => setOpen(!open)} data-testid={`job-${runId}-${j.idx}`}>
         <td><Badge text={j.state} color={COLORS[j.state]} /></td>
         <td>{j.krate} · {j.label} <Badge text={j.cadence} />{j.container && <Badge text="container" color="var(--warn)" />}</td>
-        <td>{j.counts ? `${j.counts[0]} pass ${j.counts[1]} fail ${j.counts[2]} ign` : `${j.test_ids.length}`}</td>
-        <td>{ms(j.wall_ms)}</td>
+        <td style={{ whiteSpace: "nowrap" }}>{j.counts ? `${j.counts[0]} pass ${j.counts[1]} fail ${j.counts[2]} ign` : `${j.test_ids.length}`}</td>
+        <td style={{ whiteSpace: "nowrap" }}>{ms(j.wall_ms)}</td>
         <td>{j.traces ? j.traces.distinct : "—"}</td>
       </tr>
       {open && (
@@ -456,7 +456,7 @@ function JobRows({ j, files, onFiles, onView, runId }: { j: Job; files?: { path:
             <button onClick={(e) => { e.stopPropagation(); onFiles(); }} data-testid={`files-${runId}-${j.idx}`}>{files ? "hide" : "show"} evidence files</button>
           </div>
           {files && files.map((f) => (
-            <div key={f.path}><a href="#" onClick={(e) => { e.preventDefault(); onView(f.path); }}>{f.path.split("/").slice(1).join("/")}</a> <span className="muted">{f.bytes} B</span></div>
+            <div key={f.path}><a href="#" onClick={(e) => { e.preventDefault(); onView(f.path); }}>{f.path.includes("/artifacts/") ? f.path.slice(f.path.indexOf("/artifacts/") + 11) : f.path.split("/").slice(1).join("/")}</a> <span className="muted">{f.bytes} B</span></div>
           ))}
           <details open={j.state === "running"}><summary className="muted">output tail</summary>
             <pre style={{ fontSize: 11, maxHeight: 220, overflow: "auto" }} data-testid="output-tail">{j.output_tail}</pre></details>
