@@ -51,7 +51,7 @@ fn a_join_request_and_its_digest_round_trip_through_postcard_with_every_field_pr
 }
 
 #[test]
-fn replies_match_the_frozen_nine_variant_wire_schema() {
+fn replies_match_the_frozen_ten_variant_wire_schema() {
     use JoinReply::*;
     let fixtures = [
         (Joined { answer: vec![1] }, "000101"),
@@ -64,6 +64,7 @@ fn replies_match_the_frozen_nine_variant_wire_schema() {
         (Draining { reason: "d".into() }, "060164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0702"),
         (Unauthorized { reason: "u".into() }, "080175"),
+        (DeploymentAbandoned { build_id: "b".into(), attempt: 2, node_id: "n".into(), incarnation: "i".into() }, "0901620201 6e0169"),
     ];
     for (reply, hex) in fixtures {
         let expected = bytes(&hex.replace(' ', ""));

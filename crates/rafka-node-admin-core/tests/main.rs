@@ -34,6 +34,7 @@ mod i143_acceptance_2805;
 mod i143_acceptance_2892;
 mod i143_acceptance_2938;
 mod i143_acceptance_rw1;
+mod i143_rb2_abandoned_join;
 mod i143_rj1_join;
 mod join_wire;
 mod process_launch_environment;
