@@ -287,6 +287,10 @@ impl ConnectionsWriter {
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
                 reason = %row.reason.clone().unwrap_or_default(),
+                carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+                source_incarnation = %row.source.incarnation.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+                destination_incarnation = %row.destination.incarnation.as_ref().map(|i| i.to_string()).unwrap_or_default(),
+                logged_at_ms = row.logged_at_ms,
                 origin,
                 outcome = tracing::field::Empty,
             );

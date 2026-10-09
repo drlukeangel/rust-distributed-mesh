@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Overview } from "./api";
+import { api, type Overview, type TrafficState } from "./api";
 import { SpawnBar } from "./SpawnBar";
 import { Topology } from "./tabs/Topology";
 import { Nodes } from "./tabs/Nodes";
@@ -7,9 +7,11 @@ import { Builds } from "./tabs/Builds";
 import { BootWaterfall } from "./tabs/BootWaterfall";
 import { Chaos } from "./tabs/Chaos";
 import { Timeline } from "./tabs/Timeline";
+import { Alerts } from "./tabs/Alerts";
+import { Messages } from "./tabs/Messages";
 import { Tests } from "./tabs/Tests";
 
-const TABS = ["Topology", "Nodes", "Builds", "Boot Waterfall", "Chaos", "Timeline", "Tests"] as const;
+const TABS = ["Topology", "Nodes", "Messages", "Boot Waterfall", "Chaos", "Timeline", "Alerts", "Tests", "Builds"] as const;
 type Tab = (typeof TABS)[number];
 
 const STATE_COLOR: Record<string, string> = {
@@ -44,6 +46,28 @@ function Header({ o }: { o: Overview | null }) {
   );
 }
 
+function TrafficLine() {
+  const [t, setT] = useState<TrafficState | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    const load = () => api.traffic().then((x) => { setT(x); setErr(null); }).catch((e) => setErr(String(e)));
+    load();
+    const id = setInterval(load, 2000);
+    return () => clearInterval(id);
+  }, []);
+  if (err) return <div className="fabric-line muted mono" data-testid="traffic-line">traffic: {err}</div>;
+  if (!t) return null;
+  const fresh = Date.now() - t.updated_ms < 10000;
+  return (
+    <div className="fabric-line mono" data-testid="traffic-line">
+      <span>traffic <b style={{ color: fresh ? "var(--ok)" : "var(--err)" }}>{fresh ? "running" : "stale"}</b></span>
+      <span>{t.issued} operations</span>
+      <span>{Object.entries(t.by_outcome).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>
+      <span className="muted">{Object.entries(t.by_route).map(([k, v]) => `${k} ${v}`).join(" · ")}</span>
+    </div>
+  );
+}
+
 export function App() {
   const [tab, setTab] = useState<Tab>("Topology");
   const [overview, setOverview] = useState<Overview | null>(null);
@@ -59,7 +83,14 @@ export function App() {
     <div className="layout">
       <header>
         <h1>rdm mesh — live</h1>
+        {overview?.summary && (
+          <div className="cluster-summary" data-testid="cluster-summary">
+            {overview.summary.spawned} spawned · meshes: {overview.summary.meshes.join(", ") || "—"} · chaos: {overview.summary.chaos_per_min}/min · mean peers:{" "}
+            {overview.summary.mean_peers === null ? "—" : overview.summary.mean_peers.toFixed(1)}
+          </div>
+        )}
         <Header o={overview} />
+        <TrafficLine />
         <SpawnBar />
       </header>
       <div className="tabs">
@@ -72,9 +103,11 @@ export function App() {
       <main>
         {tab === "Topology" && <Topology />}
         {tab === "Nodes" && <Nodes />}
+        {tab === "Messages" && <Messages />}
         {tab === "Builds" && <Builds />}
         {tab === "Boot Waterfall" && <BootWaterfall />}
         {tab === "Chaos" && <Chaos />}
+        {tab === "Alerts" && <Alerts />}
         {tab === "Timeline" && <Timeline />}
         {tab === "Tests" && <Tests />}
       </main>

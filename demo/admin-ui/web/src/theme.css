@@ -137,3 +137,6 @@ main {
   font-size: 0.75rem;
   margin-bottom: 0.4rem;
 }
+
+.cluster-summary { font-size: 0.8rem; color: var(--fg-dim); margin-bottom: 0.5rem; font-family: ui-monospace, monospace; }
+.react-flow__minimap { background: var(--bg-elev) !important; }

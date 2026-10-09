@@ -1,4 +1,4 @@
-export type ManagedKind = "rpc_node" | "node_admin";
+export type ManagedKind = "node_admin" | "gateway" | "broker" | "compute";
 
 export interface BuildAccepted {
   build_id: string;
@@ -26,7 +26,14 @@ export interface BuildBrief {
   executor: string | null;
   change: string;
 }
+export interface Summary {
+  spawned: number;
+  meshes: string[];
+  chaos_per_min: number;
+  mean_peers: number | null;
+}
 export interface Overview {
+  summary?: Summary;
   fabric: FabricInfo | null;
   meshes: MeshInfo[];
   nodes_total: number;
@@ -46,16 +53,30 @@ export interface TopologyNode {
   incarnation_id: string | null;
   node_id: string;
   has_runtime: boolean;
+  backbone: "" | "listener" | "publisher";
+  load: NodeLoad | null;
+}
+export interface NodeLoad {
+  cpu_used_millicores: number;
+  cpu_budget_millicores: number;
+  ram_used_bytes: number;
+  ram_budget_bytes: number;
 }
 export interface Edge {
   source: string;
   destination: string;
   kind: "direct" | "proxy";
+  /// connected | recovered | failed | disconnected: the pair's CURRENT state (see the Topology legend).
   state: string;
+  /// Why the pair is judged in that state.
+  basis: string;
+  /// The newest fact's own state.
+  last_fact: string;
+  cross_mesh: boolean;
+  backbone: boolean;
   carrier: string | null;
   reason: string | null;
   logged_at_ms: number;
-  reported_by: string;
 }
 export interface Topology {
   nodes: TopologyNode[];
@@ -95,6 +116,7 @@ export interface FaultRecord {
   detail: unknown;
 }
 export interface Cut {
+  members: string[];
   id: number;
   scope: string;
   target: string;
@@ -122,7 +144,41 @@ export interface Timeline {
   files: number;
 }
 
+export interface MessageRow {
+  ts_ms: number;
+  kind: "rpc" | "gossip";
+  span: string;
+  node: string;
+  from: string;
+  to: string;
+  op: string;
+  protocol: string;
+  outcome: string;
+  elapsed_ms: string;
+  detail: string;
+}
+
+export interface AlertItem {
+  id: number;
+  ts_ms: number;
+  severity: "info" | "warn" | "error";
+  kind: string;
+  message: string;
+  node: string | null;
+  mesh: string | null;
+}
+export interface TrafficState {
+  updated_ms: number;
+  issued: number;
+  by_outcome: Record<string, number>;
+  by_route: Record<string, number>;
+  recent: Array<{ seq: number; at_ms: number; route: string; target: string; via: string | null; outcome: string; reason: string; trace_id: string }>;
+}
+
 export interface BootWaterfallResponse {
+  service?: string;
+  jaeger_url?: string;
+  trace_url?: string;
   data?: Array<{ spans?: Array<{ operationName: string; startTime: number; duration: number }> }>;
 }
 export interface BootSpan {
@@ -171,8 +227,10 @@ export const api = {
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/restart`, { method: "POST" }),
   remove: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  createMesh: (name: string, node_admin: number, rpc_node: number) =>
-    call<BuildAccepted>("/api/meshes", post({ name, node_admin, rpc_node })),
+  createMesh: (name: string) => call<BuildAccepted>("/api/meshes", post({ name })),
+  messages: (kind: string, q: string) => call<{ messages: MessageRow[] }>(`/api/messages?kind=${kind}&limit=300&q=${encodeURIComponent(q)}`),
+  alerts: () => call<{ alerts: AlertItem[] }>("/api/alerts"),
+  traffic: () => call<TrafficState>("/api/traffic"),
   removeMesh: (name: string) =>
     call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),
 };

@@ -86,7 +86,7 @@ export function Chaos() {
             <div className="muted">active network cuts</div>
             {state.cuts.map((c) => (
               <div key={c.id} className="row mono" style={{ fontSize: 12 }}>
-                <span>#{c.id} {c.scope} {c.target} (udp ports {c.ports.join(", ")})</span>
+                <span>#{c.id} {c.scope} {c.target} ({c.members.length} members: {c.members.join(", ")}; udp ports {c.ports.join(", ")})</span>
                 <button onClick={() => run(() => api.heal(c.id))}>heal</button>
               </div>
             ))}

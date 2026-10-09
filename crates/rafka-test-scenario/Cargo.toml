@@ -17,6 +17,7 @@ rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 libc = "0.2"
 rafka-chaos = { path = "../rafka-chaos" }
+rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 
 [dev-dependencies]
 # i143_acceptance_2782 captures the detector's own spans in process.
@@ -38,6 +39,10 @@ bytes = "1"
 [[bin]]
 name = "rafka-scenario"
 path = "src/bin/rafka_scenario.rs"
+
+[[bin]]
+name = "rshape-demo"
+path = "src/bin/rshape_demo.rs"
 
 [[test]]
 name = "main"

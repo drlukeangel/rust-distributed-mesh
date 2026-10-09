@@ -77,7 +77,7 @@ async fn every_ui_topology_flow_is_one_build_in_node_admin() {
     let before = cp.topology.read().await.clone();
 
     let flows = [
-        ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"})), "add_node"),
+        ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "broker"})), "add_node"),
         ("POST", "/api/nodes/mesh1.rpc.2/restart", None, "restart_node"),
         ("DELETE", "/api/nodes/mesh1.rpc.2", None, "remove_node"),
         ("POST", "/api/bootstrap", None, "reconcile_fabric"),
@@ -103,7 +103,10 @@ async fn every_ui_topology_flow_is_one_build_in_node_admin() {
             .unwrap();
     }
     let bootstrap = client.build_view(&BuildId(timeline.0.lock().unwrap().last().unwrap().1.clone())).await.unwrap();
-    assert_eq!(bootstrap.submitted_change.as_ref().map(|c| c["desired"].clone()), Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})));
+    assert_eq!(bootstrap.submitted_change.as_ref().map(|c| c["desired"].clone()), Some(json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "broker": 3, "gateway": 3, "compute": 2},
+        {"name": "mesh2", "node_admin": 2, "broker": 3, "gateway": 3, "compute": 2},
+    ]})));
     let whats: Vec<String> = timeline.0.lock().unwrap().iter().map(|(w, _)| w.clone()).collect();
     assert_eq!(whats, ["add node", "restart node", "remove node", "bootstrap"]);
     assert_eq!(*cp.topology.read().await, before, "the UI changed nothing itself: only Builds were submitted");
@@ -118,7 +121,9 @@ async fn node_admin_refusals_reach_the_ui_with_their_status_and_reason() {
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "{v}");
     let (s, v) = call(&ui, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "{v}");
-    let (s, v) = call(&ui, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh7", "kind": "rpc_node"}))).await;
+    let (s, v) = call(&ui, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("kind-not-managed-in-the-r-shape")), "{v}");
+    let (s, v) = call(&ui, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh7", "kind": "gateway"}))).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-mesh")), "{v}");
     let (s, v) = call(&ui, "DELETE", "/api/nodes/not..a..path", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid-request")), "{v}");
@@ -138,7 +143,7 @@ async fn without_a_node_admin_or_with_one_unreachable_the_ui_says_so_by_name() {
 #[tokio::test]
 async fn topology_labels_mesh_primary_on_the_node_admin_cohort_only_and_serves_node_admins_connection_facts() {
     let (client, _) = node_admin().await;
-    let t = rafka_admin_ui::view::topology(&client, &reqwest::Client::new()).await.unwrap();
+    let t = rafka_admin_ui::view::topology(&client, &reqwest::Client::new(), &rafka_admin_ui::view::TopoCtx { facts: &[], cuts: &[], listeners: &[], publishers: &[] }).await.unwrap();
     let seat = |n: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["name"] == n).unwrap()["seat"].as_str().unwrap().to_string();
     assert_eq!(seat("mesh1.admin.1"), "fabric primary · mesh primary");
     assert_eq!(seat("mesh1.rpc.1"), "", "an rpc node first in its cohort is not a mesh primary: {t}");

@@ -6,6 +6,7 @@ export function BootWaterfall() {
   const [pick, setPick] = useState("");
   const [spans, setSpans] = useState<BootSpan[]>([]);
   const [note, setNote] = useState("");
+  const [traceUrl, setTraceUrl] = useState<string | null>(null);
 
   useEffect(() => {
     api.topology().then((r) => {
@@ -21,8 +22,9 @@ export function BootWaterfall() {
       const raw = r.data?.[0]?.spans ?? [];
       const parsed = raw.map((s) => ({ name: s.operationName, start_us: s.startTime, duration_ms: s.duration / 1000 })).sort((a, b) => a.start_us - b.start_us);
       setSpans(parsed);
+      setTraceUrl(r.trace_url ?? null);
       setNote(parsed.length ? "" : `Jaeger holds no boot trace for ${pick}`);
-    }).catch((e) => { setSpans([]); setNote(`Jaeger query failed: ${String(e)}`); });
+    }).catch((e) => { setSpans([]); setTraceUrl(null); setNote(`Jaeger query failed: ${String(e)}`); });
   }, [pick]);
 
   if (nodes.length === 0) return <div className="card muted">no nodes yet</div>;
@@ -35,7 +37,8 @@ export function BootWaterfall() {
         <select value={pick} onChange={(e) => setPick(e.target.value)}>
           {nodes.map((n) => <option key={n.name} value={n.name}>{n.name}</option>)}
         </select>
-        {note && <span className="muted mono">{note}</span>}
+        {note && <span className="muted mono" data-testid="boot-note">{note}</span>}
+        {traceUrl && <a href={traceUrl} target="_blank" rel="noreferrer" data-testid="boot-trace-link">open this trace in Jaeger</a>}
       </div>
       {spans.length > 0 && (
         <div className="card">
