@@ -28,7 +28,11 @@ use tracing::Instrument;
 
 const SEED: u64 = 0x2781;
 
-/// `rafka_node_rpc::endpoint::bind`'s configuration.
+/// `rafka_node_rpc::endpoint::bind`'s configuration with NAT traversal switched off (iroh's `test-knobs`
+/// feature). The tap owns every path between a caller and a node: iroh's NAT traversal opens new direct
+/// paths while a connection runs, and a reply the cell means to cut can leave on a path a round has just
+/// opened, a few ms before iroh demotes it. With the extension off on both ends no round runs and the
+/// connection keeps exactly the path the caller dialled, the tap's.
 async fn bind_behind_tap() -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
@@ -38,6 +42,7 @@ async fn bind_behind_tap() -> Endpoint {
         .clear_ip_transports()
         .bind_addr("127.0.0.1:0")
         .unwrap()
+        .transport_config(iroh::endpoint::QuicTransportConfig::builder().disable_nat_traversal_for_tests().build())
         .bind()
         .await
         .unwrap()
