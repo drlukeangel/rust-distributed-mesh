@@ -149,26 +149,33 @@ impl NodeSelf {
             self.server.drain();
             let draining = (self.set_status)(MemberStatus::Draining);
             let _ = self.membership.publish(&draining).await;
-            if let Some(declare) = &self.declare {
-                declare(NodeState::Draining).await;
-            }
-            // The work still in flight besides the calls answering the command itself.
-            let stats = self.server.stats();
-            loop {
-                let in_flight = rafka_node_rpc::ServerStats::get(&stats.in_flight);
-                if in_flight == 0 {
-                    break;
+            // This birth's own report of the state it entered goes to its authority beside the
+            // completion: neither waits for the other.
+            let declared = async {
+                if let Some(declare) = &self.declare {
+                    declare(NodeState::Draining).await;
+                }
+            };
+            let completion = async {
+                // The work still in flight besides the calls answering the command itself.
+                let stats = self.server.stats();
+                loop {
+                    let in_flight = rafka_node_rpc::ServerStats::get(&stats.in_flight);
+                    if in_flight == 0 {
+                        break;
+                    }
+                    let mut d = draining.clone();
+                    d.in_flight = Some(in_flight);
+                    let _ = self.membership.publish(&d).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 let mut d = draining.clone();
-                d.in_flight = Some(in_flight);
+                d.in_flight = Some(0);
                 let _ = self.membership.publish(&d).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            let mut d = draining.clone();
-            d.in_flight = Some(0);
-            let _ = self.membership.publish(&d).await;
-            tracing::Span::current().record("in_flight_at_zero", true);
-            self.complete(&commander, &op, true).await;
+                tracing::Span::current().record("in_flight_at_zero", true);
+                self.complete(&commander, &op, true).await;
+            };
+            tokio::join!(declared, completion);
         }
         .instrument(span)
         .await
@@ -185,10 +192,12 @@ impl NodeSelf {
         async {
             let leaving = (self.set_status)(MemberStatus::Leaving);
             let _ = self.membership.publish(&leaving).await;
-            if let Some(declare) = &self.declare {
-                declare(NodeState::Leaving).await;
-            }
-            self.complete(&commander, &op, false).await;
+            let declared = async {
+                if let Some(declare) = &self.declare {
+                    declare(NodeState::Leaving).await;
+                }
+            };
+            tokio::join!(declared, self.complete(&commander, &op, false));
             stop_command().request();
         }
         .instrument(span)
