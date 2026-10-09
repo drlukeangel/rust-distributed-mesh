@@ -9,6 +9,7 @@
 //! Applied | AlreadyApplied          done
 //! RejectedNotAuthority             the seat moved or the view is early: resolve again next round
 //!
+//! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
 //! When this admin no longer holds the seat that owes a key, the key is withdrawn: the seat's
 //! new holder owes it from its own view.
@@ -89,18 +90,21 @@ impl Declarer {
         self.pending.lock().unwrap().len()
     }
 
-    /// A key answered by an authority the view no longer names is owed to the current one.
+    /// A key answered by an authority the view no longer names is owed to the current one: another
+    /// node holds the seat, or the same node holds it in a new birth. What an authority applied for
+    /// a Mesh report is memory of its birth, so a restart (same NodeId, new incarnation) must be
+    /// told again; an authority whose birth the view does not yet name changes nothing.
     pub fn reowe_moved(&self, me: &PathName, view: &Topology) {
         let mut done = self.done.lock().unwrap();
         let mut pending = self.pending.lock().unwrap();
         let moved: Vec<Key> = done
             .iter()
-            .filter(|(key, (_, by, _))| {
+            .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
                     Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
                     Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
                 };
-                now.is_some_and(|n| &n.node_id != by)
+                now.is_some_and(|n| &n.node_id != by || (n.incarnation_id.is_some() && &n.incarnation_id != by_birth))
             })
             .map(|(k, _)| k.clone())
             .collect();
