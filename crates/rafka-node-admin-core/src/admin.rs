@@ -328,21 +328,18 @@ impl Records {
         }
     }
 
-    /// Install `t` as the view when it differs from the one held, and wake the declarer: a write
-    /// of the same view wakes nothing.
-    pub async fn install_view(&self, topology: &RwLock<Topology>, t: Topology) {
+    /// Install the projection `project` yields as the view, and return it. The projection is taken
+    /// while the view lock is held, so of two installers the one that holds the lock last installs
+    /// the later state: a projection taken before waiting could carry a removal's absence away
+    /// again. The declarer wakes when the view changed; a write of the same view wakes nothing.
+    pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
         let mut held = topology.write().await;
+        let t = project();
         if *held != t {
-            *held = t;
+            *held = t.clone();
             drop(held);
             self.wake.poke();
         }
-    }
-
-    /// Install the projection `project` yields as the view, and return it.
-    pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
-        let t = project();
-        self.install_view(topology, t.clone()).await;
         t
     }
 
@@ -1156,8 +1153,7 @@ impl AdminRunner {
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     async fn refresh_view(&self) {
-        let t = project(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records);
-        self.records.install_view(&self.topology, t).await;
+        self.records.install_projected(&self.topology, || project(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records)).await;
     }
 
     /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
@@ -3104,7 +3100,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         tasks.push(tokio::spawn(async move {
             let mut held: BTreeSet<PathName> = BTreeSet::new();
             loop {
-                let t = project(&fabric, &fabric_id, provider, &book, &records);
+                let t = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                 elections.observe(&t);
                 // A name this view held and now lacks: the exclusion is named from the same
                 // inputs at the moment it happens, not reconstructed later.
@@ -3116,7 +3112,6 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 held = now;
                 // The router serves once the Status authority is filled and the view it decides
                 // from holds this admin.
-                records.install_view(&topology, t).await;
                 if authority.get().is_some() && held.contains(&me) {
                     rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
@@ -3187,8 +3182,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 }
                 // Decide on, and plan from, the view as it is now: a cached view
                 // can predate the members that make another admin primary.
-                let now = project(&fabric, &fabric_id, provider, &book, &records);
-                records.install_view(&topology, now.clone()).await;
+                let now = records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                 // Every Build whose next operation this admin executes; none
                 // while it is cut off or within one silence window of healing
                 // (its view then authorizes nothing). The fabric authority first
@@ -3199,7 +3193,7 @@ let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {
-                        *topology.write().await = project(&fabric, &fabric_id, provider, &book, &records);
+                        records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
                     }
                     exec.reconcile_active().await;
                 }
@@ -3541,10 +3535,10 @@ mod tests {
         };
         let topology = RwLock::new(view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]));
         let same = topology.read().await.clone();
-        records.install_view(&topology, same).await;
+        records.install_projected(&topology, || same).await;
         assert!(quiet(&records).await, "the same view wakes nothing");
         let changed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic)]);
-        records.install_view(&topology, changed).await;
+        records.install_projected(&topology, || changed).await;
         assert!(!quiet(&records).await, "a changed view wakes the declarer");
         records.set_declare_gate(true);
         assert!(!quiet(&records).await, "the gate opening wakes it");
