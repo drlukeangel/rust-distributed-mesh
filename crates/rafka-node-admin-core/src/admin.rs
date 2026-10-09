@@ -132,7 +132,11 @@ impl AdminConfig {
                     .ok_or_else(|| format!("{} names a binding file but {} (the candidate sha this run is of) is not set", rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE))?;
                 let set = rafka_mesh_entity::binding::BindingSet::load(Path::new(&file)).map_err(|e| e.to_string())?;
                 let expect = rafka_mesh_entity::binding::Expect { candidate_sha: &candidate, required: &[], provider_image: rafka_mesh_entity::binding::ProviderImage::Unchecked };
-                Some(set.validate(&expect).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
+                // The bootstrap admin hashes every bound file before any provider opens; an admin
+                // another admin launched checks all but the hashes (its launch re-hashed its own
+                // executable; each later launch re-hashes the one it runs).
+                let validated = if launch.is_some() { set.validate_launched(&expect) } else { set.validate(&expect) };
+                Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
         let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RDM_LEAVE_LINGER_MS"]

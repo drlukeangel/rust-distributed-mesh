@@ -33,6 +33,11 @@ anyhow = "1"
 # The executable binding re-hashes every bound file at every launch and every admin birth hashes the
 # whole set; an unoptimised sha2 takes 4.4 s per 430 MB debug executable (RDM's own workspace sets
 # the same profile).
+# As the RDM root: line tables only, so each consumer binary is a fraction of a full-debuginfo one
+# (the executable bindings hash every bound file, and the bootstrap admin hashes all of them).
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package.sha2]
 opt-level = 3
 

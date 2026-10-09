@@ -260,6 +260,19 @@ impl BindingSet {
     /// Every defect refused by name, before any provider action: map shape, files, hashes,
     /// candidate, image.
     pub fn validate(&self, expect: &Expect) -> Result<Validated, BindingError> {
+        self.validate_with(expect, true)
+    }
+
+    /// The same refusals except the file hashes: what a node-admin another admin launched checks
+    /// at its start. Its own executable was re-hashed by the launch that started it, and every
+    /// executable it launches is re-hashed at that launch (`Validated::resolve`), so hashing every
+    /// bound file again at its start (hundreds of MB each in a debug build) proves nothing more
+    /// and only delays its join.
+    pub fn validate_launched(&self, expect: &Expect) -> Result<Validated, BindingError> {
+        self.validate_with(expect, false)
+    }
+
+    fn validate_with(&self, expect: &Expect, hash: bool) -> Result<Validated, BindingError> {
         let known: BTreeSet<&str> = NodeKind::ALL.iter().map(|k| k.name()).collect();
         let mut declared = BTreeSet::new();
         for id in &self.launch_ids {
@@ -298,7 +311,7 @@ impl BindingSet {
         let mut hashes = BTreeMap::new();
         for b in &self.bindings {
             Self::check_image(b, expect.provider_image)?;
-            hashes.insert(b.launch_id.clone(), Self::check_file(b)?);
+            hashes.insert(b.launch_id.clone(), if hash { Self::check_file(b)? } else { Self::check_present(b)? });
         }
         Ok(Validated { set: self.clone(), hashes })
     }
@@ -313,6 +326,20 @@ impl BindingSet {
             (Some(bound), ProviderImage::Container(p)) if bound != p => Err(BindingError::ImageMismatch { launch_id: id(), bound: bound.clone(), provider: p.to_string() }),
             (Some(_), ProviderImage::Container(_)) => Ok(()),
         }
+    }
+
+    /// The file is there and executable and its declared hash is well formed; the declared hash
+    /// is what is recorded (the launch that runs it re-hashes it).
+    fn check_present(b: &Binding) -> Result<String, BindingError> {
+        let id = &b.launch_id;
+        let absent = |e: std::io::Error| BindingError::ExecutableAbsent { launch_id: id.clone(), path: b.executable.clone(), reason: e.to_string() };
+        if b.sha256.len() != 64 || !b.sha256.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
+            return Err(BindingError::BadHash { launch_id: id.clone(), value: b.sha256.clone() });
+        }
+        if !is_executable(&b.executable).map_err(absent)? {
+            return Err(BindingError::NotExecutable { launch_id: id.clone(), path: b.executable.clone() });
+        }
+        Ok(b.sha256.clone())
     }
 
     fn check_file(b: &Binding) -> Result<String, BindingError> {
@@ -480,6 +507,29 @@ mod tests {
         s.bindings[1].image = Some("img:1".into());
         assert!(matches!(s.validate(&Expect { provider_image: ProviderImage::Container("img:1"), ..expect() }), Err(BindingError::ImageMismatch { .. })));
         assert!(matches!(s.validate(&expect()), Err(BindingError::ImageUnderProcessProvider { .. })));
+    }
+
+    /// CONTRACT: a launched admin's start checks everything but the hashes: every non-hash defect is
+    /// still refused by name, a file whose bytes no longer match passes the start, and the launch
+    /// that would run it refuses it (the hash is checked where the file is run).
+    #[test]
+    fn a_launched_admins_start_checks_all_but_the_hashes_and_the_launch_rehashes() {
+        let d = Dir::new("launched");
+        let good = || set(vec![d.exe("node_admin", "a"), d.exe("broker", "b")]);
+        let mut s = good();
+        s.bindings[1].executable = d.0.join("nope");
+        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::ExecutableAbsent { .. })));
+        let mut s = good();
+        s.bindings[1].sha256 = "xyz".into();
+        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::BadHash { .. })));
+        let mut s = good();
+        s.candidate.sha = "deadbeef".into();
+        assert!(matches!(s.validate_launched(&expect()), Err(BindingError::CandidateMismatch { .. })));
+        let s = good();
+        std::fs::write(&s.bindings[1].executable, "tampered").unwrap();
+        assert!(matches!(s.validate(&expect()), Err(BindingError::HashMismatch { .. })));
+        let v = s.validate_launched(&expect()).unwrap();
+        assert!(matches!(v.resolve(NodeKind::Broker), Err(BindingError::HashMismatch { .. })));
     }
 
     /// CONTRACT: an executable replaced after validation is refused at the launch that would have run it.
