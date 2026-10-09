@@ -16,7 +16,6 @@ use iroh::SecretKey;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::export::trace::SpanData;
 use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
-use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
@@ -25,10 +24,8 @@ use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 const PARENT: &str = "b7ad6b7169203331";
 
@@ -50,16 +47,7 @@ fn rand_u64() -> u64 {
 
 /// One in-memory exporter for the test binary; each cell reads only its own trace or payload.
 fn spans() -> InMemorySpanExporter {
-    static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();
-    EXPORTER
-        .get_or_init(|| {
-            let exporter = InMemorySpanExporter::default();
-            let provider = TracerProvider::builder().with_span_processor(SimpleSpanProcessor::new(Box::new(exporter.clone()))).build();
-            let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "context-test");
-            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)).init();
-            exporter
-        })
-        .clone()
+    crate::common::spans_exporter()
 }
 
 fn attr(s: &SpanData, key: &str) -> Option<String> {

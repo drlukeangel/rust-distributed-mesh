@@ -7,29 +7,16 @@
 
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
-use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
 use rafka_node_rpc::CallOptions;
 use rafka_node_rpc_contract::forward::FORWARD_REPLY_RESERVE;
 use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
 use std::sync::atomic::Ordering;
-use std::sync::OnceLock;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::rig::*;
 
 fn spans() -> InMemorySpanExporter {
-    static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();
-    EXPORTER
-        .get_or_init(|| {
-            let exporter = InMemorySpanExporter::default();
-            let provider = TracerProvider::builder().with_span_processor(SimpleSpanProcessor::new(Box::new(exporter.clone()))).build();
-            let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "forward-test");
-            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)).init();
-            exporter
-        })
-        .clone()
+    crate::common::spans_exporter()
 }
 
 /// The names of the spans a cell's own trace finished.

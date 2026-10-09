@@ -197,3 +197,23 @@ pub fn held_for(own: &PathName) -> ConnectionsHeld {
     held.mark_complete();
     held
 }
+
+/// The one in-memory span exporter of this test executable, behind its one global subscriber.
+/// Every cell that reads spans reads them through this and filters to its own trace; a cell never
+/// installs a subscriber of its own, because one executable holds exactly one global.
+pub fn spans_exporter() -> opentelemetry_sdk::testing::trace::InMemorySpanExporter {
+    use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
+    use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    static EXPORTER: std::sync::OnceLock<InMemorySpanExporter> = std::sync::OnceLock::new();
+    EXPORTER
+        .get_or_init(|| {
+            let exporter = InMemorySpanExporter::default();
+            let provider = TracerProvider::builder().with_span_processor(SimpleSpanProcessor::new(Box::new(exporter.clone()))).build();
+            let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "node-rpc-tests");
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)).init();
+            exporter
+        })
+        .clone()
+}

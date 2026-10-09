@@ -200,7 +200,8 @@ fn sigkill_mid_estate(provider: &str) -> (Vec<u32>, bool, String) {
     let file = std::env::temp_dir().join(format!("rdm-sigkill-{provider}-{}", std::process::id()));
     let _ = std::fs::remove_file(&file);
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "sigkill_cell_estate_body", "--test-threads=1"])
+        // The child runs this test alone: its libtest name carries the module path of this file.
+        .args(["--exact", &format!("{}::sigkill_cell_estate_body", module_path!().split_once("::").expect("a module of the test crate").1), "--test-threads=1"])
         .env(CHILD_ENV, &file)
         .env("RDM_ESTATE_SIGKILL_PROVIDER", provider)
         .stdout(std::process::Stdio::null())
