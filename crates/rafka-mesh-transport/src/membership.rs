@@ -694,6 +694,9 @@ impl Default for SeatBook {
 struct HeldSeats {
     fabric: Option<SeatHolder>,
     meshes: HashMap<String, SeatHolder>,
+    /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
+    /// the peer holds, which this node never heard itself.
+    gone: std::collections::HashSet<IncarnationId>,
 }
 
 /// What [`SeatBook::take`] did with a record.
@@ -739,6 +742,18 @@ impl SeatBook {
 
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
+    }
+
+    /// Hold that the peer proved `incarnation`, a seat holder's birth, gone.
+    pub fn mark_gone(&self, incarnation: IncarnationId) {
+        if self.inner.lock().unwrap().gone.insert(incarnation) {
+            self.changed.send_modify(|v| *v += 1);
+        }
+    }
+
+    /// The seat holders' births this node was told are gone.
+    pub fn gone(&self) -> std::collections::HashSet<IncarnationId> {
+        self.inner.lock().unwrap().gone.clone()
     }
 
     /// A receiver that wakes each time a record is held.
@@ -1716,9 +1731,12 @@ impl Membership {
 
     /// Hold the seat records an entry read named (`topology_read`): each only if it supersedes what
     /// this node holds.
-    pub fn learn_seats(&self, records: &[(Seat, SeatHolder)], via: &'static str) {
-        for (seat, holder) in records {
+    pub fn learn_seats(&self, records: &[(Seat, SeatHolder, bool)], via: &'static str) {
+        for (seat, holder, gone) in records {
             self.view.note_seat(*seat, holder, via);
+            if *gone {
+                self.view.book.seats.mark_gone(holder.incarnation.clone());
+            }
         }
     }
 

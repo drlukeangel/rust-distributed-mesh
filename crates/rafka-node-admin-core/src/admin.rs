@@ -414,6 +414,7 @@ fn incumbency_of(book: &DigestBook, records: &Records) -> crate::election::Incum
     let mut lost = records.exited_incarnations();
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
+    lost.extend(book.seats.gone());
     crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
 }
 
@@ -2709,7 +2710,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 })
             })
         });
-        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone())).with_stored(stored)));
+        let gone: crate::topology_read::GoneSource = {
+            let (book, records) = (book.clone(), records.clone());
+            Arc::new(move |h: &rafka_mesh_entity::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
+        };
+        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone())).with_stored(stored).with_gone(gone)));
     }
     // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
     // a blind put (a successor fabric primary proves an exit from it).
@@ -3063,6 +3068,24 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
         }));
+    }
+
+    // The seat watch (ruling R-A2): a silent seat holder is looked at, never replaced for being
+    // silent. A mesh primary says the fabric primary's exact birth is silent (a Concern); the birth
+    // answers it; an admin of its mesh looks at it, down to its exact runtime.
+    {
+        let watch = crate::seat_watch::Watch {
+            me: name.clone(),
+            me_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            membership: membership.clone(),
+            backbone: backbone.clone(),
+            topology: control.topology.clone(),
+            records: records.clone(),
+            looker: crate::seat_watch::Looker { me: name.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone() },
+            republish: republish.clone(),
+        };
+        tasks.push(tokio::spawn(crate::seat_watch::run(watch)));
     }
 
     let hierarchy;

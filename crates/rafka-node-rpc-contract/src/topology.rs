@@ -164,12 +164,16 @@ pub enum TopologyReply {
     },
     /// The record the target holds for one seat: a node entering the fabric learns who holds the
     /// seats before it computes any (ruling R-A2). One frame per record, sent before `End`; it is
-    /// not a mesh and `End.meshes` does not count it.
+    /// not a mesh and `End.meshes` does not count it. `gone` says the target holds the holder's
+    /// exact birth as proven gone (its runtime found exited, its departure heard, or a later birth
+    /// replaced it): the seat is vacant, and the reader holds the same proof.
     Seats {
         /// The seat the record is for.
         seat: Seat,
         /// The seat's holder as the target records it.
         holder: SeatHolder,
+        /// Whether the target holds the holder's exact birth as proven gone.
+        gone: bool,
     },
 }
 

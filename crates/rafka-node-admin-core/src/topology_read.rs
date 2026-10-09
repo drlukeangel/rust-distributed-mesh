@@ -33,8 +33,13 @@ pub struct TopologyDoor {
     /// The map this node stores (an admin's durable map of the births it knows), for a mesh it holds
     /// no gossiped snapshot of.
     stored: Option<StoredSource>,
+    /// Whether this node holds a seat holder's exact birth as proven gone.
+    gone: Option<GoneSource>,
     snapshots: AtomicU64,
 }
+
+/// Whether the node holds a recorded seat holder's exact birth as proven gone.
+pub type GoneSource = Arc<dyn Fn(&rafka_mesh_entity::SeatHolder) -> bool + Send + Sync>;
 
 /// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
 /// it stored for each mesh.
@@ -55,12 +60,18 @@ const STORED_PER_FRAME: usize = 24;
 impl TopologyDoor {
     /// A door over `membership` and the node's own digest.
     pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>) -> Self {
-        Self { membership, own, stored: None, snapshots: AtomicU64::new(0) }
+        Self { membership, own, stored: None, gone: None, snapshots: AtomicU64::new(0) }
     }
 
     /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
     pub fn with_stored(mut self, stored: StoredSource) -> Self {
         self.stored = Some(stored);
+        self
+    }
+
+    /// This node also tells a reader which recorded seat holders it holds as proven gone.
+    pub fn with_gone(mut self, gone: GoneSource) -> Self {
+        self.gone = Some(gone);
         self
     }
 
@@ -198,7 +209,8 @@ impl TopologyDoor {
             records.extend(self.membership.seats().fabric().map(|h| (rafka_mesh_entity::Seat::FabricPrimary, h)));
             let seat_records = records.len() as u64;
             for (seat, holder) in records {
-                let r = TopologyReply::Seats { seat, holder };
+                let gone = self.gone.as_ref().is_some_and(|g| g(&holder));
+                let r = TopologyReply::Seats { seat, holder, gone };
                 bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                 if let Err(e) = sink.data(r).await {
                     span.record("outcome", format!("caller-gone: {e:?}").as_str());
@@ -246,7 +258,7 @@ pub struct TopologyRead {
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
     /// The seat records the target holds, in the order it sent them.
-    pub seats: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)>,
+    pub seats: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder, bool)>,
 }
 
 /// A mesh answered from the target's stored map.
@@ -382,7 +394,7 @@ async fn read_with(
                 Some(m) => m.nodes.extend(nodes),
                 None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
-            StreamItem::Frame(_, TopologyReply::Seats { seat, holder }) => read.seats.push((seat, holder)),
+            StreamItem::Frame(_, TopologyReply::Seats { seat, holder, gone }) => read.seats.push((seat, holder, gone)),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

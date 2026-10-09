@@ -34,6 +34,7 @@ pub mod offline;
 pub mod readiness;
 pub(crate) mod reenter;
 pub mod round;
+pub mod seat_watch;
 pub mod record_store;
 pub mod shutdown;
 pub(crate) mod status_declare;
