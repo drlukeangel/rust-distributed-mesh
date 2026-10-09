@@ -12,11 +12,19 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use rafka_mesh_entity::NodeId;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub struct Forward;
 
 /// The largest inner request or reply a carrier hands across.
 pub const MAX_CARRIED_BYTES: usize = 1024 * 1024;
+
+/// What the carrier keeps back from the origin's remaining budget so its reply still reaches the
+/// origin inside that budget: the request's transit from origin to carrier (the origin measures
+/// before it writes), the carrier's work after its inner call ends (edge lookup, reply encoding),
+/// the reply's write and transit back, and the origin's read and decode. It is a bounded
+/// transport and serialization allowance, not a policy margin.
+pub const FORWARD_REPLY_RESERVE: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardRequest {
@@ -25,6 +33,12 @@ pub enum ForwardRequest {
         target: NodeId,
         inner_op: u8,
         inner: Vec<u8>,
+        /// The origin's remaining time budget for this call, in whole milliseconds, measured
+        /// immediately before this frame is written to the carrier (after the carrier was
+        /// resolved and dialed). For an overall budget it is deadline minus now; for a split
+        /// budget it is the reply budget, which starts at the commit that follows the write. The
+        /// carrier bounds its one inner call by this minus [`FORWARD_REPLY_RESERVE`].
+        remaining_ms: u64,
     },
 }
 
@@ -53,6 +67,9 @@ pub enum ForwardReply {
     /// toward the target. The origin retires its Proxy through this carrier with the structural
     /// reason `carrier-edge-lost`.
     CarrierEdgeLost { reason: String },
+    /// The origin's remaining budget does not exceed [`FORWARD_REPLY_RESERVE`], so the carrier
+    /// made no inner call. Both are whole milliseconds.
+    NoInnerBudget { remaining_ms: u64, reserve_ms: u64 },
 }
 
 impl NodeProtocol for Forward {
@@ -62,7 +79,7 @@ impl NodeProtocol for Forward {
     const MAX_REPLY_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 13;
+    const REPLY_VARIANTS: u32 = 14;
 
     type Request = ForwardRequest;
     type Reply = ForwardReply;
@@ -75,7 +92,8 @@ impl NodeProtocol for Forward {
             | ForwardReply::InnerRejectedStale { .. }
             | ForwardReply::InnerIndeterminate { .. }
             | ForwardReply::NotForwardable { .. }
-            | ForwardReply::CarrierEdgeLost { .. } => ReplyKind::ProtocolRefusal,
+            | ForwardReply::CarrierEdgeLost { .. }
+            | ForwardReply::NoInnerBudget { .. } => ReplyKind::ProtocolRefusal,
             ForwardReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ForwardReply::NotReady { .. } => ReplyKind::NotReady,
             ForwardReply::Busy { .. } => ReplyKind::Busy,
@@ -131,6 +149,7 @@ mod tests {
             ForwardReply::Malformed { kind: MalformedKind::Corrupt },
             ForwardReply::Unauthorized { reason: "u".into() },
             ForwardReply::CarrierEdgeLost { reason: "e".into() },
+            ForwardReply::NoInnerBudget { remaining_ms: 5, reserve_ms: 100 },
         ];
         assert_eq!(replies.len() as u32, Forward::REPLY_VARIANTS);
         for r in replies {

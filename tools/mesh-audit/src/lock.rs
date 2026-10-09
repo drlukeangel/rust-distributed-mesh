@@ -31,6 +31,7 @@ pub enum Ratchet {
     TypedProtocolIdentity,
     TypedProtocolEvidence,
     StatusResealIsAtomic,
+    ForwardResealIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
@@ -38,7 +39,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 20] = [
+    pub const ALL: [Ratchet; 21] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitNodeMeta,
@@ -55,6 +56,7 @@ impl Ratchet {
         Self::TypedProtocolIdentity,
         Self::TypedProtocolEvidence,
         Self::StatusResealIsAtomic,
+        Self::ForwardResealIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
@@ -80,6 +82,7 @@ impl Ratchet {
             Self::TypedProtocolIdentity => "typed_protocol_identity",
             Self::TypedProtocolEvidence => "typed_protocol_evidence",
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
+            Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
@@ -227,6 +230,11 @@ pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
 pub const STATUS: &str = "crates/rafka-node-rpc-contract/src/status.rs";
+pub const FORWARD: &str = "crates/rafka-node-rpc-contract/src/forward.rs";
+pub const FORWARD_WIRE: &str = "crates/rafka-node-rpc-contract/tests/forward_wire.rs";
+/// The frozen 0x1A counts.
+pub const FORWARD_REQUESTS: u32 = 1;
+pub const FORWARD_REPLIES: u32 = 14;
 pub const STATUS_WIRE: &str = "crates/rafka-node-rpc-contract/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rafka-node-rpc-contract/src/framing.rs";
 pub const CATALOG: &str = "crates/rafka-node-rpc-contract/src/catalog.rs";
@@ -557,6 +565,27 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
+                ],
+                ratchet,
+                &mut out,
+            );
+        }
+        Ratchet::ForwardResealIsAtomic => {
+            require(
+                root,
+                FORWARD,
+                &[&format!("const REQUEST_VARIANTS: u32 = {FORWARD_REQUESTS};"), &format!("const REPLY_VARIANTS: u32 = {FORWARD_REPLIES};")],
+                ratchet,
+                &mut out,
+            );
+            require(
+                root,
+                FORWARD_WIRE,
+                &[
+                    "fn the_request_matches_the_frozen_one_variant_wire_schema",
+                    "fn replies_match_the_frozen_fourteen_variant_wire_schema",
+                    "Forward::REQUEST_VARIANTS",
+                    "Forward::REPLY_VARIANTS",
                 ],
                 ratchet,
                 &mut out,

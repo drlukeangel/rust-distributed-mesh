@@ -356,7 +356,7 @@ impl NodeRpcClient {
             Ok(p) => p,
             Err(e) => return Err((PreCommit::begin(P::OP).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
         };
-        match self.open::<P::Reply, _>(target, P::OP, payload, P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)).await {
+        match self.open::<P::Reply, _>(target, P::OP, crate::client::Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)).await {
             Phase::Done(out, evidence) => Err((out, evidence)),
             Phase::Committed(Opened { recv, evidence, reply_deadline, .. }) => Ok((
                 ReplyStream { recv, buf: Vec::new(), order: FrameOrder::new(), deadline: reply_deadline, done: false, _p: PhantomData },

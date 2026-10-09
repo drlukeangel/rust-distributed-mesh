@@ -8,12 +8,12 @@
 //! The origin side: [`NodeRpcClient::call_via`] executes a route's `ViaPeer` choice. It never
 //! selects a carrier; the connections route projection does.
 
-use crate::client::{CallEvidence, CallOptions, Decode, NodeRpcClient};
+use crate::client::{Budget, CallEvidence, CallOptions, Decode, NodeRpcClient, Payload};
 use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
 use rafka_mesh_entity::NodeId;
 use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
+use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
 use rafka_node_rpc_contract::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::sync::Arc;
@@ -81,7 +81,7 @@ async fn carry_once(
     peer: &PeerContext,
     req: ForwardRequest,
 ) -> ForwardReply {
-    let ForwardRequest::Forward { target, inner_op, inner, .. } = req;
+    let ForwardRequest::Forward { target, inner_op, inner, remaining_ms } = req;
     let Some(&max_reply) = table.get().and_then(|t| t.get(&inner_op)) else {
         tracing::info_span!(
             "rdm.node_rpc.request.reject.via-not-forwardable",
@@ -92,6 +92,25 @@ async fn carry_once(
         .in_scope(|| tracing::info!("the inner protocol is not forwardable through this carrier"));
         return ForwardReply::NotForwardable { op: inner_op };
     };
+    // One inner call, bounded by what the origin has left minus the reserve for the reply's
+    // way back. With nothing usable left no inner call is made.
+    let reserve_ms = FORWARD_REPLY_RESERVE.as_millis() as u64;
+    let inner_ms = remaining_ms.saturating_sub(reserve_ms);
+    if inner_ms == 0 {
+        let refused = tracing::info_span!(
+            "rdm.node_rpc.request.reject.via-forward-budget-spent",
+            inner_op,
+            target = %target,
+            caller = %peer.endpoint_id,
+            remaining_ms,
+            reserve_ms
+        );
+        if let Some(tp) = peer.context.traceparent.as_deref() {
+            rafka_mesh_telemetry::set_remote_parent(&refused, tp, peer.context.tracestate.as_deref());
+        }
+        refused.in_scope(|| tracing::info!("the origin's remaining budget does not exceed the reply reserve; no inner call"));
+        return ForwardReply::NoInnerBudget { remaining_ms, reserve_ms };
+    }
     let node_id = target.clone();
     // The hop is a child span of the origin's trace; the inner call carries the origin's
     // context unchanged, so the target sees the origin's caller_system and causal parent.
@@ -106,7 +125,7 @@ async fn carry_once(
     if let Some(tp) = peer.context.traceparent.as_deref() {
         rafka_mesh_telemetry::set_remote_parent(&span, tp, peer.context.tracestate.as_deref());
     }
-    let opts = CallOptions { context: Some(peer.context.clone()), ..CallOptions::default() };
+    let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)), context: Some(peer.context.clone()), ..CallOptions::default() };
     let (out, _evidence) = client
         .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_op, inner, max_reply, &opts, |d| match d {
             Decode::Committed(c, bytes) => c.relayed(bytes),
@@ -166,12 +185,17 @@ impl NodeRpcClient {
             Ok(b) => b,
             Err(e) => return (pre.not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None),
         };
-        let forward = ForwardRequest::Forward {
-            target: target.clone(),
-            inner_op: P::OP,
-            inner,
+        let target = target.clone();
+        let build = move |remaining: std::time::Duration| {
+            let forward = ForwardRequest::Forward { target, inner_op: P::OP, inner, remaining_ms: remaining.as_millis() as u64 };
+            Forward::encode_request(&forward).map_err(|e| e.0)
         };
-        let (outer, evidence) = self.call::<Forward>(carrier, &forward, opts).await;
+        let (outer, evidence) = self
+            .invoke_payload::<ForwardReply, _>(carrier, Forward::OP, Payload::AtWrite(Box::new(build)), Forward::MAX_REPLY_FRAME_BYTES, opts, |d| match d {
+                Decode::Committed(c, bytes) => c.reply::<Forward>(bytes),
+                Decode::Early(e, bytes) => e.reply::<Forward>(bytes),
+            })
+            .await;
         (carried::<P>(outer), evidence)
     }
 }

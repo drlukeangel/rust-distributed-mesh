@@ -225,6 +225,16 @@ fn status_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 }
 
 #[test]
+fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
+    let t = Planted::of_tree();
+    t.edit("crates/rafka-node-rpc-contract/src/forward.rs", "const REPLY_VARIANTS: u32 = 14;", "const REPLY_VARIANTS: u32 = 15;");
+    only(check(t.root()), Ratchet::ForwardResealIsAtomic);
+    let f = Planted::of_tree();
+    f.delete("crates/rafka-node-rpc-contract/tests/forward_wire.rs");
+    only(check(f.root()), Ratchet::ForwardResealIsAtomic);
+}
+
+#[test]
 fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
     let t = Planted::of_tree();
     t.write("crates/rafka-node-rpc-testkit/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");

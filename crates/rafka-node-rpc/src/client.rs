@@ -60,6 +60,13 @@ impl Default for CallOptions {
     }
 }
 
+/// The request bytes of one call: encoded up front, or built at the write from the caller's
+/// remaining budget.
+pub(crate) enum Payload {
+    Ready(Vec<u8>),
+    AtWrite(Box<dyn FnOnce(Duration) -> Result<Vec<u8>, String> + Send>),
+}
+
 /// Which exact leg a call used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEvidence {
@@ -210,7 +217,7 @@ impl NodeRpcClient {
         &self,
         target: &NodeTarget,
         op: u8,
-        payload: Vec<u8>,
+        payload: Payload,
         max_reply: usize,
         opts: &CallOptions,
         early_decode: E,
@@ -297,6 +304,26 @@ impl NodeRpcClient {
             }
             Err(_) => return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence)),
         };
+        let payload = match payload {
+            Payload::Ready(bytes) => bytes,
+            Payload::AtWrite(build) => {
+                // The remaining budget is measured here, after resolve, dial and stream open,
+                // immediately before the request is written.
+                let remaining = match (opts.budget, overall) {
+                    (_, Some(d)) => d.saturating_duration_since(Instant::now()),
+                    (Budget::Split { reply, .. }, None) => reply,
+                    (Budget::Overall(_), None) => unreachable!(),
+                };
+                tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "the remaining budget at the request write");
+                match build(remaining) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = send.reset(VarInt::from_u32(ResetCode::FrameNotSent.code()));
+                        return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("request does not encode: {e}"))), Some(evidence));
+                    }
+                }
+            }
+        };
         let header = RequestHeader { fence: request_target.clone(), context: self.context_for(opts) };
         let frame = encode_request(&header, &payload);
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
@@ -368,6 +395,21 @@ impl NodeRpcClient {
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
+        self.invoke_payload(target, op, Payload::Ready(payload), max_reply, opts, decode).await
+    }
+
+    pub(crate) async fn invoke_payload<R, D>(
+        &self,
+        target: &NodeTarget,
+        op: u8,
+        payload: Payload,
+        max_reply: usize,
+        opts: &CallOptions,
+        decode: D,
+    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+    where
+        D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
+    {
         use tracing::Instrument;
         // The caller's side of one call: its outcome, why, and how long it took; the steps it
         // reached are the log lines inside it (resolved, connection pooled or dialed, stream
@@ -404,7 +446,7 @@ impl NodeRpcClient {
         &self,
         target: &NodeTarget,
         op: u8,
-        payload: Vec<u8>,
+        payload: Payload,
         max_reply: usize,
         opts: &CallOptions,
         decode: D,

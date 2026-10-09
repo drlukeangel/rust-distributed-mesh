@@ -39,7 +39,7 @@ async fn an_exact_target_is_preserved_over_via_peer_and_the_carrier_cannot_subst
     assert_eq!((r.b.handled.load(Ordering::SeqCst), r.c.handled.load(Ordering::SeqCst)), (1, 0), "P carried to B, never to C");
     // The carrier is handed the exact final target; a Forward op is itself never forwardable, so
     // P cannot be asked to carry a carry (recursion is refused by type at the origin).
-    let (out, _) = r.origin.call_via::<rafka_node_rpc_contract::forward::Forward>(&NodeTarget::ExactNode(r.p.resolved.node_id.clone()), &target.resolved.node_id, &rafka_node_rpc_contract::forward::ForwardRequest::Forward { target: target.resolved.node_id.clone(), inner_op: Probe::OP, inner: vec![] }, &CallOptions::default()).await;
+    let (out, _) = r.origin.call_via::<rafka_node_rpc_contract::forward::Forward>(&NodeTarget::ExactNode(r.p.resolved.node_id.clone()), &target.resolved.node_id, &rafka_node_rpc_contract::forward::ForwardRequest::Forward { target: target.resolved.node_id.clone(), inner_op: Probe::OP, inner: vec![], remaining_ms: 5_000 }, &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::NotForwardable { .. })), "{out:?}");
     // The carrier is exact: a route naming a carrier process the resolver no longer knows (its path
     // taken by another birth) is not sent to the path's holder.

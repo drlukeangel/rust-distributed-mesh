@@ -180,7 +180,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_forward_naming_forward_is_refused_not_forwardable_by_the_admin() {
     let r = rig().await;
-    let nested = ForwardRequest::Forward { target: r.target.node_id.clone(), inner_op: Forward::OP, inner: Vec::new() };
+    let nested = ForwardRequest::Forward { target: r.target.node_id.clone(), inner_op: Forward::OP, inner: Vec::new(), remaining_ms: 5_000 };
     let (out, _) = r.origin.call::<Forward>(&admin_target(&r), &nested, &CallOptions::default()).await;
     let reply = out.reply().unwrap_or_else(|| panic!("the admin answers a nested forward: {out:?}")).value().clone();
     assert_eq!(reply, ForwardReply::NotForwardable { op: Forward::OP });
