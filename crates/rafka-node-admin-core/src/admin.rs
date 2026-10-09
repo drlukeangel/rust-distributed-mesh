@@ -3255,6 +3255,31 @@ mod tests {
         assert_eq!(hydration_blocker(&me, &store, &builds, Some((crate::build::BuildId("bld-other".into()), 9))).await, None, "a floor for another Build is not this pointer's");
     }
 
+    /// CONTRACT (R-S2): the declarer is woken by a view that changed and by the declare gate
+    /// opening or closing; writing the same view, or setting the gate to the value it holds,
+    /// wakes nothing (the 200 ms projection write is not a timer in disguise).
+    #[tokio::test]
+    async fn a_changed_view_or_gate_wakes_the_declarer_and_a_repeat_does_not() {
+        let records = Records::default();
+        let quiet = |records: &Records| {
+            let wake = records.wake.clone();
+            async move { tokio::time::timeout(Duration::from_millis(150), wake.woken()).await.is_err() }
+        };
+        let topology = RwLock::new(view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]));
+        let same = topology.read().await.clone();
+        records.install_view(&topology, same).await;
+        assert!(quiet(&records).await, "the same view wakes nothing");
+        let changed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic)]);
+        records.install_view(&topology, changed).await;
+        assert!(!quiet(&records).await, "a changed view wakes the declarer");
+        records.set_declare_gate(true);
+        assert!(!quiet(&records).await, "the gate opening wakes it");
+        records.set_declare_gate(true);
+        assert!(quiet(&records).await, "the gate set to the value it holds wakes nothing");
+        records.set_declare_gate(false);
+        assert!(!quiet(&records).await, "the gate closing wakes it");
+    }
+
     #[test]
     fn a_mesh_without_a_ready_admin_cedes_the_fabric_and_stays_pending() {
         use MemberStatus::*;

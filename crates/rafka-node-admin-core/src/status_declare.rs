@@ -221,6 +221,10 @@ impl Declarer {
             };
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());
+                // The seat names no deliverable holder: a failed delivery has lost its route.
+                if let Some(s) = p.sent.as_mut().filter(|s| !s.typed) {
+                    s.route_lost = true;
+                }
                 continue;
             };
             let now = Destination::of(target);
@@ -295,9 +299,7 @@ impl Declarer {
                 self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));
             } else {
                 self.note(&p.key, 1, &outcome);
-                if let Some(held) = self.pending.lock().unwrap().get_mut(&p.key) {
-                    held.sent = Some(Sent { to: Destination::of(&target), typed, route_lost: false });
-                }
+                self.record_sent(&p.key, &target, typed);
             }
         }
     }
@@ -328,6 +330,13 @@ impl Declarer {
             self.pending.lock().unwrap().remove(&key);
             tracing::info_span!("rdm.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
                 .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
+        }
+    }
+
+    /// The send of `key` to `target` ended without finishing it; `typed` says a typed reply came back.
+    pub fn record_sent(&self, key: &Key, target: &crate::model::Node, typed: bool) {
+        if let Some(held) = self.pending.lock().unwrap().get_mut(key) {
+            held.sent = Some(Sent { to: Destination::of(target), typed, route_lost: false });
         }
     }
 
@@ -386,6 +395,7 @@ mod tests {
     fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
         let mut n = Node::allocated(name.parse().unwrap());
         n.status = NodeStatus::ReadyForTraffic;
+        n.incarnation_id = Some(IncarnationId::mint());
         n.is_primary = primary;
         n.is_fabric_primary = fabric_primary;
         n
@@ -524,5 +534,143 @@ mod tests {
         }
         d.reowe_moved(&me, &moved);
         assert!(d.pending.lock().unwrap().contains_key(&mesh));
+    }
+
+    // ---- R-S2: sent when owed, and again only on an eligible event ----
+
+    fn mesh_key() -> Key {
+        Key::Mesh("m1".into(), MeshState::ReadyForTraffic)
+    }
+
+    fn fabric_primary_of(v: &Topology) -> Node {
+        v.fabric_primary().unwrap().clone()
+    }
+
+    /// CONTRACT: the receiver's view catches up while the sender's target tuple stays identical:
+    /// the declaration answered `RejectedNotAuthority` (typed, terminal) is sent again exactly
+    /// once, when the authority's down op addresses this admin, and not before.
+    #[test]
+    fn a_typed_refusal_is_sent_again_once_when_the_authority_addresses_this_admin() {
+        let me_id = NodeId::mint();
+        let v = view("mesh2.admin.1", "mesh1.admin.1");
+        let d = Declarer::new();
+        owe_all(&d);
+        let none = BTreeSet::new();
+        let first: Vec<Key> = d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect();
+        assert!(first.contains(&mesh_key()), "owed and never sent: due {first:?}");
+        let fp = fabric_primary_of(&v);
+        d.record_sent(&mesh_key(), &fp, true);
+
+        assert!(!d.due(&me_id, &v, &none).iter().any(|(p, _)| p.key == mesh_key()), "a typed reply is terminal: nothing before the down op");
+        assert!(!d.due(&me_id, &v, &none).iter().any(|(p, _)| p.key == mesh_key()), "and a second look still sends nothing");
+
+        let from_fp: BTreeSet<NodeId> = [fp.node_id.clone()].into();
+        let after: Vec<Key> = d.due(&me_id, &v, &from_fp).into_iter().map(|(p, _)| p.key).collect();
+        assert_eq!(after.iter().filter(|k| **k == mesh_key()).count(), 1, "the down op re-sends it exactly once: {after:?}");
+        d.record_sent(&mesh_key(), &fp, true);
+        assert!(!d.due(&me_id, &v, &none).iter().any(|(p, _)| p.key == mesh_key()), "and then nothing again");
+
+        let other: BTreeSet<NodeId> = [NodeId::mint()].into();
+        assert!(!d.due(&me_id, &v, &other).iter().any(|(p, _)| p.key == mesh_key()), "a down op from a node that is not the key's authority re-sends nothing");
+    }
+
+    /// CONTRACT: a target that goes live -> unreachable is sent nothing; an untyped failure is
+    /// sent again when the route is viable again, a typed reply is not.
+    #[test]
+    fn a_target_going_unreachable_sends_nothing_and_a_failed_delivery_resends_when_it_returns() {
+        let me_id = NodeId::mint();
+        let mut v = view("mesh2.admin.1", "mesh1.admin.1");
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owe_all(&d);
+        let fp = fabric_primary_of(&v);
+        let typed_key = Key::OwnState("inc".into(), NodeState::ReadyForTraffic);
+        d.record_sent(&mesh_key(), &fp, false);
+        d.record_sent(&typed_key, &fp, true);
+
+        for n in &mut v.nodes {
+            if n.is_fabric_primary {
+                n.status = NodeStatus::PendingReconnect;
+            }
+        }
+        let gone: Vec<Key> = d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect();
+        assert!(!gone.contains(&mesh_key()) && !gone.contains(&typed_key), "an unreachable target is sent nothing: {gone:?}");
+
+        for n in &mut v.nodes {
+            if n.is_fabric_primary {
+                n.status = NodeStatus::ReadyForTraffic;
+            }
+        }
+        let back: Vec<Key> = d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect();
+        assert!(back.contains(&mesh_key()), "the failed delivery gained a viable route: {back:?}");
+        assert!(!back.contains(&typed_key), "a typed reply stays terminal when the route returns: {back:?}");
+    }
+
+    /// CONTRACT: a destination that changes to a deliverable birth is sent to once.
+    #[test]
+    fn a_new_destination_birth_is_sent_to_once() {
+        let me_id = NodeId::mint();
+        let mut v = view("mesh2.admin.1", "mesh1.admin.1");
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owe_all(&d);
+        let fp = fabric_primary_of(&v);
+        d.record_sent(&mesh_key(), &fp, true);
+        for n in &mut v.nodes {
+            if n.is_fabric_primary {
+                n.incarnation_id = Some(IncarnationId::mint());
+            }
+        }
+        let moved = d.due(&me_id, &v, &none);
+        let (_, to) = moved.iter().find(|(p, _)| p.key == mesh_key()).expect("a new birth of the authority is a new destination");
+        d.record_sent(&mesh_key(), to, true);
+        assert!(!d.due(&me_id, &v, &none).iter().any(|(p, _)| p.key == mesh_key()));
+    }
+
+    /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,
+    /// with no topology change, is due at once (the wake that finds it is the declarer's input).
+    #[test]
+    fn an_obligation_newly_owed_without_a_topology_change_is_due() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let v = view("mesh1.admin.1", "mesh2.admin.1");
+        let d = Declarer::new();
+        let ids: BTreeMap<String, String> = [("mesh1".to_string(), MeshId::mint().to_string())].into();
+        let none = BTreeSet::new();
+        owed_from_view(&d, &me, "inc", false, false, &v, &ids);
+        assert!(d.due(&NodeId::mint(), &v, &none).is_empty(), "not ready, gate closed: nothing is owed");
+        owed_from_view(&d, &me, "inc", true, false, &v, &ids);
+        let own: Vec<Key> = d.due(&NodeId::mint(), &v, &none).into_iter().map(|(p, _)| p.key).collect();
+        assert_eq!(own, vec![Key::OwnState("inc".into(), NodeState::ReadyForTraffic)], "own readiness owes its birth");
+        owed_from_view(&d, &me, "inc", true, true, &v, &ids);
+        let both = d.due(&NodeId::mint(), &v, &none).len();
+        assert_eq!(both, 2, "the gate opening owes the Mesh declaration");
+    }
+
+    /// CONTRACT: a burst of 5 pokes wakes the declarer once; a poke during a round is kept as the
+    /// one stored permit; and with nothing poked the declarer sleeps.
+    #[tokio::test]
+    async fn a_burst_of_pokes_runs_one_round() {
+        let w = DeclareWake::new();
+        for _ in 0..5 {
+            w.poke();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), w.woken()).await.expect("the burst woke the declarer");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(200), w.woken()).await.is_err(), "5 pokes ran one round, not five");
+        w.poke();
+        tokio::time::timeout(std::time::Duration::from_secs(5), w.woken()).await.expect("a poke after the round wakes it again");
+    }
+
+    /// CONTRACT: a down op taken in a round is gone from the next; one arriving after the take is kept.
+    #[test]
+    fn the_down_ops_taken_by_a_round_are_not_taken_twice() {
+        let w = DeclareWake::new();
+        let a = NodeId::mint();
+        w.addressed_by(&a);
+        w.addressed_by(&a);
+        assert_eq!(w.take_addressed(), [a.clone()].into());
+        assert!(w.take_addressed().is_empty());
+        let b = NodeId::mint();
+        w.addressed_by(&b);
+        assert_eq!(w.take_addressed(), [b].into());
     }
 }

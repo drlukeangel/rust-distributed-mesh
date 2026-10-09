@@ -159,9 +159,17 @@ impl RoundDriver {
     /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
     /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
     pub fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
+        let targets = self.changed_mesh_primaries(view, is_fabric_primary);
+        if !targets.is_empty() {
+            send_down(&self.me, "fabric", &view.fabric.name, targets, client);
+        }
+    }
+
+    /// The mesh primaries to send the down op now, recorded as addressed.
+    pub fn changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
         if !is_fabric_primary {
             self.addressed.clear();
-            return;
+            return Vec::new();
         }
         let mut targets = Vec::new();
         let mut present = Vec::new();
@@ -175,9 +183,7 @@ impl RoundDriver {
             }
         }
         self.addressed.retain(|mesh, _| present.contains(mesh));
-        if !targets.is_empty() {
-            send_down(&self.me, "fabric", &view.fabric.name, targets, client);
-        }
+        targets
     }
 
     /// No status is adopted and waiting: no round is open.
@@ -407,6 +413,30 @@ mod tests {
             meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
             nodes,
         }
+    }
+
+    /// CONTRACT (R-S2): the fabric-primary sends the down op to a mesh's primary when its view of
+    /// that primary appears or changes, once each, and to nobody when it is not the fabric-primary.
+    #[test]
+    fn fabric_primary_addresses_a_mesh_primary_when_its_view_of_it_changes() {
+        let me = member("mesh1.admin.1", true, true);
+        let first = member("mesh2.admin.1", true, false);
+        let mut driver = RoundDriver::new(me.name.clone());
+        let v0 = view(vec![me.clone()]);
+        assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
+
+        let v1 = view(vec![me.clone(), first.clone()]);
+        let sent: Vec<String> = driver.changed_mesh_primaries(&v1, true).into_iter().map(|(m, _)| m).collect();
+        assert_eq!(sent, vec!["mesh2".to_string()], "a mesh primary gained by the view is addressed");
+        assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+
+        let mut reborn = first.clone();
+        reborn.incarnation_id = Some(IncarnationId::mint());
+        let v2 = view(vec![me.clone(), reborn]);
+        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
+
+        assert!(driver.changed_mesh_primaries(&v2, false).is_empty(), "a node that is not the fabric-primary addresses nobody");
+        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "and addresses the primaries afresh when it becomes the fabric-primary");
     }
 
     const NONE: Announced = Announced { mesh_awaiting_round: false, fabric_awaiting_round: false };
