@@ -8,4 +8,5 @@ mod i143_acceptance_2901;
 mod i143_acceptance_2902;
 mod gossip_stats;
 mod heartbeat_spans;
+mod lifecycle_frames_wire;
 mod seat_frames_wire;

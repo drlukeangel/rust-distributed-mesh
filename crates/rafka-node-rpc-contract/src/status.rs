@@ -133,6 +133,64 @@ pub enum StatusRequest {
         /// The event applied.
         event: FabricEvent,
     },
+    /// Downward: the owning mesh-admin tells the exact birth to refuse new work and finish the
+    /// eligible in-flight work, and to keep running (`drain-node`; node-drain.md). The reply
+    /// (`Applied` / `AlreadyApplied`) admits the command; completion is [`Self::NodeDrained`].
+    DrainNode {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `drain-node:<path>`.
+        operation: String,
+    },
+    /// Upward: the exact birth tells its owning mesh-admin that no eligible work remains in
+    /// flight (`node-drained`). The subject is the sender; the fence names the admin.
+    NodeDrained {
+        /// The birth that drained.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `drain-node:<path>`.
+        operation: String,
+    },
+    /// Downward: the owning mesh-admin tells the exact birth to enter `Leaving` and shut down,
+    /// with no implicit drain (`stop-node`; node-stop.md). The reply admits the command;
+    /// completion is [`Self::NodeLeft`] and the provider's terminal proof.
+    StopNode {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `stop-node:<path>`.
+        operation: String,
+    },
+    /// Upward: the exact birth tells its owning mesh-admin that `Leaving` is committed and its
+    /// shutdown admitted (`node-left`), sent before it closes its endpoint. Not terminal proof.
+    NodeLeft {
+        /// The birth that is leaving.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `stop-node:<path>`.
+        operation: String,
+    },
 }
 
 impl StatusRequest {
@@ -145,6 +203,10 @@ impl StatusRequest {
             Self::ProbeNodeState { .. } => "probe-node-state",
             Self::ApplyMeshState { .. } => "apply-mesh-state",
             Self::ApplyFabricEvent { .. } => "apply-fabric-event",
+            Self::DrainNode { .. } => "drain-node",
+            Self::NodeDrained { .. } => "node-drained",
+            Self::StopNode { .. } => "stop-node",
+            Self::NodeLeft { .. } => "node-left",
         }
     }
 }
@@ -293,7 +355,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 6;
+    const REQUEST_VARIANTS: u32 = 10;
     const REPLY_VARIANTS: u32 = 16;
 
     type Request = StatusRequest;
@@ -398,6 +460,10 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
+            StatusRequest::DrainNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
+            StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
