@@ -12,7 +12,6 @@
 //! Every cut is preceded by a completed healthy invocation in the same capture.
 
 use iroh::endpoint::presets;
-use iroh::endpoint::transports::{PathSelection, PathSelectionContext, PathSelector};
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use rafka_mesh_entity::{IncarnationId, NodeId};
@@ -29,33 +28,7 @@ use tracing::Instrument;
 
 const SEED: u64 = 0x2781;
 
-/// The network seam owns every path between a caller and a node. Iroh's QUIC NAT traversal makes
-/// each side advertise its bound loopback address; the peer validates a direct path to it, and its
-/// default selector moves the connection onto that path as soon as it measures a lower RTT than
-/// the tap's (observed: the caller selected the direct path, abandoned the tap's, and the held or
-/// lost reply never crossed the tap). This selector keeps the first path a connection has, the one
-/// the caller dialled (the tap's address, the node's side of it being the tap's back socket), so a
-/// direct path stays a backup that the dialling side closes, and every datagram of the invocation
-/// crosses the tap. The tap adds no latency: a tap path whose RTT is over iroh's 10 ms
-/// good-enough bound (`remote_state.rs` `GOOD_ENOUGH_LATENCY`) makes iroh start NAT-traversal rounds
-/// every ~17 ms for as long as the connection lives, and a path a round has just opened carries
-/// data until the selector demotes it, so a cut reply can leave on it.
-#[derive(Debug)]
-struct FirstPathOnly;
-
-impl PathSelector for FirstPathOnly {
-    fn select(&self, ctx: &PathSelectionContext<'_>) -> PathSelection {
-        let mut selection = PathSelection::none();
-        if ctx.current().is_none() {
-            if let Some(first) = ctx.paths().next() {
-                selection.set(&first);
-            }
-        }
-        selection
-    }
-}
-
-/// `rafka_node_rpc::endpoint::bind`'s configuration with [`FirstPathOnly`].
+/// `rafka_node_rpc::endpoint::bind`'s configuration.
 async fn bind_behind_tap() -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
@@ -65,7 +38,6 @@ async fn bind_behind_tap() -> Endpoint {
         .clear_ip_transports()
         .bind_addr("127.0.0.1:0")
         .unwrap()
-        .path_selector(std::sync::Arc::new(FirstPathOnly))
         .bind()
         .await
         .unwrap()
