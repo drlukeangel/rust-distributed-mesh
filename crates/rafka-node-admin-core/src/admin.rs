@@ -508,8 +508,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     if topology.fabric_primary().is_some() {
         // The fabric primary authors `degraded` from the investigation's rebirth decision until the
         // reborn mesh's primary reports for its round (`crate::investigate`), and a successor holder
-        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`).
-        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
+        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
+        // that holds no seat serves the `degraded` the holder published.
+        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
     }
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
@@ -2792,6 +2793,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     records.set_adopted_degraded(false);
                 }
                 was_fabric_primary = fabric_primary;
+                records.set_published_degraded(!fabric_primary && membership.fabric_status().is_some_and(|s| s.status == "degraded"));
                 let heard = membership.book.current(membership.book.staleness_floor());
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
