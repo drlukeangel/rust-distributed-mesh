@@ -179,6 +179,7 @@ pub struct Authority {
 }
 
 impl Authority {
+    /// A gate for `node`'s Build log, open.
     pub fn new(node: String) -> Self {
         Self { node, fenced: tokio::sync::Mutex::new(None) }
     }

@@ -80,7 +80,9 @@ fn folded(identity: Option<FabricIdentity>, pointer: Option<FabricPointer>) -> O
 /// others, so a late write never moves a seat back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatRow {
+    /// The seat the record is for.
     pub seat: rafka_mesh_entity::Seat,
+    /// The seat's holder.
     pub holder: rafka_mesh_entity::SeatHolder,
 }
 

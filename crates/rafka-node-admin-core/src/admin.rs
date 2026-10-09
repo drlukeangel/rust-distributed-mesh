@@ -315,6 +315,7 @@ impl Records {
         self.entering.store(entering, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Whether this admin has not yet been told who holds the seats (its entry read has not answered).
     pub fn is_entering(&self) -> bool {
         self.entering.load(std::sync::atomic::Ordering::SeqCst)
     }

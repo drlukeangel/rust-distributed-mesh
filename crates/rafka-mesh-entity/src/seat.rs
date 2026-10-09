@@ -20,6 +20,7 @@ pub enum Seat {
 }
 
 impl Seat {
+    /// The seat's name as it appears in spans and evidence.
     pub fn name(self) -> &'static str {
         match self {
             Self::MeshPrimary => "mesh-primary",
@@ -31,9 +32,13 @@ impl Seat {
 /// The holder of a seat: the exact birth, the mesh it belongs to, and the epoch of the record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SeatHolder {
+    /// The mesh the holder belongs to.
     pub mesh: String,
+    /// The holder's node.
     pub node_id: NodeId,
+    /// The holder's exact birth.
     pub incarnation: IncarnationId,
+    /// The record's epoch: a later epoch supersedes an earlier one.
     pub epoch: u64,
 }
 

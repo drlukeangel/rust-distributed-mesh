@@ -50,6 +50,7 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// The trigger's name as it appears in spans.
     pub fn name(self) -> &'static str {
         match self {
             Self::Concern => "concern",
@@ -125,16 +126,26 @@ pub enum Finding {
     /// The birth answered a direct ping.
     Answered,
     /// The birth answered the same kick through a live member of its mesh.
-    AnsweredViaPeer { carrier: String },
+    AnsweredViaPeer {
+        /// The mesh member that carried the kick.
+        carrier: String,
+    },
     /// The provider inspected its exact runtime and it still runs.
     Running,
     /// The provider inspected its exact runtime and it exited: a verified loss.
-    Exited { code: Option<i32> },
+    Exited {
+        /// The exit code, when one is provable.
+        code: Option<i32>,
+    },
     /// Nothing proves the birth gone or alive: named by what was missing.
-    Unproven { reason: String },
+    Unproven {
+        /// What was missing.
+        reason: String,
+    },
 }
 
 impl Finding {
+    /// The finding's name as it appears in spans.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Answered => "answered",
@@ -157,9 +168,13 @@ impl Finding {
 
 /// What the look needs of this admin.
 pub struct Looker {
+    /// This admin's path.name.
     pub me: PathName,
+    /// Its mesh membership.
     pub membership: Membership,
+    /// Its Node RPC client.
     pub client: Arc<NodeRpcClient>,
+    /// Its deployment provider.
     pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
 }
 
@@ -204,13 +219,21 @@ impl Looker {
 
 /// What the watch drives.
 pub struct Watch {
+    /// This admin's path.name.
     pub me: PathName,
+    /// This admin's NodeId.
     pub me_id: NodeId,
+    /// This admin's exact birth.
     pub incarnation: IncarnationId,
+    /// Its mesh membership.
     pub membership: Membership,
+    /// Its place on the backbone.
     pub backbone: Backbone,
+    /// Its view of the topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
+    /// Its records of births and exits.
     pub records: Arc<Records>,
+    /// What it looks at a birth with.
     pub looker: Looker,
     /// Re-publishes this admin's presence and re-joins its mesh's members (`status_rpc::Republish`).
     pub republish: crate::status_rpc::Republish,

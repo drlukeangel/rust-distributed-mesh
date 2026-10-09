@@ -703,11 +703,17 @@ struct HeldSeats {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatTaken {
     /// The record was held; `previous` is the record it superseded.
-    Held { previous: Option<SeatHolder> },
+    Held {
+        /// The record it superseded.
+        previous: Option<SeatHolder>,
+    },
     /// The record is the one already held.
     Same,
     /// The record does not supersede the one held, which is named.
-    Refused { held: SeatHolder },
+    Refused {
+        /// The record held, which this one does not supersede.
+        held: SeatHolder,
+    },
 }
 
 impl SeatBook {
@@ -740,6 +746,7 @@ impl SeatBook {
         }
     }
 
+    /// The fabric seat's held record.
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
     }
@@ -761,6 +768,7 @@ impl SeatBook {
         self.changed.subscribe()
     }
 
+    /// The held record of `mesh`'s primary seat.
     pub fn mesh(&self, mesh: &str) -> Option<SeatHolder> {
         self.inner.lock().unwrap().meshes.get(mesh).cloned()
     }
@@ -785,9 +793,13 @@ impl SeatBook {
 /// A Concern heard on the backbone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConcernHeard {
+    /// The seat whose holder looks silent.
     pub seat: Seat,
+    /// The silent holder's node.
     pub node_id: NodeId,
+    /// The silent holder's exact birth.
     pub incarnation: IncarnationId,
+    /// The mesh primary that marked the birth silent.
     pub observer: String,
 }
 
