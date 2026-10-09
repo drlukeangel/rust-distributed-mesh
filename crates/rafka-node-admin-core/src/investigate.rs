@@ -232,7 +232,6 @@ pub async fn run(w: Watch) {
         let fabric_primary = view.fabric_primary().is_some_and(|n| n.name == w.me);
         if !(fabric_primary && w.membership.authorizes()) {
             w.ladder.lock().unwrap().clear();
-            w.records.set_peer_recovery(None);
             continue;
         }
         let book = &w.membership.book;

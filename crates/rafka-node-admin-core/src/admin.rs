@@ -2789,11 +2789,18 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 if fabric_primary && !was_fabric_primary {
                     let adopted = membership.fabric_status().is_some_and(|s| s.status == "degraded");
                     records.set_adopted_degraded(adopted);
-                } else if !fabric_primary && was_fabric_primary {
+                }
+                if fabric_primary {
+                    records.set_published_degraded(false);
+                } else {
+                    // The seat is released in one place and one order: the published `degraded` is
+                    // held before the authority records it replaces are cleared, so no projection
+                    // between the two answers ready for a fabric the holder published degraded.
+                    records.set_published_degraded(membership.fabric_status().is_some_and(|s| s.status == "degraded"));
+                    records.set_peer_recovery(None);
                     records.set_adopted_degraded(false);
                 }
                 was_fabric_primary = fabric_primary;
-                records.set_published_degraded(!fabric_primary && membership.fabric_status().is_some_and(|s| s.status == "degraded"));
                 let heard = membership.book.current(membership.book.staleness_floor());
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
