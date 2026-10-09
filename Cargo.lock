@@ -2027,7 +2027,7 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=d0928e92b67e0b989b6a57b8e054ac891fac3b63#d0928e92b67e0b989b6a57b8e054ac891fac3b63"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=61a8cbbca7654108805de6bdcc50f2fa48f66321#61a8cbbca7654108805de6bdcc50f2fa48f66321"
 dependencies = [
  "blake3",
  "bytes",

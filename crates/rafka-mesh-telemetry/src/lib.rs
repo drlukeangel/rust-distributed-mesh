@@ -459,6 +459,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .add_directive(tracing::Level::INFO.into())
         .add_directive("iroh=warn".parse().expect("static directive"))
         .add_directive("iroh_gossip=warn".parse().expect("static directive"))
+        .add_directive("rg3=debug".parse().expect("static directive"))
         .add_directive("noq=warn".parse().expect("static directive"))
         .add_directive("noq_proto=warn".parse().expect("static directive"))
         .and(filter_fn(export::admits_source));

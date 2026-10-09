@@ -52,7 +52,7 @@ opentelemetry-semantic-conventions = "0.27"
 # and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
 iroh = { git = "https://github.com/drlukeangel/iroh", rev = "1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5" }
 iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "1d27e4ea253b4a37fcbe2a346ba13e1310fc1fd5" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "d0928e92b67e0b989b6a57b8e054ac891fac3b63" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "61a8cbbca7654108805de6bdcc50f2fa48f66321" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }
