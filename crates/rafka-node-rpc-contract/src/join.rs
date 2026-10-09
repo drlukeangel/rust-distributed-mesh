@@ -11,6 +11,8 @@
 //! Joined { answer }     the digest matches the deployment; `answer` is the admin's entry answer
 //! JoinMismatch          the digest disagrees with the deployment in `field`
 //! NotAuthority          the receiver did not deploy this birth and holds no member of that name
+//! DeploymentAbandoned   the receiver deployed this exact birth and ended its deployment before the
+//!                       join arrived
 //! ```
 //!
 //! The request carries the digest typed, as `WireDigest` (`rafka_mesh_entity::wire`, the same
@@ -100,6 +102,19 @@ pub enum JoinReply {
         /// Why the call is refused.
         reason: String,
     },
+    /// The receiver deployed exactly this birth and ended its deployment (the create stopped
+    /// waiting for the birth's report) before the join arrived. The receiver is the authority;
+    /// the birth's runtime is retired by the executor that deployed it, not by this reply.
+    DeploymentAbandoned {
+        /// The Build whose create deployed the birth.
+        build_id: String,
+        /// The attempt of that Build.
+        attempt: u32,
+        /// The abandoned birth's node id.
+        node_id: String,
+        /// The abandoned birth's incarnation.
+        incarnation: String,
+    },
 }
 
 impl JoinReply {
@@ -109,6 +124,7 @@ impl JoinReply {
             Self::Joined { .. } => "joined",
             Self::JoinMismatch { .. } => "join-mismatch",
             Self::NotAuthority { .. } => "not-authority",
+            Self::DeploymentAbandoned { .. } => "deployment-abandoned",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
@@ -128,7 +144,7 @@ impl NodeProtocol for Join {
     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 9;
+    const REPLY_VARIANTS: u32 = 10;
 
     type Request = JoinRequest;
     type Reply = JoinReply;
@@ -136,7 +152,7 @@ impl NodeProtocol for Join {
     fn classify_reply(reply: &JoinReply) -> ReplyKind {
         match reply {
             JoinReply::Joined { .. } => ReplyKind::Success,
-            JoinReply::JoinMismatch { .. } | JoinReply::NotAuthority { .. } => ReplyKind::ProtocolRefusal,
+            JoinReply::JoinMismatch { .. } | JoinReply::NotAuthority { .. } | JoinReply::DeploymentAbandoned { .. } => ReplyKind::ProtocolRefusal,
             JoinReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             JoinReply::NotReady { .. } => ReplyKind::NotReady,
             JoinReply::Busy { .. } => ReplyKind::Busy,
@@ -175,6 +191,7 @@ mod tests {
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::ProtocolRefusal),
             (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
+            (JoinReply::DeploymentAbandoned { build_id: "bld-1".into(), attempt: 2, node_id: "n".into(), incarnation: "i".into() }, ReplyKind::ProtocolRefusal),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),
             (Join::busy("b".into()), ReplyKind::Busy),
