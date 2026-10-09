@@ -24,9 +24,10 @@ use rafka_test_scenario::container_faults;
 use rafka_test_scenario::elections::seats_as_expected;
 use rafka_test_scenario::estate::{binding_set_from_build_manifest, descends_from, named, wait_for, Estate, Owner, RUNTIME_IMAGE};
 use rafka_test_scenario::ledger::Bucket;
-use rafka_test_scenario::model::Rng;
+use rafka_test_scenario::model::{NodeClass, Rng};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault as SigFault, Refusal as SigRefusal};
+use rafka_test_scenario::soak::{Config as SoakConfig, Driver as SoakDriver, Profile as SoakProfile};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -289,9 +290,20 @@ fn owner(cell: &str, shape: Shape) -> Owner {
     Owner { product: "mesh".into(), feature: "i143-rshape".into(), subfeature: format!("mock-{}", shape.tier), rung: "MN".into(), provider: provider(), test: cell.into() }
 }
 
-/// Born from empty provider state on the consumer's four bound executables: the Day-0 admin, then
-/// ONE accepted Build for both meshes at the full shape, executed by the rectifier.
-async fn form(cell: &str, shape: Shape) -> Formed {
+/// The Day-0 admin of an estate born on the consumer's bound executables, before any Build.
+struct Born {
+    dir: PathBuf,
+    candidate: String,
+    set: rafka_node_admin_client::binding::BindingSet,
+    bound: Vec<PathBuf>,
+    estate: Estate,
+    provider_before: Value,
+    started_ms: u64,
+}
+
+/// From empty provider state: the consumer's binding set validated, then the Day-0 admin started
+/// on it. Nothing else runs a bound executable.
+async fn birth(cell: &str, shape: Shape) -> Born {
     let started_ms = now_ms();
     let root = workspace_root();
     let bin = root.join(env("RDM_RSHAPE_CONSUMER_BIN_DIR"));
@@ -306,6 +318,13 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     let dir = cell_dir(cell);
     let mut estate = Estate::bootstrap_external(owner(cell, shape), "fabric1", "mesh1", &set, &candidate, &["broker", "gateway", "compute"]).await.unwrap_or_else(|e| panic!("the consumer's binding set is refused: {e}"));
     estate.set_seed(seed());
+    Born { dir, candidate, set, bound, estate, provider_before, started_ms }
+}
+
+/// Born from empty provider state on the consumer's four bound executables: the Day-0 admin, then
+/// ONE accepted Build for both meshes at the full shape, executed by the rectifier.
+async fn form(cell: &str, shape: Shape) -> Formed {
+    let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let topology_initial = estate.nodes().await;
     let mut actions = Vec::new();
     let body = json!({"fabric": "fabric1", "meshes": MESHES.iter().map(|m| shape.mesh_request(m)).collect::<Vec<_>>()});
@@ -696,12 +715,16 @@ impl Views<'_> {
 /// RDM_SHUTDOWN_DRAIN_BOUND_MS, 60 s each). The wall from the stop request to the last exit is
 /// recorded: it is a measurement of the shutdown, not a tolerance.
 async fn provider_left(f: &Formed, stop_started: Instant, inv: &mut Invariants) -> Value {
+    provider_left_of(&f.bound, stop_started, inv).await
+}
+
+async fn provider_left_of(bound: &[PathBuf], stop_started: Instant, inv: &mut Invariants) -> Value {
     let drain_bound = std::env::var("RDM_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
     let deadline = Instant::now() + Duration::from_millis(drain_bound * 3);
     let (left, stop_returned_ms) = (|| async {
         let returned = stop_started.elapsed().as_millis() as u64;
         loop {
-            let left = provider_actions(&f.bound);
+            let left = provider_actions(bound);
             if left["processes"].as_array().is_some_and(|p| p.is_empty()) || Instant::now() >= deadline {
                 return (left, returned);
             }
@@ -6286,3 +6309,331 @@ async fn mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_bud
     carrier_edge_run("mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget", any_tier()).await;
 }
 
+
+
+// ---- the soaks (rafka-v2 #2949) --------------------------------------------------------------------
+
+/// One canonical soak story: the profile of legal actions the seeded draw picks among, and the
+/// round kinds that are its named fault/heal/recovery cycles. The driver, generator, ledger and
+/// invariants are the one `rafka_test_scenario::soak` serves every story with.
+struct Story {
+    id: &'static str,
+    profile: SoakProfile,
+    /// The kinds of round (`soak::kind`) that complete a named cycle: the fault or topology change
+    /// ran, the fabric converged on the new state, and the invariants held at its checkpoint.
+    cycle_kinds: &'static [&'static str],
+    /// The story cuts a mesh from the others: a host that cannot cut fails the cell by name.
+    needs_cut: bool,
+}
+
+const S1: Story = Story { id: "S1", profile: SoakProfile::Routing, cycle_kinds: &["restart", "kill", "wedge"], needs_cut: false };
+const S2: Story = Story { id: "S2", profile: SoakProfile::Authority, cycle_kinds: &["restart", "kill", "wedge", "hand-off"], needs_cut: false };
+const S3: Story = Story { id: "S3", profile: SoakProfile::Partition, cycle_kinds: &["heal"], needs_cut: true };
+const S4: Story = Story { id: "S4", profile: SoakProfile::Lifecycle, cycle_kinds: &["restart", "shrink", "replace", "grow-rpc"], needs_cut: false };
+const S5: Story = Story { id: "S5", profile: SoakProfile::All, cycle_kinds: &["restart", "kill", "wedge", "hand-off", "shrink", "replace", "grow-rpc", "grow-admin", "heal"], needs_cut: false };
+
+fn soak_seconds() -> u64 {
+    env("RDM_RSHAPE_SOAK_SECONDS").parse().unwrap_or_else(|e| panic!("REFUSED: RDM_RSHAPE_SOAK_SECONDS is not a u64: {e}"))
+}
+
+/// One offline-tickle round at its longest (the driver derives its unheard windows from it).
+fn tickle_round() -> Duration {
+    let budget = match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => d,
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    };
+    budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32)
+}
+
+/// Whether this host can drop UDP between loopback ports; `Err` names why it cannot.
+fn host_can_cut() -> Result<(), String> {
+    Partition::start(&[], &[]).map(|_| ())
+}
+
+/// The route of every route.resolve span, in start order.
+fn route_rows(spans: &[Value]) -> Vec<Value> {
+    let mut r: Vec<&Value> = spans.iter().filter(|sp| sp["name"].as_str().is_some_and(|n| n.starts_with("rdm.node_rpc.route.resolve."))).collect();
+    r.sort_by_key(|sp| start_ns(sp));
+    r.into_iter()
+        .map(|sp| {
+            json!({"name": sp["name"], "service": sp["service"], "trace_id": sp["trace_id"], "span_id": sp["span_id"], "parent_span_id": sp["parent_span_id"], "start_unix_nano": sp["start_unix_nano"], "attributes": {
+                "protocol": sp["attributes"]["protocol"], "route": sp["attributes"]["route"], "carrier": sp["attributes"]["carrier"], "target": sp["attributes"]["target"], "outcome": sp["attributes"]["outcome"], "own": sp["attributes"]["own"], "destination": sp["attributes"]["destination"],
+            }})
+        })
+        .collect()
+}
+
+/// What a story's run did, judged from the driver's report and the estate's own spans. Every
+/// check that fails panics after the evidence is on disk, naming the rule.
+async fn soak_run(cell: &str, story: Story) {
+    let shape = require_tier(CANONICAL);
+    let secs = soak_seconds();
+    let seed = seed();
+    let can_cut = if provider() == "process" {
+        match host_can_cut() {
+            Ok(()) => true,
+            Err(why) => {
+                assert!(!story.needs_cut, "RDM_REQUIRE_NETFAULT: {} cuts a mesh from the others and this host cannot drop UDP between loopback ports: {why}", story.id);
+                assert!(std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1"), "RDM_REQUIRE_NETFAULT=1: this host cannot drop UDP between loopback ports: {why}");
+                false
+            }
+        }
+    } else {
+        true
+    };
+    let t0 = Instant::now();
+    let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
+    let day0 = estate.nodes().await;
+    let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
+    let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
+    let (floor, backbone) = (cfg.floor, cfg.backbone);
+    eprintln!("SOAK {} cell={cell} seed={seed} secs={secs} profile={:?} provider={} network_faults={can_cut}", story.id, story.profile, provider());
+    let driver = SoakDriver::new(estate, cfg).await;
+    let born_view = driver.estate.nodes().await;
+    let born_at_s = t0.elapsed().as_secs();
+    let progress = driver.progress();
+    // A heartbeat on disk: the run's liveness is readable while it runs.
+    let beat = {
+        let (dir, progress) = (dir.clone(), progress.clone());
+        let beat_t0 = Instant::now();
+        tokio::spawn(async move {
+            let mut text = String::new();
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                text.push_str(&format!("{}\n", json!({"t_ms": now_ms(), "run_s": beat_t0.elapsed().as_secs(), "actions_executed": progress.lock().unwrap().executed.len()})));
+                let _ = std::fs::write(dir.join("heartbeat.jsonl"), &text);
+            }
+        })
+    };
+    let run_t0 = Instant::now();
+    let run_started_ms = now_ms();
+    let joined = tokio::spawn(driver.run()).await;
+    beat.abort();
+    let run_wall = run_t0.elapsed();
+    let (report, mut estate) = match joined {
+        Ok(r) => r,
+        Err(e) => {
+            let message = if e.is_panic() { format!("{:?}", e.into_panic().downcast_ref::<String>().cloned().or_else(|| Some("a non-string panic".into()))) } else { e.to_string() };
+            let repro = rafka_test_scenario::soak::panicked(seed, &progress.lock().unwrap(), &message);
+            write_json(&dir, "failure.json", &json!({"cell": cell, "story": story.id, "seed": seed, "secs": secs, "driver_panic": message, "repro": repro}));
+            panic!("{} seed {seed}: the soak driver panicked: {message}\nminimized reproduction ({} of {} actions): {:#?}", story.id, repro.minimized.len(), repro.original_len, repro.minimized);
+        }
+    };
+    let nodes_final = estate.nodes().await;
+    let (_, fabric_final) = estate.get("/api/fabric").await;
+    let stop_t = Instant::now();
+    estate.stop().await;
+    let mut inv = Invariants::default();
+    let left = provider_left_of(&bound, stop_t, &mut inv).await;
+    let spans = estate.spans();
+    let index = copy_spans(&estate, &dir);
+
+    // The driver's verdict first: the evidence below is written for a red run too.
+    let summary = rafka_test_scenario::soak::summary(&report);
+    eprintln!("{summary}");
+    let failed = !report.ok();
+    if failed {
+        write_json(&dir, "failure.json", &json!({"cell": cell, "story": story.id, "seed": seed, "secs": secs, "violations": report.violations, "ledger_violations": report.ledger.violations, "repro": report.repro, "executed": report.executed}));
+    }
+
+    let rows = &report.rounds_log;
+    // Monotonic bounded duration.
+    let starts: Vec<u64> = rows.iter().map(|r| r["at_s"].as_u64().unwrap_or(0)).collect();
+    let walls: Vec<u64> = rows.iter().map(|r| r["wall_ms"].as_u64().unwrap_or(0)).collect();
+    let monotonic = starts.windows(2).all(|w| w[0] <= w[1]) && starts.iter().zip(&walls).all(|(s, w)| s + w / 1000 <= report.elapsed_s);
+    let last_end_s = starts.iter().zip(&walls).map(|(s, w)| s + w / 1000).max().unwrap_or(0);
+    // The named cycles: a round of a cycle kind that reached convergence and its checkpoint.
+    let cycles: Vec<Value> = rows
+        .iter()
+        .filter(|r| r["kind"].as_str().is_some_and(|k| story.cycle_kinds.contains(&k)))
+        .filter(|r| r.get("converged_ms").is_some() && r.get("invariants_held").is_some_and(|h| h.as_array().is_some_and(|a| !a.is_empty())))
+        .map(|r| json!({"round": r["round"], "kind": r["kind"], "action": r["action"], "at_s": r["at_s"], "wall_ms": r["wall_ms"], "born": r.get("born"), "healed": r.get("healed"), "silenced": r.get("silenced"), "killed": r.get("killed"), "wedge": r.get("wedge").map(|w| w["verdict"].clone())}))
+        .collect();
+    let checkpoints: Vec<Value> = rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "held": r.get("invariants_held"), "deferred": r.get("invariants_deferred"), "authority": r.get("authority")})).collect();
+    let judged = checkpoints.iter().filter(|c| c["held"].as_array().is_some_and(|a| !a.is_empty())).count();
+    let deferred = checkpoints.iter().filter(|c| c["deferred"].is_string()).count();
+    // Cuts: every cut window, from its own rows.
+    let cuts: Vec<(u64, u64, String)> = rows
+        .iter()
+        .filter_map(|r| r.get("silenced").and_then(|x| x["cut_at_ns"].as_u64()).map(|c| (c, s(&r["silenced"]["mesh"]))))
+        .map(|(c, mesh)| {
+            let healed = rows.iter().filter_map(|r| r.get("healed")).find(|h| s(&h["mesh"]) == mesh && h["healed_at_ns"].as_u64().unwrap_or(0) > c).and_then(|h| h["healed_at_ns"].as_u64());
+            (c, healed.unwrap_or(u64::MAX), mesh)
+        })
+        .collect();
+    let in_cut_lifecycle: Vec<(String, Vec<String>)> = cuts.iter().map(|(c, h, mesh)| (mesh.clone(), lifecycle_marks(&spans, *c, (*h).min(now_ns())))).filter(|(_, m)| !m.is_empty()).collect();
+    // The path RAN.
+    let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
+    let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
+    let stale: Vec<&Value> = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target").into_iter().filter(|sp| sp["attributes"].get("receiver_node_id").is_some()).collect();
+    let stale_served: Vec<&&Value> = stale.iter().filter(|sp| spans.iter().any(|x| x["trace_id"] == sp["trace_id"] && x["name"] == "rdm.node_rpc.request.serve.via-direct")).collect();
+    let routes = route_rows(&spans);
+    let mut route_classes: BTreeMap<String, usize> = BTreeMap::new();
+    for r in &routes {
+        *route_classes.entry(s(&r["attributes"]["route"])).or_default() += 1;
+    }
+    let mut action_kinds = report.actions.clone();
+    action_kinds.retain(|_, n| *n > 0);
+
+    write_jsonl(&dir, "actions.jsonl", rows);
+    write_jsonl(&dir, "operations.jsonl", &report.operations.iter().map(|o| json!({"op_seq": o["op_seq"], "target": o["target"], "target_node_id": o["target_node_id"], "key": o["key"], "intent": o["intent"], "via": o["via"], "trace_id": o["trace_id"]})).collect::<Vec<_>>());
+    write_jsonl(&dir, "outcomes.jsonl", &report.operations.iter().map(|o| json!({"op_seq": o["op_seq"], "route": o["route"], "trace_id": o["trace_id"], "classification": o["classification"]})).collect::<Vec<_>>());
+    write_jsonl(&dir, "authority-history.jsonl", &rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "authority": r.get("authority"), "handed_off_from": r.get("handed_off_from")})).collect::<Vec<_>>());
+    write_jsonl(&dir, "route-history.jsonl", &routes);
+    write_jsonl(&dir, "runtime-history.jsonl", &rows.iter().filter(|r| r.get("born").is_some() || r.get("killed").is_some() || r.get("wedge").is_some()).map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "born": r.get("born"), "killed": r.get("killed"), "wedge": r.get("wedge"), "retired_call": r.get("retired_call")})).collect::<Vec<_>>());
+    write_json(&dir, "topology-initial.json", &json!({"shape_requested": {"tier": shape.tier, "meshes": MESHES, "per_mesh": {"node_admin": shape.node_admin, "compute": shape.compute, "gateway": shape.gateway, "broker": shape.broker}, "total": shape.total()}, "provider_state_before": provider_before, "view_at_day0": day0, "view_after_birth": born_view}));
+    write_json(&dir, "topology-final.json", &json!({"total": nodes_final.len(), "nodes": nodes_final, "fabric": fabric_final}));
+
+    let mut result = json!({
+        "cell": cell,
+        "story": story.id,
+        "profile": story.profile,
+        "tier": shape.tier,
+        "qualifies_export": shape.tier == "canonical" && secs >= 1800,
+        "provider": provider(),
+        "seed": seed,
+        "soak_seconds": secs,
+        "rdm_candidate_sha": candidate,
+        "harness_source": "the cell's own checkout; the candidate is the RDM commit the consumer imported",
+        "consumer_binding": estate.external.as_ref().map(|x| x.validated.receipt()),
+        "network_faults": can_cut,
+        "started_ms": started_ms,
+        "run_started_ms": run_started_ms,
+        "finished_ms": now_ms(),
+        "birth_s": born_at_s,
+        "run_wall_s": run_wall.as_secs(),
+        "driver_elapsed_s": report.elapsed_s,
+        "last_round_end_s": last_end_s,
+        "rounds": report.rounds,
+    });
+    let more = json!({
+        "action_kinds": action_kinds,
+        "skipped": report.skipped,
+        "cadence": {"staleness_floor_ms": floor.as_millis() as u64, "backbone_interval_ms": backbone.as_millis() as u64, "rdm_staleness_ms": std::env::var("RDM_STALENESS_MS").ok(), "rdm_gossip_interval_ms": std::env::var("RDM_GOSSIP_INTERVAL_MS").ok(), "rdm_backbone_interval_ms": std::env::var("RDM_BACKBONE_INTERVAL_MS").ok()},
+        "schedule": {"seed": seed, "executed": report.executed, "events": report.schedule},
+        "cycles": cycles,
+        "checkpoints": checkpoints,
+        "ledger": report.ledger,
+        "route_classes": route_classes,
+        "indeterminate_operations": report.operations.iter().filter(|o| o["classification"]["bucket"] == "Indeterminate").map(|o| json!({"op_seq": o["op_seq"], "target": o["target"], "via": o["via"], "route": o["route"], "trace_id": o["trace_id"], "reason": o["classification"]["detail"]})).collect::<Vec<_>>(),
+        "cuts": cuts.iter().map(|(c, h, m)| json!({"mesh": m, "cut_at_ns": c, "healed_at_ns": h})).collect::<Vec<_>>(),
+    });
+    let evidence = json!({
+        "evidence": {
+            "estate_manifest": estate.artifacts.join("manifest.json"),
+            "rpc_ledger": estate.artifacts.join("rpc-ledger.jsonl"),
+            "spans_dir": estate.evidence,
+            "exported_spans": spans.len(),
+            "proof_store_serve_spans": served,
+            "build_attempt_spans": reconciles,
+            "stale_target_refusals": stale.len(),
+        },
+        "provider_after_stop": left,
+        "spans": index,
+    });
+    let views = json!({"views": {
+        "topology-initial.json": "the Day-0 view, the view after the Build birthed the shape, the requested shape and the provider state before launch",
+        "topology-final.json": "the last GET /api/nodes and /api/fabric before the estate stopped",
+        "actions.jsonl": "one row per executed round: the seeded action, the REST calls it made, its convergence and the invariants that held at its checkpoint",
+        "operations.jsonl": "every issued proof-store operation with its target, key and intent, in issue order",
+        "outcomes.jsonl": "the ledger's classification of every operation (bucket, typed reason)",
+        "authority-history.jsonl": "the fabric-primary and mesh primaries after each action",
+        "route-history.jsonl": "every route.resolve span of the run (route, carrier, target, outcome)",
+        "runtime-history.jsonl": "each birth, kill and hold of the run",
+        "spans/": "a copy of every span file the estate wrote, unchanged",
+        "heartbeat.jsonl": "the run's liveness every 30 s while it ran",
+    }});
+    for part in [more, evidence, views] {
+        for (k, v) in part.as_object().cloned().unwrap_or_default() {
+            result[k] = v;
+        }
+    }
+
+    inv.holds("the soak ran its whole duration: round starts never go backward, every round ends inside the run, and the run lasted at least RDM_RSHAPE_SOAK_SECONDS", monotonic && report.elapsed_s >= secs, json!({"seconds_requested": secs, "driver_elapsed_s": report.elapsed_s, "run_wall_s": run_wall.as_secs(), "rounds": report.rounds, "last_round_end_s": last_end_s, "longest_round_ms": walls.iter().max()}));
+    inv.holds("the driver judged no rule broken: every round's invariants held and the ledger reconciled", !failed, json!({"violations": report.violations, "ledger_violations": report.ledger.violations}));
+    inv.holds(&format!("{}: at least one named fault/heal/recovery cycle completed (the action converged and the invariants held at its checkpoint)", story.id), !cycles.is_empty(), json!({"cycle_kinds": story.cycle_kinds, "completed": cycles.len(), "first": cycles.first(), "action_kinds": action_kinds}));
+    inv.holds("the seeded schedule is recorded: the seed, every executed action and every scheduler event", report.executed.len() == rows.len() && !report.schedule.is_empty(), json!({"seed": seed, "actions": report.executed.len(), "events": report.schedule.len()}));
+    inv.holds("checkpointed invariants: every round carries the invariants that held after it (or names the cut that defers them to its Heal row)", judged + deferred == rows.len() && judged > 0, json!({"rounds": rows.len(), "judged": judged, "deferred_during_cut": deferred, "invariants": ["one-current-birth-per-path", "live-admin-answers", "fabric-build-id-held", "no-peer-mesh-permanently-unheard", "one-fabric-primary", "seats-equal-the-public-candidates", "every-rpc-node-reachable-on-its-current-birth"]}));
+    inv.holds("continuous traffic: operations were issued, each classified once from its typed outcome", report.ledger.issued > 0, json!({"issued": report.ledger.issued, "buckets": report.ledger.buckets, "details": report.ledger.details, "applied_mutations": report.ledger.applied_mutations, "stores_reconciled": report.ledger.stores_reconciled}));
+    inv.holds("the path RAN: the brokers served the operations and the topology actions ran as Build attempts", served > 0 && reconciles > 0, json!({"proof_store_serve_spans": served, "build_attempt_spans": reconciles}));
+    inv.holds("no stale-slot dispatch: a request a 425 refused was never served in its trace", stale_served.is_empty(), json!({"stale_target_refusals": stale.len(), "served_after_refusal": stale_served.len()}));
+    if story.id == "S1" {
+        inv.holds("S1 routes: exact-node calls reached their node directly and carried calls went through a gateway", route_classes.get("direct").copied().unwrap_or(0) > 0, json!({"route_classes": route_classes}));
+    }
+    if !cuts.is_empty() {
+        inv.holds("every cut has its Heal row, and a cut mesh opened no death, tombstone, departure, rebirth or provider terminate while it held", cuts.iter().all(|(_, h, _)| *h != u64::MAX) && in_cut_lifecycle.is_empty(), json!({"cuts": cuts.len(), "lifecycle_marks": in_cut_lifecycle}));
+    }
+    if story.needs_cut {
+        inv.holds("S3: the mesh was cut, held and healed at least once", !cuts.is_empty(), json!({"cuts": cuts.len()}));
+    }
+    write_json(&dir, "invariant-results.json", &json!({"cell": cell, "story": story.id, "tier": shape.tier, "provider": provider(), "invariants": inv.0, "checkpoints": result["checkpoints"]}));
+    result["invariants_checked"] = json!(inv.0.len());
+    write_json(&dir, "result.json", &result);
+    let _ = set;
+}
+
+/// CONTRACT (S1, routing, #2949): on the canonical twenty-node estate (node-admin / compute /
+/// gateway / broker = 2 / 2 / 3 / 3 x 2 meshes, born by one accepted Build on the consumer's four
+/// executables) continuous seeded proof-store traffic runs for RDM_RSHAPE_SOAK_SECONDS: exact-node
+/// calls from the controller and a quarter carried by a gateway, same-mesh and cross-mesh, each
+/// recorded in the operation ledger before it is sent and classified once from its typed outcome.
+/// Meanwhile the seeded generator draws only restarts, kills and holds of role nodes (compute,
+/// gateway, broker), each executed on the exact runtime or as a Build; after every one the fabric
+/// converges on the new birth (every admin holds the same births, the old incarnation nowhere) and
+/// the invariants are checked. At the end every operation is accounted. What must NOT happen: an
+/// operation without an outcome, a lost applied write, a second effective fabric-primary, a node
+/// reachable on a birth that is not its current one, a violated invariant, an unexplained hang, or
+/// a runtime left running after the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_routing_preserves_continuous_invariants() {
+    soak_run("mock_soak_routing_preserves_continuous_invariants", S1).await;
+}
+
+/// CONTRACT (S2, authority, #2949): the same estate, traffic and ledger, with the seeded draw
+/// limited to node-admins: restarts, kills and holds of a non-primary admin and mesh-primary
+/// hand-offs (the fabric-primary's included, only through the hand-off Build). After every action
+/// each live admin holds the same births, there is exactly one fabric-primary, the seats equal
+/// the public candidates', and `Fabric.build_id` is the accepted Build's. The fabric-primary is
+/// never signalled and no mesh loses every node-admin. What must NOT happen: two effective
+/// writers, a fabric without a mesh primary after convergence, a minted Build for drift, or an
+/// operation without an outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_authority_preserves_continuous_invariants() {
+    soak_run("mock_soak_authority_preserves_continuous_invariants", S2).await;
+}
+
+/// CONTRACT (S3, partition, #2949): the same estate, traffic and ledger, with the seeded draw
+/// limited to cutting one mesh from the other: every UDP path between the meshes is dropped
+/// (acknowledged by the host's rule install), held until every node-admin has re-fed every
+/// peer-mesh node-admin twice, then healed, converged completely, and repeated. While cut, each
+/// admin still holds its own mesh ready and nothing opens a death, tombstone, departure or
+/// rebirth; after the heal every admin holds every member ready on the same births with one
+/// fabric-primary. A host that cannot drop UDP fails the cell by name. What must NOT happen: a
+/// cut left unhealed at the end, a death during a cut, a new Build for an unchanged topology, or an
+/// operation without an outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_partition_preserves_continuous_invariants() {
+    soak_run("mock_soak_partition_preserves_continuous_invariants", S3).await;
+}
+
+/// CONTRACT (S4, lifecycle, #2949): the same estate, traffic and ledger, with the seeded draw
+/// limited to the life of role nodes: restart, retire (delete: drain then terminate), replacement
+/// at the same path.name as a new NodeId, and legal capacity re-add (grow to the lowest free
+/// ordinal), each as a Build the rectifier executes. After every action the view holds exactly the
+/// model's counts, the retired NodeId names no node (a call to it is refused, never dispatched)
+/// and a replaced birth is held nowhere. What must NOT happen: a resurrected retired identity, a
+/// replacement reusing a NodeId, drift left unrepaired, or an operation without an outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_lifecycle_preserves_continuous_invariants() {
+    soak_run("mock_soak_lifecycle_preserves_continuous_invariants", S4).await;
+}
+
+/// CONTRACT (S5, randomized, #2949): the same estate, traffic and ledger, with the seeded draw over
+/// every legal action: grow, shrink, restart, replace, hand-off, kill, hold, and (where the host
+/// can drop UDP) cut and heal of a mesh. One seed is the whole schedule and the manifest records it.
+/// Invariants are checked after every action. What must NOT happen: an illegal action executed, a
+/// violated invariant, an operation without an outcome, or a runtime left running after the stop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_randomized_preserves_continuous_invariants() {
+    soak_run("mock_soak_randomized_preserves_continuous_invariants", S5).await;
+}

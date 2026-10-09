@@ -806,6 +806,12 @@ impl Estate {
             .iter()
             .flat_map(|(m, a, r)| [((m.to_string(), "node_admin".to_string()), *a as usize), ((m.to_string(), "rpc_node".to_string()), *r as usize)])
             .collect();
+        self.settled_counts(want, within).await
+    }
+
+    /// The view once every `(mesh, kind)` cohort holds exactly its count of nodes, every one ready
+    /// for traffic.
+    pub async fn settled_counts(&self, want: std::collections::BTreeMap<(String, String), usize>, within: Duration) -> Vec<Value> {
         let until = Instant::now() + within;
         loop {
             let nodes = self.nodes().await;

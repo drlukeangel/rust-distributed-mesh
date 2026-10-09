@@ -22,6 +22,9 @@ use std::fmt;
 pub enum NodeClass {
     NodeAdmin,
     RpcNode,
+    Compute,
+    Gateway,
+    Broker,
 }
 
 impl NodeClass {
@@ -30,15 +33,28 @@ impl NodeClass {
         match self {
             NodeClass::NodeAdmin => "admin",
             NodeClass::RpcNode => "rpc",
+            NodeClass::Compute => "compute",
+            NodeClass::Gateway => "gateway",
+            NodeClass::Broker => "broker",
+        }
+    }
+    /// The class's name in the node-admin view and in a Build's mesh request (`kind`).
+    pub fn kind_name(self) -> &'static str {
+        match self {
+            NodeClass::NodeAdmin => "node_admin",
+            NodeClass::RpcNode => "rpc_node",
+            NodeClass::Compute => "compute",
+            NodeClass::Gateway => "gateway",
+            NodeClass::Broker => "broker",
         }
     }
     /// A node of this class can hold a seat and execute Builds.
     pub fn holds_seats(self) -> bool {
         self == NodeClass::NodeAdmin
     }
-    /// A node of this class serves the proof store (0x70).
+    /// A node of this class serves the proof store (0x70): every class but the node-admin.
     pub fn serves_proof(self) -> bool {
-        self == NodeClass::RpcNode
+        self != NodeClass::NodeAdmin
     }
 }
 
@@ -144,12 +160,18 @@ fn illegal(step: usize, action: &Action, precondition: &str, detail: String) -> 
 impl Model {
     /// A fabric of `meshes`, each `(name, node_admins, rpc_nodes)`, born at ordinals 1..=n.
     pub fn new(meshes: &[(&str, u32, u32)], bounds: BTreeMap<NodeClass, ClassBounds>, capabilities: Capabilities) -> Self {
+        let classed: Vec<(&str, Vec<(NodeClass, u32)>)> = meshes.iter().map(|(name, admins, rpcs)| (*name, vec![(NodeClass::NodeAdmin, *admins), (NodeClass::RpcNode, *rpcs)])).collect();
+        Self::of(&classed, bounds, capabilities)
+    }
+
+    /// A fabric of `meshes`, each `(name, [(class, count)])`, born at ordinals 1..=n of each class.
+    pub fn of(meshes: &[(&str, Vec<(NodeClass, u32)>)], bounds: BTreeMap<NodeClass, ClassBounds>, capabilities: Capabilities) -> Self {
         let mut m = Model { meshes: BTreeMap::new(), bounds, capabilities };
-        for (name, admins, rpcs) in meshes {
+        for (name, classes) in meshes {
             let mut mesh = ModelMesh::default();
-            for (class, n) in [(NodeClass::NodeAdmin, *admins), (NodeClass::RpcNode, *rpcs)] {
-                for i in 1..=n {
-                    mesh.nodes.insert(format!("{name}.{}.{i}", class.segment()), ModelNode { class, birth: 1, incarnation: 1 });
+            for (class, n) in classes {
+                for i in 1..=*n {
+                    mesh.nodes.insert(format!("{name}.{}.{i}", class.segment()), ModelNode { class: *class, birth: 1, incarnation: 1 });
                 }
             }
             m.meshes.insert((*name).to_string(), mesh);
@@ -297,10 +319,11 @@ impl Model {
     /// Every legal action in this state, in a fixed order. A proof operation is listed once per
     /// (target, kind); its key and value are drawn by the generator.
     fn candidates(&self) -> Vec<Action> {
+        let classes: std::collections::BTreeSet<NodeClass> = self.bounds.keys().copied().chain(self.meshes.values().flat_map(|m| m.nodes.values().map(|n| n.class))).collect();
         let mut out = Vec::new();
         for (mesh, m) in &self.meshes {
-            for class in [NodeClass::NodeAdmin, NodeClass::RpcNode] {
-                out.push(Action::Grow { mesh: mesh.clone(), class });
+            for class in &classes {
+                out.push(Action::Grow { mesh: mesh.clone(), class: *class });
             }
             for node in m.nodes.keys() {
                 out.push(Action::Shrink { node: node.clone() });
@@ -346,11 +369,18 @@ impl Rng {
 /// state it is drawn in and applied before the next is drawn; a state with no legal action ends
 /// the sequence early.
 pub fn generate(seed: u64, initial: &Model, len: usize) -> Vec<Action> {
+    generate_among(seed, initial, len, |_| true)
+}
+
+/// [`generate`] restricted to the candidates `allow` accepts: a traffic and fault profile is a
+/// predicate over the legal actions, and the draw is still one seeded pick among them.
+pub fn generate_among(seed: u64, initial: &Model, len: usize, allow: impl Fn(&Action) -> bool) -> Vec<Action> {
     let mut rng = Rng(seed);
     let mut state = initial.clone();
     let mut out = Vec::with_capacity(len);
     for step in 0..len {
-        let cands = state.candidates();
+        let mut cands = state.candidates();
+        cands.retain(|a| allow(a));
         if cands.is_empty() {
             break;
         }

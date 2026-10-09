@@ -36,7 +36,8 @@ use crate::container_faults;
 use crate::elections::seats_as_expected;
 use crate::estate::{wait_for, Estate, ProbeHandle};
 use crate::ledger::{Bucket, Ledger, MutationIntent, OperationId};
-use crate::model::{generate, replay, shrink, Action, Capabilities, ClassBounds, Failure, Model, NodeClass, Rng};
+use crate::model::{generate_among, replay, shrink, Action, Capabilities, ClassBounds, Failure, Model, NodeClass, Rng};
+use crate::netfault::{udp_ports, Partition};
 use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as ProofOp;
 use crate::sim::Scheduler;
@@ -96,9 +97,14 @@ fn node_of(a: &Action) -> Option<&str> {
 pub struct Config {
     pub seed: u64,
     pub secs: u64,
-    /// `(mesh, node_admins, rpc_nodes)` as born.
-    pub shape: Vec<(&'static str, u32, u32)>,
+    /// `(mesh, [(class, count)])` as born.
+    pub shape: Vec<(&'static str, Vec<(NodeClass, u32)>)>,
     pub bounds: BTreeMap<NodeClass, ClassBounds>,
+    /// The legal actions this run draws from.
+    pub profile: Profile,
+    /// The provider can make a mesh unheard by the others: the container provider always, the
+    /// process provider when the host drops UDP between loopback ports (`netfault`).
+    pub network_faults: bool,
     /// The membership staleness floor and the backbone gossip interval the estate runs at
     /// (`rafka_mesh_transport::membership`): the windows a silence is observed within.
     pub floor: Duration,
@@ -116,12 +122,26 @@ impl Config {
         Self {
             seed,
             secs,
-            shape: vec![("mesh1", 2, 3), ("mesh2", 2, 3)],
+            shape: vec![("mesh1", vec![(NodeClass::NodeAdmin, 2), (NodeClass::RpcNode, 3)]), ("mesh2", vec![(NodeClass::NodeAdmin, 2), (NodeClass::RpcNode, 3)])],
             bounds: BTreeMap::from([(NodeClass::NodeAdmin, ClassBounds { min: 2, max: 3 }), (NodeClass::RpcNode, ClassBounds { min: 3, max: 4 })]),
+            profile: Profile::All,
+            network_faults: false,
             floor,
             backbone,
             tickle_round,
         }
+    }
+
+    /// Two meshes of `admins` node-admins, `compute` compute, `gateway` gateway and `broker` broker
+    /// nodes each (the R-shape roles); a role class may lose one node and regain it, or grow by
+    /// one. `profile` names the actions the run draws from.
+    #[allow(clippy::too_many_arguments)]
+    pub fn roles(seed: u64, secs: u64, per_mesh: [(NodeClass, u32); 4], profile: Profile, network_faults: bool, floor: Duration, backbone: Duration, tickle_round: Duration) -> Self {
+        let mut bounds = BTreeMap::new();
+        for (class, n) in per_mesh {
+            bounds.insert(class, if class == NodeClass::NodeAdmin { ClassBounds { min: n, max: n + 1 } } else { ClassBounds { min: n - 1, max: n + 1 } });
+        }
+        Self { seed, secs, shape: vec![("mesh1", per_mesh.to_vec()), ("mesh2", per_mesh.to_vec())], bounds, profile, network_faults, floor, backbone, tickle_round }
     }
 
     /// How long a silenced node takes to be marked unheard in the view of the observer that judges
@@ -141,7 +161,52 @@ impl Config {
 
     /// The initial model of the shape on a provider.
     pub fn model(&self, provider: &str) -> Model {
-        Model::new(&self.shape, self.bounds.clone(), Capabilities { network_faults: provider == "container" })
+        let meshes: Vec<(&str, Vec<(NodeClass, u32)>)> = self.shape.iter().map(|(m, classes)| (*m, classes.clone())).collect();
+        Model::of(&meshes, self.bounds.clone(), Capabilities { network_faults: provider == "container" || self.network_faults })
+    }
+}
+
+/// The legal actions a run draws from: the traffic and fault profile of one soak. The generator
+/// is the same seeded draw in every profile; a profile only narrows the candidates it picks among.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Profile {
+    /// Every legal action.
+    All,
+    /// Restarts, kills and holds of role nodes (every class but the node-admin); the continuous
+    /// traffic stream is the proof-store load in every profile.
+    Routing,
+    /// Restarts, kills and holds of node-admins, and mesh-primary hand-offs (the fabric-primary's
+    /// included), under traffic.
+    Authority,
+    /// A mesh made unheard by the others, held, healed, converged, repeated.
+    Partition,
+    /// Restart, retire (delete), replacement and capacity re-add of role nodes under traffic.
+    Lifecycle,
+}
+
+fn is_admin_path(p: &str) -> bool {
+    p.split('.').nth(1) == Some("admin")
+}
+
+impl Profile {
+    pub fn allows(self, a: &Action) -> bool {
+        let node = node_of(a);
+        match self {
+            Profile::All => true,
+            Profile::Routing => matches!(a, Action::Restart { .. } | Action::Kill { .. } | Action::Wedge { .. }) && node.is_some_and(|p| !is_admin_path(p)),
+            Profile::Authority => match a {
+                Action::HandOff { .. } => true,
+                Action::Restart { .. } | Action::Kill { .. } | Action::Wedge { .. } => node.is_some_and(is_admin_path),
+                _ => false,
+            },
+            Profile::Partition => matches!(a, Action::Unheard { .. } | Action::Heal { .. }),
+            Profile::Lifecycle => match a {
+                Action::Grow { class, .. } => *class != NodeClass::NodeAdmin,
+                Action::Shrink { .. } | Action::Restart { .. } | Action::Replace { .. } => node.is_some_and(|p| !is_admin_path(p)),
+                _ => false,
+            },
+        }
     }
 }
 
@@ -217,6 +282,8 @@ pub struct Report {
     pub executed: Vec<Action>,
     pub schedule: Vec<Value>,
     pub rounds_log: Vec<Value>,
+    /// Every issued operation with its target, key, intent and typed classification, in issue order.
+    pub operations: Vec<Value>,
 }
 
 impl Report {
@@ -237,6 +304,12 @@ struct OpMeta {
     target_path: String,
     target_id: String,
     key: u64,
+    /// The trace of the probe invocation that carried the operation, from the `traceparent` it printed.
+    trace_id: Option<String>,
+    /// The gateway that carried the call, when one did.
+    via: Option<String>,
+    /// The route the probe printed for the call (`direct`, `via-peer`, ...).
+    route: Option<String>,
 }
 
 #[derive(Default)]
@@ -254,6 +327,8 @@ struct View {
     /// The fabric-primary's control API: the traffic's probes read the view through it.
     admin: Option<String>,
     rpcs: Vec<(String, String)>,
+    /// The gateways that carry a quarter of the traffic to its exact target (`--via`).
+    gateways: Vec<String>,
 }
 
 struct Shared {
@@ -270,6 +345,8 @@ struct Call {
     key: u64,
     value: Option<String>,
     expected: Option<String>,
+    /// The gateway that carries the call to its exact target (`--via path:<gateway>`).
+    via: Option<String>,
 }
 
 /// Issue `call` once: recorded in the ledger before it is sent, classified from the printed typed
@@ -286,7 +363,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
         }
         let id = b.ledger.issue(PROOF_STORE_OP, call.target_id.clone(), mutation);
         debug_assert_eq!(id.0 as usize, b.meta.len());
-        b.meta.push(OpMeta { target_path: call.target_path.clone(), target_id: call.target_id.clone(), key: call.key });
+        b.meta.push(OpMeta { target_path: call.target_path.clone(), target_id: call.target_id.clone(), key: call.key, trace_id: None, via: call.via.clone(), route: None });
         id
     };
     let target = format!("exact:{}", call.target_id);
@@ -301,6 +378,9 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
         }
         _ => {}
     }
+    if let Some(gw) = &call.via {
+        args.extend(["--via".into(), format!("path:{gw}")]);
+    }
     let (p, a) = (probe.clone(), admin.to_string());
     let printed = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -308,6 +388,10 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
     })
     .await;
     let mut b = shared.book.lock().unwrap();
+    if let Ok(Ok(out)) = &printed {
+        b.meta[id.0 as usize].trace_id = out["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).filter(|t| t.len() == 32).map(String::from);
+        b.meta[id.0 as usize].route = out["route"].as_str().map(String::from);
+    }
     match printed {
         Ok(Ok(out)) => match b.ledger.classify_probe(id, &out) {
             Ok(()) => {
@@ -341,13 +425,18 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
         let key = TRAFFIC_KEYS.start + rng.below(TRAFFIC_KEYS.end - TRAFFIC_KEYS.start);
         let pick = rng.below(10);
         let value = format!("t{n}");
+        // A quarter of the calls are carried to their exact target by a gateway (same-mesh and
+        // cross-mesh alike); the rest go direct from the controller.
+        // A node is never its own carrier (a node does not dial itself).
+        let carriers: Vec<&String> = view.gateways.iter().filter(|g| **g != path).collect();
+        let via = (!carriers.is_empty() && rng.below(4) == 0).then(|| carriers[rng.below(carriers.len() as u64) as usize].clone());
         let call = match pick {
-            0..=4 => Call { target_path: path, target_id: id, kind: "put", key, value: Some(value), expected: None },
+            0..=4 => Call { target_path: path, target_id: id, kind: "put", key, value: Some(value), expected: None, via },
             5..=6 => {
                 let expected = shared.book.lock().unwrap().last.get(&(id.clone(), key)).cloned();
-                Call { target_path: path, target_id: id, kind: "cas", key, value: Some(value), expected }
+                Call { target_path: path, target_id: id, kind: "cas", key, value: Some(value), expected, via }
             }
-            _ => Call { target_path: path, target_id: id, kind: "get", key, value: None, expected: None },
+            _ => Call { target_path: path, target_id: id, kind: "get", key, value: None, expected: None, via },
         };
         issue(&shared, &probe, &admin, call).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -388,21 +477,27 @@ async fn relocate_control(estate: &mut Estate, known: &[String]) -> bool {
     false
 }
 
-/// `(admins, rpc nodes)` per mesh the model holds.
-fn expected_counts(model: &Model) -> BTreeMap<String, (u32, u32)> {
-    model.meshes.keys().map(|m| (m.clone(), (model.count(m, NodeClass::NodeAdmin), model.count(m, NodeClass::RpcNode)))).collect()
+/// The node count of every class per mesh the model holds.
+fn expected_counts(model: &Model) -> BTreeMap<String, BTreeMap<&'static str, u32>> {
+    let classes: BTreeSet<NodeClass> = model.bounds.keys().copied().chain(model.meshes.values().flat_map(|m| m.nodes.values().map(|n| n.class))).collect();
+    model.meshes.keys().map(|m| (m.clone(), classes.iter().map(|c| (c.kind_name(), model.count(m, *c))).collect())).collect()
+}
+
+/// A node that serves the proof store: every kind but the node-admin.
+fn serves_proof(n: &Value) -> bool {
+    n["kind"].as_str().is_some_and(|k| k != "node_admin")
 }
 
 /// The fabric has converged when every live admin's view holds the same births: the expected
 /// counts, every one ready for traffic, the same (path, incarnation) set everywhere. Returns the
 /// live admin bases that agree.
-async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, (u32, u32)>) -> Option<Vec<String>> {
+async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<Vec<String>> {
     let nodes = estate.nodes().await;
     let shape_ok = |nodes: &[Value]| {
-        expected.iter().all(|(m, (a, r))| {
+        expected.iter().all(|(m, counts)| {
             let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
             let all = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
-            ready("node_admin") == *a && ready("rpc_node") == *r && all("node_admin") == *a && all("rpc_node") == *r
+            counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
         })
     };
     let births = |nodes: &[Value]| -> BTreeSet<(String, String)> { nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect() };
@@ -552,6 +647,38 @@ fn fabric_primaries(nodes: &[Value]) -> String {
     crate::elections::advertised_fabric_primaries(nodes).join(",")
 }
 
+/// A mesh made unheard by every other mesh, until its Heal row.
+enum Cut {
+    /// Container provider: a packet filter in the namespaces of the mesh's containers.
+    Container(container_faults::Silenced),
+    /// Process provider: UDP between the mesh's transport sockets and every other mesh's dropped
+    /// by `iptables`; dropping the value lifts it.
+    Udp { partition: Partition, members: Vec<String> },
+}
+
+impl Cut {
+    fn members_len(&self) -> usize {
+        match self {
+            Cut::Container(s) => s.members.len(),
+            Cut::Udp { members, .. } => members.len(),
+        }
+    }
+
+    fn lift(self) -> Result<(), String> {
+        match self {
+            Cut::Container(s) => s.lift(),
+            Cut::Udp { partition, .. } => {
+                drop(partition);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
 /// A fault or an execution step that broke a rule.
 struct Broken {
     rule: &'static str,
@@ -578,7 +705,7 @@ pub struct Driver {
     actions: BTreeMap<String, usize>,
     skipped: BTreeMap<String, usize>,
     rounds_log: Vec<Value>,
-    silenced: BTreeMap<String, container_faults::Silenced>,
+    silenced: BTreeMap<String, Cut>,
     started: Instant,
 }
 
@@ -587,12 +714,20 @@ impl Driver {
     pub async fn new(mut estate: Estate, cfg: Config) -> Self {
         estate.set_seed(cfg.seed);
         let initial = cfg.model(&estate.owner.provider);
-        let desired = json!({"fabric": "fabric1", "meshes": cfg.shape.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>()});
+        let desired = json!({"fabric": "fabric1", "meshes": cfg.shape.iter().map(|(m, classes)| {
+            let mut mesh = serde_json::Map::new();
+            mesh.insert("name".into(), json!(m));
+            for (class, n) in classes {
+                mesh.insert(class.kind_name().into(), json!(n));
+            }
+            Value::Object(mesh)
+        }).collect::<Vec<_>>()});
         let (status, a) = estate.post("/api/build", &desired).await;
         assert_eq!(status, 202, "{a}");
         let build_id = s(&a["build_id"]);
         estate.await_build(&build_id, Duration::from_secs(120)).await;
-        estate.settled_shape(&cfg.shape, Duration::from_secs(60)).await;
+        let want: BTreeMap<(String, String), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), class.kind_name().to_string()), *n as usize))).collect();
+        estate.settled_counts(want, Duration::from_secs(60)).await;
         let expected = expected_counts(&initial);
         wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || converged_everywhere(&estate, &expected)).await;
         let known = admin_bases(&estate.nodes().await);
@@ -625,8 +760,9 @@ impl Driver {
 
     fn publish_view(&self, nodes: &[Value]) {
         let admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")).and_then(|n| n["admin_api_base"].as_str().map(String::from));
-        let rpcs = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-        *self.shared.view.lock().unwrap() = View { admin, rpcs };
+        let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+        let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
     }
 
     /// The live reason an action cannot run now, if any. The model knows no authority.
@@ -684,7 +820,8 @@ impl Driver {
         }
         for _ in 0..64 {
             let seed = self.rng.next();
-            let drawn = generate(seed, &self.model, 1);
+            let profile = self.cfg.profile;
+            let drawn = generate_among(seed, &self.model, 1, |a| profile.allows(a));
             let a = drawn.into_iter().next()?;
             self.sched.record("draw", &format!("{seed:#x}:{}", kind(&a)));
             match self.live_refusal(&a, nodes) {
@@ -706,7 +843,8 @@ impl Driver {
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);
         let mut violations: Vec<Violation> = Vec::new();
         let mut round = 0usize;
-        while Instant::now() < deadline && violations.is_empty() {
+        // A cut owes its Heal row: the run ends on a healed fabric, never inside a hold.
+        while (Instant::now() < deadline || !self.silenced.is_empty()) && violations.is_empty() {
             round += 1;
             if !relocate_control(&mut self.estate, &self.known).await {
                 violations.push(Violation { rule: "control-api-answers".into(), round, step: self.executed.len(), action: "-".into(), detail: "no admin answers its control API".into() });
@@ -736,14 +874,26 @@ impl Driver {
                 violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail });
             }
             entry["wall_ms"] = json!(started.elapsed().as_millis() as u64);
+            if entry.get("converged_ms").is_some() {
+                entry["converged_ms"] = entry["wall_ms"].clone();
+            }
             self.rounds_log.push(entry);
             if violations.is_empty() {
-                if let Err(b) = self.invariants(round).await {
-                    violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail });
+                // The checkpoint: the invariants that held after this action, by name, on its row.
+                match self.invariants(round).await {
+                    Ok(held) => {
+                        if let Some(row) = self.rounds_log.last_mut() {
+                            row["invariants_held"] = json!(held);
+                            if held.is_empty() {
+                                row["invariants_deferred"] = json!("a mesh is cut; they are judged at its Heal row");
+                            }
+                        }
+                    }
+                    Err(b) => violations.push(Violation { rule: b.rule.into(), round, step, action: action.to_string(), detail: b.detail }),
                 }
             }
         }
-        // A mesh left silenced is healed before anything is judged or stopped.
+        // A mesh left silenced (a violation ended the run) is healed before anything is judged or stopped.
         for (mesh, sil) in std::mem::take(&mut self.silenced) {
             if let Err(e) = sil.lift() {
                 violations.push(Violation { rule: "silence-lifts".into(), round, step: self.executed.len().saturating_sub(1), action: format!("lift {mesh}"), detail: e });
@@ -766,6 +916,15 @@ impl Driver {
             executed: self.executed.clone(),
             schedule: self.sched.events_json(),
             rounds_log: self.rounds_log.clone(),
+            operations: {
+                let b = self.shared.book.lock().unwrap();
+                b.ledger
+                    .operations()
+                    .iter()
+                    .zip(b.meta.iter())
+                    .map(|(o, m)| json!({"op_seq": o.id.0, "target": m.target_path, "target_node_id": m.target_id, "key": m.key, "trace_id": m.trace_id, "via": m.via, "route": m.route, "intent": o.mutation.as_ref().map(|i| json!({"key": i.key, "value": String::from_utf8_lossy(&i.value)})), "classification": o.classification}))
+                    .collect()
+            },
         };
         report.ledger.violations = ledger_violations.iter().map(|(_, d)| d.clone()).collect();
         // The first broken rule, shrunk. A ledger violation fails at the last executed row.
@@ -809,7 +968,7 @@ impl Driver {
         let mut no_build_for_drift = false;
         match action {
             Action::Grow { mesh, class } => {
-                let kind = if *class == NodeClass::NodeAdmin { "node_admin" } else { "rpc_node" };
+                let kind = class.kind_name();
                 let (st, b) = self.estate.post("/api/nodes/spawn", &json!({"mesh": mesh, "kind": kind})).await;
                 entry["accepted"] = json!(st);
                 if st != 202 {
@@ -878,8 +1037,9 @@ impl Driver {
             }
             Action::Heal { mesh } => {
                 let sil = self.silenced.remove(mesh).ok_or_else(|| broken("model-matches-estate", format!("{mesh} holds no silence to lift")))?;
+                let healed_at_ns = now_ns();
                 sil.lift().map_err(|e| broken("silence-lifts", e))?;
-                entry["healed"] = json!(mesh);
+                entry["healed"] = json!({"mesh": mesh, "healed_at_ns": healed_at_ns});
             }
             Action::Proof(op) => {
                 let (target, key) = match op {
@@ -889,9 +1049,9 @@ impl Driver {
                 let probe = self.estate.probe_handle();
                 let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.admin.clone());
                 let call = match op {
-                    ProofOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None },
-                    ProofOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()) },
-                    ProofOp::Delete { .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None },
+                    ProofOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
+                    ProofOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
+                    ProofOp::Delete { .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "delete", key, value: None, expected: None, via: None },
                 };
                 issue(&self.shared, &probe, &admin, call).await;
                 return Ok(());
@@ -1055,7 +1215,7 @@ impl Driver {
     async fn wedge(&mut self, n: &Value, round: usize, attempt_before: u64, entry: &mut Value) -> Result<(), Broken> {
         let path = s(&n["name"]);
         let container = self.estate.owner.provider == "container";
-        let is_rpc = n["kind"] == "rpc_node";
+        let is_rpc = serves_proof(n);
         let exact = format!("exact:{}", s(&n["node_id"]));
         let floor = self.cfg.floor;
         let key = (9000 + round).to_string();
@@ -1111,7 +1271,7 @@ impl Driver {
         // On containers the view marked a held node unheard 29 s to 46 s after the hold (spans of
         // the i143-2787-soak-container runs); the container cell for the silence (#2784) observes
         // the same consequence within 90 s, and so does the soak there.
-        let within = if container { Duration::from_secs(90) } else { self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members.len()).sum::<usize>()) };
+        let within = if container { Duration::from_secs(90) } else { self.cfg.unheard_within(true_offline, 1 + self.silenced.values().map(|x| x.members_len()).sum::<usize>()) };
         let marked = until_unheard(&mut self.estate, &known, &[path.clone()], true_offline, true, within).await;
         if let Ok(after) = &marked {
             entry["unheard_after_ms"] = json!(after.as_millis() as u64);
@@ -1190,6 +1350,9 @@ impl Driver {
     async fn unheard(&mut self, mesh: &str, nodes: &[Value], entry: &mut Value) -> Result<(), Broken> {
         let members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
+        if self.estate.owner.provider != "container" {
+            return self.cut_udp(mesh, nodes, members, entry).await;
+        }
         let sil = container_faults::silence(&self.estate, &members, &fp).map_err(|e| broken("fault-applies", e))?;
         if !sil.active().map_err(|e| broken("fault-is-observed", e))? {
             return Err(broken("fault-is-observed", format!("{mesh}: the silence chain is not installed on every member")));
@@ -1199,16 +1362,63 @@ impl Driver {
         // The window the container cell for this fault (#2784) observes the same consequence in; the
         // soak measures the time it took (`unheard_after_ms`).
         let within = Duration::from_secs(90);
-        self.silenced.insert(mesh.to_string(), sil);
+        self.silenced.insert(mesh.to_string(), Cut::Container(sil));
         let after = until_unheard(&mut self.estate, &others, &members, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
         entry["silenced"] = json!({"mesh": mesh, "members": members, "unheard_after_ms": after.as_millis() as u64});
         Ok(())
     }
 
+    /// Process provider: every UDP path between `mesh` and the other meshes is dropped (the host's
+    /// acknowledgement is the rule install). Held until every node-admin has re-fed every peer-mesh
+    /// node-admin twice (`rdm.mesh.connection.update.via-refeed`, reason `stale-held-member`), the
+    /// repair the architecture gives an unheard peer mesh; each node-admin of the cut mesh still holds
+    /// its own mesh ready, because no node is cut from a member of its own mesh.
+    async fn cut_udp(&mut self, mesh: &str, nodes: &[Value], members: Vec<String>, entry: &mut Value) -> Result<(), Broken> {
+        let others: Vec<String> = nodes.iter().filter(|n| n["mesh"] != mesh && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+        let (pa, pb) = (udp_ports(nodes, &members), udp_ports(nodes, &others));
+        if pa.len() != members.len() || pb.len() != others.len() {
+            return Err(broken("fault-names-an-exact-runtime", format!("{mesh}: {} of {} members and {} of {} others publish a transport socket", pa.len(), members.len(), pb.len(), others.len())));
+        }
+        let partition = Partition::start(&pa, &pb).map_err(|why| broken("fault-applies", format!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {mesh} and the other meshes: {why}")))?;
+        let cut_at_ns = now_ns();
+        self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
+        let admins: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["admin_api_base"]))).collect();
+        let window = self.cfg.floor;
+        let until = Instant::now() + window * 6 + Duration::from_secs(40);
+        let held_at = loop {
+            let spans = self.estate.spans();
+            let att: Vec<&Value> = spans
+                .iter()
+                .filter(|sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns)
+                .collect();
+            let all = admins.iter().all(|(obs, om, _)| admins.iter().filter(|(_, pm, _)| pm != om).all(|(peer, _, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
+            if all {
+                break now_ns();
+            }
+            if Instant::now() >= until {
+                return Err(broken("fault-is-observed", format!("{mesh} cut: not every node-admin re-fed every peer-mesh node-admin twice within {}s ({} re-feeds since the cut)", (window * 6 + Duration::from_secs(40)).as_secs(), att.len())));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        for (name, node_mesh, base) in &admins {
+            let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["name"].as_str()).collect();
+            let Some(view) = try_get(base, "/api/nodes").await else {
+                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} ({base}) does not answer /api/nodes during the cut")));
+            };
+            let theirs = view["nodes"].as_array().cloned().unwrap_or_default();
+            let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready-for-traffic")).collect();
+            if !missing.is_empty() {
+                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} no longer holds its own mesh members ready during the cut: {missing:?}")));
+            }
+        }
+        entry["silenced"] = json!({"mesh": mesh, "members": members, "fault": "udp-drop", "udp_ports": {"cut": pa, "others": pb}, "cut_at_ns": cut_at_ns, "held_after_ms": (held_at - cut_at_ns) / 1_000_000});
+        Ok(())
+    }
+
     /// The invariants that hold at every converged point; a violation names itself.
-    async fn invariants(&mut self, round: usize) -> Result<(), Broken> {
+    async fn invariants(&mut self, round: usize) -> Result<Vec<&'static str>, Broken> {
         if !self.silenced.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let nodes = self.estate.nodes().await;
         let mut per_path: BTreeMap<String, usize> = BTreeMap::new();
@@ -1230,7 +1440,7 @@ impl Driver {
                 return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds Fabric.build_id {} not {}", f["build_id"], self.build_id)));
             }
             let heard: BTreeSet<String> = f["meshes"].as_array().into_iter().flatten().filter(|m| m["status"] == "ready-for-traffic").map(|m| s(&m["name"])).collect();
-            for (mesh, _, _) in &self.cfg.shape {
+            for (mesh, _) in &self.cfg.shape {
                 if !heard.contains(*mesh) {
                     return Err(broken("no-peer-mesh-permanently-unheard", format!("round {round}: {base} does not hold {mesh} ready-for-traffic")));
                 }
@@ -1243,13 +1453,24 @@ impl Driver {
         if !ok {
             return Err(broken("seats-equal-the-public-candidates", format!("round {round}: {why}")));
         }
-        for n in nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic") {
+        for n in nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic") {
             let r = self.estate.probe(&["get", "--target", &format!("exact:{}", s(&n["node_id"])), "--key", "9998"]);
             if r["outcome"] != "Reply" || r["reply"]["incarnation_id"] != n["incarnation_id"] {
                 return Err(broken("every-rpc-node-reachable-on-its-current-birth", format!("round {round}: {} not reachable on its current birth: {r}", n["name"])));
             }
         }
-        Ok(())
+        if let Some(row) = self.rounds_log.last_mut() {
+            row["authority"] = json!({"fabric_primary": writers.iter().next(), "mesh_primaries": nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>(), "seat_holders": nodes.iter().filter(|n| n["is_primary"] == true).map(|n| n["name"].clone()).collect::<Vec<_>>()});
+        }
+        Ok(vec![
+            "one-current-birth-per-path",
+            "live-admin-answers",
+            "fabric-build-id-held",
+            "no-peer-mesh-permanently-unheard",
+            "one-fabric-primary",
+            "seats-equal-the-public-candidates",
+            "every-rpc-node-reachable-on-its-current-birth",
+        ])
     }
 
     /// The ledger's count algebra over every operation and its state algebra against every store
@@ -1258,7 +1479,7 @@ impl Driver {
     async fn reconcile_ledger(&mut self) -> (LedgerReport, Vec<(String, String)>) {
         let mut found: Vec<(String, String)> = Vec::new();
         let nodes = if relocate_control(&mut self.estate, &self.known).await { self.estate.nodes().await } else { Vec::new() };
-        let alive: BTreeMap<String, String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
+        let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
         let (meta, excluded, probe_failures) = {
             let b = self.shared.book.lock().unwrap();
             (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone())
@@ -1420,6 +1641,7 @@ pub fn summary(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+        use crate::model::generate;
 
     /// A failure at the last row of a generated sequence shrinks to a legal sequence that ends in
     /// the failing action, reaches the same topology before it and keeps the involved node's rows.

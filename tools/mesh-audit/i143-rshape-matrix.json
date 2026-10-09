@@ -538,8 +538,7 @@
       "job": "i143-rshape-soak-routing-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-process/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_routing_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-routing-process/mock_soak_routing_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_authority_preserves_continuous_invariants",
@@ -549,8 +548,7 @@
       "job": "i143-rshape-soak-authority-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_partition_preserves_continuous_invariants",
@@ -560,8 +558,7 @@
       "job": "i143-rshape-soak-partition-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-process/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_partition_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-partition-process/mock_soak_partition_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_lifecycle_preserves_continuous_invariants",
@@ -571,8 +568,7 @@
       "job": "i143-rshape-soak-lifecycle-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-process/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-lifecycle-process/mock_soak_lifecycle_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_randomized_preserves_continuous_invariants",
@@ -582,8 +578,7 @@
       "job": "i143-rshape-soak-randomized-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-process/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_randomized_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-randomized-process/mock_soak_randomized_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_routing_preserves_continuous_invariants",
@@ -593,8 +588,7 @@
       "job": "i143-rshape-soak-routing-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-container/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_routing_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-routing-container/mock_soak_routing_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_authority_preserves_continuous_invariants",
@@ -604,8 +598,7 @@
       "job": "i143-rshape-soak-authority-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_partition_preserves_continuous_invariants",
@@ -615,8 +608,7 @@
       "job": "i143-rshape-soak-partition-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_partition_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_lifecycle_preserves_continuous_invariants",
@@ -626,8 +618,7 @@
       "job": "i143-rshape-soak-lifecycle-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-container/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-lifecycle-container/mock_soak_lifecycle_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_randomized_preserves_continuous_invariants",
@@ -637,8 +628,7 @@
       "job": "i143-rshape-soak-randomized-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-container/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_randomized_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-randomized-container/mock_soak_randomized_preserves_continuous_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_replay_reproduces_qualified_invariants",
