@@ -457,13 +457,14 @@ async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
     let hidden = e.node_id("mesh1.rpc.3").await;
     e.world.freeze(&hidden);
     e.view.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
-    // A real loss elsewhere opens an attempt whose plan also names the path the view lacks.
+    // A real loss elsewhere opens an attempt whose plan is exactly that birth: the path the view
+    // lacks is its own attempt's, so this one neither creates over it nor fences it.
     e.world.kill(&e.node_id("mesh1.rpc.2").await);
     e.unheard(&["mesh1.rpc.2"]).await;
     e.drift().await.expect("the proven loss opens the next attempt");
     e.converge().await;
-    assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "the absent-but-running path is held, not created over");
-    assert_eq!(e.fence_of("mesh1.rpc.3"), vec![FenceOutcome::Held]);
+    assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "the absent-but-running path is not created over");
+    assert_eq!(e.fence_of("mesh1.rpc.3"), vec![], "an attempt that carries an action plans only its birth");
 }
 
 /// The seeded soak's finding (seed 7, round 3, trace in the spans of
