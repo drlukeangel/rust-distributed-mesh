@@ -459,15 +459,17 @@ pub struct EstateScope {
 }
 
 /// The reaper: waits for the test binary to die, then kills every process whose environment names
-/// this estate's root (`RDM_ESTATE_ROOT`: every admin, and every node an admin launched, inherits
-/// it), removes the container fabric recorded in `<root>/fabric_id`, and removes the root. It runs
+/// this estate's root: `RDM_ESTATE_ROOT` (the bootstrap admin and the admins the estate restarted)
+/// or a data dir under it, `RDM_DATA_DIR` (every node an admin launched: the process provider strips
+/// every `RDM_*` of the launcher from the child, so its launch contract is the only mark it has),
+/// removes the container fabric recorded in `<root>/fabric_id`, and removes the root. It runs
 /// in its own session, so a gate that kills the test binary's process group leaves it running.
 const REAPER: &str = r#"
 owner=$1; root=$2
 while kill -0 "$owner" 2>/dev/null; do sleep 0.2; done
 for pass in 1 2 3 4 5 6 7 8 9 10; do
   found=0
-  for e in $(grep -laP "RDM_ESTATE_ROOT=$root\x00" /proc/[0-9]*/environ 2>/dev/null); do
+  for e in $(grep -laP "RDM_(ESTATE_ROOT=$root|DATA_DIR=$root/[^\x00]*)\x00" /proc/[0-9]*/environ 2>/dev/null); do
     p=${e#/proc/}; p=${p%/environ}
     [ "$p" = "$$" ] && continue
     kill -9 "$p" 2>/dev/null && found=1
@@ -1238,11 +1240,17 @@ impl Drop for Estate {
     }
 }
 
-/// Kill, until none is left, every process whose environment names `root` (`RDM_ESTATE_ROOT`: every
-/// admin and every node an admin launched inherits it): the reaper's own rule, applied by the
-/// estate when it ends, so a failed run leaves nothing behind for the reaper to find later.
+/// Does this process environment (`/proc/<pid>/environ`, NUL-separated) name `root` as its estate:
+/// `RDM_ESTATE_ROOT` is the root, or `RDM_DATA_DIR` is a directory under it?
+pub fn environ_names_estate(env: &[u8], root: &Path) -> bool {
+    let (estate, data) = (format!("RDM_ESTATE_ROOT={}", root.display()), format!("RDM_DATA_DIR={}/", root.display()));
+    env.split(|b| *b == 0).any(|var| var == estate.as_bytes() || var.starts_with(data.as_bytes()))
+}
+
+/// Kill, until none is left, every process whose environment names `root` (see
+/// [`environ_names_estate`]): the reaper's own rule, applied by the estate when it ends, so a failed
+/// run leaves nothing behind for the reaper to find later.
 fn kill_estate_processes(root: &Path) {
-    let needle = format!("RDM_ESTATE_ROOT={}\0", root.display());
     for _ in 0..10 {
         let mut found = false;
         for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
@@ -1251,7 +1259,7 @@ fn kill_estate_processes(root: &Path) {
                 continue;
             }
             let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else { continue };
-            if env.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+            if environ_names_estate(&env, root) {
                 found |= Command::new("kill").args(["-9", &pid.to_string()]).status().is_ok_and(|s| s.success());
             }
         }

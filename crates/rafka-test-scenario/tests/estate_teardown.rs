@@ -1,7 +1,7 @@
 //! The estate harness's teardown: an estate that ends, by a passing run or a panicking one, leaves no
 //! process of its own behind.
 
-use rafka_test_scenario::estate::{Estate, Owner};
+use rafka_test_scenario::estate::{environ_names_estate, Estate, Owner};
 use std::path::Path;
 use std::time::Duration;
 
@@ -16,15 +16,14 @@ fn owner() -> Owner {
     }
 }
 
-/// The processes whose environment names `root` as their estate.
+/// The processes whose environment names `root` as their estate, the nodes an admin launched included.
 fn processes_of(root: &Path) -> Vec<u32> {
-    let needle = format!("RDM_ESTATE_ROOT={}\0", root.display());
     std::fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()))
-        .filter(|pid| std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| env.windows(needle.len()).any(|w| w == needle.as_bytes())))
+        .filter(|pid| std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| environ_names_estate(&env, root)))
         .collect()
 }
 
