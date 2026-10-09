@@ -3256,8 +3256,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     rounds.end();
                 }
                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
-                // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
-                rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
+                // R-S2: a node-admin (a mesh primary or not) the fabric-primary's view gained or changed is sent the down op.
+                rounds.address_changed(&t, fabric_primary, Some(&rpc_client));
                 let addr = rafka_mesh_transport::membership::gossip_addr;
                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                 builds.join_admins(admins.clone()).await;

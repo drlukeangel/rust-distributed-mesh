@@ -172,28 +172,31 @@ pub(crate) struct RoundDriver {
     /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
     /// view's primary changing from this is what sends it again (R-S2).
     addressed: BTreeMap<String, Addressed>,
+    /// The node-admins that are not a mesh primary, addressed the same way, by node.
+    addressed_admins: BTreeMap<crate::model::NodeId, Addressed>,
 }
 
 impl RoundDriver {
     pub fn new(me: PathName) -> Self {
-        Self { me, mesh: None, fabric: None, addressed: BTreeMap::new() }
+        Self { me, mesh: None, fabric: None, addressed: BTreeMap::new(), addressed_admins: BTreeMap::new() }
     }
 
-    /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
-    /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
-    /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
+    /// The fabric-primary's view of a node-admin changed (a mesh primary or another admin appeared,
+    /// moved or was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
+    /// takeover alone: an admin this admin has not addressed in this view is addressed now. A
     /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
-    pub(crate) fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
-        let targets = self.changed_mesh_primaries(view, is_fabric_primary);
+    pub(crate) fn address_changed(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
+        let targets = self.changed_addressees(view, is_fabric_primary);
         if !targets.is_empty() {
             send_down(&self.me, "fabric", &view.fabric.name, targets, client);
         }
     }
 
-    /// The mesh primaries to send the down op now, recorded as addressed.
-    pub(crate) fn changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
+    /// The node-admins to send the down op now (mesh primaries by mesh, other admins by node), recorded as addressed.
+    pub(crate) fn changed_addressees(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
         if !is_fabric_primary {
             self.addressed.clear();
+            self.addressed_admins.clear();
             return Vec::new();
         }
         let mut targets = Vec::new();
@@ -208,6 +211,24 @@ impl RoundDriver {
             }
         }
         self.addressed.retain(|mesh, _| present.contains(mesh));
+        // A node-admin that is not a mesh primary owes its own birth to this admin as well, and
+        // this admin's view of it can trail the admin's first declaration: the receiver cannot
+        // resolve the sender yet and refuses it by name, and a refusal is terminal. The down op is
+        // what asks again, once per birth and endpoint the view holds.
+        let mut admins = Vec::new();
+        for n in view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.name != self.me) {
+            if view.cohort_primary(&n.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == n.node_id) {
+                continue;
+            }
+            let Some(m) = view.meshes.iter().find(|m| m.name == n.mesh) else { continue };
+            admins.push(n.node_id.clone());
+            let now = Addressed::of(n, m);
+            if self.addressed_admins.get(&n.node_id) != Some(&now) {
+                self.addressed_admins.insert(n.node_id.clone(), now);
+                targets.push((n.name.to_string(), Some(n.clone())));
+            }
+        }
+        self.addressed_admins.retain(|id, _| admins.contains(id));
         targets
     }
 
@@ -450,17 +471,17 @@ mod tests {
         let first = member("mesh2.admin.1", true, false);
         let mut driver = RoundDriver::new(me.name.clone());
         let v0 = view(vec![me.clone()]);
-        assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
+        assert!(driver.changed_addressees(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
 
         let v1 = view(vec![me.clone(), first.clone()]);
-        let sent: Vec<String> = driver.changed_mesh_primaries(&v1, true).into_iter().map(|(m, _)| m).collect();
+        let sent: Vec<String> = driver.changed_addressees(&v1, true).into_iter().map(|(m, _)| m).collect();
         assert_eq!(sent, vec!["mesh2".to_string()], "a mesh primary gained by the view is addressed");
-        assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+        assert!(driver.changed_addressees(&v1, true).is_empty(), "the same view addresses nobody twice");
 
         let mut reborn = first.clone();
         reborn.incarnation_id = Some(IncarnationId::mint());
         let v2 = view(vec![me.clone(), reborn]);
-        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
+        assert_eq!(driver.changed_addressees(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
 
         // The primary was in view before its endpoint was: gaining the endpoint it is resolved by
         // is a change, so the down op goes again once the receiver can resolve the sender.
@@ -468,14 +489,14 @@ mod tests {
         early.endpoint_id = None;
         let mut v_early = view(vec![me.clone(), early.clone()]);
         let mut driver = RoundDriver::new(me.name.clone());
-        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
-        assert!(driver.changed_mesh_primaries(&v_early, true).is_empty());
+        assert_eq!(driver.changed_addressees(&v_early, true).len(), 1);
+        assert!(driver.changed_addressees(&v_early, true).is_empty());
         for n in &mut v_early.nodes {
             if n.name == early.name {
                 n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
             }
         }
-        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
+        assert_eq!(driver.changed_addressees(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
     }
 
     /// CONTRACT (R-S2): a node-admin that is not a mesh primary owes its own birth to the
@@ -489,32 +510,32 @@ mod tests {
         let second = member("mesh1.admin.2", false, false);
         let mut driver = RoundDriver::new(me.name.clone());
         let v0 = view(vec![me.clone()]);
-        assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "nobody else in view: nobody to address");
+        assert!(driver.changed_addressees(&v0, true).is_empty(), "nobody else in view: nobody to address");
 
         let v1 = view(vec![me.clone(), second.clone()]);
-        let sent: Vec<String> = driver.changed_mesh_primaries(&v1, true).into_iter().map(|(who, _)| who).collect();
+        let sent: Vec<String> = driver.changed_addressees(&v1, true).into_iter().map(|(who, _)| who).collect();
         assert_eq!(sent, vec!["mesh1.admin.2".to_string()], "a non-primary admin gained by the view is addressed");
-        assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+        assert!(driver.changed_addressees(&v1, true).is_empty(), "the same view addresses nobody twice");
 
         let mut reborn = second.clone();
         reborn.incarnation_id = Some(IncarnationId::mint());
         let v2 = view(vec![me.clone(), reborn]);
-        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the admin is addressed");
+        assert_eq!(driver.changed_addressees(&v2, true).len(), 1, "a new birth of the admin is addressed");
 
         let mut early = second.clone();
         early.endpoint_id = None;
         let mut v_early = view(vec![me.clone(), early.clone()]);
         let mut driver = RoundDriver::new(me.name.clone());
-        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
+        assert_eq!(driver.changed_addressees(&v_early, true).len(), 1);
         for n in &mut v_early.nodes {
             if n.name == early.name {
                 n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
             }
         }
-        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
+        assert_eq!(driver.changed_addressees(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
 
         let not_fp = view(vec![member("mesh1.admin.1", true, false), second]);
-        assert!(driver.changed_mesh_primaries(&not_fp, false).is_empty(), "a view where this admin is not the fabric-primary addresses nobody");
+        assert!(driver.changed_addressees(&not_fp, false).is_empty(), "a view where this admin is not the fabric-primary addresses nobody");
     }
 
     // @feature: node-lifecycle
