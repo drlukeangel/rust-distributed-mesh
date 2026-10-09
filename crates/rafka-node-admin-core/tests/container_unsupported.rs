@@ -10,6 +10,9 @@ use rafka_node_admin_core::model::ProviderKind;
 
 #[tokio::test]
 async fn an_unreachable_container_runtime_is_refused_by_name() {
+    if crate::own_process::delegated(module_path!(), "an_unreachable_container_runtime_is_refused_by_name") {
+        return;
+    }
     std::env::set_var("DOCKER_HOST", "unix:///nonexistent/i143-e2-s4/docker.sock");
     match ContainerDeploymentProvider::prepare("fabric-unsupported").await {
         Err(DeployError::Unsupported { provider, reason }) => {

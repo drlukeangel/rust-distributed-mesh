@@ -237,6 +237,9 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// timeout or hang, a runtime left running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn soak_driver_reconciles_fixed_seed_thirty_minute_process_run() {
+    if crate::own_process::delegated(module_path!(), "soak_driver_reconciles_fixed_seed_thirty_minute_process_run") {
+        return;
+    }
     soak_cell(PROCESS_CELL, "process", "soak-process").await;
 }
 
@@ -246,5 +249,8 @@ async fn soak_driver_reconciles_fixed_seed_thirty_minute_process_run() {
 /// container is in no silenced set. Every container of the estate is gone when the estate stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn soak_driver_reconciles_fixed_seed_thirty_minute_container_run() {
+    if crate::own_process::delegated(module_path!(), "soak_driver_reconciles_fixed_seed_thirty_minute_container_run") {
+        return;
+    }
     soak_cell(CONTAINER_CELL, "container", "soak-container").await;
 }

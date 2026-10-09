@@ -142,6 +142,9 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// without a node-admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
+    if crate::own_process::delegated(module_path!(), "process_fault_backend_kills_exact_runtime_recovers_current_birth") {
+        return;
+    }
     let dir = acceptance_dir(KILL_CELL);
     let cap = capture(KILL_CELL);
     // Three node-admins: the bootstrap admin is the harness's own control address and is never signalled,

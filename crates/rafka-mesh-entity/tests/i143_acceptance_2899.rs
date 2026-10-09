@@ -105,6 +105,9 @@ fn held(book: &DigestBook, node_id: &NodeId) -> (u64, MemberStatus, u64) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
+    if crate::own_process::delegated(module_path!(), "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock") {
+        return;
+    }
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::env::set_var("RDM_EVIDENCE_DIR", &dir);

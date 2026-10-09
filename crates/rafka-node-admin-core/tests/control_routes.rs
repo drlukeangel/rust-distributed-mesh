@@ -85,15 +85,8 @@ struct Harness {
 /// This admin (`mesh1.admin.1`, the fabric-primary) holds a settled accepted Build of the
 /// observed topology: the one every change compiles against.
 async fn harness(runtime_routes: Router) -> Harness {
-    // Every test in this binary installs its own thread-local dispatcher, and a callsite caches
-    // the interest of the dispatchers that existed when it registered; a callsite registered
-    // while no dispatcher wanted it stays disabled and its `record` never reaches a layer. One
-    // process-wide dispatcher that enables everything keeps every callsite enabled.
-    static ENABLED_EVERYWHERE: std::sync::Once = std::sync::Once::new();
-    ENABLED_EVERYWHERE.call_once(|| {
-        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
-    });
     let spans = SpanNames::default();
+    crate::enable_callsites();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
@@ -354,6 +347,7 @@ async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
 #[tokio::test]
 async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_change_by_name() {
     let spans = SpanNames::default();
+    crate::enable_callsites();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
@@ -458,6 +452,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 #[tokio::test]
 async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_status() {
     let fields = SpanFields::default();
+    crate::enable_callsites();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();

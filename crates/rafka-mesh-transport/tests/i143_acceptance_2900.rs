@@ -205,6 +205,9 @@ async fn wait<T, Fut: std::future::Future<Output = Option<T>>>(what: &str, mut p
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
+    if crate::own_process::delegated(module_path!(), "members_receiver_commits_complete_snapshot_before_advancing_version") {
+        return;
+    }
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::env::set_var("RDM_EVIDENCE_DIR", &dir);

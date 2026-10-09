@@ -13,6 +13,9 @@ use std::time::Duration;
 /// not set is absent; what the process needs from the host (`PATH`) is kept.
 #[tokio::test]
 async fn a_launched_process_sees_the_launch_contract_its_spec_names_and_never_its_launchers() {
+    if crate::own_process::delegated(module_path!(), "a_launched_process_sees_the_launch_contract_its_spec_names_and_never_its_launchers") {
+        return;
+    }
     for (k, v) in [
         ("RDM_SUPERSEDES", "launcher-predecessor"),
         ("RDM_LAUNCHER", "mesh1.admin.1,x,y"),
