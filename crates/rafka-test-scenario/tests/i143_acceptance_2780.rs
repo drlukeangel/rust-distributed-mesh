@@ -222,7 +222,7 @@ impl Run {
         self.door_of(primary["name"].as_str().unwrap()).await
     }
 
-    /// The admin that executes everything else (admin cohorts, mesh creation and retirement): the fabric primary.
+    /// The admin that executes everything else (mesh creation and retirement): the fabric primary.
     async fn fabric_door(&self) -> Door {
         let nodes = self.estate.nodes().await;
         let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));

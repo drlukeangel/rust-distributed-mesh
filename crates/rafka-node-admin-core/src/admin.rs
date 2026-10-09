@@ -1142,13 +1142,12 @@ pub struct AdminRunner {
     pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
 }
 
-/// The lifecycle events of a retirement this admin executes, on its own mesh channel and the
-/// backbone; peer primaries forward them onto their meshes.
+/// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
+/// backbone carries them as the open overlays and retained departures of this mesh's aggregate,
+/// which its mesh primary publishes; a peer mesh's primary forwards them onto its own channel.
 pub struct GossipLifecycle {
     /// This admin's mesh channel.
     pub membership: Membership,
-    /// The backbone.
-    pub backbone: Backbone,
 }
 
 #[async_trait::async_trait]
@@ -1163,9 +1162,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
             }
-            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeDeleting not sent on the backbone");
-            }
             tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
         .instrument(span)
@@ -1178,9 +1174,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
             }
-            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeRestarting not sent on the backbone");
-            }
             tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
         .instrument(span)
@@ -1192,9 +1185,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         async {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
-            }
-            if let Err(e) = self.backbone.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeDeleted not sent on the backbone");
             }
             tracing::info!("the exact birth is proven terminal: it has left");
         }
@@ -2573,7 +2563,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
         node_rpc: Some(node_rpc.clone()),
-        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() })),
+        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone() })),
     });
 
     // This birth's exact runtime. A launched admin takes the record its

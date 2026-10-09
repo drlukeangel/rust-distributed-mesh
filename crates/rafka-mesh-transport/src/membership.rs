@@ -276,8 +276,8 @@ pub enum Frame {
     },
     /// The mesh executor holding `op` has started removing its exact birth:
     /// the node is still found, and application routing stops selecting it.
-    /// Published on the executor's own mesh channel and the backbone; a peer
-    /// mesh primary forwards it onto its own channel (`forwarded_by`).
+    /// Published on the executor's own mesh channel only; the backbone carries it as an open
+    /// overlay of its mesh's aggregate (`Members.in_flight`).
     NodeDeleting {
         /// The removal being executed.
         op: LifecycleOp,
@@ -285,7 +285,7 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
-    /// channels as `NodeDeleting`; retained afterwards in `Members.departed`.
+    /// channel as `NodeDeleting`; retained afterwards in `Members.departed`.
     NodeDeleted {
         /// The removal that completed.
         op: LifecycleOp,
@@ -295,7 +295,7 @@ pub enum Frame {
     /// The mesh executor holding `op` (`restart-node:<path>`) is restarting its exact birth:
     /// commanded silence (fabric-node-lifecycle.md: node-admin took it down and owns bringing it
     /// back). The node stays held through its own `Leaving` and silence, not routable, until a
-    /// later birth of the same NodeId is heard. Same channels as `NodeDeleting`; carried in
+    /// later birth of the same NodeId is heard. Same channel as `NodeDeleting`; carried in
     /// `Members.in_flight` while open.
     NodeRestarting {
         /// The restart being executed.
@@ -2309,11 +2309,6 @@ impl Backbone {
         for f in frames {
             let _ = self.membership.forward(&f).await;
         }
-    }
-
-    /// Publish a lifecycle event this admin authored on the backbone.
-    pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
-        self.channel.broadcast(f).await
     }
 
     /// This admin took `seat`: it holds the record and says it once. A mesh primary's record goes
