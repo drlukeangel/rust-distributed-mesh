@@ -92,15 +92,6 @@ impl NodeObserver for Never {
     async fn ready(&self, _: &Node) -> Result<(), String> {
         Err("never".into())
     }
-    async fn drain(&self, _: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        rafka_node_admin_core::deployment::pipeline::DrainOutcome::NotSent { reason: "no Node RPC".into() }
-    }
-    async fn drained(&self, _: &Node) -> bool {
-        false
-    }
-    async fn admission_closed(&self, _: &Node) -> Result<(), String> {
-        Err("never".into())
-    }
 }
 
 struct Discard;

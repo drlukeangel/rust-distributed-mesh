@@ -2139,7 +2139,7 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         let inputs = s(&first["attributes"]["inputs"]);
         assert!(!inputs.contains(&format!("{old_name}={old_id}:ReadyForTraffic")), "{}: the old fabric-primary was still a ready candidate when the seat moved: {inputs}", ev["scenario"]);
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
-        let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "MarkDraining" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
+        let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "DrainNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         // The retiring admin executes its own retirement: its TerminateRuntime step signals its own
         // process, so the step's span closes at the shutdown flush and never records an outcome. The
         // terminal observation is the host's: the process is gone. The step's start is recorded
@@ -3012,7 +3012,7 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let pos = |n: &str| names.iter().position(|x| x == n).unwrap_or_else(|| panic!("{node}: restart pipeline has no `{n}` step: {names:?}"));
-    assert!(pos("NodeRestarting") < pos("MarkDraining") && pos("MarkDraining") < pos("TerminateRuntime"), "{node}: restart steps run NodeRestarting -> MarkDraining -> TerminateRuntime: {names:?}");
+    assert!(pos("NodeRestarting") < pos("DrainNode") && pos("DrainNode") < pos("AwaitNodeDrained") && pos("AwaitNodeDrained") < pos("StopNode") && pos("StopNode") < pos("AwaitNodeLeft") && pos("AwaitNodeLeft") < pos("TerminateRuntime"), "{node}: restart steps run NodeRestarting -> DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft -> TerminateRuntime: {names:?}");
     let restarting = named(spans, "rdm.node_admin.node.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["build_id"] == bid.as_str()).collect::<Vec<_>>();
     assert!(!restarting.is_empty(), "{node}: the executor published no NodeRestarting for {id}");
     assert!(restarting.iter().all(|sp| sp["attributes"]["incarnation_id"] == old.as_str()), "{node}: NodeRestarting names the old birth {old}: {restarting:?}");
@@ -3095,7 +3095,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
     let chains: Vec<Value> = records.iter().map(|r| check_restart_chain(&spans, r)).collect();
-    inv.holds("each restart was a Build the rectifier executed: REST -> reconcile (restart-node) -> node.update.via-build -> pipeline -> NodeRestarting, MarkDraining, TerminateRuntime in order; NodeRestarting named the old birth; the new birth announced ready; no NodeDeleted for the node", true, json!({"restarts": chains.len()}));
+    inv.holds("each restart was a Build the rectifier executed: REST -> reconcile (restart-node) -> node.update.via-build -> pipeline -> NodeRestarting, DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime in order; NodeRestarting named the old birth; the new birth announced ready; no NodeDeleted for the node", true, json!({"restarts": chains.len()}));
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([f.build_id.clone()]), "the only Build ever accepted is the formation Build: four restarts are four attempts of it");
     let services = check_services(&spans, &mut inv);
@@ -3302,7 +3302,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
-    for want in ["NodeDeleting", "MarkDraining", "WaitForDrain", "PublishLeaving", "CloseRpcAdmission", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"] {
+    for want in ["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "ReleaseStorage", "RemoveTopologyMembership", "Complete"] {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
         assert!(at >= last, "{node}: retire steps out of order at `{want}`: {names:?}");
         last = at;
@@ -3322,22 +3322,25 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
         "node_deleting_spans": deleting.len(), "node_deleted_span": deleted[0]["span_id"], "receivers_removed": removed, "ready_after_departure": 0})
 }
 
-/// The Draining the retiring node applied, read from its own span and the pipeline's: the in-flight
-/// count the apply answered, the status declarations the authority decided from the node, and the
+/// The drain the retiring node obeyed, read from its own span and the pipeline's: the `drain-node`
+/// the executor sent, the node's own `via-drain-node` handling, the `node-drained` completion the
+/// commanding admin accepted, the status declarations the authority decided from the node, and the
 /// work the node refused or finished.
 fn drain_evidence(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let id = s(&rec["node_id"]);
-    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-apply-draining").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
+    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-drain-node").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
     let probes = named(spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).count();
     let mut decls: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| sp["attributes"]["sender"] == node.as_str()).collect();
     decls.sort_by_key(|sp| start_ns(sp));
     let drain = named(spans, "rdm.mesh.node.update.via-drain").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect::<Vec<_>>();
-    let rpc = named(spans, "rdm.node_admin.node.update.via-drain-rpc").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect::<Vec<_>>();
+    let sent = named(spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["command"] == "drain-node").collect::<Vec<_>>();
+    let accepted = named(spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().filter(|sp| sp["attributes"]["subject"] == id.as_str() && sp["attributes"]["op"] == "node-drained").collect::<Vec<_>>();
     json!({
         "node": node, "node_id": id,
-        "apply_draining": applied.iter().map(|sp| json!({"span": sp["span_id"], "sender": sp["attributes"]["sender"], "in_flight": sp["attributes"]["in_flight"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
-        "drain_rpc_receipts": rpc.iter().map(|sp| json!({"span": sp["span_id"], "outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "drain_node": applied.iter().map(|sp| json!({"span": sp["span_id"], "commander": sp["attributes"]["commander"], "in_flight_at_zero": sp["attributes"]["in_flight_at_zero"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "drain_command_sent": sent.iter().map(|sp| json!({"span": sp["span_id"], "admission": sp["attributes"]["admission"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "node_drained_accepted": accepted.iter().map(|sp| json!({"span": sp["span_id"], "outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
         "probes_served": probes,
         "declarations_from_the_node": decls.iter().map(|sp| json!({"span": sp["span_id"], "op": sp["attributes"]["op"], "outcome": sp["attributes"]["outcome"], "detail": sp["attributes"]["detail"], "receiver_is_primary": sp["attributes"]["receiver_is_primary"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
         "process_drain": drain.iter().map(|sp| json!({"span": sp["span_id"], "deadline_ms": sp["attributes"]["deadline_ms"], "in_flight_at_deadline": sp["attributes"]["in_flight_at_deadline"]})).collect::<Vec<_>>(),
@@ -3922,10 +3925,11 @@ async fn drain_run(cell: &str, shape: Shape) {
         let chain = check_retire_chain(&spans, r);
         let drain = drain_evidence(&spans, r);
         let node = s(&r["node"]);
-        // The Draining the admin applied, and the node's answer: a typed in-flight count.
-        let applied = drain["apply_draining"].as_array().unwrap();
-        assert!(!applied.is_empty(), "{node}: no ApplyNodeState(Draining) served by the retiring node: {drain}");
-        assert!(applied.iter().all(|x| x["in_flight"].is_string() || x["in_flight"].is_number()), "{node}: the apply answered no in-flight count: {drain}");
+        // The drain the admin commanded, the node's handling of it, and the completion call it made back.
+        let applied = drain["drain_node"].as_array().unwrap();
+        assert!(!applied.is_empty(), "{node}: no drain-node served by the retiring node: {drain}");
+        assert!(applied.iter().all(|x| x["in_flight_at_zero"] == "true" || x["in_flight_at_zero"] == true), "{node}: the node called node-drained before its in-flight work reached zero: {drain}");
+        assert!(drain["node_drained_accepted"].as_array().unwrap().iter().any(|x| x["outcome"] == "applied"), "{node}: the commanding admin accepted no node-drained: {drain}");
         // Ordinary work that reaches a draining routable node is refused by name before its body is read:
         // a broker answers the typed `Draining` reply, a gateway refuses to carry (`node is draining`).
         // No handler ran for any of it and none of its values were stored (account() checked the trace
@@ -3944,13 +3948,13 @@ async fn drain_run(cell: &str, shape: Shape) {
         // its Leaving) made after the apply are decided by the authority, `applied`.
         let decided: Vec<&Value> = drain["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied").collect();
         assert!(decided.len() >= 2, "{node}: the authority decided fewer than two (Draining, Leaving) declarations from the draining node after the apply: {drain}");
-        // The caller's certainty: the admin's drain call is `Established` with the node's in-flight count.
-        let receipts = drain["drain_rpc_receipts"].as_array().unwrap();
-        assert!(receipts.iter().any(|r| s(&r["outcome"]).starts_with("Established { in_flight: ")), "{node}: the drain call was not Established with an in-flight count: {drain}");
+        // The caller's certainty: the admin's drain command was admitted.
+        let receipts = drain["drain_command_sent"].as_array().unwrap();
+        assert!(receipts.iter().any(|r| r["admission"] == "admitted"), "{node}: the drain command was not admitted: {drain}");
         drains.push(json!({"node": node, "chain": chain, "drain": drain, "ordinary_work_refused_while_draining": hits.len(), "refusals": hits, "declarations_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
     }
     inv.holds(
-        "C15/C16: each retiring node applied ApplyNodeState(Draining) and answered its in-flight count; the retire steps ran MarkDraining, WaitForDrain, PublishLeaving, CloseRpcAdmission, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
+        "C15/C16: each retiring node obeyed drain-node and called node-drained once its in-flight work reached zero; the retire steps ran DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
         true,
         json!({"drains": drains}),
     );
@@ -4009,9 +4013,9 @@ async fn drain_run(cell: &str, shape: Shape) {
 
 /// CONTRACT: drain, retire and a held runtime are proven against the exact runtime the provider holds.
 /// A broker and a gateway (the routable work shapes) are retired by the fabric-primary's Build under
-/// seeded traffic aimed at them: each retiring node answers ApplyNodeState(Draining) with a typed
-/// in-flight count and the retire steps run in their documented order (MarkDraining, WaitForDrain,
-/// PublishLeaving, CloseRpcAdmission, TerminateRuntime, NodeDeleted); ordinary work that reaches a
+/// seeded traffic aimed at them: each retiring node obeys drain-node and calls node-drained once its
+/// in-flight work reaches zero, and the retire steps run in their documented order (DrainNode,
+/// AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted); ordinary work that reaches a
 /// draining node is refused with the typed `Draining` reply before its body is read, with no handler run and no
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
 /// applied or not and never re-sent; the old birth's runtime is terminal in the provider, its NodeDeleted

@@ -94,7 +94,8 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         status_storage: Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(std::sync::OnceLock::new()),
-        drain: Arc::new(std::sync::OnceLock::new()),
+        commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
+        own: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
     });

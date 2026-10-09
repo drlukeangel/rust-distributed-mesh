@@ -17,7 +17,7 @@ use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChang
 use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
-use crate::deployment::pipeline::{AdmissionClosure, CreateStep, DrainOutcome, Identity, RetireStep, StorageDisposition};
+use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
@@ -261,8 +261,8 @@ pub(crate) enum WireOutput {
     RuntimeEvidence(WireRuntimeEvidence),
     MeshPending(WireMeshPending),
     LifecycleOp(LifecycleOp),
-    Drain(WireDrain),
-    Admission(WireAdmission),
+    CommandAdmission(WireCommandAdmission),
+    Completion(WireCompletion),
     Storage(WireStorageDisposition),
 }
 
@@ -286,20 +286,20 @@ pub(crate) struct WireMeshPending {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) enum WireDrain {
-    Established { in_flight: u64 },
+pub(crate) enum WireCommandAdmission {
+    Admitted,
+    AlreadyAdmitted,
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
-    Deadline { last_in_flight: Option<u64> },
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) enum WireAdmission {
-    Heard,
-    ThisRuntimeExited,
-    Deadline { last_refusal: String },
-    DrainNotEstablished,
+pub(crate) enum WireCompletion {
+    Received,
+    Deadline,
+    RuntimeExited,
+    NotAwaited { admission: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -309,45 +309,45 @@ pub(crate) enum WireStorageDisposition {
     PreservedNoMeta,
 }
 
-impl From<&DrainOutcome> for WireDrain {
-    fn from(d: &DrainOutcome) -> Self {
+impl From<&CommandAdmission> for WireCommandAdmission {
+    fn from(d: &CommandAdmission) -> Self {
         match d {
-            DrainOutcome::Established { in_flight } => Self::Established { in_flight: *in_flight },
-            DrainOutcome::NotSent { reason } => Self::NotSent { reason: reason.clone() },
-            DrainOutcome::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
-            DrainOutcome::Refused { reply } => Self::Refused { reply: reply.clone() },
-            DrainOutcome::Deadline { last_in_flight } => Self::Deadline { last_in_flight: *last_in_flight },
+            CommandAdmission::Admitted => Self::Admitted,
+            CommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
+            CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
+            CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
         }
     }
 }
-impl From<WireDrain> for DrainOutcome {
-    fn from(d: WireDrain) -> Self {
+impl From<WireCommandAdmission> for CommandAdmission {
+    fn from(d: WireCommandAdmission) -> Self {
         match d {
-            WireDrain::Established { in_flight } => Self::Established { in_flight },
-            WireDrain::NotSent { reason } => Self::NotSent { reason },
-            WireDrain::Indeterminate { reason } => Self::Indeterminate { reason },
-            WireDrain::Refused { reply } => Self::Refused { reply },
-            WireDrain::Deadline { last_in_flight } => Self::Deadline { last_in_flight },
+            WireCommandAdmission::Admitted => Self::Admitted,
+            WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
+            WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
+            WireCommandAdmission::Refused { reply } => Self::Refused { reply },
         }
     }
 }
-impl From<&AdmissionClosure> for WireAdmission {
-    fn from(a: &AdmissionClosure) -> Self {
+impl From<&Completion> for WireCompletion {
+    fn from(a: &Completion) -> Self {
         match a {
-            AdmissionClosure::Heard => Self::Heard,
-            AdmissionClosure::ThisRuntimeExited => Self::ThisRuntimeExited,
-            AdmissionClosure::Deadline { last_refusal } => Self::Deadline { last_refusal: last_refusal.clone() },
-            AdmissionClosure::DrainNotEstablished => Self::DrainNotEstablished,
+            Completion::Received => Self::Received,
+            Completion::Deadline => Self::Deadline,
+            Completion::RuntimeExited => Self::RuntimeExited,
+            Completion::NotAwaited { admission } => Self::NotAwaited { admission: admission.clone() },
         }
     }
 }
-impl From<WireAdmission> for AdmissionClosure {
-    fn from(a: WireAdmission) -> Self {
+impl From<WireCompletion> for Completion {
+    fn from(a: WireCompletion) -> Self {
         match a {
-            WireAdmission::Heard => Self::Heard,
-            WireAdmission::ThisRuntimeExited => Self::ThisRuntimeExited,
-            WireAdmission::Deadline { last_refusal } => Self::Deadline { last_refusal },
-            WireAdmission::DrainNotEstablished => Self::DrainNotEstablished,
+            WireCompletion::Received => Self::Received,
+            WireCompletion::Deadline => Self::Deadline,
+            WireCompletion::RuntimeExited => Self::RuntimeExited,
+            WireCompletion::NotAwaited { admission } => Self::NotAwaited { admission },
         }
     }
 }
@@ -380,8 +380,8 @@ enum Produces {
     RuntimeEvidence,
     MeshPending,
     LifecycleOp,
-    Drain,
-    Admission,
+    CommandAdmission,
+    Completion,
     Storage,
 }
 
@@ -406,10 +406,10 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::MeshPending
     } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
         Produces::LifecycleOp
-    } else if ret(RetireStep::MarkDraining) || ret(RetireStep::WaitForDrain) {
-        Produces::Drain
-    } else if ret(RetireStep::CloseRpcAdmission) {
-        Produces::Admission
+    } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) {
+        Produces::CommandAdmission
+    } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
+        Produces::Completion
     } else if ret(RetireStep::ReleaseStorage) {
         Produces::Storage
     } else {
@@ -468,8 +468,8 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
             WireOutput::MeshPending(WireMeshPending { applied: r.applied, reason: r.reason })
         }
         Produces::LifecycleOp => WireOutput::LifecycleOp(typed(v)?),
-        Produces::Drain => WireOutput::Drain((&typed::<DrainOutcome>(v)?).into()),
-        Produces::Admission => WireOutput::Admission((&typed::<AdmissionClosure>(v)?).into()),
+        Produces::CommandAdmission => WireOutput::CommandAdmission((&typed::<CommandAdmission>(v)?).into()),
+        Produces::Completion => WireOutput::Completion((&typed::<Completion>(v)?).into()),
         Produces::Storage => WireOutput::Storage((&typed::<StorageDisposition>(v)?).into()),
     })
 }
@@ -501,8 +501,8 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
             Ok(v)
         }
         WireOutput::LifecycleOp(op) => json(&op),
-        WireOutput::Drain(d) => json(&DrainOutcome::from(d)),
-        WireOutput::Admission(a) => json(&AdmissionClosure::from(a)),
+        WireOutput::CommandAdmission(d) => json(&CommandAdmission::from(d)),
+        WireOutput::Completion(a) => json(&Completion::from(a)),
         WireOutput::Storage(s) => json(&StorageDisposition::from(s)),
     }
 }

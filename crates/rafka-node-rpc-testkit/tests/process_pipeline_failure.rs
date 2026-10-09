@@ -46,15 +46,6 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         async fn ready(&self, _: &Node) -> Result<(), String> {
             Err("never".into())
         }
-        async fn drain(&self, _: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        rafka_node_admin_core::deployment::pipeline::DrainOutcome::NotSent { reason: "this observer has no Node RPC".into() }
-    }
-    async fn drained(&self, _: &Node) -> bool {
-            false
-        }
-        async fn admission_closed(&self, _: &Node) -> Result<(), String> {
-            Err("never".into())
-        }
     }
     let builds = MemoryBuildStateAdapter::new();
     let build_id = BuildId::mint();

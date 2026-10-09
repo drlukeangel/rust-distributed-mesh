@@ -1002,6 +1002,8 @@ pub struct MembershipObserver {
     /// The process's one Node RPC client (ruling X), over which the typed drain reaches the
     /// exact birth; `None` only in a cell that observes without a transport.
     pub client: Option<Arc<rafka_node_rpc::NodeRpcClient>>,
+    /// The commands this admin sent and awaits a completion call for.
+    pub commands: Arc<crate::node_commands::CommandBook>,
 }
 
 impl MembershipObserver {
@@ -1032,36 +1034,15 @@ impl NodeObserver for MembershipObserver {
         }
     }
 
-    async fn drain(&self, node: &Node) -> crate::deployment::pipeline::DrainOutcome {
-        use crate::deployment::pipeline::DrainOutcome;
-        use rafka_node_rpc_contract::status::{NodeState, Status, StatusRequest};
+    async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
         let Some(client) = self.client.as_ref() else {
-            return DrainOutcome::NotSent { reason: "this admin holds no Node RPC client".into() };
+            return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into() };
         };
-        let Some(incarnation) = node.incarnation_id.clone() else {
-            return DrainOutcome::NotSent { reason: format!("{} has no known birth to drain", node.name) };
-        };
-        let req = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining };
-        let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
-        let outcome = crate::deployment::pipeline::drain_outcome(&out);
-        tracing::info_span!("rdm.node_admin.node.update.via-drain-rpc", node = %node.name, outcome = ?outcome, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the typed drain was sent to the exact birth"));
-        outcome
+        crate::node_commands::send_command(client, &self.commands, &rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node, cmd, ctx).await
     }
 
-    async fn drained(&self, node: &Node) -> bool {
-        self.digest_of(node).is_some_and(|d| {
-            d.status == MemberStatus::Leaving
-                || (d.status == MemberStatus::Draining && d.in_flight.is_none_or(|n| n == 0))
-        })
-    }
-
-    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
-        match self.digest_of(node) {
-            Some(d) if matches!(d.status, MemberStatus::Draining | MemberStatus::Leaving) => Ok(()),
-            None => Ok(()), // gone from the fabric
-            Some(d) => Err(format!("{} still reports {:?}", node.name, d.status)),
-        }
+    async fn await_completion(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext, within: Duration) -> crate::deployment::pipeline::Completion {
+        crate::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
 
     async fn departed(&self, node: &Node) -> bool {
@@ -1148,6 +1129,9 @@ pub struct AdminRunner {
 pub struct GossipLifecycle {
     /// This admin's mesh channel.
     pub membership: Membership,
+    /// This admin's place on the backbone: the `node-draining` and `node-leaving` command hooks
+    /// publish there as well.
+    pub backbone: Backbone,
 }
 
 #[async_trait::async_trait]
@@ -1175,6 +1159,26 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
                 tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
             }
             tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
+        }
+        .instrument(span)
+        .await
+    }
+    async fn draining(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-draining", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
+        async {
+            self.backbone.publish_command_hook(&f).await;
+            tracing::info!("the drain command was accepted: node-draining published on the mesh channel and the backbone");
+        }
+        .instrument(span)
+        .await
+    }
+    async fn leaving(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
+        async {
+            self.backbone.publish_command_hook(&f).await;
+            tracing::info!("the stop command was accepted: node-leaving published on the mesh channel and the backbone");
         }
         .instrument(span)
         .await
@@ -1844,6 +1848,16 @@ impl Running {
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
+        self.leave_with(true).await
+    }
+
+    /// Leave after a `stop-node` was admitted: `Leaving` with no `Draining` say (stop has no
+    /// implicit drain), then the same linger and close.
+    pub async fn leave_after_stop(self) {
+        self.leave_with(false).await
+    }
+
+    async fn leave_with(self, say_draining: bool) {
         // A leaving holder yields before it says anything: its Build log decides nothing after
         // this, and the committed facts are with the neighbours before the new holder acts.
         if let Err(e) = self.builds.yield_seat("leaving").await {
@@ -1863,7 +1877,7 @@ impl Running {
         // (rafka-v2 #2942): the Draining say, each Leaving announcement on each channel, the
         // transport shutdown.
         let me = self.digest.lock().unwrap().node.name.to_string();
-        {
+        if say_draining {
             let started = std::time::Instant::now();
             let span = tracing::info_span!("rdm.mesh.node.update.via-leave-draining", node = %me, channel = "mesh", elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
             let r = self.membership.publish(&say(MemberStatus::Draining)).instrument(span.clone()).await;
@@ -2164,7 +2178,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");
     let iroh_router = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
-        .accept(rafka_node_rpc::ALPN, rpc_server)
+        .accept(rafka_node_rpc::ALPN, rpc_server.clone())
         .spawn();
     drop(step);
     tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-accept-loop-started", node = %name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
@@ -2493,6 +2507,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // What this admin applied as an authority before it last stopped: the Mesh status and Fabric
     // event rows it put, and the lifecycle state on each node row it wrote, folded into what it
     // holds as applied. A reader folds; nothing here writes a row.
+    let commands = Arc::new(crate::node_commands::CommandBook::default());
+    let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
@@ -2506,7 +2522,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             nodes_storage: nodes_storage.clone(),
             mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
             republish: republish.clone(),
-            drain: Arc::new(std::sync::OnceLock::new()),
+            commands: commands.clone(),
+            own: own_commands.clone(),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
         }));
@@ -2546,7 +2563,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let runner = Arc::new(AdminRunner {
         provider: provider_dyn.clone(),
         joins: joins.clone(),
-        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()) }),
+        observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone() }),
         records: records.clone(),
         builds: builds_dyn.clone(),
         template,
@@ -2564,7 +2581,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
         node_rpc: Some(node_rpc.clone()),
-        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone() })),
+        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() })),
     });
 
     // This birth's exact runtime. A launched admin takes the record its
@@ -2978,6 +2995,32 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let d = digest.lock().unwrap().clone();
                 let _ = membership.publish(&d).await;
             })
+        }));
+    }
+    // This admin as the subject of drain-node / stop-node from its own mesh-admin.
+    {
+        let digest_for_status = digest.clone();
+        let digest_now = digest.clone();
+        let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
+            let mut d = digest_for_status.lock().unwrap();
+            d.status = st;
+            d.clone()
+        });
+        let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
+        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None)));
+    }
+    // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
+    // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
+    {
+        let (commands, backbone) = (commands.clone(), backbone.clone());
+        membership.set_completion_carrier(Arc::new(move |f: &rafka_mesh_transport::membership::Frame| {
+            use rafka_mesh_transport::membership::Frame;
+            let (Frame::NodeLeft { op, .. } | Frame::NodeDrained { op, .. }) = f else { return };
+            let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
+            if commands.is_open(&key) {
+                let (backbone, f) = (backbone.clone(), f.clone());
+                tokio::spawn(async move { backbone.carry_completion(f).await });
+            }
         }));
     }
     let d = digest.clone();
@@ -3821,7 +3864,8 @@ mod tests {
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
             republish: Arc::new(std::sync::OnceLock::new()),
-            drain: Arc::new(std::sync::OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
         };

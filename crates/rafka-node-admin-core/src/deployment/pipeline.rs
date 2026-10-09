@@ -7,10 +7,11 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! retire: MarkDraining (the typed Node RPC drain; its receipt carries the DrainOutcome)
-//!   -> WaitForDrain (bounded; a deadline is an arm, never a failure) -> PublishLeaving
-//!   -> CloseRpcAdmission (after an established drain)
-//!   -> TerminateRuntime -> ReleaseStorage (a removal: by the Build's StorageMeta)
+//! retire: DrainNode (drain-node to the exact birth; its receipt carries the CommandAdmission)
+//!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
+//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (bounded, likewise)
+//!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
+//!   -> ReleaseStorage (a removal: by the Build's StorageMeta)
 //!   -> RemoveTopologyMembership -> Complete
 //! ```
 //!
@@ -147,14 +148,14 @@ pub enum RetireStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
-    /// Tell the exact birth to enter `Draining`.
-    MarkDraining,
-    /// Wait, bounded, for the birth's in-flight work to finish.
-    WaitForDrain,
-    /// Publish the birth's `Leaving` announcement.
-    PublishLeaving,
-    /// Wait for the birth to stop admitting Node RPC calls.
-    CloseRpcAdmission,
+    /// `drain-node` to the exact birth: refuse new work, finish eligible work, keep running.
+    DrainNode,
+    /// Wait, bounded, for the birth's `node-drained` completion call.
+    AwaitNodeDrained,
+    /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
+    StopNode,
+    /// Wait, bounded, for the birth's `node-left` completion call.
+    AwaitNodeLeft,
     /// Stop the runtime through the provider.
     TerminateRuntime,
     /// The departure (a removal only): the provider proved the runtime terminal; the
@@ -179,10 +180,10 @@ impl RetireStep {
     /// Every retire step in order.
     pub const ORDER: [RetireStep; 10] = [
         Self::NodeDeleting,
-        Self::MarkDraining,
-        Self::WaitForDrain,
-        Self::PublishLeaving,
-        Self::CloseRpcAdmission,
+        Self::DrainNode,
+        Self::AwaitNodeDrained,
+        Self::StopNode,
+        Self::AwaitNodeLeft,
         Self::TerminateRuntime,
         Self::NodeDeleted,
         Self::ReleaseStorage,
@@ -196,10 +197,10 @@ impl RetireStep {
             Self::NodeDeleting => "NodeDeleting",
             Self::NodeDeleted => "NodeDeleted",
             Self::NodeRestarting => "NodeRestarting",
-            Self::MarkDraining => "MarkDraining",
-            Self::WaitForDrain => "WaitForDrain",
-            Self::PublishLeaving => "PublishLeaving",
-            Self::CloseRpcAdmission => "CloseRpcAdmission",
+            Self::DrainNode => "DrainNode",
+            Self::AwaitNodeDrained => "AwaitNodeDrained",
+            Self::StopNode => "StopNode",
+            Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
             Self::ReleaseStorage => "ReleaseStorage",
             Self::ObserveDeparture => "ObserveDeparture",
@@ -372,16 +373,18 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
-    /// The typed drain: `ApplyNodeState(Draining)` to the exact birth over Node RPC (the
-    /// lifecycle op commands downward; fabric-mesh-ops.md §3). Answers what the call
-    /// established, never a guess: the work in flight, or by name why nothing was established.
-    async fn drain(&self, node: &Node) -> DrainOutcome;
-    /// After the drain: has this birth finished its in-flight work
-    /// (it reports `Draining` with nothing in flight, or `Leaving`)?
-    async fn drained(&self, node: &Node) -> bool;
-    /// Does the node refuse new Node RPC work (a typed
-    /// `Draining`, or nothing admits the call at all)?
-    async fn admission_closed(&self, node: &Node) -> Result<(), String>;
+    /// Send `cmd` (`drain-node` or `stop-node`) to the exact birth over Node RPC, opening the
+    /// command before the send so its completion finds it. Answers what the call established,
+    /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
+    /// admission, not completion.
+    async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
+        CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
+    }
+    /// Wait up to `within` for the commanded birth's completion call (`node-drained` /
+    /// `node-left`) at this admin.
+    async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
+        Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
+    }
     /// Has this exact birth's own `Leaving` reached this admin's membership view (its own digest,
     /// heard through gossip; never what this admin's pipeline wrote into its own view)? A birth
     /// this admin never heard leave, or only judged dead from silence, has not departed.
@@ -481,35 +484,15 @@ pub enum StorageDisposition {
     PreservedNoMeta,
 }
 
-/// How a retiring birth's admission was found closed before termination: the
-/// CloseRpcAdmission step's receipt.
+/// What one directed command (`drain-node`, `stop-node`) established at the exact birth: the
+/// DrainNode / StopNode step's receipt. Admission is not completion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "arm", rename_all = "kebab-case")]
-pub enum AdmissionClosure {
-    /// The birth itself refuses new work (its digest says Draining or Leaving).
-    Heard,
-    /// This deployment's own runtime has exited: it admits nothing.
-    ThisRuntimeExited,
-    /// The drain deadline passed with the closure unheard; the provider's terminal proof closes it.
-    Deadline {
-        /// The last refusal the closure check saw.
-        last_refusal: String,
-    },
-    /// No drain was established, so no closure was awaited.
-    DrainNotEstablished,
-}
-
-/// What the typed drain of a retiring birth established (the lock's RetireNode contract): the
-/// MarkDraining step's receipt carries it, so a termination that followed no established drain
-/// is visible in durable evidence and in the trace.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
-pub enum DrainOutcome {
-    /// The exact birth entered Draining; this much work was still in flight.
-    Established {
-        /// The work still in flight.
-        in_flight: u64,
-    },
+pub enum CommandAdmission {
+    /// The birth answered `Applied`.
+    Admitted,
+    /// The birth answered `AlreadyApplied`: the same operation was admitted before.
+    AlreadyAdmitted,
     /// The call never reached the birth (no route, dial refused, connection lost before the send).
     NotSent {
         /// Why the call was not sent.
@@ -525,30 +508,71 @@ pub enum DrainOutcome {
         /// The refusal's name.
         reply: String,
     },
-    /// The drain was established and the lifecycle drain deadline passed before `Leaving`.
-    Deadline {
-        /// The last in-flight count seen, when one was.
-        last_in_flight: Option<u64>,
-    },
 }
 
-/// The arm one typed drain call is (`ApplyNodeState(Draining)` to the exact birth): only
-/// `NodeDrainingApplied` establishes a drain; every other reply is `Refused` by its name, an
-/// unsent call `NotSent`, an unanswered one `Indeterminate`. `Deadline` is `WaitForDrain`'s, never
-/// a call's.
-pub fn drain_outcome(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafka_node_rpc_contract::status::StatusReply>) -> DrainOutcome {
+impl CommandAdmission {
+    /// Whether the birth holds the command.
+    pub fn admitted(&self) -> bool {
+        matches!(self, Self::Admitted | Self::AlreadyAdmitted)
+    }
+    /// The arm's name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::AlreadyAdmitted => "already-admitted",
+            Self::NotSent { .. } => "not-sent",
+            Self::Indeterminate { .. } => "indeterminate",
+            Self::Refused { .. } => "refused",
+        }
+    }
+}
+
+/// The arm one directed command call is: only `Applied` and `AlreadyApplied` admit it; every other
+/// reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
+pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafka_node_rpc_contract::status::StatusReply>) -> CommandAdmission {
     use rafka_node_rpc_contract::outcome::RpcOutcome;
     use rafka_node_rpc_contract::status::StatusReply;
     match out {
         RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
-            other => DrainOutcome::Refused { reply: other.name().to_string() },
+            StatusReply::Applied => CommandAdmission::Admitted,
+            StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
+            other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         },
-        RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
-        RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
-        RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
-        RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
+        RpcOutcome::NotSent(n) => CommandAdmission::NotSent { reason: format!("{:?}", n.reason()) },
+        RpcOutcome::Indeterminate(i) => CommandAdmission::Indeterminate { reason: format!("{:?}", i.reason()) },
+        RpcOutcome::Unserved(u) => CommandAdmission::Refused { reply: format!("unserved op {:#04x}", u.op()) },
+        RpcOutcome::RejectedStale(r) => CommandAdmission::Refused { reply: format!("stale target {}", r.target_node_id()) },
     }
+}
+
+/// Whether the exact birth's completion call (`node-drained`, `node-left`) reached this admin: the
+/// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
+/// success; the provider's terminal proof is what ends a stop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "arm", rename_all = "kebab-case")]
+pub enum Completion {
+    /// The matching completion call was accepted.
+    Received,
+    /// The lifecycle drain deadline passed with no completion call.
+    Deadline,
+    /// This deployment's own runtime exited before any completion call came.
+    RuntimeExited,
+    /// The command was not admitted, so no completion was awaited.
+    NotAwaited {
+        /// Why: the admission arm.
+        admission: String,
+    },
+}
+
+/// The identity a directed command carries: the Build, the attempt and the command's operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandContext {
+    /// The Build the operation belongs to.
+    pub build_id: String,
+    /// The Build attempt that holds it.
+    pub attempt: u32,
+    /// `drain-node:<path>` or `stop-node:<path>`.
+    pub operation: String,
 }
 
 /// Publishes the lifecycle events of a removal or a restart.
@@ -560,6 +584,12 @@ pub trait LifecycleEvents: Send + Sync {
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
+    /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
+    /// channel and the backbone.
+    async fn draining(&self, _op: &LifecycleOp) {}
+    /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
+    /// and the backbone.
+    async fn leaving(&self, _op: &LifecycleOp) {}
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
@@ -682,7 +712,7 @@ pub struct Timeouts {
     pub join: Duration,
     /// How long `WaitForNodeReady` waits.
     pub ready: Duration,
-    /// How long `WaitForDrain` and `CloseRpcAdmission` wait.
+    /// How long `AwaitNodeDrained` and `AwaitNodeLeft` wait for a completion call.
     pub drain: Duration,
     /// Stop-ladder grace before a forced kill; longer than the node's own
     /// drain deadline (node-rpc §35).
@@ -806,7 +836,7 @@ where
 }
 
 /// One run of one operation (`create-node:<path>`, `retire-node:<path>`).
-struct Run<'r> {
+pub(crate) struct Run<'r> {
     build_id: &'r BuildId,
     attempt: u32,
     node: &'r PathName,
@@ -1260,66 +1290,131 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.restarting(&op).await;
             None
         };
-        node.status = NodeStatus::Draining;
-        // MarkDraining is the typed Node RPC drain to the exact birth; the provider sends no
-        // signal here (it terminates and inspects, later). The outcome is the step's receipt.
-        let drain: DrainOutcome = self
-            .step(&mut run, RetireStep::MarkDraining.name(), async {
-                self.sink.publish(node.clone());
-                Ok(self.observer.drain(&node).await)
-            })
-            .await?;
-        // WaitForDrain: an established drain waits for the birth's own Leaving (or its runtime's
-        // exit) up to the lifecycle drain deadline; the deadline is an arm, recorded, never a
-        // failure: an authorized retirement is not made immortal by a birth that will not finish
-        // (the lock's escape hatch). A drain that was not established waits for nothing.
-        let drain: DrainOutcome = self
-            .step(&mut run, RetireStep::WaitForDrain.name(), async {
-                let DrainOutcome::Established { .. } = &drain else { return Ok(drain.clone()) };
-                let drained = poll(self.timeouts.drain, || async {
-                    self.observer.drained(&node).await || matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. })
-                })
-                .await;
-                if drained {
-                    Ok(drain.clone())
+        // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
+        // drain-node and its node-drained, then stop-node, its node-left and the provider's
+        // terminal proof. A caller that puts other work between them (a replace) calls the halves.
+        self.drain_steps(&mut run, &mut node, handle).await?;
+        self.stop_steps(&mut run, &mut node, handle).await?;
+        // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything
+        // else: the departure below removes the birth from this admin's view and fences its
+        // digests, so the observation must come first.
+        if req.observe_departure {
+            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
+                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
+                    Ok(())
                 } else {
-                    let last_in_flight = match self.observer.drain(&node).await {
-                        DrainOutcome::Established { in_flight } => Some(in_flight),
-                        _ => None,
-                    };
-                    Ok(DrainOutcome::Deadline { last_in_flight })
+                    Err(format!(
+                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
+                        self.timeouts.drain
+                    ))
                 }
             })
             .await?;
-        let drain_established = matches!(drain, DrainOutcome::Established { .. });
-        node.status = NodeStatus::Leaving;
-        self.step(&mut run, RetireStep::PublishLeaving.name(), async {
-            self.sink.publish(node.clone());
+        }
+        // The departure: the provider's inspection above is the proof. Nothing earlier (the
+        // node's Leaving, its drained reply, the claim) is.
+        if let Some(op) = op {
+            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+            self.lifecycle.deleted(&op).await;
+        }
+        if req.kind == RetireKind::Removal {
+            self.release_storage_step(&mut run, &req.build_id, &node).await?;
+        }
+        self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
+            self.sink.remove(name);
             Ok(())
         })
         .await?;
-        // CloseRpcAdmission: after an established drain, the birth's own closure (its typed
-        // refusal of new work, or this deployment's exit) is awaited up to the drain deadline;
-        // the deadline is an arm, recorded, and the provider's terminal proof below is then
-        // what closes admission. Only `handle` (this deployment) counts, never another birth
-        // at the path. A drain that was not established awaits nothing.
-        let _closure: AdmissionClosure = self
-            .step(&mut run, RetireStep::CloseRpcAdmission.name(), async {
-                if !drain_established {
-                    return Ok(AdmissionClosure::DrainNotEstablished);
+        self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+        Ok(())
+
+    }
+
+    /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
+    /// operation (`drain-node:<path>` / `stop-node:<path>`).
+    fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
+        CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: format!("{}:{}", cmd.operation_prefix(), node.name) }
+    }
+
+    /// The lifecycle op a command's gossip hook carries.
+    fn command_op(&self, ctx: &CommandContext, node: &Node) -> Result<LifecycleOp, String> {
+        Ok(LifecycleOp {
+            build_id: ctx.build_id.clone(),
+            attempt: ctx.attempt,
+            operation: ctx.operation.clone(),
+            node_id: node.node_id.clone(),
+            incarnation: node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?,
+            name: node.name.clone(),
+            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+        })
+    }
+
+    /// Resolves when this deployment's own runtime has exited.
+    async fn until_exited(&self, handle: &DeploymentHandle) {
+        while !matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The drain half of a shutdown (node-drain.md): `drain-node` to the exact birth, then the
+    /// wait for its `node-drained` completion call. The birth stays running. The completion wait
+    /// ends at the lifecycle drain deadline (an arm, recorded) or at this runtime's exit.
+    pub(crate) async fn drain_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
+        use crate::node_commands::NodeCommand;
+        let ctx = self.command_context(run, NodeCommand::Drain, node);
+        node.status = NodeStatus::Draining;
+        let admission: CommandAdmission = self
+            .step(run, RetireStep::DrainNode.name(), async {
+                self.sink.publish(node.clone());
+                // The accepted command's hook, then the command.
+                let op = self.command_op(&ctx, node)?;
+                self.lifecycle.draining(&op).await;
+                Ok(self.observer.send_command(node, NodeCommand::Drain, &ctx).await)
+            })
+            .await?;
+        let _: Completion = self
+            .step(run, RetireStep::AwaitNodeDrained.name(), async {
+                if !admission.admitted() {
+                    return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
-                let until = Instant::now() + self.timeouts.drain;
-                loop {
-                    match self.observer.admission_closed(&node).await {
-                        Ok(()) => return Ok(AdmissionClosure::Heard),
-                        Err(_) if matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) => return Ok(AdmissionClosure::ThisRuntimeExited),
-                        Err(reason) if Instant::now() >= until => return Ok(AdmissionClosure::Deadline { last_refusal: reason }),
-                        Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
-                    }
+                tokio::select! {
+                    c = self.observer.await_completion(node, NodeCommand::Drain, &ctx, self.timeouts.drain) => Ok(c),
+                    () = self.until_exited(handle) => Ok(Completion::RuntimeExited),
                 }
             })
             .await?;
-        self.step(&mut run, RetireStep::TerminateRuntime.name(), async {
+        Ok(())
+    }
+
+    /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
+    /// drain), the wait for its `node-left` completion call, then the provider's stop and
+    /// inspection of the exact runtime: only its `Exited` is terminal proof.
+    pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
+        use crate::node_commands::NodeCommand;
+        let name = node.name.clone();
+        let ctx = self.command_context(run, NodeCommand::Stop, node);
+        node.status = NodeStatus::Leaving;
+        let admission: CommandAdmission = self
+            .step(run, RetireStep::StopNode.name(), async {
+                self.sink.publish(node.clone());
+                let op = self.command_op(&ctx, node)?;
+                self.lifecycle.leaving(&op).await;
+                Ok(self.observer.send_command(node, NodeCommand::Stop, &ctx).await)
+            })
+            .await?;
+        let _: Completion = self
+            .step(run, RetireStep::AwaitNodeLeft.name(), async {
+                if !admission.admitted() {
+                    return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
+                }
+                tokio::select! {
+                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => Ok(c),
+                    () = self.until_exited(handle) => Ok(Completion::RuntimeExited),
+                }
+            })
+            .await?;
+        self.step(run, RetireStep::TerminateRuntime.name(), async {
             self.provider
                 .terminate(handle, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
                 .await
@@ -1360,67 +1455,42 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
-        // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything
-        // else: the departure below removes the birth from this admin's view and fences its
-        // digests, so the observation must come first.
-        if req.observe_departure {
-            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
-                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
-                        self.timeouts.drain
-                    ))
+        Ok(())
+    }
+
+    /// The storage disposition of a removal (the lock's StorageMeta): what the accepted Build's
+    /// meta for this path says, read here and interpreted here, never by the provider. The receipt
+    /// names the disposition.
+    pub(crate) async fn release_storage_step(&self, run: &mut Run<'_>, build_id: &BuildId, node: &Node) -> Result<(), PipelineError> {
+        let name = &node.name;
+        let _disposition: StorageDisposition = self
+            .step(run, RetireStep::ReleaseStorage.name(), async {
+                let storage = self
+                    .builds
+                    .read_build(build_id)
+                    .await
+                    .ok()
+                    .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
+                let release = match storage {
+                    Some(StorageMeta::Ephemeral) | Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }) => true,
+                    Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }) => false,
+                    // No meta for this path in the Build: storage is never destroyed on missing evidence.
+                    None => return Ok(StorageDisposition::PreservedNoMeta),
+                };
+                if !release {
+                    return Ok(StorageDisposition::Preserved);
+                }
+                match node.data_dir.as_deref() {
+                    Some(dir) => match std::fs::remove_dir_all(dir) {
+                        Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
+                        Err(e) => Err(format!("{dir}: {e}")),
+                    },
+                    None => Ok(StorageDisposition::Released { locator: String::new() }),
                 }
             })
             .await?;
-        }
-        // The departure: the provider's inspection above is the proof. Nothing earlier (the
-        // node's Leaving, its drained reply, the claim) is.
-        if let Some(op) = op {
-            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.deleted(&op).await;
-        }
-        // Storage disposition (the lock's StorageMeta): a restart keeps the storage; a removal
-        // does what the accepted Build's meta for this path says, read here and
-        // interpreted here, never by the provider. The receipt names the disposition.
-        if req.kind == RetireKind::Removal {
-            let _disposition: StorageDisposition = self
-                .step(&mut run, RetireStep::ReleaseStorage.name(), async {
-                    let storage = self
-                        .builds
-                        .read_build(&req.build_id)
-                        .await
-                        .ok()
-                        .and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
-                    let release = match storage {
-                        Some(StorageMeta::Ephemeral) | Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }) => true,
-                        Some(StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }) => false,
-                        // No meta for this path in the Build: storage is never destroyed on missing evidence.
-                        None => return Ok(StorageDisposition::PreservedNoMeta),
-                    };
-                    if !release {
-                        return Ok(StorageDisposition::Preserved);
-                    }
-                    match node.data_dir.as_deref() {
-                        Some(dir) => match std::fs::remove_dir_all(dir) {
-                            Ok(()) => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(StorageDisposition::Released { locator: dir.to_string() }),
-                            Err(e) => Err(format!("{dir}: {e}")),
-                        },
-                        None => Ok(StorageDisposition::Released { locator: String::new() }),
-                    }
-                })
-                .await?;
-        }
-        self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
-            self.sink.remove(name);
-            Ok(())
-        })
-        .await?;
-        self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+
         Ok(())
     }
 }

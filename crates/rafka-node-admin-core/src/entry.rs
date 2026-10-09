@@ -65,6 +65,13 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     let fabric_shutdown = tokio::select! {
         _ = &mut by_route => true,
         _ = signal() => false,
+        // A `stop-node` this admin admitted and answered with its `node-left`: it leaves with no
+        // drain leg.
+        () = crate::node_self::stop_command().wait() => {
+            let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, commanded = true);
+            running.leave_after_stop().instrument(span).await;
+            return;
+        }
         // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
         // answer: it ends, and its exit is the death proof the fabric recovers from.
         reason = rafka_mesh_transport::membership::until_transport_stopped() => {

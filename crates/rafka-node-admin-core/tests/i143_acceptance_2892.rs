@@ -14,7 +14,7 @@ use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, Memor
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::deployment::pipeline::{
-    CreateRequest, CreateStep, DeploymentPipeline, DrainOutcome, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink,
+    CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink,
 };
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::{DeploymentId, Node, PathName, ProviderKind};
@@ -239,15 +239,6 @@ impl NodeObserver for Fleet {
             self.reached.notify_one();
             std::future::pending::<()>().await;
         }
-        Ok(())
-    }
-    async fn drain(&self, _: &Node) -> DrainOutcome {
-        DrainOutcome::NotSent { reason: "this cell retires nothing".into() }
-    }
-    async fn drained(&self, _: &Node) -> bool {
-        true
-    }
-    async fn admission_closed(&self, _: &Node) -> Result<(), String> {
         Ok(())
     }
 }

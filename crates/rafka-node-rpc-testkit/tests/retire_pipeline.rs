@@ -1,5 +1,5 @@
 //! i143.e2.s5 functional: the retire pipeline runs its steps in order —
-//! MarkDraining, WaitForDrain, PublishLeaving, CloseRpcAdmission,
+//! DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft,
 //! TerminateRuntime, ReleaseStorage (permanent),
 //! RemoveTopologyMembership, Complete — each with a receipt and a step span,
 //! and a retire then create on the same node succeeds.
@@ -58,11 +58,18 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     let want: Vec<(&str, &StepOutcome, &str)> =
         RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
     assert_eq!(got, want);
-    // MarkDraining is the typed Node RPC drain: its receipt carries what the call established.
-    let mark = view.steps.iter().find(|r| r.step == RetireStep::MarkDraining.name()).expect("MarkDraining receipted");
-    let drain: rafka_node_admin_core::deployment::pipeline::DrainOutcome =
-        serde_json::from_value(mark.output.clone().expect("the drain outcome is the step's output")).expect("a DrainOutcome");
-    assert!(matches!(drain, rafka_node_admin_core::deployment::pipeline::DrainOutcome::Established { .. }), "{drain:?}");
+    // DrainNode and StopNode are the directed commands: each receipt carries what the call
+    // admitted; AwaitNodeDrained and AwaitNodeLeft carry the completion call the birth made back.
+    use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
+    let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
+    for step in [RetireStep::DrainNode, RetireStep::StopNode] {
+        let admission: CommandAdmission = serde_json::from_value(output(step)).expect("a CommandAdmission");
+        assert_eq!(admission, CommandAdmission::Admitted, "{}", step.name());
+    }
+    for step in [RetireStep::AwaitNodeDrained, RetireStep::AwaitNodeLeft] {
+        let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
+        assert_eq!(completion, Completion::Received, "{}", step.name());
+    }
 
     // What each step did, from outside.
     let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
@@ -90,6 +97,18 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     }
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
         && f.get("pipeline").map(String::as_str) == Some("retire")));
+    // Each command was sent under its own operation, and each completion call was decided by the
+    // commanding side for that operation.
+    for (command, completion, operation) in [("drain-node", "node-drained", "drain-node:mesh1.rpc.1"), ("stop-node", "node-left", "stop-node:mesh1.rpc.1")] {
+        assert!(
+            all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some("admitted") && f.get("command").map(String::as_str) == Some(command)),
+            "no admitted {command} span"
+        );
+        assert!(
+            all.values().any(|(n, _, f)| n == "rdm.node_admin.status.update.via-completion-accepted" && f.get("operation").map(String::as_str) == Some(operation) && f.get("outcome").map(String::as_str) == Some("applied") && f.get("op").map(String::as_str) == Some(completion)),
+            "no accepted {completion} span"
+        );
+    }
 
     // Create again on the same node.
     let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));

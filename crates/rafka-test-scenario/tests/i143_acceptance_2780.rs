@@ -322,9 +322,9 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let door = run.member_door("mesh1").await;
     let ack = door.arm(&id, spec.clone()).await;
     let build_id = run.delete(node).await;
-    // Before MarkDraining asked the birth to drain it must be alive; once TerminateRuntime's work is
+    // Before DrainNode asked the birth to drain it must be alive; once TerminateRuntime's work is
     // done it is dead. Between, the birth may have exited by its own drain: not asserted.
-    let (mark, terminate) = (index_of(order, RetireStep::MarkDraining.name()), index_of(order, RetireStep::TerminateRuntime.name()));
+    let (mark, terminate) = (index_of(order, RetireStep::DrainNode.name()), index_of(order, RetireStep::TerminateRuntime.name()));
     let runtimes = if i < mark { Some((node, 1)) } else if i >= terminate { Some((node, 0)) } else { None };
     let h = run.hold(&door, &id, ack, &build_id, &op, Some(order[..i].to_vec()), runtimes).await;
     let rel = door.release(&id).await;

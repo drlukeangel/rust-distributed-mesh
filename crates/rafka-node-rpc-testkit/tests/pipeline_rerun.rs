@@ -89,15 +89,6 @@ impl NodeObserver for Pausing<'_> {
     async fn ready(&self, node: &Node) -> Result<(), String> {
         self.live.ready(node).await
     }
-    async fn drain(&self, _: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        rafka_node_admin_core::deployment::pipeline::DrainOutcome::NotSent { reason: "this observer has no Node RPC".into() }
-    }
-    async fn drained(&self, node: &Node) -> bool {
-        self.live.drained(node).await
-    }
-    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
-        self.live.admission_closed(node).await
-    }
 }
 
 /// Live processes whose environment names `node_id`.

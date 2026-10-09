@@ -1,11 +1,9 @@
-//! Functional: `CloseRpcAdmission` takes the exact retired runtime's exit as
-//! proof that it admits no Node RPC, and only that runtime's.
+//! Functional: a retire is commanded and proven per exact birth, whatever the fabric last heard.
 //!
-//! The observer hides every `Draining` and `Leaving` the node says, as if each
-//! announcement were lost on the fabric: its view keeps the last
-//! `ReadyForTraffic`. A runtime that exited still admits nothing, so the retire
-//! completes. A successor birth at the same path that still runs is never
-//! closed by its predecessor's exit.
+//! The observer hides every `Draining` and `Leaving` the node says, as if each announcement were
+//! lost on the fabric. The retire's proof is the commands and their completion calls
+//! (`drain-node` / `node-drained`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
+//! never a digest. A predecessor's exit at the same path stands for none of a successor's commands.
 
 use crate::common;
 
@@ -14,7 +12,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{AdmissionClosure, DrainOutcome, 
+use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion,
     CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
 };
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
@@ -39,17 +37,14 @@ impl NodeObserver for DeparturesLost<'_> {
     async fn ready(&self, node: &Node) -> Result<(), String> {
         self.live.ready(node).await
     }
-    async fn drain(&self, node: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        self.live.drain(node).await
+    async fn send_command(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> CommandAdmission {
+        self.live.send_command(node, cmd, ctx).await
     }
-    async fn drained(&self, _: &Node) -> bool {
-        true
+    async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> Completion {
+        self.live.await_completion(node, cmd, ctx, within).await
     }
-    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
-        Err(format!(
-            "{} still reports ReadyForTraffic (its departure was lost)",
-            node.name
-        ))
+    async fn departed(&self, _: &Node) -> bool {
+        false
     }
 }
 
@@ -106,7 +101,7 @@ async fn exited(provider: &ProcessDeploymentProvider, h: &DeploymentHandle) -> b
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
+async fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
@@ -160,14 +155,14 @@ async fn an_exited_runtime_closes_its_admission_when_every_departure_is_lost() {
     assert_eq!(
         retired,
         Ok(()),
-        "the retired runtime exited: it admits nothing, whatever the fabric last heard"
+        "the retired runtime exited: its commands were completed and its exit proven, whatever the fabric last heard"
     );
     assert!(exited(&process, &created.handle).await);
     let _ = std::fs::remove_dir_all(&template.data_root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
+async fn a_predecessors_exit_never_stands_for_its_successors_commands() {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
     let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
@@ -235,26 +230,27 @@ async fn a_predecessors_exit_never_closes_its_running_successors_admission() {
             observe_departure: false,
         })
         .await;
-    // Under the lock the bounded drain never blocks an authorized retirement: B's drain was
-    // established (B is live and admits its node-admin) and drained to nothing in flight; its
-    // Leaving never came (departures lost), so CloseRpcAdmission records its deadline arm and the
-    // provider's ladder terminates B. A's exit counts for nothing: every proof is on B's own handle.
+    // B is live and admits its node-admin: its drain-node and stop-node were admitted, and its
+    // node-drained and node-left calls reached the commanding side. A's exit counts for nothing:
+    // every command and every proof is on B's own birth and handle.
     retired.unwrap_or_else(|e| panic!("retire B: {e}"));
     assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
     let steps = builds.read_build(&build).await.unwrap().steps;
     let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
-    let drained: DrainOutcome = serde_json::from_value(output("MarkDraining")).unwrap();
-    assert!(matches!(drained, DrainOutcome::Established { .. }), "B admitted the typed drain: {drained:?}");
-    let waited: DrainOutcome = serde_json::from_value(output("WaitForDrain")).unwrap();
-    assert!(matches!(waited, DrainOutcome::Established { in_flight: 0 }), "B drained to nothing in flight: {waited:?}");
-    let closure: AdmissionClosure = serde_json::from_value(output("CloseRpcAdmission")).unwrap();
-    assert!(matches!(closure, AdmissionClosure::Deadline { .. }), "A's exit never closed B; the deadline did: {closure:?}");
+    for step in ["DrainNode", "StopNode"] {
+        let admission: CommandAdmission = serde_json::from_value(output(step)).unwrap();
+        assert!(matches!(admission, CommandAdmission::Admitted), "B admitted {step}: {admission:?}");
+    }
+    for step in ["AwaitNodeDrained", "AwaitNodeLeft"] {
+        let completion: Completion = serde_json::from_value(output(step)).unwrap();
+        assert!(matches!(completion, Completion::Received), "B's {step} completion call reached the commanding side: {completion:?}");
+    }
 }
 
 /// CONTRACT (Luke 2026-10-05, a mesh retire's departure barrier): inside a whole-mesh retire, the
 /// local cleanup waits until this admin's own membership view has heard the birth's own `Leaving`.
 /// When every departure is lost, the retire stops at `ObserveDeparture` by name and the node is NOT
-/// removed from this admin's view: a completed `PublishLeaving` step is not proof. Must NOT happen:
+/// removed from this admin's view: a completed `StopNode` step is not proof. Must NOT happen:
 /// `RemoveTopologyMembership` running, or success synthesised from the runtime's exit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {

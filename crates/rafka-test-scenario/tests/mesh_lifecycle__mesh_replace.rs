@@ -112,7 +112,7 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
             v.iter().map(|sp| s(&sp["attributes"]["step"])).collect()
         };
         let at = |step: &str| order.iter().position(|x| x == step).unwrap_or_else(|| panic!("{name}: no {step} under {b}: {order:?}"));
-        assert!(at("MarkDraining") < at("TerminateRuntime") && at("TerminateRuntime") < at("RemoveTopologyMembership"), "{name}: {order:?}");
+        assert!(at("DrainNode") < at("TerminateRuntime") && at("TerminateRuntime") < at("RemoveTopologyMembership"), "{name}: {order:?}");
         assert!(mine.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{name}: every retire step completed");
     }
 

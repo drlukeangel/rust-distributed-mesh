@@ -169,7 +169,7 @@ pub struct ServerStats {
     pub stale: AtomicU64,
     /// Handlers that failed or panicked.
     pub faults: AtomicU64,
-    /// Handlers dispatched and not yet finished (WaitForDrain reads it).
+    /// Handlers dispatched and not yet finished (a drained node waits for it to reach zero).
     pub in_flight: AtomicU64,
 }
 

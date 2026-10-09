@@ -89,10 +89,11 @@ pub struct StatusAuthority {
     /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
     /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
     pub republish: Republish,
-    /// This admin's own drain (the server refuses new calls, in-flight work finishes), answering
-    /// the work still in flight; filled by the role binary. What an `ApplyNodeState(Draining)`
-    /// naming this admin runs.
-    pub drain: Drain,
+    /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
+    pub commands: Arc<crate::node_commands::CommandBook>,
+    /// This admin as the subject of `drain-node` / `stop-node` from its own mesh-admin; filled once
+    /// its digest and server exist.
+    pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
@@ -178,6 +179,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, send
         StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } => {
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
+        // Commands and completions are answered before the decision (`StatusAuthority::apply`).
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } => {
+            (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
+        }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
             if !sender.is_fabric_primary {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: sender.name.to_string() } }, None);
@@ -243,10 +248,15 @@ impl StatusAuthority {
     /// receiver holds its mesh's seat (accepting a Pending hand-off is not an election).
     pub async fn apply(&self, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let view = self.topology.read().await.clone();
+        match req {
+            StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } => return self.accept_completion(sender.as_ref(), req),
+            StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
+            _ => {}
+        }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.nodes.iter().find(|n| n.name == self.me) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.drain, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.wake).await {
                 return reply;
             }
         }
@@ -282,6 +292,31 @@ impl StatusAuthority {
 }
 
 impl StatusAuthority {
+    /// A birth's completion call (`node-drained`, `node-left`) at the admin that commanded it: it
+    /// resolves the open command it names, by `(build_id, attempt, operation, node_id,
+    /// incarnation)`. The sender must be the subject. A completion with no open command is
+    /// refused `NotReady` naming the mismatch, never counted toward another operation.
+    fn accept_completion(&self, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
+        crate::node_commands::accept_completion(&self.commands, &self.me.to_string(), sender.map(|n| (&n.node_id, n.incarnation_id.as_ref(), n.name.to_string())).as_ref().map(|(a, b, c)| (*a, *b, c.as_str())), req)
+    }
+
+    /// `drain-node` / `stop-node` naming this admin: served by the subject itself, from another
+    /// node-admin (its owning mesh-admin).
+    async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
+        let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
+        let me = view.nodes.iter().find(|n| n.name == self.me);
+        let reply = match (me, sender, self.own.get()) {
+            (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
+            (Some(me), _, _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
+            (_, Some(from), Some(own)) if from.kind == NodeKind::NodeAdmin && from.name != self.me => own.serve(&from.node_id, req).await.expect("a command"),
+            (_, Some(from), None) => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} from {} is refused", self.me, req.op(), from.name) },
+            (_, other, _) => StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: other.map(|n| n.name.to_string()).unwrap_or_else(|| "unknown peer".into()) } },
+        };
+        tracing::info_span!("rdm.node_admin.status.update.via-command", node = %self.me, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("a node command naming this admin was decided"));
+        reply
+    }
+
     /// An `Applied` decision: the fact's row is put and acknowledged, and only then is it held as
     /// applied and answered. A refused put answers `NotReady` naming the store and holds nothing,
     /// so the same declaration again is decided afresh. The commit decides again over what is
@@ -386,9 +421,6 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
     }
 }
 
-/// A node's own drain, filled by the role binary: what `ApplyNodeState(Draining)` runs on the
-/// subject; answers the work still in flight.
-pub type Drain = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>> + Send + Sync>>>;
 
 /// The downward exact-node operations, answered by the subject itself. `Some(reply)` when `req`
 /// names this node and comes from a fabric member other than itself (a probe) or from a node-admin
@@ -396,10 +428,8 @@ pub type Drain = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future:
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition.
-/// `ApplyNodeState(Draining)`: the node enters `Draining` (or already is) and answers the work
-/// still in flight, the current count on every repeat. Any other state applied to a node-admin
-/// is not served in this build, by name.
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, drain: &Drain, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+/// `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let (node_id, incarnation) = match req {
         StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
@@ -434,17 +464,8 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
-        StatusRequest::ApplyNodeState { state: NodeState::Draining, .. } => {
-            let Some(drain) = drain.get() else {
-                return Some(StatusReply::NotReady { reason: format!("{} has no drain door in this build", me.name) });
-            };
-            let in_flight = drain().await;
-            tracing::info_span!("rdm.node_admin.status.update.via-apply-draining", node = %me.name, sender = %sender_name, in_flight, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("draining applied by a node-admin"));
-            Some(StatusReply::NodeDrainingApplied { in_flight })
-        }
         StatusRequest::ApplyNodeState { state, .. } => {
-            Some(StatusReply::NotReady { reason: format!("{} serves apply-node-state only for Draining in this build; {state:?} is not served", me.name) })
+            Some(StatusReply::NotReady { reason: format!("{} does not serve apply-node-state ({state:?}): a drain is drain-node and a stop is stop-node", me.name) })
         }
         _ => None,
     }
@@ -512,13 +533,13 @@ mod tests {
         let admin = node("mesh2.admin.1");
         let carrier = node("mesh2.rpc.1");
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
-        let (republish, drain) = (Republish::default(), Drain::default());
+        let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::Current { .. })), "{answered:?}");
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
-        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
-        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
-        assert!(self_subject(&admin, None, &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
+        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
+        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
+        assert!(self_subject(&admin, None, &probe, &republish, &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
     }
 }

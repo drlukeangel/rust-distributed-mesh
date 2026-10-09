@@ -84,15 +84,6 @@ impl NodeObserver for Counting<'_> {
         self.asked_ready.fetch_add(1, Ordering::SeqCst);
         self.live.ready(node).await
     }
-    async fn drain(&self, _: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        rafka_node_admin_core::deployment::pipeline::DrainOutcome::NotSent { reason: "this observer has no Node RPC".into() }
-    }
-    async fn drained(&self, node: &Node) -> bool {
-        self.live.drained(node).await
-    }
-    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
-        self.live.admission_closed(node).await
-    }
 }
 
 async fn create_losing(lose: Option<&'static str>) {

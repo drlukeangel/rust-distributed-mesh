@@ -385,6 +385,15 @@ pub enum Frame {
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
+    /// The exact birth in `op` sent its `node-drained` completion (gossip.md, node-drained): no
+    /// eligible work remains in flight and the process keeps running. Published by the node on
+    /// its own mesh channel; carried and forwarded exactly as [`Frame::NodeLeft`].
+    NodeDrained {
+        /// The drain operation and the exact birth that drained.
+        op: LifecycleOp,
+        /// The admin or primary that forwards the frame.
+        forwarded_by: Option<String>,
+    },
 }
 
 impl Frame {
@@ -850,6 +859,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeDrained { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDrained { op, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
@@ -1350,13 +1360,13 @@ struct View {
     forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     desync: Arc<tokio::sync::Notify>,
-    /// What a node-admin does with a `node-left` it hears on its mesh channel from the node
-    /// itself: carry it onto the backbone when it holds the stop command (set by the admin).
-    node_left_carrier: Arc<Mutex<Option<NodeLeftCarrier>>>,
+    /// What a node-admin does with a `node-drained` or `node-left` it hears on its mesh channel
+    /// from the node itself: carry it onto the backbone when it holds the command (set by the admin).
+    completion_carrier: Arc<Mutex<Option<CompletionCarrier>>>,
 }
 
-/// What a node-admin does with a node's own `node-left` heard on its mesh channel.
-pub type NodeLeftCarrier = Arc<dyn Fn(&LifecycleOp) + Send + Sync>;
+/// What a node-admin does with a node's own completion frame heard on its mesh channel.
+pub type CompletionCarrier = Arc<dyn Fn(&Frame) + Send + Sync>;
 
 impl View {
     fn new(mesh: &str, node: &str) -> Self {
@@ -1385,10 +1395,11 @@ impl View {
                 self.book.restarting(op.clone());
                 Vec::new()
             }
-            Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } => {
+            Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
                 let kind = match f {
                     Frame::NodeDraining { .. } => "node-draining",
                     Frame::NodeLeaving { .. } => "node-leaving",
+                    Frame::NodeDrained { .. } => "node-drained",
                     _ => "node-left",
                 };
                 tracing::info_span!(
@@ -1405,11 +1416,11 @@ impl View {
                     via,
                 )
                 .in_scope(|| tracing::info!("a lifecycle command or completion frame was heard: evidence of the accepted command, never liveness, completion or exit proof"));
-                // A node's own `node-left`, heard on this mesh's channel: the owning mesh-admin
-                // carries it onto the backbone (gossip.md, node-left).
-                if let (Frame::NodeLeft { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
-                    if let Some(carry) = self.node_left_carrier.lock().unwrap().clone() {
-                        carry(op);
+                // A node's own `node-drained` or `node-left`, heard on this mesh's channel: the owning
+                // mesh-admin carries it onto the backbone (gossip.md, node-drained, node-left).
+                if let (Frame::NodeLeft { .. } | Frame::NodeDrained { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
+                    if let Some(carry) = self.completion_carrier.lock().unwrap().clone() {
+                        carry(f);
                     }
                 }
                 Vec::new()
@@ -1853,9 +1864,10 @@ impl Membership {
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
 
-    /// Install what this node-admin does with a node's own `node-left` heard on the mesh channel.
-    pub fn set_node_left_carrier(&self, carrier: NodeLeftCarrier) {
-        *self.view.node_left_carrier.lock().unwrap() = Some(carrier);
+    /// Install what this node-admin does with a node's own `node-drained` / `node-left` heard on
+    /// the mesh channel.
+    pub fn set_completion_carrier(&self, carrier: CompletionCarrier) {
+        *self.view.completion_carrier.lock().unwrap() = Some(carrier);
     }
 
     /// Broadcast a frame onto this mesh's channel (a forward).
@@ -2390,11 +2402,15 @@ impl Backbone {
         let _ = self.membership.view.take(f, &self.fabric, "mesh-channel");
     }
 
-    /// Carry a node's own `node-left` onto the backbone, preserving `op` and naming this admin in
-    /// `forwarded_by`.
-    pub async fn carry_node_left(&self, op: LifecycleOp) {
-        let frame = Frame::NodeLeft { op, forwarded_by: Some(self.node.clone()) };
-        let _ = self.channel.broadcast(&frame).await;
+    /// Carry a node's own completion frame (`node-drained`, `node-left`) onto the backbone,
+    /// preserving `op` and naming this admin in `forwarded_by`.
+    pub async fn carry_completion(&self, frame: Frame) {
+        let carried = match frame {
+            Frame::NodeLeft { op, .. } => Frame::NodeLeft { op, forwarded_by: Some(self.node.clone()) },
+            Frame::NodeDrained { op, .. } => Frame::NodeDrained { op, forwarded_by: Some(self.node.clone()) },
+            _ => return,
+        };
+        let _ = self.channel.broadcast(&carried).await;
     }
 
     /// This admin took `seat`: it holds the record and says it once. A mesh primary's record goes

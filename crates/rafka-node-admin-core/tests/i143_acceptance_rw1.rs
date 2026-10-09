@@ -19,7 +19,7 @@ use rafka_node_admin_core::accepted::{AttemptAction, FabricTopology, MeshTopolog
 use rafka_node_admin_core::build::{BuildId, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};
 use rafka_node_admin_core::deployment::pipeline::Bound;
-use rafka_node_admin_core::deployment::pipeline::{AdmissionClosure, CreateStep, DrainOutcome, RetireStep, StorageDisposition};
+use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion, CreateStep, RetireStep, StorageDisposition};
 use rafka_node_admin_core::deployment::provider::DeploymentHandle;
 use rafka_node_admin_core::fabric_builds::{encode_chunks, BuildMessage};
 use rafka_node_admin_core::fabric_storage::{FabricRecord, FabricShutdown};
@@ -128,6 +128,10 @@ fn frames() -> Vec<Frame> {
         Frame::NodeDeleting { op: op("retire-node:mesh2.rpc.2"), forwarded_by: None },
         Frame::NodeDeleted { op: op("retire-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
         Frame::NodeRestarting { op: op("restart-node:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeDraining { op: op("drain-node:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeLeaving { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
+        Frame::NodeLeft { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh2.admin.1".into()) },
+        Frame::NodeDrained { op: op("drain-node:mesh2.rpc.2"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
         Frame::Seated { seat: rafka_mesh_entity::Seat::FabricPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 3 } },
@@ -221,19 +225,19 @@ fn facts() -> Vec<BuildFact> {
     for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
         out.push(step(s.name(), Some(to_json(&op("retire-node:mesh2.rpc.1")))));
     }
-    for d in [
-        DrainOutcome::Established { in_flight: 3 },
-        DrainOutcome::NotSent { reason: "NoRoute".into() },
-        DrainOutcome::Indeterminate { reason: "no reply".into() },
-        DrainOutcome::Refused { reply: "StaleIncarnation".into() },
-        DrainOutcome::Deadline { last_in_flight: Some(1) },
-        DrainOutcome::Deadline { last_in_flight: None },
-    ] {
-        out.push(step(RetireStep::MarkDraining.name(), Some(to_json(&d))));
-        out.push(step(RetireStep::WaitForDrain.name(), Some(to_json(&d))));
-    }
-    for a in [AdmissionClosure::Heard, AdmissionClosure::ThisRuntimeExited, AdmissionClosure::Deadline { last_refusal: "busy".into() }, AdmissionClosure::DrainNotEstablished] {
-        out.push(step(RetireStep::CloseRpcAdmission.name(), Some(to_json(&a))));
+    for (command, completion) in [(RetireStep::DrainNode, RetireStep::AwaitNodeDrained), (RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
+        for d in [
+            CommandAdmission::Admitted,
+            CommandAdmission::AlreadyAdmitted,
+            CommandAdmission::NotSent { reason: "NoRoute".into() },
+            CommandAdmission::Indeterminate { reason: "no reply".into() },
+            CommandAdmission::Refused { reply: "StaleIncarnation".into() },
+        ] {
+            out.push(step(command.name(), Some(to_json(&d))));
+        }
+        for c in [Completion::Received, Completion::Deadline, Completion::RuntimeExited, Completion::NotAwaited { admission: "NotSent".into() }] {
+            out.push(step(completion.name(), Some(to_json(&c))));
+        }
     }
     for s in [StorageDisposition::Released { locator: "/data/x".into() }, StorageDisposition::Preserved, StorageDisposition::PreservedNoMeta] {
         out.push(step(RetireStep::ReleaseStorage.name(), Some(to_json(&s))));

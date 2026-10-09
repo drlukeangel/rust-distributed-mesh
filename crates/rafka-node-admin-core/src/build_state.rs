@@ -992,7 +992,7 @@ mod tests {
             with(&a.operation, "NodeDeleting", &a),
             with(&a.operation, "NodeDeleted", &a),
             with(&b.operation, "NodeDeleting", &b),
-            with(&b.operation, "MarkDraining", &b),
+            with(&b.operation, "DrainNode", &b),
         ];
         let open = in_flight_ops(&fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");

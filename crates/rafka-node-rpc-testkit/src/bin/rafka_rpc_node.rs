@@ -61,20 +61,23 @@ async fn main() {
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal("rafka-rpc-node").await;
-    let deadline = node::drain_deadline_from_env();
-    let drain = tracing::info_span!(
-        "rdm.mesh.node.update.via-drain",
-        node = %launch.name,
-        incarnation_id = %launch.incarnation,
-        deadline_ms = deadline.as_millis() as u64,
-        in_flight_at_deadline = tracing::field::Empty,
-    );
-    let left = {
-        use tracing::Instrument;
-        running.drain(deadline).instrument(drain.clone()).await
-    };
-    drain.record("in_flight_at_deadline", left);
-    drop(drain);
+    // A `stop-node` has no drain leg; only a signal drains the node itself.
+    if !node::stop_commanded() {
+        let deadline = node::drain_deadline_from_env();
+        let drain = tracing::info_span!(
+            "rdm.mesh.node.update.via-drain",
+            node = %launch.name,
+            incarnation_id = %launch.incarnation,
+            deadline_ms = deadline.as_millis() as u64,
+            in_flight_at_deadline = tracing::field::Empty,
+        );
+        let left = {
+            use tracing::Instrument;
+            running.drain(deadline).instrument(drain.clone()).await
+        };
+        drain.record("in_flight_at_deadline", left);
+        drop(drain);
+    }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation)
         .in_scope(|| tracing::info!("stopping"));
     running.stop(node::leave_linger_from_env()).await;

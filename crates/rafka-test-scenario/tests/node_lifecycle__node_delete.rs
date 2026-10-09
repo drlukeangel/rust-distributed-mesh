@@ -145,21 +145,46 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .expect("the runtime was terminated and inspected");
     assert!(start(deleted[0]) > terminal, "the departure follows the terminal proof");
     assert!(start(deleting[0]) < start(deleted[0]));
-    // The drain leg (fabric-mesh-ops.md §4): the executor's typed drain reached the exact birth
-    // (the victim's own `via-apply-draining`), after the pre-notice and before the terminal
-    // proof; the MarkDraining step's receipt carries an established drain.
-    let drained_at = named(&spans, "rdm.node_admin.status.update.via-apply-draining")
+    // The drain and stop legs (node-drain.md, node-stop.md): the executor's drain-node reached the
+    // exact birth (the victim's own `via-drain-node`), after the pre-notice; the victim called
+    // node-drained back and the executor accepted it; then stop-node, the victim's `via-stop-node`,
+    // its node-left call accepted by the executor, all before the terminal proof.
+    let drained_at = named(&spans, "rdm.node_admin.status.update.via-drain-node")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM)
         .map(start)
         .min()
-        .expect("the victim answered the typed drain");
+        .expect("the victim served drain-node");
     assert!(drained_at > start(deleting[0]) && drained_at < terminal, "the drain lands between the pre-notice and the terminal proof");
-    let mark_draining = named(&spans, "rdm.node_admin.deployment.update.via-step")
+    let stopped_at = named(&spans, "rdm.node_admin.status.update.via-stop-node")
         .into_iter()
-        .find(|sp| sp["attributes"]["step"] == "MarkDraining" && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
-        .expect("MarkDraining completed on the executor");
-    assert!(start(mark_draining) < terminal, "the drain step precedes termination");
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .map(start)
+        .min()
+        .expect("the victim served stop-node");
+    let accepted = |completion: &str| -> u64 {
+        named(&spans, "rdm.node_admin.status.update.via-completion-accepted")
+            .into_iter()
+            .filter(|sp| sp["attributes"]["op"] == completion && sp["attributes"]["subject"] == victim_id.as_str() && sp["attributes"]["outcome"] == "applied")
+            .map(start)
+            .min()
+            .unwrap_or_else(|| panic!("the executor accepted no {completion} from the victim"))
+    };
+    let (node_drained_at, node_left_at) = (accepted("node-drained"), accepted("node-left"));
+    assert!(drained_at < node_drained_at && node_drained_at < stopped_at, "stop-node follows the accepted node-drained: drain {drained_at} drained {node_drained_at} stop {stopped_at}");
+    assert!(stopped_at < node_left_at && node_left_at < terminal, "node-left is accepted before the terminal proof: stop {stopped_at} left {node_left_at} terminal {terminal}");
+    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
+        let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .find(|sp| sp["attributes"]["step"] == step && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
+            .unwrap_or_else(|| panic!("{step} completed on the executor"));
+        assert!(start(done) < terminal, "{step} precedes termination");
+    }
+    // The command hooks: node-draining and node-leaving are heard by the other nodes of the fabric.
+    for kind in ["node-draining", "node-leaving", "node-left", "node-drained"] {
+        let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
+        assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
+    }
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     assert!(heard_deleting >= 5, "every other node heard the pre-notice: {heard_deleting}");

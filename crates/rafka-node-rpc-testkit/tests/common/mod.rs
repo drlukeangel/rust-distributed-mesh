@@ -95,6 +95,8 @@ pub struct LiveMesh {
     pub membership: Membership,
     pub client: NodeRpcClient,
     pub resolver: Arc<StaticResolver>,
+    /// The commands this admin side sent and awaits a completion call for.
+    pub commands: Arc<rafka_node_admin_core::node_commands::CommandBook>,
 }
 
 impl LiveMesh {
@@ -143,34 +145,16 @@ impl NodeObserver for LiveMesh {
         Ok(())
     }
 
-    async fn drain(&self, node: &Node) -> rafka_node_admin_core::deployment::pipeline::DrainOutcome {
-        use rafka_node_admin_core::deployment::pipeline::DrainOutcome;
-        use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+    async fn send_command(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
         let target = match self.echo_target(node) {
             Ok(t) => t,
-            Err(reason) => return DrainOutcome::NotSent { reason },
+            Err(reason) => return rafka_node_admin_core::deployment::pipeline::CommandAdmission::NotSent { reason },
         };
-        let Some(incarnation) = node.incarnation_id.clone() else { return DrainOutcome::NotSent { reason: "no incarnation".into() } };
-        let req = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining };
-        match self.client.call::<Status>(&target, &req, &CallOptions::default()).await.0 {
-            RpcOutcome::Reply(r) => match r.value() {
-                StatusReply::NodeDrainingApplied { in_flight } => DrainOutcome::Established { in_flight: *in_flight },
-                other => DrainOutcome::Refused { reply: other.name().to_string() },
-            },
-            RpcOutcome::NotSent(n) => DrainOutcome::NotSent { reason: format!("{:?}", n.reason()) },
-            RpcOutcome::Indeterminate(i) => DrainOutcome::Indeterminate { reason: format!("{:?}", i.reason()) },
-            RpcOutcome::Unserved(u) => DrainOutcome::Refused { reply: format!("unserved op {:#04x}", u.op()) },
-            RpcOutcome::RejectedStale(r) => DrainOutcome::Refused { reply: format!("stale target {}", r.target_node_id()) },
-        }
+        rafka_node_admin_core::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }
 
-    async fn drained(&self, node: &Node) -> bool {
-        use rafka_mesh_entity::MemberStatus;
-        self.membership.book.get(node.node_id.as_str()).is_some_and(|(d, _)| {
-            Some(&d.node.incarnation) == node.incarnation_id.as_ref()
-                && (d.status == MemberStatus::Leaving
-                    || (d.status == MemberStatus::Draining && d.in_flight.is_none_or(|n| n == 0)))
-        })
+    async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
+        rafka_node_admin_core::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
 
     async fn departed(&self, node: &Node) -> bool {
@@ -179,20 +163,6 @@ impl NodeObserver for LiveMesh {
             .book
             .get(node.node_id.as_str())
             .is_some_and(|(d, _)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && d.status == MemberStatus::Leaving)
-    }
-
-    async fn admission_closed(&self, node: &Node) -> Result<(), String> {
-        let target = self.echo_target(node)?;
-        {
-            match self.echo(&target).await {
-                RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. }) => {
-                    return Err(format!("{} still runs new calls", node.name))
-                }
-                // A typed Draining (the handler never ran), or nothing admits the call.
-                _ => {}
-            }
-        }
-        Ok(())
     }
 }
 
@@ -265,7 +235,26 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     };
     assert!(matches!(membership.take_read_chunk(held, "peer"), rafka_mesh_transport::snapshot::Taken::Installed(_)));
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
-    let rpc_server = rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())
+    // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
+    // open commands of this admin side.
+    let commands = Arc::new(rafka_node_admin_core::node_commands::CommandBook::default());
+    let serve_commands = {
+        let commands = commands.clone();
+        move |b: rafka_node_rpc::ServerBuilder| {
+            b.serve::<rafka_node_rpc_contract::status::Status, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer: rafka_node_rpc::PeerContext, req: rafka_node_rpc_contract::status::StatusRequest| {
+                let commands = commands.clone();
+                async move {
+                    use rafka_node_rpc_contract::status::StatusRequest as R;
+                    let (R::NodeDrained { node_id, incarnation, .. } | R::NodeLeft { node_id, incarnation, .. }) = &req else {
+                        return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
+                    };
+                    let (node_id, incarnation) = (node_id.clone(), incarnation.clone());
+                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, "mesh1.admin.1", Some((&node_id, Some(&incarnation), "the commanded birth")), &req))
+                }
+            })
+        }
+    };
+    let rpc_server = serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone()))
         .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
@@ -301,7 +290,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")))));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver },
+        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },
         seed: (admin_ep.id().to_string(), addr),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },

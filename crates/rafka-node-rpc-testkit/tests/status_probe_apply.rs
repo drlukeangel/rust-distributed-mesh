@@ -1,7 +1,8 @@
 //! The downward exact-node operations at a live rpc node (the 0x1B reseal): a node-admin probes
-//! the exact birth and gets its current state; applies `Draining` and gets the work in flight,
-//! the current count on a repeat; a stale incarnation is refused with the one held; an upward
-//! declaration sent downward is refused by direction.
+//! the exact birth and gets its current state; commands `drain-node` and gets `Applied` (a repeat
+//! `AlreadyApplied`), after which the birth calls `node-drained` back; `ApplyNodeState` is not a
+//! drain command and is refused by name; a stale incarnation is refused with the one held; an
+//! upward declaration sent downward is refused by direction.
 
 use crate::common;
 
@@ -15,11 +16,12 @@ use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
-/// with the node's state and changes nothing; `ApplyNodeState(Draining)` answers
-/// `NodeDrainingApplied { in_flight }` and so does a repeat; a probe naming another incarnation
-/// is `RejectedStaleIncarnation` with the held one; a `DeclareNodeState` sent downward is
-/// refused by direction. What must NOT happen: a probe moving the state, or the generic
-/// `Draining { reason }` refusal standing in for the drain's success.
+/// with the node's state and changes nothing; `DrainNode` answers `Applied`, a repeat of the same
+/// operation `AlreadyApplied`, and the birth then calls `NodeDrained` at the commanding side;
+/// `ApplyNodeState(Draining)` is refused `NotReady` naming drain-node and moves nothing; a probe
+/// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
+/// `DeclareNodeState` sent downward is refused by direction. What must NOT happen: a probe moving
+/// the state, or `ApplyNodeState` standing in for the drain command.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family() {
     let fabric_id = FabricId::mint();
@@ -95,10 +97,18 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     // An upward declaration sent downward: refused by direction.
     let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic };
     assert!(matches!(call(downward_declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
-    // Draining applied: the work in flight, and the current count on a repeat.
-    let drain = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
-    assert_eq!(call(drain.clone()).await, StatusReply::NodeDrainingApplied { in_flight: 0 });
-    assert_eq!(call(drain).await, StatusReply::NodeDrainingApplied { in_flight: 0 }, "a repeat answers the current count, never AlreadyApplied");
+    // ApplyNodeState is not a drain command: refused by name, nothing moves.
+    let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
+    assert!(matches!(call(apply).await, StatusReply::NotReady { reason } if reason.contains("drain-node")));
+    assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
+    // drain-node: admitted, then the birth calls node-drained back at the commanding side.
+    let (operation, build_id) = ("drain-node:mesh1.rpc.1".to_string(), "bld_probe".to_string());
+    let key = rafka_node_admin_core::node_commands::CommandKey { build_id: build_id.clone(), attempt: 1, operation: operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    let mut completed = observer.commands.open(key);
+    let drain = StatusRequest::DrainNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id, attempt: 1, operation };
+    assert_eq!(call(drain.clone()).await, StatusReply::Applied);
+    tokio::time::timeout(std::time::Duration::from_secs(10), completed.wait_for(|done| *done)).await.expect("the birth called node-drained at the commanding side").unwrap();
+    assert_eq!(call(drain).await, StatusReply::AlreadyApplied, "a repeat of the same operation is one logical command");
     // The probe after the drain reports it.
     assert_eq!(call(probe).await, StatusReply::Current { node_id: node.node_id.clone(), incarnation, state: NodeState::Draining });
 

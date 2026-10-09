@@ -198,7 +198,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
-    for step in ["MarkDraining", "TerminateRuntime", "NodeDeleted"] {
+    for step in ["DrainNode", "StopNode", "TerminateRuntime", "NodeDeleted"] {
         assert!(victim_steps.iter().any(|n| n == step), "the standard retire ran {step} for {window_victim}: {victim_steps:?}");
     }
     let gone = !std::path::Path::new(&format!("/proc/{frozen_pid}")).exists() || std::fs::read_to_string(format!("/proc/{frozen_pid}/stat")).unwrap_or_default().contains(") Z ");

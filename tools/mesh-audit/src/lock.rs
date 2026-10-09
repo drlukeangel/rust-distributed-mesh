@@ -252,11 +252,12 @@ pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/retire_pipel
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
 
-/// The five typed drain arms of the landed `DrainOutcome`.
-pub const DRAIN_ARMS: [&str; 5] = ["Established", "NotSent", "Indeterminate", "Refused", "Deadline"];
+/// The five typed arms of the landed `CommandAdmission` (what a directed `drain-node` / `stop-node`
+/// call established at the exact birth).
+pub const DRAIN_ARMS: [&str; 5] = ["Admitted", "AlreadyAdmitted", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 6;
+pub const STATUS_REQUESTS: u32 = 10;
 pub const STATUS_REPLIES: u32 = 16;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -483,30 +484,30 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
         Ratchet::RetireAttemptsRpcDrainFirst => {
-            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::MarkDraining"], ratchet, &mut out);
+            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::DrainNode"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
-                match (text.find("Self::MarkDraining,"), text.find("Self::TerminateRuntime,")) {
+                match (text.find("Self::DrainNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}
-                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "MarkDraining ordered before TerminateRuntime in the retire steps".into() }),
+                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "DrainNode ordered before TerminateRuntime in the retire steps".into() }),
                 }
             } else {
                 out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "the file itself".into() });
             }
         }
-        Ratchet::RetireHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "DrainOutcome")) {
+        Ratchet::RetireHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "CommandAdmission")) {
             Some(found) if found == DRAIN_ARMS => {}
             Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: DRAIN_ARMS.iter().map(|s| s.to_string()).collect(), found }),
-            None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum DrainOutcome`".into() }),
+            None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
         Ratchet::DriftSilenceIsNotRetireAuthority => {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
         Ratchet::RetireReceiptNamesDrainArm => {
-            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum DrainOutcome"], ratchet, &mut out);
-            require(root, RETIRE_CELLS, &["MarkDraining"], ratchet, &mut out);
+            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission"], ratchet, &mut out);
+            require(root, RETIRE_CELLS, &["DrainNode"], ratchet, &mut out);
         }
         Ratchet::DrainSuccessIsNotRefusal => {
-            require(root, STATUS, &["NodeDrainingApplied { in_flight: u64 }", "Draining { reason: String }"], ratchet, &mut out);
+            require(root, STATUS, &["NodeDrainingApplied { in_flight: u64 }", "Draining { reason: String }", "DrainNode {"], ratchet, &mut out);
             require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family"], ratchet, &mut out);
         }
         Ratchet::ForwardPreservesContext => {
@@ -577,7 +578,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_six_variant_wire_schema",
+                    "fn requests_match_the_frozen_ten_variant_wire_schema",
                     "fn replies_match_the_frozen_sixteen_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",

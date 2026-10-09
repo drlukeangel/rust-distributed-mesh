@@ -9,7 +9,6 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
-use rafka_node_admin_core::deployment::pipeline::{drain_outcome, DrainOutcome};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
@@ -129,13 +128,13 @@ struct Rig {
     ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
-async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, drain_in_flight: Option<u64>) -> Rig {
-    rig_with(me, others, mesh_ids, drain_in_flight, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await
+async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>) -> Rig {
+    rig_with(me, others, mesh_ids, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await
 }
 
 /// The rig over a given `status.storage` and a given starting `Declared` (what a restarted
 /// authority folded from its rows).
-async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, drain_in_flight: Option<u64>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rafka_mesh_entity::FabricId>) -> Rig {
+async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rafka_mesh_entity::FabricId>) -> Rig {
     let mut nodes = vec![me.node.clone()];
     nodes.extend(others.iter().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
@@ -144,11 +143,6 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         nodes,
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
-    let drain: rafka_node_admin_core::status_rpc::Drain = Arc::new(OnceLock::new());
-    if let Some(n) = drain_in_flight {
-        let door: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = u64> + Send>> + Send + Sync> = Arc::new(move || Box::pin(async move { n }));
-        let _ = drain.set(door);
-    }
     let authority = Arc::new(StatusAuthority {
         me: me.node.name.clone(),
         fabric_id,
@@ -158,7 +152,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         status_storage,
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         republish: Arc::new(OnceLock::new()),
-        drain,
+        commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
+        own: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
     });
@@ -229,7 +224,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
     // The receiver: mesh2's bootstrap admin, not yet any seat's holder.
     let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-    let rig = rig(me, &[&fabric_primary, &not_primary, &member, &other], mesh_ids, None).await;
+    let rig = rig(me, &[&fabric_primary, &not_primary, &member, &other], mesh_ids).await;
     let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
 
     // Applied, its reply lost: Indeterminate at the caller, and the state is held once.
@@ -279,13 +274,12 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2805): after the exact birth applies Draining, its status door stays admitted while
-/// every other call is refused as Draining: a probe answers the current state, a repeated drain
-/// answers the in-flight count again, a stale incarnation is refused by name. Every drain call
-/// classifies as exactly one DrainOutcome arm and a refusal is never Established: Established
-/// (NodeDrainingApplied), Refused (a stale incarnation), NotSent (cut before the send),
-/// Indeterminate (the reply lost); Deadline is the retire pipeline's WaitForDrain arm when an
-/// established drain never finishes.
+/// CONTRACT (#2805): after the exact birth's server drains, its status door stays admitted while
+/// every other call is refused as Draining: a probe answers the current state. A node command
+/// classifies as exactly one CommandAdmission arm and a refusal is never admitted: Refused (a
+/// stale incarnation, `ApplyNodeState` as a drain), NotSent (cut before the send), Indeterminate
+/// (the reply lost). The completion wait of an admitted command that never completes is the retire
+/// pipeline's Deadline arm, never a success.
 #[test]
 fn draining_authority_serves_status_checks_exact_birth() {
     let cell = "draining_authority_serves_status_checks_exact_birth";
@@ -296,13 +290,14 @@ fn draining_authority_serves_status_checks_exact_birth() {
 }
 
 async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
+    use rafka_node_admin_core::deployment::pipeline::{command_admission, CommandAdmission, Completion};
 
-    // The subject: mesh1.admin.2, drained by its executor mesh1.admin.1.
+    // The subject: mesh1.admin.2, commanded by its owning mesh-admin mesh1.admin.1.
     let executor = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let subject = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
-    let rig = rig(subject, &[&executor], BTreeMap::new(), Some(3)).await;
-    let drain = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
+    let rig = rig(subject, &[&executor], BTreeMap::new()).await;
+    let command = |inc: IncarnationId| StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: inc, build_id: "bld_2805".into(), attempt: 1, operation: "drain-node:mesh1.admin.2".into() };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -310,40 +305,42 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let (ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"before".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. })), "{ping:?}");
 
-    // Established: the drain is applied; the server now refuses ordinary calls as Draining.
-    let established = call(&rig, &executor, &drain, &CallOptions::default()).await;
-    assert_eq!(drain_outcome(&established), DrainOutcome::Established { in_flight: 3 });
+    // The server drains: every ordinary call is refused as Draining, the status door stays admitted.
     rig.server.drain();
     let (refused_ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&refused_ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Draining { .. })), "a non-status call is refused as Draining: {refused_ping:?}");
-    // The status door stays admitted: a repeat drain answers again, a probe answers the state.
-    assert_eq!(drain_outcome(&call(&rig, &executor, &drain, &CallOptions::default()).await), DrainOutcome::Established { in_flight: 3 }, "a repeat drain answers the count again");
     let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
     let probed = reply(&call(&rig, &executor, &probe, &CallOptions::default()).await);
     assert!(matches!(&probed, StatusReply::Current { node_id: n, .. } if *n == node_id), "{probed:?}");
 
-    // Refused: a stale incarnation, by name, never Established.
-    let stale = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Draining };
-    let stale_out = call(&rig, &executor, &stale, &CallOptions::default()).await;
+    // ApplyNodeState is not a drain command: refused by name, never admitted.
+    let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
+    let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
+    assert!(matches!(reply(&applied), StatusReply::NotReady { reason } if reason.contains("drain-node")), "{applied:?}");
+    let apply_arm = command_admission(&applied);
+    assert!(matches!(&apply_arm, CommandAdmission::Refused { reply } if reply.contains("not-ready")), "{apply_arm:?}");
+
+    // Refused: a stale incarnation, by name, never admitted.
+    let stale_out = call(&rig, &executor, &command(IncarnationId::mint()), &CallOptions::default()).await;
     assert!(matches!(reply(&stale_out), StatusReply::RejectedStaleIncarnation { .. }), "{stale_out:?}");
-    let refused = drain_outcome(&stale_out);
-    assert!(matches!(&refused, DrainOutcome::Refused { reply } if reply.contains("stale")), "{refused:?}");
+    let refused = command_admission(&stale_out);
+    assert!(matches!(&refused, CommandAdmission::Refused { reply } if reply.contains("stale")), "{refused:?}");
     // NotSent: cut before the request's FIN.
-    let (cut, _) = c.call::<Status>(&target, &drain, &CallOptions { cut_before_finish: true, ..Default::default() }).await;
-    let not_sent = drain_outcome(&cut);
-    assert!(matches!(not_sent, DrainOutcome::NotSent { .. }), "{not_sent:?}");
-    // Indeterminate: applied, the reply lost.
+    let (cut, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
+    let not_sent = command_admission(&cut);
+    assert!(matches!(not_sent, CommandAdmission::NotSent { .. }), "{not_sent:?}");
+    // Indeterminate: decided, the reply lost.
     rig.authority.hold_next_reply.store(true, Ordering::SeqCst);
-    let (lost, _) = c.call::<Status>(&target, &drain, &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
-    let indeterminate = drain_outcome(&lost);
-    assert!(matches!(indeterminate, DrainOutcome::Indeterminate { .. }), "{indeterminate:?}");
-    // Deadline: the retire pipeline's WaitForDrain over an established drain that never finishes.
+    let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
+    let indeterminate = command_admission(&lost);
+    assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
+    // Deadline: the retire pipeline's AwaitNodeDrained over an admitted command that never completes.
     let deadline = deadline_arm().await;
-    assert_eq!(deadline, DrainOutcome::Deadline { last_in_flight: Some(3) });
+    assert_eq!(deadline, Completion::Deadline);
 
     let spans = capture.spans();
-    let applies = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-apply-draining").count();
-    assert!(applies >= 2, "every applied drain is spanned: {applies}");
+    let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
+    assert!(commands >= 2, "every node command naming the admin is spanned: {commands}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     let result = json!({
         "cell": cell,
@@ -352,21 +349,21 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
         "ping_while_draining": "draining",
         "probe": format!("{probed:?}"),
         "arms": {
-            "established": format!("{:?}", DrainOutcome::Established { in_flight: 3 }),
+            "apply_node_state": format!("{apply_arm:?}"),
             "refused": format!("{refused:?}"),
             "not_sent": format!("{not_sent:?}"),
             "indeterminate": format!("{indeterminate:?}"),
             "deadline": format!("{deadline:?}"),
         },
         "server_draining_refusals": rig.server.stats().draining.load(Ordering::SeqCst),
-        "apply_draining_spans": applies,
+        "command_spans": commands,
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The retire pipeline run to its WaitForDrain over a birth whose drain is established and never
-/// finishes: the step's receipt is the arm.
-async fn deadline_arm() -> DrainOutcome {
+/// The retire pipeline run to its AwaitNodeDrained over a birth that admits the drain and never
+/// completes it: the step's receipt is the arm.
+async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completion {
     use rafka_node_admin_core::build::BuildId;
     use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, RetireKind, RetireRequest, RetireStep, Timeouts, TopologySink};
@@ -397,23 +394,21 @@ async fn deadline_arm() -> DrainOutcome {
             None
         }
     }
-    /// The birth answers the drain with three calls in flight and never finishes them.
+    /// The birth admits every command and never calls a completion back.
     struct NeverDrained;
     #[async_trait::async_trait]
     impl NodeObserver for NeverDrained {
-        async fn drain(&self, _: &Node) -> DrainOutcome {
-            DrainOutcome::Established { in_flight: 3 }
+        async fn send_command(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
+            rafka_node_admin_core::deployment::pipeline::CommandAdmission::Admitted
         }
-        async fn drained(&self, _: &Node) -> bool {
-            false
+        async fn await_completion(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
+            tokio::time::sleep(within).await;
+            rafka_node_admin_core::deployment::pipeline::Completion::Deadline
         }
         async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
             None
         }
         async fn ready(&self, _: &Node) -> Result<(), String> {
-            Ok(())
-        }
-        async fn admission_closed(&self, _: &Node) -> Result<(), String> {
             Ok(())
         }
     }
@@ -468,16 +463,16 @@ async fn deadline_arm() -> DrainOutcome {
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, observe_departure: false };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
-    // (MarkDraining), its result (WaitForDrain: the deadline arm); and never NodeDeleted, because
-    // the provider never proves the runtime dead.
+    // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never
+    // NodeDeleted, because the provider never proves the runtime dead.
     let view = builds.read_build(&build_id).await.unwrap();
     let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
     let pos = |name: &str| order.iter().position(|s| *s == name);
-    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::MarkDraining.name()), pos(RetireStep::WaitForDrain.name()));
+    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::DrainNode.name()), pos(RetireStep::AwaitNodeDrained.name()));
     assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the drain, then its result: {order:?}");
     assert!(pos(RetireStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
     let step = &view.steps[waited.unwrap()];
-    serde_json::from_value(step.output.clone().expect("WaitForDrain records its arm")).unwrap()
+    serde_json::from_value(step.output.clone().expect("AwaitNodeDrained records its arm")).unwrap()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -558,7 +553,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
         let store = Refusing::refusing();
         let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-        let rig = rig_with(me, &[&fabric_primary], ids.clone(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let rig = rig_with(me, &[&fabric_primary], ids.clone(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let pending = StatusRequest::ApplyMeshState { mesh_id: mesh2.clone(), mesh_name: "mesh2".into(), state: MeshState::Pending };
 
         let refused = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
@@ -575,7 +570,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
 
         // A Fabric event: refused, then applied, then a repeat.
         let mesh1_primary = birth("mesh3.admin.1", NodeKind::NodeAdmin, "mesh3", true, false);
-        let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic };
         store.refuse.store(true, Ordering::SeqCst);
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
@@ -588,7 +583,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
         assert_eq!(folded.meshes.get(&mesh2), Some(&MeshState::Pending));
         let me_again = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-        let restarted = rig_with(me_again, &[&fabric_primary], ids, None, store.clone(), folded, Some(fabric.clone())).await;
+        let restarted = rig_with(me_again, &[&fabric_primary], ids, store.clone(), folded, Some(fabric.clone())).await;
         let after_restart = reply(&call(&restarted, &fabric_primary, &pending, &CallOptions::default()).await);
         assert_eq!(after_restart, StatusReply::AlreadyApplied, "the folded row answers the natural key");
 
@@ -621,10 +616,10 @@ fn status_authority_refuses_every_backward_move_by_name() {
         let senders: Vec<Birth> = (0..4).map(|i| birth(&format!("mesh1.rpc.{}", i + 1), NodeKind::RpcNode, "mesh1", false, false)).collect();
         let fabric_primary = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
         let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-        let node_rig = rig(me, &senders.iter().collect::<Vec<_>>(), BTreeMap::new(), None).await;
+        let node_rig = rig(me, &senders.iter().collect::<Vec<_>>(), BTreeMap::new()).await;
         let mut fp = fabric_primary;
         fp.node.is_fabric_primary = true;
-        let mesh_rig = rig(receiver, &[&fp], BTreeMap::new(), None).await;
+        let mesh_rig = rig(receiver, &[&fp], BTreeMap::new()).await;
         let mut refused_node = 0;
         let mut refused_mesh = 0;
         let mut repeats = 0;
@@ -687,7 +682,7 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let other_admin = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let stranger = birth("mesh9.rpc.1", NodeKind::RpcNode, "mesh9", false, false);
         let receiver = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
-        let rig = rig(receiver, &[&fp, &rpc, &other_admin], BTreeMap::new(), None).await;
+        let rig = rig(receiver, &[&fp, &rpc, &other_admin], BTreeMap::new()).await;
         let not_authority = |r: &StatusReply, name: &str| match r {
             StatusReply::RejectedNotAuthority { why } => assert_eq!(why.as_str(), name, "{r:?}"),
             other => panic!("expected rejected-not-authority/{name}: {other:?}"),
@@ -723,7 +718,7 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let mp_receiver = birth("mesh1.admin.3", NodeKind::NodeAdmin, "mesh1", true, false);
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
-        let rig2 = rig_with(mp_receiver, &[&fp], ids, None, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await;
+        let rig2 = rig_with(mp_receiver, &[&fp], ids, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await;
         let wrong_fabric = rafka_mesh_entity::FabricId::mint();
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
@@ -757,7 +752,7 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
         let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
         let fabric = rafka_mesh_entity::FabricId::mint();
         let store: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
-        let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), None, store.clone(), Declared::default(), Some(fabric.clone())).await;
+        let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
         assert_eq!(reply(&call(&rig, &fp1, &ready, &CallOptions::default()).await), StatusReply::Applied);
         // The seat moves: fp2 holds it, fp1 does not.
@@ -781,7 +776,7 @@ fn applied_events_survive_authority_change_and_the_old_authority_is_refused() {
         // The receiver restarts over its rows.
         let folded = Declared::rehydrate(&*store, &MemoryNodesStorage::default()).await.unwrap();
         let receiver2 = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-        let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), None, store.clone(), folded, Some(fabric.clone())).await;
+        let rig2 = rig_with(receiver2, &[&fp1, &fp2], BTreeMap::new(), store.clone(), folded, Some(fabric.clone())).await;
         {
             let mut t = rig2.authority.topology.write().await;
             for n in t.nodes.iter_mut().filter(|n| n.name == fp1.node.name) {
@@ -818,7 +813,7 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
     capture.run(async {
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
-        let rig = rig(me, &[&subject], BTreeMap::new(), None).await;
+        let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let old_inc = subject.node.incarnation_id.clone().unwrap();
         let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st };
         assert_eq!(reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Draining), &CallOptions::default()).await), StatusReply::Applied, "the old birth reached Draining");
@@ -854,7 +849,7 @@ fn status_route_loss_never_synthesizes_dead() {
     capture.run(async {
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
-        let rig = rig(me, &[&subject], BTreeMap::new(), None).await;
+        let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         // The healthy control, in the same capture.
         assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
@@ -914,7 +909,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 1: the target holds another MeshId under mesh2's name.
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), held.clone())].into_iter().collect();
-        let r1 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let r1 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
         let other = MeshId::mint();
         let e1 = handoff(&r1, other, target_of(&r1)).await.expect_err("a stale MeshId is refused");
         assert!(e1.contains("no replacement id is minted") && e1.contains(&held.to_string()), "{e1}");
@@ -923,7 +918,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 2: the target is already past Pending.
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
-        let r2 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let r2 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
         let ahead = StatusRequest::ApplyMeshState { mesh_id: mesh_id.clone(), mesh_name: "mesh2".into(), state: MeshState::ReadyForTraffic };
         assert_eq!(reply(&call(&r2, &fp, &ahead, &CallOptions::default()).await), StatusReply::Applied);
         let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after ReadyForTraffic is backward");
@@ -933,7 +928,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // typed (the rectifier is the retry), and the next hand-off of the same key is AlreadyApplied.
         let mesh_id3 = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
-        let r3 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let r3 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
         r3.authority.hold_next_reply.store(true, Ordering::SeqCst);
         let t3 = std::time::Instant::now();
         let e3 = handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect_err("a lost reply is not certainty: the step fails and is not retried inside");
@@ -945,7 +940,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         // Arm 4: the target cannot be reached at all: the reachability wait ends at its bound and
         // no Status is sent.
         let mesh_id4 = MeshId::mint();
-        let r4 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], BTreeMap::new(), None).await;
+        let r4 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], BTreeMap::new()).await;
         let mut dark = target_of(&r4);
         dark.transport_addr = Some("127.0.0.1:1".parse().unwrap());
         let t4 = std::time::Instant::now();
@@ -988,7 +983,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let mesh_id = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
-        let r = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        let r = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids).await;
         r.ready.store(false, Ordering::SeqCst);
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
@@ -1037,7 +1032,7 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         let (id1, id2) = (MeshId::mint(), MeshId::mint());
         // Its own records hold only the Mesh it was born into.
         let records: BTreeMap<String, MeshId> = [("mesh2".to_string(), id2.clone())].into_iter().collect();
-        let rig = rig(me, &[&mesh1_primary, &mesh1_other], records, None).await;
+        let rig = rig(me, &[&mesh1_primary, &mesh1_other], records).await;
         {
             use rafka_node_admin_core::model::Mesh;
             let mut t = rig.authority.topology.write().await;

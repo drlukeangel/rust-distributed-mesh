@@ -141,10 +141,10 @@ fn retire_attempts_rpc_drain_first_fails_when_termination_precedes_the_drain() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "        Self::MarkDraining,\n        Self::WaitForDrain,",
-        "        Self::WaitForDrain,",
+        "        Self::DrainNode,\n        Self::AwaitNodeDrained,",
+        "        Self::AwaitNodeDrained,",
     );
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::MarkDraining,");
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::DrainNode,");
     only(check(t.root()), Ratchet::RetireAttemptsRpcDrainFirst);
 }
 
@@ -172,8 +172,8 @@ fn retire_receipt_names_drain_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum DrainOutcome",
-        "#[serde(rename_all = \"kebab-case\")]\npub enum DrainOutcome",
+        "#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission",
+        "#[serde(rename_all = \"kebab-case\")]\npub enum CommandAdmission",
     );
     only(check(t.root()), Ratchet::RetireReceiptNamesDrainArm);
 }
