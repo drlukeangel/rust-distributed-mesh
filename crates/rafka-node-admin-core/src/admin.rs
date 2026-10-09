@@ -233,6 +233,13 @@ pub struct Records {
     /// What wakes the declarer (`crate::status_declare`): poked by the topology, this admin's own
     /// digest status, the declare gate, the meshes this admin holds and a down op's receipt.
     pub wake: Arc<crate::status_declare::DeclareWake>,
+    /// This admin does not hold the fabric-primary role and the last fabric status published is
+    /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
+    published_degraded: std::sync::atomic::AtomicBool,
+    /// The exact births the fabric authority proved exited from their runtimes (`reconcile_drift`).
+    /// Shown `Dead` whatever their last digest said: a view that learned a birth from topology alone
+    /// holds it ready, and a proven exit is the evidence that topology never was.
+    exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -278,6 +285,24 @@ impl Records {
     /// Hold (or clear) the adopted `degraded`; whether the value changed.
     pub fn set_adopted_degraded(&self, on: bool) -> bool {
         self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
+    }
+
+    /// A birth whose exit the fabric authority proved.
+    pub fn mark_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) {
+        self.exited.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
+    }
+
+    pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.exited.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
+    }
+
+    /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
+    pub fn published_degraded(&self) -> bool {
+        self.published_degraded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_published_degraded(&self, on: bool) {
+        self.published_degraded.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// May this admin declare its Mesh ready (see the field)?
@@ -434,6 +459,8 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         // `Dead` only while the mesh primary's offline tickle holds this exact birth true offline.
         n.status = if restarting {
             NodeStatus::Restarting
+        } else if records.is_exited(&d.node.node_id, &d.node.incarnation) {
+            NodeStatus::Dead
         } else if !silent {
             node_status(d.status)
         } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
@@ -512,8 +539,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     if topology.fabric_primary().is_some() {
         // The fabric primary authors `degraded` from the investigation's rebirth decision until the
         // reborn mesh's primary reports for its round (`crate::investigate`), and a successor holder
-        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`).
-        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
+        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
+        // that holds no seat serves the `degraded` the holder published.
+        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
     }
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
@@ -541,6 +569,8 @@ pub async fn reconcile_drift(
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     defers: &(dyn Fn(&str) -> bool + Sync),
+    decided: &(dyn Fn(&str) -> bool + Sync),
+    on_exit_proven: &(dyn Fn(&NodeId, &IncarnationId) + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
@@ -556,7 +586,8 @@ pub async fn reconcile_drift(
     // reached, not dead: it is inspected like any unheard birth, and only an exited runtime counts.
     let mut map = t.clone();
     for row in durable {
-        if map.node(&row.name).is_none() && current.topology.contains(&row.name) {
+        // A birth whose proven departure is held left on purpose: its row is history, not drift.
+        if map.node(&row.name).is_none() && current.topology.contains(&row.name) && !book.is_departed(row.node_id.as_str()) {
             let mut n = Node::allocated(row.name.clone());
             n.node_id = row.node_id.clone();
             n.incarnation_id = Some(row.incarnation_id.clone());
@@ -565,23 +596,60 @@ pub async fn reconcile_drift(
         }
     }
     let t = &map;
-    for n in crate::drift::unheard(t) {
+    // The births this authority may have to prove: the ones it no longer hears, and the node-admins
+    // of a peer mesh whose rebirth the ladder decided (`crate::investigate`). A mesh this authority
+    // never heard on the backbone is held `ready` in its view from topology alone (topology is not
+    // liveness), so the ladder's decision, not a status, names its node-admins.
+    let mut candidates = crate::drift::unheard(t);
+    for n in &t.nodes {
+        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && decided(&n.mesh) && !candidates.iter().any(|c| c.name == n.name) {
+            candidates.push(n);
+        }
+    }
+    for n in candidates {
         // A peer mesh with no live node-admin is reborn on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
         // other birth, a node-admin of a mesh that still has one included, is proven here as ever.
         if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+            // The hold is named once per mesh and Build: an unnamed deferral is a rebirth nobody is
+            // waiting on.
+            let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
+            let key = (current.build_id.clone(), 0u32, vec!["deferred".to_string(), n.mesh.clone()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-drift-deferred", node = %me, mesh = %n.mesh, birth = %n.name, unheard_ms = unheard.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "none".into()))
+                    .in_scope(|| tracing::info!("the peer mesh's node-admins wait for the investigation's rebirth decision"));
+            }
             continue;
         }
         let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
+        // A silent birth this authority cannot prove is named once, with what it lacks: it is not
+        // drift until its exact runtime is inspected, and an authority that holds no fact for it
+        // can never inspect it.
+        let mut unprovable = |why: String| {
+            let key = (current.build_id.clone(), 0u32, vec![n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default(), why.clone()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-drift-unprovable", node = %me, birth = %n.name, node_id = %n.node_id, status = ?n.status, reason = %why)
+                    .in_scope(|| tracing::info!("a silent birth the accepted topology names cannot be proven exited by this authority"));
+            }
+        };
         let (fact, data_dir, birth) = match (&held, row) {
             (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
             (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-            _ => continue,
+            _ => {
+                unprovable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held.is_some() { "a digest without a runtime" } else { "no digest of this birth" }));
+                continue;
+            }
         };
         // Proof is the exact runtime's own terminal status, in this
         // provider's control domain; anything else proves nothing.
-        let Ok(handle) = crate::deployment::provider::adopt(provider, &fact) else { continue };
+        let handle = match crate::deployment::provider::adopt(provider, &fact) {
+            Ok(h) => h,
+            Err(e) => {
+                unprovable(format!("the provider refused to adopt its runtime: {e}"));
+                continue;
+            }
+        };
         let inspected = provider.inspect(&handle).await;
         let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0);
         if let crate::deployment::provider::DeploymentStatus::Exited { code } = status {
@@ -591,8 +659,11 @@ pub async fn reconcile_drift(
                 _ => "exit-record",
             };
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
+            on_exit_proven(&n.node_id, &incarnation);
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
+        } else {
+            unprovable(format!("its runtime is not proven exited: {status:?}"));
         }
     }
     let short = crate::drift::shortfall(&current.topology, t, &exited);
@@ -2833,7 +2904,15 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 if fabric_primary && !was_fabric_primary {
                     let adopted = membership.fabric_status().is_some_and(|s| s.status == "degraded");
                     records.set_adopted_degraded(adopted);
-                } else if !fabric_primary && was_fabric_primary {
+                }
+                if fabric_primary {
+                    records.set_published_degraded(false);
+                } else {
+                    // The seat is released in one place and one order: the published `degraded` is
+                    // held before the authority records it replaces are cleared, so no projection
+                    // between the two answers ready for a fabric the holder published degraded.
+                    records.set_published_degraded(membership.fabric_status().is_some_and(|s| s.status == "degraded"));
+                    records.set_peer_recovery(None);
                     records.set_adopted_degraded(false);
                 }
                 was_fabric_primary = fabric_primary;
@@ -2920,6 +2999,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             membership: membership.clone(),
             topology: control.topology.clone(),
             records: records.clone(),
+            settled: { let (accepted, builds) = (accepted.clone(), builds_dyn.clone()); Arc::new(move || { let (accepted, builds) = (accepted.clone(), builds.clone()); Box::pin(async move { accepted.current(&*builds).await.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running)) }) }) },
             client: node_rpc.client.clone(),
             connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
             ladder: ladder.clone(),
@@ -2971,7 +3051,12 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh)).await;
+let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+                    // The proofs the pass just took are in the view the attempt is planned from: a birth
+                    // proven exited is not live there, and holds no seat.
+                    if opened.is_some() {
+                        *topology.write().await = project(&fabric, &fabric_id, provider, &book, &records);
+                    }
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
@@ -3086,6 +3171,46 @@ mod tests {
     fn with_id(mut d: MeshDigest, id: &str) -> MeshDigest {
         d.node.node_id = NodeId::parse(id).unwrap();
         d
+    }
+
+    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
+    /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the holder
+    /// published, `degraded`, until the holder publishes ready. Must NOT happen: `ready-for-traffic`
+    /// because its own authority records (cleared with the seat) are empty.
+    #[test]
+    fn a_non_holder_projects_the_degraded_status_the_holder_published() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        for d in [with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000"), with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000")] {
+            book.record(d);
+        }
+        let records = Records::default();
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic, "nothing published degraded: ready");
+        records.set_published_degraded(true);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the holder published degraded and has not published ready");
+    }
+
+    /// CONTRACT: a birth the fabric authority proved exited is `Dead` in the view whatever its last
+    /// digest said, so a mesh whose admins were learned from topology alone and are all proven gone
+    /// has no primary admin. Must NOT happen: a dead admin holds its mesh's seat because its digest
+    /// says ready.
+    #[test]
+    fn a_proven_exited_birth_is_dead_whatever_its_digest_says() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let a = with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000");
+        let b = with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000");
+        book.record(a.clone());
+        book.record(b.clone());
+        let records = Records::default();
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_some());
+        records.mark_exited(&b.node.node_id, &b.node.incarnation);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().status, NodeStatus::Dead);
+        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
     }
 
     #[test]

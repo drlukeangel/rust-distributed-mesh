@@ -632,14 +632,30 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
-        let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
+        // The fabric primary that decided the rebirth probed the mesh: the seat can move to a reborn
+        // admin while the other mesh is still unheard, and its ladder starts over from the seat.
+        // A fabric primary that loses the seat takes its ladder with it, so the next holder decides
+        // again for a mesh it has not yet heard: a mesh is reborn at least once and by any one
+        // fabric primary at most once.
+        let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
+        assert!(!rebirths.is_empty(), "{m}: reborn: {rebirths:#?}");
+        for r in &rebirths {
+            assert_eq!(rebirths.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: reborn once per fabric primary: {rebirths:#?}");
+        }
+        let first = rebirths.iter().min_by_key(|sp| at_ns(sp)).unwrap();
+        let decider = attr(first, "node");
+        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
+        probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
-        for p in &probes {
-            assert_eq!(attr(p, "outcome"), "carrier-edge-lost", "{m}: {p:#?}");
+        for (i, p) in probes.iter().enumerate() {
+            // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
+            // commits and loses its reply (`Indeterminate`, unreachable). The rebirth is decided only
+            // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
+            let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail") == "Indeterminate";
+            assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
+            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the rebirth: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
         }
-        let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
-        assert_eq!(rebirths.len(), 1, "{m}: reborn once: {rebirths:#?}");
     }
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "meshes": lost, "mesh_ids": mesh_ids}));
 }
@@ -675,11 +691,19 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
         async move { held.then_some(()) }
     })
     .await;
-    wait_for("a round of the mesh completes after the fault and its adopted status is republished", Duration::from_secs(120), || {
+    // The report is its own declaration, owed once the round completed and sent on the declarer's
+    // cadence: it follows the round, and the republish does not wait for it. The estate is stopped
+    // only once the fabric primary of the moment has it, or the stop outruns the declaration.
+    wait_for("a round of the mesh completes after the fault, its adopted status is republished and the mesh primary's round-complete report reaches the fabric primary", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let done = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().any(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms);
+        let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).min();
         let sent = !mesh_sends_after(&spans, &lost, fault_ms).is_empty();
-        async move { (done && sent).then_some(()) }
+        let reported = complete.is_some_and(|c| {
+            named(&spans, "rdm.node_admin.status.update.via-declaration")
+                .into_iter()
+                .any(|sp| attr(&sp, "op") == "declare-mesh-state" && attr(&sp, "sender").starts_with(&format!("{lost}.admin.")) && matches!(attr(&sp, "outcome").as_str(), "applied" | "already-applied") && at_ns(&sp) / 1_000_000 >= c)
+        });
+        async move { (sent && reported).then_some(()) }
     })
     .await;
     let fp = f.fabric_primary.clone();

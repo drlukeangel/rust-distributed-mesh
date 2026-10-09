@@ -210,6 +210,9 @@ pub struct Watch {
     pub membership: Membership,
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     pub records: Arc<Records>,
+    /// Is the accepted Build settled (not pending, not running)? A mesh the Build is still birthing
+    /// is not unheard.
+    pub settled: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>,
     pub client: Arc<NodeRpcClient>,
     /// Does this node hold an Active Direct connection to the exact node?
     pub connected: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
@@ -226,18 +229,28 @@ fn now_ms() -> u64 {
 /// fabric primary and its view authorizes, every peer mesh it has heard on the backbone is stepped
 /// down its ladder.
 pub async fn run(w: Watch) {
+    // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
+    let mut seat_since: Option<Instant> = None;
     loop {
         tokio::time::sleep(w.round).await;
         let view = w.topology.read().await.clone();
         let fabric_primary = view.fabric_primary().is_some_and(|n| n.name == w.me);
         if !(fabric_primary && w.membership.authorizes()) {
             w.ladder.lock().unwrap().clear();
-            w.records.set_peer_recovery(None);
+            seat_since = None;
             continue;
+        }
+        // The clock of a mesh never heard runs while the accepted Build is settled: from the seat, and
+        // from each settling, because a mesh the Build is still birthing has not had its chance to be heard.
+        if (w.settled)().await {
+            seat_since.get_or_insert_with(Instant::now);
+        } else {
+            seat_since = None;
         }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        forget_unheard_meshes(&w.ladder, &heard);
+        let never = if seat_since.is_some() { never_heard(&view, &w.me.mesh, &heard) } else { BTreeSet::new() };
+        forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let round_ms = w.round.as_millis().max(1) as u64;
         let mut tasks = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
@@ -245,9 +258,21 @@ pub async fn run(w: Watch) {
             let rounds = unheard.as_millis() as u64 / round_ms;
             tasks.push(investigate(&w, &view, mesh, rounds, unheard));
         }
+        for mesh in never {
+            let unheard = seat_since.expect("never is empty without it").elapsed();
+            let rounds = unheard.as_millis() as u64 / round_ms;
+            tasks.push(investigate(&w, &view, mesh, rounds, unheard));
+        }
         futures_util::future::join_all(tasks).await;
         restore(&w, &view);
     }
+}
+
+/// The peer meshes the view holds nodes of that the backbone has never carried to this admin: it
+/// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
+/// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
+pub fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
+    view.nodes.iter().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
 
 /// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
@@ -445,6 +470,19 @@ mod tests {
 
     /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a rebirth at 30 rounds, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
+    #[test]
+    fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_seat() {
+        use crate::model::*;
+        let node = |n: &str| Node::allocated(n.parse().unwrap());
+        let t = Topology {
+            fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![node("mesh1.admin.1"), node("mesh2.admin.1"), node("mesh2.rpc.1"), node("mesh3.admin.1")],
+        };
+        let heard: BTreeSet<String> = ["mesh3".to_string()].into();
+        assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
+    }
+
     #[test]
     fn two_carrier_edge_lost_probes_decide_a_rebirth_at_thirty_rounds() {
         let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
