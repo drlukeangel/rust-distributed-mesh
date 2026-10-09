@@ -887,6 +887,21 @@ impl Estate {
         }
     }
 
+    /// Wait until the node at `witness` (a probe target such as `path:mesh1.gateway.1`) holds the
+    /// birth the admin's view lists for `node` (same node id, same incarnation). A node learns a
+    /// peer's birth by gossip, not from the admin's settled view: a call through a witness is made
+    /// only once the witness's own resolver holds the birth it will call.
+    pub async fn witness_holds(&self, witness: &str, node: &str) {
+        let birth = self.node(node).await;
+        let (id, incarnation) = (birth["node_id"].as_str().unwrap_or_default().to_string(), birth["incarnation_id"].as_str().unwrap_or_default().to_string());
+        let exact = format!("exact:{id}");
+        wait_for(&format!("{witness} holds incarnation {incarnation} of {node}"), Duration::from_secs(30), || async {
+            let r = self.probe(&["resolve", "--target", witness, "--query", &exact]);
+            (r["reply"]["resolution"] == "found" && r["reply"]["incarnation_id"] == incarnation.as_str()).then_some(())
+        })
+        .await;
+    }
+
     pub async fn node(&self, name: &str) -> Value {
         self.node_opt(name).await.unwrap_or_else(|| panic!("no node {name}"))
     }

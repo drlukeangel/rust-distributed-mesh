@@ -46,6 +46,7 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through gateway.2 to the same broker.
+    estate.witness_holds("path:mesh1.gateway.2", "mesh1.broker.1").await;
     let carried = estate.probe(&["get", "--target", &exact_b1, "--via", "path:mesh1.gateway.2", "--key", "r1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b1_id, "the carrier reached exactly broker.1: {carried}");

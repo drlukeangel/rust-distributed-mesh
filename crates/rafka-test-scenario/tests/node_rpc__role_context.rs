@@ -35,6 +35,7 @@ async fn one_call_through_a_gateway_to_a_broker_is_one_trace_across_three_proces
     let broker_id = broker["node_id"].as_str().unwrap().to_string();
     let exact = format!("exact:{broker_id}");
 
+    estate.witness_holds("path:mesh1.gateway.1", "mesh1.broker.1").await;
     let put = estate.probe(&["put", "--target", &exact, "--via", "path:mesh1.gateway.1", "--key", "t1", "--value", "traced"]);
     assert_eq!((put["outcome"].as_str(), put["route"].as_str()), (Some("Reply"), Some("via-peer")), "{put}");
     assert_eq!(put["reply"]["executing_node"], broker_id, "{put}");

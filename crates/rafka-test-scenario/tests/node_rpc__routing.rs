@@ -49,6 +49,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through P to the same B: P's one inner call reaches B, which served.
+    estate.witness_holds("path:mesh1.rpc.3", "mesh1.rpc.1").await;
     let carried = estate.probe(&["get", "--target", &exact_b, "--via", "path:mesh1.rpc.3", "--key", "d1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b["node_id"], "the carrier reached exactly B: {carried}");
