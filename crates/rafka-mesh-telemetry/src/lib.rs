@@ -8,6 +8,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 pub mod export;
 pub mod logs;
+mod log_sink;
 pub mod watchdog;
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
@@ -441,9 +442,10 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         builder = builder.with_span_processor(processor);
         any = true;
     }
+    let stderr_sink = log_sink::LogSink::start(std::io::stderr());
     let fmt_filter = EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()).and(filter_fn(export::admits_source));
     if !any {
-        let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter)).try_init();
+        let _ = tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter)).try_init();
         return None;
     }
     let provider = builder.build();
@@ -466,7 +468,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(fmt_filter))
+        .with(tracing_subscriber::fmt::layer().with_writer(stderr_sink.clone()).with_filter(fmt_filter))
         .with(OpenTelemetryLayer::new(tracer).with_filter(otel_filter))
         .with(log_layer)
         .try_init();
