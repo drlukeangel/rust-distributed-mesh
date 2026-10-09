@@ -12,12 +12,12 @@ fn admin_ui_holds_no_lifecycle_authority() {
 #[test]
 fn the_ratchet_names_every_kind_of_violation() {
     let dir = std::env::temp_dir().join(format!("admin-ui-ratchet-{}", std::process::id()));
-    let src = dir.join("admin-ui/src");
+    let src = dir.join("demo/admin-ui/src");
     std::fs::create_dir_all(&src).unwrap();
-    std::fs::write(dir.join("admin-ui/Cargo.toml"), "[dependencies]\nrafka-node-admin-core = { path = \"x\" }\n\n[dev-dependencies]\nrafka-node-admin-client = { path = \"y\" }\n").unwrap();
+    std::fs::write(dir.join("demo/admin-ui/Cargo.toml"), "[dependencies]\nrafka-node-admin-core = { path = \"x\" }\n\n[dev-dependencies]\nrafka-node-admin-client = { path = \"y\" }\n").unwrap();
     std::fs::write(
         src.join("main.rs"),
-        "use rafka_node_admin_core::process_table::ProcessTable;\nfn f(c: &mut std::process::Child) { let _ = c.kill(); let _ = std::process::Command::new(\"rafka-rpc-node\"); }\n// Command::new(\"in a comment\") is fine\n",
+        "use rafka_node_admin_core::process_table::ProcessTable;\nuse rafka_chaos::process_faults::Fault;\nfn f(c: &mut std::process::Child) { let _ = c.kill(); let _ = std::process::Command::new(\"rafka-rpc-node\"); }\n// Command::new(\"in a comment\") is fine\n",
     )
     .unwrap();
     let v = lifecycle_violations(&dir);
@@ -25,7 +25,8 @@ fn the_ratchet_names_every_kind_of_violation() {
     assert!(has("depends on rafka-node-admin-core"), "{v:#?}");
     assert!(has("does not depend on rafka-node-admin-client"), "{v:#?}");
     assert!(has("`ProcessTable`") && has("`rafka_node_admin_core`") && has("`.kill(`") && has("`process::Child`"), "{v:#?}");
-    assert!(has("main.rs:2: starts a process"), "{v:#?}");
-    assert!(!v.iter().any(|x| x.contains("main.rs:3")), "comments pass: {v:#?}");
+    assert!(has("names the chaos kit outside chaos.rs"), "{v:#?}");
+    assert!(has("main.rs:3: starts a process"), "{v:#?}");
+    assert!(!v.iter().any(|x| x.contains("main.rs:4")), "comments pass: {v:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 }

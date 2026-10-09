@@ -1,0 +1,34 @@
+[package]
+name = "rafka-admin-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The demo admin UI: a node-admin client that draws the mesh truthfully"
+
+[lib]
+name = "rafka_admin_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rafka-admin-ui"
+path = "src/main.rs"
+
+[dependencies]
+rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-node-admin-client = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-chaos = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+axum = "0.8.9"
+tower-http = { version = "0.6.11", features = ["fs"] }
+reqwest = { version = "0.13.3", features = ["json"] }
+urlencoding = "2"
+
+[dev-dependencies]
+rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

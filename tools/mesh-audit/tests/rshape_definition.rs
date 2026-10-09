@@ -25,6 +25,9 @@ const FORK_URLS: [&str; 4] = [
     "https://github.com/drlukeangel/noq",
 ];
 const CONSUMER: &str = "demo";
+/// The demo workspace's own packages: the consumer and the admin UI (its one member).
+const LOCAL_PACKAGES: [&str; 2] = ["rshape-consumer", "rafka-admin-ui"];
+const UI_DIR: &str = "demo/admin-ui";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
 /// resolves to. Anything else named `rafka-*` is a business crate.
@@ -168,7 +171,7 @@ fn check_lock(lock: &str, rev: &str) -> Vec<String> {
     for line in lock.lines().map(str::trim).chain(std::iter::once("[[package]]")) {
         if line == "[[package]]" {
             if let Some((n, has_src)) = cur.take() {
-                if !has_src && n != "rshape-consumer" {
+                if !has_src && !LOCAL_PACKAGES.contains(&n.as_str()) {
                     sourceless.push(n);
                 }
             }
@@ -215,7 +218,7 @@ fn check_sources(files: &[(String, String)]) -> Vec<String> {
                 for word in l.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
                     if let Some(krate) = word.strip_prefix("rafka_") {
                         let pkg = format!("rafka-{}", krate.replace('_', "-"));
-                        if !APPROVED_RDM.contains(&pkg.as_str()) {
+                        if pkg != "rafka-admin-ui" && !APPROVED_RDM.contains(&pkg.as_str()) {
                             v.push(format!("rshape-consumer-business-dependency: {path}:{} names crate `{pkg}`", i + 1));
                         }
                     }
@@ -238,7 +241,7 @@ fn check_build_receipt(metadata: &Value, manifest: &Value) -> Vec<String> {
     for p in metadata["packages"].as_array().into_iter().flatten() {
         let name = p["name"].as_str().unwrap_or("?");
         match p["source"].as_str() {
-            None if name != "rshape-consumer" => v.push(format!("rshape-consumer-path-dependency: package `{name}` resolves to a path ({})", p["manifest_path"])),
+            None if !LOCAL_PACKAGES.contains(&name) => v.push(format!("rshape-consumer-path-dependency: package `{name}` resolves to a path ({})", p["manifest_path"])),
             None => {}
             Some(src) if src.starts_with(&format!("git+{RDM_URL}")) => {
                 rdm += 1;
@@ -278,7 +281,7 @@ fn check_root_excludes_consumer(root_toml: &str) -> Vec<String> {
 
 fn consumer_sources() -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut stack = vec![root().join(CONSUMER).join("src")];
+    let mut stack = vec![root().join(CONSUMER).join("src"), root().join(UI_DIR).join("src")];
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).unwrap() {
             let p = e.unwrap().path();
@@ -320,6 +323,11 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     let (mut clean, revs) = check_manifest(&toml);
     let rev = revs.iter().next().cloned().unwrap_or_default();
     assert_eq!(revs.len(), 1, "the fixture pins exactly one RDM rev: {revs:?}");
+    // The admin UI is the demo workspace's one member: the same import rules, at the same rev; the
+    // workspace root and entry-point rules belong to the consumer's manifest alone.
+    let (ui_rules, ui_revs) = check_manifest(&read(&format!("{UI_DIR}/Cargo.toml")));
+    clean.extend(ui_rules.into_iter().filter(|m| !m.starts_with("rshape-consumer-not-own-workspace") && !m.starts_with("rshape-consumer-missing-entry-point")));
+    assert_eq!(ui_revs, revs, "the admin UI pins the consumer's one rev");
     clean.extend(check_lock(&lock, &rev));
     clean.extend(check_sources(&consumer_sources()));
     clean.extend(check_root_excludes_consumer(&root_toml));

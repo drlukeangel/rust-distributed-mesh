@@ -5,6 +5,9 @@
 //! - any reach into node-admin core or its old process table;
 //! - any process-control primitive (kill, child handles);
 //! - any process spawn;
+//! - a fault aimed anywhere but through the chaos kit: `rafka_chaos` is named only in `chaos.rs`,
+//!   whose faults are typed outcomes on one node's exact runtime and are never lifecycle (a
+//!   topology change is a Build);
 //! - a runtime dependency on node-admin core, or none on the client crate
 //!   (a test may serve the real control API as a dev-dependency).
 
@@ -23,7 +26,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
 /// Every violation in the admin-ui crate under `root`, as `file:line: why`.
 pub fn lifecycle_violations(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
-    let manifest = root.join("admin-ui/Cargo.toml");
+    let manifest = root.join("demo/admin-ui/Cargo.toml");
     match std::fs::read_to_string(&manifest) {
         Ok(m) => {
             // Runtime dependencies only: a test may serve the real control API.
@@ -37,7 +40,7 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
         }
         Err(e) => out.push(format!("{}: {e}", manifest.display())),
     }
-    let src = root.join("admin-ui/src");
+    let src = root.join("demo/admin-ui/src");
     let mut files: Vec<_> = walk(&src);
     files.sort();
     for f in files {
@@ -48,6 +51,9 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
                 if code.contains(needle) {
                     out.push(format!("{}:{}: `{needle}`: {why}", f.display(), n + 1));
                 }
+            }
+            if code.contains("rafka_chaos") && f.file_name().and_then(|n| n.to_str()) != Some("chaos.rs") {
+                out.push(format!("{}:{}: names the chaos kit outside chaos.rs; faults go through that one door", f.display(), n + 1));
             }
             if code.contains("Command::new") {
                 out.push(format!("{}:{}: starts a process; topology changes are Build requests to node-admin", f.display(), n + 1));

@@ -44,8 +44,8 @@ done
 echo "$CANDIDATE" | grep -qE '^[0-9a-f]{40}$' || refuse "--candidate-sha '$CANDIDATE' is not a 40-hex commit"
 case "$WORKSPACE" in "$FIXTURE"|"$FIXTURE"/*|/|.|"") refuse "--workspace '$WORKSPACE' is the fixture itself or the root; it is a clean copy" ;; esac
 
-FIXTURE_REV=$(grep -oE 'rev = "[0-9a-f]{40}"' "$FIXTURE/Cargo.toml" | sort -u)
-[ "$(echo "$FIXTURE_REV" | wc -l)" = 1 ] && [ -n "$FIXTURE_REV" ] || refuse "$FIXTURE/Cargo.toml pins more than one rev (or none): $FIXTURE_REV"
+FIXTURE_REV=$(grep -ohE 'rev = "[0-9a-f]{40}"' "$FIXTURE/Cargo.toml" "$FIXTURE/admin-ui/Cargo.toml" | sort -u)
+[ "$(echo "$FIXTURE_REV" | wc -l)" = 1 ] && [ -n "$FIXTURE_REV" ] || refuse "$FIXTURE/Cargo.toml and $FIXTURE/admin-ui/Cargo.toml pin more than one rev (or none): $FIXTURE_REV"
 FIXTURE_REV=${FIXTURE_REV#rev = \"}; FIXTURE_REV=${FIXTURE_REV%\"}
 
 rm -rf "$WORKSPACE" "$BIN_DIR" "$OUTPUT"
@@ -53,12 +53,15 @@ mkdir -p "$WORKSPACE" "$BIN_DIR" "$OUTPUT"
 LOG="$OUTPUT/gate.log"
 materialize_and_build() {
     echo "candidate=$CANDIDATE fixture_rev=$FIXTURE_REV workspace=$WORKSPACE"
-    cp "$FIXTURE/Cargo.toml" "$FIXTURE/Cargo.lock" "$FIXTURE/rust-toolchain.toml" "$WORKSPACE/" || return 1
-    cp -r "$FIXTURE/src" "$WORKSPACE/src" || return 1
+    # The fixture is a workspace of the consumer and the admin UI; the UI's web app is not part of
+    # the Rust build (it is built with npm).
+    (cd "$FIXTURE" && tar --exclude=./target --exclude=./admin-ui/web -cf - .) | tar -xf - -C "$WORKSPACE" || return 1
     if [ "$FIXTURE_REV" != "$CANDIDATE" ]; then
-        sed -i "s/$FIXTURE_REV/$CANDIDATE/g" "$WORKSPACE/Cargo.toml" "$WORKSPACE/Cargo.lock" || return 1
+        sed -i "s/$FIXTURE_REV/$CANDIDATE/g" "$WORKSPACE/Cargo.toml" "$WORKSPACE/admin-ui/Cargo.toml" "$WORKSPACE/Cargo.lock" || return 1
     fi
-    cargo build --locked --manifest-path "$WORKSPACE/Cargo.toml" --bins
+    cargo build --locked --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins || return 1
+    # The admin UI's own tests (its flows run against node-admin's real control router).
+    cargo test --locked --manifest-path "$WORKSPACE/Cargo.toml" -p rafka-admin-ui
 }
 materialize_and_build > "$LOG" 2>&1 || { tail -20 "$LOG" >&2; refuse "the consumer did not materialize or build at $CANDIDATE (see $LOG)"; }
 
@@ -77,7 +80,7 @@ rdm = []
 for p in m["packages"]:
     src = p.get("source")
     if src is None:
-        if p["name"] != "rshape-consumer":
+        if p["name"] not in ("rshape-consumer", "rafka-admin-ui"):
             bad.append(f"path package {p['name']} at {p['manifest_path']}")
         continue
     if src.startswith("git+"):
@@ -106,8 +109,11 @@ for b in $BINS; do
     [ -x "$TARGET/debug/$b" ] || refuse "binary $b was not built at $TARGET/debug/$b"
     cp "$TARGET/debug/$b" "$BIN_DIR/$b"
 done
+# The demo's admin UI binary rides beside the node binaries (not part of the hashed set).
+[ -x "$TARGET/debug/rafka-admin-ui" ] || refuse "binary rafka-admin-ui was not built at $TARGET/debug/rafka-admin-ui"
+cp "$TARGET/debug/rafka-admin-ui" "$BIN_DIR/rafka-admin-ui"
 hashes=$(for b in $BINS; do printf '%s\t%s\n' "$b" "$(sha256sum "$BIN_DIR/$b" | cut -d' ' -f1)"; done | jq -R -s 'split("\n")[:-1] | map(split("\t") | {(.[0]): .[1]}) | add')
-src_hash=$(cd "$WORKSPACE" && find src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
+src_hash=$(cd "$WORKSPACE" && find src admin-ui/src -type f | sort | xargs sha256sum | sha256sum | cut -d' ' -f1)
 jq -n --arg cand "$CANDIDATE" --arg url "$RDM_URL" --arg fixture_rev "$FIXTURE_REV" --argjson bins "$hashes" \
     --arg toml "$(sha256sum "$WORKSPACE/Cargo.toml" | cut -d' ' -f1)" --arg lock "$(sha256sum "$WORKSPACE/Cargo.lock" | cut -d' ' -f1)" \
     --arg src "$src_hash" --arg rustc "$(rustc --version)" --arg cargo "$(cargo --version)" --arg bindir "$BIN_DIR" --arg ws "$WORKSPACE" \

@@ -154,7 +154,7 @@ pub fn emitters(root: &Path) -> anyhow::Result<Vec<Emitter>> {
         Ok(())
     }
     let mut out = Vec::new();
-    for dir in ["crates", "tools", "admin-ui", "cli", "gateway", "broker", "compute", "registry"] { walk(root, &root.join(dir), &mut out)?; }
+    for dir in ["crates", "tools", "demo"] { walk(root, &root.join(dir), &mut out)?; }
     out.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
     Ok(out)
 }

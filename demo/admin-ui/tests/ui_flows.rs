@@ -134,3 +134,16 @@ async fn without_a_node_admin_or_with_one_unreachable_the_ui_says_so_by_name() {
     let (s, v) = call(&ui, "POST", "/api/nodes/mesh1.rpc.1/restart", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::BAD_GATEWAY, Some("node-admin-unreachable")), "{v}");
 }
+
+#[tokio::test]
+async fn topology_labels_mesh_primary_on_the_node_admin_cohort_only_and_serves_node_admins_connection_facts() {
+    let (client, _) = node_admin().await;
+    let t = rafka_admin_ui::view::topology(&client, &reqwest::Client::new()).await.unwrap();
+    let seat = |n: &str| t["nodes"].as_array().unwrap().iter().find(|x| x["name"] == n).unwrap()["seat"].as_str().unwrap().to_string();
+    assert_eq!(seat("mesh1.admin.1"), "fabric primary · mesh primary");
+    assert_eq!(seat("mesh1.rpc.1"), "", "an rpc node first in its cohort is not a mesh primary: {t}");
+    assert_eq!(seat("mesh1.rpc.2"), "");
+    // The node-admin holds no connection fact in this fixture: it answers an empty list, not an error.
+    assert_eq!(t["edge_errors"], json!([]), "{t}");
+    assert_eq!(t["edges"], json!([]), "{t}");
+}

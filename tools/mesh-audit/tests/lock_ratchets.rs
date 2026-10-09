@@ -16,7 +16,7 @@ impl Planted {
         let dir = std::env::temp_dir().join(format!("lock-ratchets-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_dir_all(&dir);
         let root = workspace_root();
-        for scope in ["crates", "tools/mesh-audit/src", "admin-ui", "cli", "gateway", "broker", "compute", "registry"] {
+        for scope in ["crates", "tools/mesh-audit/src", "demo"] {
             copy_rs(&root.join(scope), &dir.join(scope));
         }
         Self(dir)

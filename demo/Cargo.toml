@@ -1,7 +1,7 @@
 # The i143 R-shape qualification consumer: a fresh, business-empty application that imports the
 # candidate RDM crates the way Rafka does, by git dependency pinned to one exact commit. It is
 # EXCLUDED from the RDM root workspace (root Cargo.toml `exclude`) and is its own workspace
-# root (the empty [workspace] table below), with its own lockfile.
+# root (the [workspace] table below, whose one member is admin-ui), with its own lockfile.
 #
 # Rules the static ratchet enforces (tools/mesh-audit/tests/rshape_definition.rs): every RDM
 # dependency is a git dependency on the RDM repository at ONE exact 40-hex rev; no path
@@ -14,17 +14,18 @@ publish = false
 description = "Business-empty R-shape consumer: four node entry points composed through RDM's public seams"
 
 [workspace]
+members = ["admin-ui"]
 
 [dependencies]
-rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
-rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
-rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
-rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
+rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
+rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
-rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
+rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "b987c2fd3861b73773dda2c5b23d891d28aea4fb" }
+rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "2ae4cafb22902fc9a7dd006cf28f45fe9443ecea" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"

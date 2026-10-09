@@ -16,7 +16,6 @@ members = [
     "crates/test-roles/gateway",
     "crates/test-roles/broker",
     "crates/test-roles/compute",
-    "admin-ui",
     "tools/mesh-audit",
     "crates/scratch-json-dumper",
 ]
