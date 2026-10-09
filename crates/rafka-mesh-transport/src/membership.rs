@@ -2891,6 +2891,70 @@ mod tests {
         assert!(view.book.inner.lock().unwrap().get(peer.as_str()).unwrap().2 == Heard::Forwarded, "a peer mesh's member is forwarded");
     }
 
+    /// CONTRACT: the version a node holds of a source Mesh names a projection its book already holds. A
+    /// reader that sees version `k` and then reads the book finds the change of version `k` (or a
+    /// later one), never an older one: a delta moves the version and the book together.
+    #[test]
+    fn a_held_source_version_never_runs_ahead_of_the_book_it_names() {
+        let view = View::new("mesh1", "mesh1.rpc.1");
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let id = NodeId::mint();
+        let incarnation = IncarnationId::mint();
+        let at = |n: u64| {
+            let mut d = digest(&id, &incarnation, None, MemberStatus::ReadyForTraffic, n);
+            d.node.name = "mesh2.rpc.1".parse().unwrap();
+            d
+        };
+        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId("birth".into()) };
+        let first = Frame::Members {
+            mesh: "mesh2".into(),
+            publisher: publisher.clone(),
+            forwarded_by: Some("mesh1.admin.1".into()),
+            topology_version: 1,
+            published_at_rafka_ms: 1,
+            snapshot_id: 1,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![at(1)],
+            in_flight: vec![],
+            departed: vec![],
+        };
+        let _ = view.take_snapshot(&first, &fabric, Side::MeshChannel);
+        const LAST: u64 = 20_000;
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (view, id, stop) = (view.clone(), id.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut behind = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    let Some((_, version)) = view.mesh_rx.lock().unwrap().held_version("mesh2") else { continue };
+                    let held = view.book.get(id.as_str()).map(|(d, _)| d.digest_seq).unwrap_or(0);
+                    if held < version {
+                        behind.push((version, held));
+                    }
+                }
+                behind
+            })
+        };
+        for v in 2..=LAST {
+            let delta = Frame::MembersDelta {
+                mesh: "mesh2".into(),
+                source_publisher: publisher.clone(),
+                base_version: v - 1,
+                topology_version: v,
+                published_at_rafka_ms: v,
+                changed: vec![at(v)],
+                removed: vec![],
+                in_flight: vec![],
+                departed: vec![],
+            };
+            let _ = view.take_snapshot(&delta, &fabric, Side::MeshChannel);
+        }
+        stop.store(true, Ordering::Relaxed);
+        let behind = reader.join().unwrap();
+        assert!(behind.is_empty(), "a reader saw a version whose change the book did not hold yet: {} times, first (version, held) {:?}", behind.len(), behind.first());
+    }
+
     /// The first `Leaving` is lost; one of the later announcements in the
     /// linger still reaches the fabric.
     #[tokio::test]
