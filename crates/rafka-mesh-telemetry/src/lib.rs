@@ -476,14 +476,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         .add_directive("noq=warn".parse().expect("static directive"))
         .add_directive("noq_proto=warn".parse().expect("static directive"))
         .and(filter_fn(export::admits_source));
-    let log_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive("iroh=warn".parse().expect("static directive"))
-        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
-        .add_directive("rg3=debug".parse().expect("static directive"))
-        .add_directive("noq=warn".parse().expect("static directive"))
-        .add_directive("noq_proto=warn".parse().expect("static directive"))
-        .and(filter_fn(export::admits_source));
+    let log_filter = log_env_filter().and(filter_fn(export::admits_source));
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
@@ -494,3 +487,17 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let _ = watchdog::spawn();
     Some(guard(provider, logs, evidence))
 }
+
+/// What the OTLP log bridge exports: INFO and above from RDM, WARN and above from iroh, iroh-gossip
+/// and noq. A crate's DEBUG firehose (iroh-gossip's HyParView `rg3` diagnostics among them: one
+/// event per neighbour message per node) never reaches the collector by default; RUST_LOG can
+/// still admit it for one run.
+pub(crate) fn log_env_filter() -> EnvFilter {
+    EnvFilter::from_default_env()
+        .add_directive(tracing::Level::INFO.into())
+        .add_directive("iroh=warn".parse().expect("static directive"))
+        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
+        .add_directive("noq=warn".parse().expect("static directive"))
+        .add_directive("noq_proto=warn".parse().expect("static directive"))
+}
+

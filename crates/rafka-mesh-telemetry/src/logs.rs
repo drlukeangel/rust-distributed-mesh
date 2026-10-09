@@ -157,4 +157,24 @@ mod tests {
         assert!(outside.record.trace_context.is_none());
         assert_eq!(outside.record.severity_number, Some(Severity::Warn));
     }
+
+    /// CONTRACT: the OTLP log bridge's default filter drops the debug firehose of the gossip stack
+    /// (iroh-gossip's HyParView `rg3` diagnostics: 8.8M rows per service in 40 min took the
+    /// collector's ClickHouse down) and iroh/noq below WARN, and keeps RDM's INFO and every WARN.
+    #[test]
+    fn the_log_bridge_drops_the_gossip_debug_firehose_and_keeps_info_and_warn() {
+        use tracing_subscriber::Layer as _;
+        let logs = InMemoryLogExporter::default();
+        let log_provider = opentelemetry_sdk::logs::LoggerProvider::builder().with_simple_exporter(logs.clone()).build();
+        let subscriber = tracing_subscriber::registry().with(LogAdapter::new(log_provider.logger("t")).with_filter(crate::log_env_filter()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "rg3", "rg3 send_neighbor");
+            tracing::debug!(target: "iroh_gossip::proto", "gossip debug");
+            tracing::info!(target: "iroh", "iroh info");
+            tracing::info!(target: "rafka_node_admin_core::admin", "rdm info");
+            tracing::warn!(target: "iroh_gossip::net", "gossip warn");
+        });
+        let bodies: Vec<String> = logs.get_emitted_logs().unwrap().iter().filter_map(|r| match &r.record.body { Some(AnyValue::String(s)) => Some(s.as_str().to_string()), _ => None }).collect();
+        assert_eq!(bodies, ["rdm info", "gossip warn"], "{bodies:?}");
+    }
 }
