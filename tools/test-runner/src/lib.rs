@@ -433,7 +433,10 @@ pub fn parse_libtest(log: &str, names: &[(String, String)]) -> (Vec<Outcome>, Op
         if status.is_none() && failures.contains(exe_name.as_str()) {
             status = Some("failed");
         }
-        let status = status.unwrap_or("not-run").to_string();
+        // A result line a child's output tore in two names no verdict; the summary does: no failures
+        // and every requested test counted means this one passed.
+        let counted_all = matches!(summary, Some((p, 0, i)) if p + i == names.len());
+        let status = status.unwrap_or(if counted_all { "passed" } else { "not-run" }).to_string();
         let message = if status == "failed" { panic_message(log, exe_name) } else { None };
         out.push(Outcome { id: id.clone(), status, message });
     }
@@ -1495,6 +1498,14 @@ mod tests {
         assert_eq!(st, ["passed", "failed", "ignored", "not-run"]);
         assert!(out[1].message.as_deref().unwrap().contains("boom: left 1 right 2"), "{:?}", out[1].message);
         assert_eq!(summary, Some((1, 1, 1)));
+    }
+
+    #[test]
+    fn a_torn_result_line_is_a_pass_when_the_summary_counts_every_test_and_no_failure() {
+        let log = "test s::a ... ok\ntest s::b ... node says hi\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1s\n";
+        let names: Vec<(String, String)> = ["s::a", "s::b"].iter().map(|n| (n.to_string(), n.to_string())).collect();
+        let (out, _) = parse_libtest(log, &names);
+        assert_eq!(out.iter().map(|o| o.status.as_str()).collect::<Vec<_>>(), ["passed", "passed"]);
     }
 
     #[test]

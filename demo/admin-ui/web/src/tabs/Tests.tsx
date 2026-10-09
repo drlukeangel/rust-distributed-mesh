@@ -142,7 +142,7 @@ const TIER_COLORS: Record<string, string> = {
 };
 
 const Badge = ({ text, color, testid }: { text: string; color?: string; testid?: string }) => (
-  <span className="pill" style={{ borderColor: color ?? "var(--fg-dim)", color: color ?? "var(--fg-dim)", marginRight: 4 }} data-testid={testid}>
+  <span className="pill" style={{ borderColor: color ?? "var(--fg-dim)", color: color ?? "var(--fg-dim)", marginRight: 4, whiteSpace: "nowrap" }} data-testid={testid}>
     {text}
   </span>
 );
