@@ -8,6 +8,7 @@
 
 
 pub mod binding;
+pub mod cadence;
 pub mod connections;
 pub mod digest;
 pub mod launch;

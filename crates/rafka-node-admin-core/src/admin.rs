@@ -2011,6 +2011,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         // owes no clean data dir.
         refuse_contradictory_start(&cfg, holds.filter(|_| cfg.launch.is_none())).map_err(|e| format!("refusing to start: {e}"))?;
     }
+    crate::investigate::check_idle_below_probe2(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval())
+        .map_err(|e| format!("refusing to start: {e}"))?;
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
     // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
     // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
@@ -2079,14 +2081,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     };
 
     // The mesh endpoint: gossip for membership and Build facts.
-    // A dead peer's connection closes within the membership silence window:
-    // the gossip actor waits on a dead peer's full send queue until then.
-    let transport = iroh::endpoint::QuicTransportConfig::builder()
-        .keep_alive_interval(Duration::from_secs(1))
-        .max_idle_timeout(Some(Duration::from_secs(3).try_into().map_err(|e| format!("idle timeout: {e:?}"))?))
-        .build();
+    // The transport is the one every node kind binds with (`rafka_node_rpc::endpoint::transport_config`).
     let alpns = vec![iroh_gossip::ALPN.to_vec(), rafka_node_rpc::ALPN.to_vec()];
-    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), transport)
+    let endpoint = rafka_node_rpc::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), rafka_node_rpc::endpoint::transport_config())
         .await
         .map_err(|e| format!("mesh address {mesh_addr}: {e}"))?;
     let mesh_addr = endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap_or(mesh_addr);

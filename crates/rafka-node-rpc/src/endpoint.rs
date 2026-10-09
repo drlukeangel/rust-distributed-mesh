@@ -5,9 +5,24 @@ use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
 
+/// The one QUIC transport configuration every node kind binds with (node-admin, rpc nodes, the
+/// probe, role binaries): a connection idles out after `staleness_floor()` (`RDM_STALENESS_MS`,
+/// 30 s by default) and is kept alive every `gossip_interval() / 2` (`RDM_GOSSIP_INTERVAL_MS`,
+/// 2 s by default, so 1 s). A pooled connection to a dead peer therefore closes within the
+/// staleness floor, which the node-admin holds below the investigation's second probe
+/// (`check_idle_below_probe2`), so the second probe's dial fails before writing.
+pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
+    let idle = rafka_mesh_entity::cadence::staleness_floor();
+    let keep_alive = rafka_mesh_entity::cadence::gossip_interval() / 2;
+    iroh::endpoint::QuicTransportConfig::builder()
+        .keep_alive_interval(keep_alive)
+        .max_idle_timeout(Some(idle.try_into().expect("the staleness floor fits a QUIC idle timeout")))
+        .build()
+}
+
 /// The process's one endpoint: one identity, one physical UDP socket, at
 /// exactly the transport address node-admin assigned (relay off, no
-/// discovery, Iroh's default transport configuration). Node RPC and gossip
+/// discovery, the shared `transport_config`). Node RPC and gossip
 /// share it by ALPN. A request names its target in the fence of its framing;
 /// the socket decides nothing and there is never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
@@ -16,6 +31,7 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        .transport_config(transport_config())
         .clear_ip_transports()
         .bind_addr(addr)?;
     Ok(builder.bind().await?)
