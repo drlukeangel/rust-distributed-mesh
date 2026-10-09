@@ -25,6 +25,7 @@ use rafka_node_rpc_contract::status::{Status, StatusRequest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// A planned birth that has not checked in this round, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -325,22 +326,27 @@ impl RoundDriver {
 fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String, Option<crate::model::Node>)>, client: Option<&Arc<NodeRpcClient>>) {
     for (who, node) in targets {
         let (me, of, client) = (me.clone(), of.to_string(), client.cloned());
-        tokio::spawn(async move {
-            let outcome = match (&node, &client) {
-                (None, _) => "no-birth-in-view".to_string(),
-                (Some(_), None) => "no-node-rpc-client".to_string(),
-                (Some(n), Some(client)) => match n.incarnation_id.clone() {
-                    None => "birth-has-no-incarnation".to_string(),
-                    Some(incarnation) => {
-                        let req = StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation };
-                        let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &CallOptions::default()).await;
-                        out.reply().map(|r| r.value().name().to_string()).unwrap_or_else(|| out.name().to_string())
-                    }
-                },
-            };
-            tracing::info_span!("rdm.node_admin.mesh.update.via-round-down", node = %me, mesh = %of, scope, target = %who, outcome = %outcome)
-                .in_scope(|| tracing::info!("the round's down op re-sent"));
-        });
+        // The span opens before the call, so the call and the target's serve chain are its children.
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-round-down", node = %me, mesh = %of, scope, target = %who, outcome = tracing::field::Empty);
+        tokio::spawn(
+            async move {
+                let outcome = match (&node, &client) {
+                    (None, _) => "no-birth-in-view".to_string(),
+                    (Some(_), None) => "no-node-rpc-client".to_string(),
+                    (Some(n), Some(client)) => match n.incarnation_id.clone() {
+                        None => "birth-has-no-incarnation".to_string(),
+                        Some(incarnation) => {
+                            let req = StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation };
+                            let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &CallOptions::default()).await;
+                            out.reply().map(|r| r.value().name().to_string()).unwrap_or_else(|| out.name().to_string())
+                        }
+                    },
+                };
+                tracing::Span::current().record("outcome", outcome.as_str());
+                tracing::info!("the round's down op re-sent");
+            }
+            .instrument(span),
+        );
     }
 }
 
