@@ -63,6 +63,11 @@ pub enum CutSpec {
     /// `backbone` or `any`): the leave skips that one publish call, so the frame is never offered
     /// to the channel. It models a lost announcement at the send seam, not in a peer queue.
     LeaveAnnouncement { announcements: Vec<u32>, channel: String },
+    /// The admin withholds the catch-up it sends every neighbour that comes up on the Build topic
+    /// (the shutdown in force, the Fabric record and the active Builds' facts): the NeighborUp task
+    /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
+    /// one-shot catch-up lost at the send seam.
+    CatchUp,
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -75,6 +80,7 @@ pub enum Probe {
     Pointer { build_id: Option<String> },
     ProviderDomain,
     LeaveAnnouncement { node: String, announcement: u32, channel: &'static str },
+    CatchUp { node: String, neighbour: String },
 }
 
 impl CutSpec {
@@ -90,6 +96,7 @@ impl CutSpec {
             (CutSpec::PointerWrite { moves_pointer }, Probe::Pointer { build_id }) => !*moves_pointer || build_id.is_some(),
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
+            (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
             _ => false,
         }
     }
@@ -105,6 +112,7 @@ impl Probe {
             Probe::Pointer { build_id } => json!({"pointer_to_build_id": build_id}),
             Probe::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
+            Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
         }
     }
 }
@@ -162,7 +170,7 @@ impl AdminFaults {
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
         // A condition (not a parked call) has no parked caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. }) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.
@@ -404,6 +412,15 @@ impl LifecycleHook for FaultedHook {
     }
 }
 
+/// The Build topic's catch-up seam: an armed [`CutSpec::CatchUp`] withholds that neighbour's catch-up.
+struct FaultedCatchUp(Arc<AdminFaults>);
+
+impl rafka_node_admin_core::wiring::CatchUpSeam for FaultedCatchUp {
+    fn withholds(&self, node: &str, neighbour: &str) -> bool {
+        self.0.in_force(Probe::CatchUp { node: node.to_string(), neighbour: neighbour.to_string() })
+    }
+}
+
 /// The leave's seam: an armed [`CutSpec::LeaveAnnouncement`] that matches withholds that publish.
 struct FaultedLeave(Arc<AdminFaults>);
 
@@ -423,6 +440,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
     Wiring {
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
+        catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: Some(Box::new(move |inner| Arc::new(FaultedFabricStorage { inner, faults: f_storage }))),
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

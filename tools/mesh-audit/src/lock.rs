@@ -230,6 +230,10 @@ pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rafka-node-admin-core/src/topology_read.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rafka-node-rpc-contract/tests/topology_wire.rs";
+/// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
+pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
+pub const BUILD_FACTS_HYDRATE: &str = "crates/rafka-node-admin-core/src/hydrate.rs";
+pub const BUILD_FACTS_CELLS: &str = "crates/rafka-node-rpc-contract/tests/build_facts_wire.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
@@ -611,6 +615,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
             require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "WireDigest::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_twelve_variant_wire_schema"], ratchet, &mut out);
+            require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
+            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "resolve_wanted", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
+            require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneNewLivenessPrimitive => {

@@ -485,6 +485,11 @@ impl AcceptedStore {
         *self.wanted.lock().unwrap() = None;
     }
 
+    /// The Build a remembered Fabric record names: the pointer this admin heard and cannot take yet.
+    pub fn wanted_build_id(&self) -> Option<BuildId> {
+        self.wanted.lock().unwrap().as_ref().and_then(|r| r.build_id.clone())
+    }
+
     /// Facts arrived: a remembered record whose Build is now held is taken.
     pub async fn resolve_wanted(&self, builds: &dyn BuildStateAdapter) {
         let wanted = self.wanted.lock().unwrap().clone();
