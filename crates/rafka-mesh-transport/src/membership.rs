@@ -24,7 +24,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, DEPARTED_RETENTION};
+use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -353,6 +353,29 @@ pub enum Frame {
         /// The Rafka-time of the change.
         changed_at_rafka_ms: u64,
     },
+    /// A seat changed hands: its new holder announces itself, once, on its own mesh channel and the
+    /// backbone (a mesh primary's seat), or on the backbone (the fabric primary's). Every node-admin
+    /// holds the record with the later epoch; a record that does not supersede the held one is
+    /// refused by name. Replayed by a primary to a neighbour that comes up, like a status.
+    Seated {
+        /// The seat that changed hands.
+        seat: Seat,
+        /// Its new holder: the exact birth and the record's epoch.
+        holder: SeatHolder,
+    },
+    /// A mesh primary marked the exact birth `node_id`/`incarnation` of `seat`'s holder
+    /// `PendingReconnect` (silent past the staleness floor) and says so on the backbone, once per
+    /// mark. A WARNING: it names a birth to look at and never makes the seat vacant.
+    Concern {
+        /// The seat whose holder looks silent.
+        seat: Seat,
+        /// The silent holder's node.
+        node_id: NodeId,
+        /// The silent holder's exact birth.
+        incarnation: IncarnationId,
+        /// The mesh primary that marked the birth silent.
+        observer: String,
+    },
 }
 
 impl Frame {
@@ -649,6 +672,116 @@ impl StatusBook {
             out.push(Frame::FabricStatus { fabric: fabric.clone(), status: h.status.clone(), publisher: h.publisher.clone(), forwarded_by: by(&h.publisher), changed_at_rafka_ms: h.changed_at_rafka_ms });
         }
         out
+    }
+}
+
+/// The seat holders a node holds: each seat's record with the latest epoch, until a record that
+/// supersedes it (`SeatHolder::supersedes`). A record that does not is refused by name.
+#[derive(Debug, Clone, Default)]
+pub struct SeatBook {
+    inner: Arc<Mutex<HeldSeats>>,
+}
+
+#[derive(Debug, Default)]
+struct HeldSeats {
+    fabric: Option<SeatHolder>,
+    meshes: HashMap<String, SeatHolder>,
+}
+
+/// What [`SeatBook::take`] did with a record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatTaken {
+    /// The record was held; `previous` is the record it superseded.
+    Held { previous: Option<SeatHolder> },
+    /// The record is the one already held.
+    Same,
+    /// The record does not supersede the one held, which is named.
+    Refused { held: SeatHolder },
+}
+
+impl SeatBook {
+    /// Hold `holder` for `seat` if it supersedes what is held.
+    pub fn take(&self, seat: Seat, holder: &SeatHolder) -> SeatTaken {
+        let mut held = self.inner.lock().unwrap();
+        let slot: &mut Option<SeatHolder> = match seat {
+            Seat::FabricPrimary => &mut held.fabric,
+            Seat::MeshPrimary => {
+                let current = held.meshes.get(&holder.mesh).cloned();
+                return match current {
+                    Some(c) if &c == holder => SeatTaken::Same,
+                    Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
+                    previous => {
+                        held.meshes.insert(holder.mesh.clone(), holder.clone());
+                        SeatTaken::Held { previous }
+                    }
+                };
+            }
+        };
+        match slot.clone() {
+            Some(c) if &c == holder => SeatTaken::Same,
+            Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
+            previous => {
+                *slot = Some(holder.clone());
+                SeatTaken::Held { previous }
+            }
+        }
+    }
+
+    pub fn fabric(&self) -> Option<SeatHolder> {
+        self.inner.lock().unwrap().fabric.clone()
+    }
+
+    pub fn mesh(&self, mesh: &str) -> Option<SeatHolder> {
+        self.inner.lock().unwrap().meshes.get(mesh).cloned()
+    }
+
+    /// Every mesh primary record held, by mesh name.
+    pub fn meshes(&self) -> std::collections::BTreeMap<String, SeatHolder> {
+        self.inner.lock().unwrap().meshes.iter().map(|(m, h)| (m.clone(), h.clone())).collect()
+    }
+
+    /// Every record held, as the frames a primary replays to a neighbour that came up.
+    pub fn held_frames(&self) -> Vec<Frame> {
+        let held = self.inner.lock().unwrap();
+        let mut out: Vec<Frame> = held.meshes.values().map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
+        out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f { holder.mesh.clone() } else { String::new() });
+        if let Some(h) = &held.fabric {
+            out.push(Frame::Seated { seat: Seat::FabricPrimary, holder: h.clone() });
+        }
+        out
+    }
+}
+
+/// A Concern heard on the backbone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcernHeard {
+    pub seat: Seat,
+    pub node_id: NodeId,
+    pub incarnation: IncarnationId,
+    pub observer: String,
+}
+
+/// The Concerns a node heard and has not yet looked at, and what wakes the one looking.
+#[derive(Debug, Clone, Default)]
+pub struct ConcernInbox {
+    heard: Arc<Mutex<Vec<ConcernHeard>>>,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl ConcernInbox {
+    fn put(&self, c: ConcernHeard) {
+        self.heard.lock().unwrap().push(c);
+        self.wake.notify_one();
+    }
+
+    /// Every Concern heard since the last drain.
+    pub fn drain(&self) -> Vec<ConcernHeard> {
+        std::mem::take(&mut *self.heard.lock().unwrap())
+    }
+
+    /// Resolves when a Concern has been heard since the last wake.
+    pub async fn heard(&self) {
+        self.wake.notified().await
     }
 }
 
@@ -1140,6 +1273,8 @@ struct View {
     node: String,
     book: DigestBook,
     statuses: StatusBook,
+    seats: SeatBook,
+    concerns: ConcernInbox,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
@@ -1182,6 +1317,14 @@ impl View {
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
                 self.statuses.take(f, fabric);
+                Vec::new()
+            }
+            Frame::Seated { seat, holder } => {
+                self.note_seat(*seat, holder, via);
+                Vec::new()
+            }
+            Frame::Concern { seat, node_id, incarnation, observer } => {
+                self.concerns.put(ConcernHeard { seat: *seat, node_id: node_id.clone(), incarnation: incarnation.clone(), observer: observer.clone() });
                 Vec::new()
             }
             _ => Vec::new(),
@@ -1384,6 +1527,21 @@ impl View {
     fn note(&self, d: &MeshDigest, via: &'static str) {
         self.via.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert(via);
     }
+
+    /// Hold a seat record this node heard, naming what it did with it.
+    fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> SeatTaken {
+        let taken = self.seats.take(seat, holder);
+        let (outcome, previous) = match &taken {
+            SeatTaken::Held { previous } => ("held", previous.as_ref().map(ToString::to_string).unwrap_or_default()),
+            SeatTaken::Same => ("same", String::new()),
+            SeatTaken::Refused { held } => ("refused-not-newer", held.to_string()),
+        };
+        if !matches!(taken, SeatTaken::Same) {
+            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.node, seat = seat.name(), holder = %holder, via, outcome, previous = %previous)
+                .in_scope(|| tracing::info!("a seat record was heard"));
+        }
+        taken
+    }
 }
 
 /// A node's membership: its mesh channel and what it holds.
@@ -1414,6 +1572,7 @@ impl Membership {
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
+                frames.extend(replay_view.seats.held_frames());
                 frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
                 frames
             } else {
@@ -1528,6 +1687,24 @@ impl Membership {
     pub fn learn_statuses(&self, frames: &[Frame]) {
         for f in frames {
             self.view.statuses.take(f, &self.fabric);
+        }
+    }
+
+    /// The seat holders this node holds.
+    pub fn seats(&self) -> &SeatBook {
+        &self.view.seats
+    }
+
+    /// The Concerns this node heard.
+    pub fn concerns(&self) -> &ConcernInbox {
+        &self.view.concerns
+    }
+
+    /// Hold the seat records an entry read named (`topology_read`): each only if it supersedes what
+    /// this node holds.
+    pub fn learn_seats(&self, records: &[(Seat, SeatHolder)], via: &'static str) {
+        for (seat, holder) in records {
+            self.view.note_seat(*seat, holder, via);
         }
     }
 
@@ -1827,7 +2004,9 @@ impl Backbone {
         let (replay_view, replay_fabric, replay_me) = (membership.view.clone(), membership.fabric.clone(), node.to_string());
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
-                replay_view.statuses.held_frames(&replay_fabric, &replay_me)
+                let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
+                frames.extend(replay_view.seats.held_frames());
+                frames
             } else {
                 Vec::new()
             }
@@ -2045,6 +2224,27 @@ impl Backbone {
     /// Publish a lifecycle event this admin authored on the backbone.
     pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
         self.channel.broadcast(f).await
+    }
+
+    /// This admin took `seat`: it holds the record and says it once. A mesh primary's record goes
+    /// onto its mesh channel and the backbone; the fabric primary's onto the backbone. Nothing
+    /// repeats it: a neighbour that comes up is replayed it by the primary, like a status.
+    pub async fn announce_seat(&self, seat: Seat, holder: SeatHolder) {
+        let frame = Frame::Seated { seat, holder: holder.clone() };
+        self.membership.view.note_seat(seat, &holder, "own");
+        tracing::info_span!("rdm.mesh.seat.update.via-announce", node = %self.node, seat = seat.name(), holder = %holder).in_scope(|| tracing::info!("seat taken, announced"));
+        let _ = self.channel.broadcast(&frame).await;
+        if seat == Seat::MeshPrimary {
+            let _ = self.membership.forward(&frame).await;
+        }
+    }
+
+    /// Say on the backbone that `seat`'s holder birth looks silent from here. A warning, once per
+    /// call; the caller decides when a call is owed.
+    pub async fn concern(&self, seat: Seat, node_id: NodeId, incarnation: IncarnationId) {
+        tracing::info_span!("rdm.mesh.seat.update.via-concern", node = %self.node, seat = seat.name(), holder_node_id = %node_id, holder_incarnation = %incarnation.0)
+            .in_scope(|| tracing::info!("a seat holder looks silent: Concern published"));
+        let _ = self.channel.broadcast(&Frame::Concern { seat, node_id, incarnation, observer: self.node.clone() }).await;
     }
 
     /// Join the backbone through every node-admin known, once each.
