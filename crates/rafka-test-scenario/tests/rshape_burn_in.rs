@@ -5305,6 +5305,96 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     .await;
 }
 
+async fn trace_view(label: &str, f: &Formed, bases: &[(String, String, String)], victim: &str) -> String {
+    let mut rows = Vec::new();
+    for (name, base, mesh) in bases {
+        let v = f.estate.nodes_at(base).await;
+        let n = v.iter().find(|n| n["name"] == victim);
+        let fab = try_json(base, "/api/fabric").await.unwrap_or(Value::Null);
+        rows.push(format!("{name}({mesh}) fp={:?} fabric_build={} sees {victim}: {}", fabric_primaries_of(&v), fab["build_id"], n.map(|n| format!("id={} inc={} status={} ", n["node_id"], n["incarnation_id"].as_str().unwrap_or("").chars().take(8).collect::<String>(), n["status"])).unwrap_or("-".into())));
+    }
+    format!("{label}: {}", rows.join(" | "))
+}
+
+/// TRACE CELL (investigation, no assertion on the outcome): the near writer is asked to restart a near-side
+/// gateway while every UDP path between the meshes is dropped. The cell records, every second, what every admin
+/// of each side holds for that path.name (NodeId, incarnation, status) and which Builds each side's writer holds,
+/// through the cut and after the heal.
+async fn cut_restart_trace_run(cell: &str, shape: Shape) {
+    let mut f = form(cell, shape).await;
+    let mut inv = Invariants::default();
+    let nodes = settle(&f).await;
+    let (_launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
+    let _authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let _connections = converge_connections(&f, &mut inv).await;
+    let mut a = Authority::new(f.seed, &nodes);
+    let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
+    assert_eq!(provider(), "process");
+    let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let window = Duration::from_millis(window_ms);
+    let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
+    let side = |m: &str| -> Vec<String> { st.nodes.iter().filter(|n| n["mesh"] == m).map(|n| s(&n["name"])).collect() };
+    let near_mesh = st.mesh_of_fp();
+    let far_mesh = if near_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
+    let (near, far) = (side(&near_mesh), side(&far_mesh));
+    let near_fp = st.fp_name();
+    let bases: Vec<(String, String, String)> = st.admins.iter().map(|n| (s(&n["name"]), s(&n["admin_api_base"]), s(&n["mesh"]))).collect();
+    for (name, base, _) in &bases {
+        wait_for(&format!("{name} holds every member ready before the cut"), Duration::from_secs(60), || async { holds_all_ready(&f.estate.nodes_at(base).await, &everyone).then_some(()) }).await;
+    }
+    let victim = format!("{near_mesh}.gateway.1");
+    let before = st.nodes.iter().find(|n| n["name"] == victim.as_str()).cloned().unwrap();
+    let t_start = Instant::now();
+    let note = |what: &str| eprintln!("TRACE[{:>6} ms] {what}", t_start.elapsed().as_millis());
+    note(&format!("victim={victim} node_id={} incarnation={} near_fp={near_fp} near={near_mesh} far={far_mesh}", before["node_id"], before["incarnation_id"]));
+    let cut = Partition::start(&udp_ports(&st.nodes, &near), &udp_ports(&st.nodes, &far)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: {why}"));
+    note("cut installed");
+    for (name, base, mesh) in &bases {
+        let (own, other) = if *mesh == near_mesh { (&near, &far) } else { (&far, &near) };
+        wait_for(&format!("{name} holds its own mesh ready and the other mesh unheard"), window * 6 + Duration::from_secs(40), || async {
+            let v = f.estate.nodes_at(base).await;
+            (holds_all_ready(&v, own) && holds_all_unheard(&v, other)).then_some(())
+        })
+        .await;
+    }
+    note("every admin holds its own side ready and the other unheard");
+    let (code, v) = f.estate.http_post(&st.fp_base(), &format!("/api/nodes/{victim}/restart"), &json!({})).await;
+    note(&format!("RESTART {victim} at {near_fp}: {code} {v}"));
+    let mut last = String::new();
+    let end = Instant::now() + window * 4 + Duration::from_secs(60);
+    while Instant::now() < end {
+        let now = trace_view("cut", &f, &bases, &victim).await;
+        if now != last {
+            note(&now);
+            last = now;
+        }
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+    drop(cut);
+    note("cut dropped");
+    let end = Instant::now() + window * 2 + Duration::from_secs(60);
+    while Instant::now() < end {
+        let now = trace_view("healed", &f, &bases, &victim).await;
+        if now != last {
+            note(&now);
+            last = now;
+        }
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+    for (name, base, _) in &bases {
+        let b = try_json(base, "/api/builds").await;
+        note(&format!("{name} builds: {}", b.map(|b| b.to_string()).unwrap_or("-".into())));
+    }
+    f.estate.stop().await;
+    let _ = copy_spans(&f.estate, &f.dir);
+    note("estate stopped");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trace_cut_restart_of_a_near_node() {
+    cut_restart_trace_run("trace_cut_restart_of_a_near_node", any_tier()).await;
+}
+
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
 /// rule install). Each side elects from what it hears: every admin holds its own mesh ready and the other mesh
 /// unheard, with one fabric-primary of its own side (the near side keeps the one it had), and a non-primary admin
