@@ -297,6 +297,14 @@ pub enum BuildStateError {
         /// What this open asked for.
         wanted: String,
     },
+    /// This admin yielded the fabric-primary seat: its Build log decides nothing from that moment
+    /// (the fence is sticky for this birth).
+    Fenced {
+        /// The admin that yielded.
+        node: String,
+        /// Why it yielded.
+        by: String,
+    },
 }
 
 impl std::fmt::Display for BuildStateError {
@@ -307,6 +315,7 @@ impl std::fmt::Display for BuildStateError {
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
             Self::CorruptJournal { line, reason } => write!(f, "build journal line {line} does not decode: {reason}"),
+            Self::Fenced { node, by } => write!(f, "{node} yielded the fabric-primary seat ({by}); its Build log decides nothing any more"),
             Self::AttemptTaken { build_id, attempt, held, wanted } => {
                 write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
             }

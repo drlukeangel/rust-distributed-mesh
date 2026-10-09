@@ -1818,6 +1818,8 @@ pub struct Running {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Asked before each leave announcement publish (a testkit executable's wiring; none in the product).
     leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
+    /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
+    builds: Arc<FabricBuildStateAdapter>,
 }
 
 impl Running {
@@ -1835,6 +1837,12 @@ impl Running {
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
+        // A leaving holder yields before it says anything: its Build log decides nothing after
+        // this, and the committed facts are with the neighbours before the new holder acts.
+        if let Err(e) = self.builds.yield_seat("leaving").await {
+            tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %self.digest.lock().unwrap().node.name, error = %e)
+                .in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
+        }
         self.executor.abort();
         self.hierarchy.abort();
         self.publisher.abort();
@@ -3084,6 +3092,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             records: records.clone(),
             looker: crate::seat_watch::Looker { me: name.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone() },
             republish: republish.clone(),
+            builds: builds.clone(),
         };
         tasks.push(tokio::spawn(crate::seat_watch::run(watch)));
     }
@@ -3359,7 +3368,7 @@ let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take() })
+    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone() })
 }
 
 #[cfg(test)]

@@ -33,6 +33,7 @@ use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 /// One message on the Build topic, one postcard frame (`rafka_mesh_transport::wire`). The nonce
 /// makes every send distinct, so a catch-up resend is never taken for a message already seen.
@@ -164,6 +165,43 @@ pub struct FabricBuildStateAdapter {
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
     /// The admins joined while they stayed live.
     joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
+    /// The authority gate every fabric-primary mutation passes (ruling R-A2).
+    authority: Authority,
+}
+
+/// The gate of the fabric-primary's mutations: one lock, held from the decision through its
+/// durable commit and its broadcast. A fabric-primary that yields takes the same lock to set a
+/// sticky fence, so a decision is either wholly committed before the fence or refused by it; no
+/// decision of a yielded holder is made after the new holder acts.
+pub struct Authority {
+    node: String,
+    fenced: tokio::sync::Mutex<Option<String>>,
+}
+
+impl Authority {
+    pub fn new(node: String) -> Self {
+        Self { node, fenced: tokio::sync::Mutex::new(None) }
+    }
+
+    /// Enter the gate for one mutation: refused by name once the fence is set.
+    pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, Option<String>>, BuildStateError> {
+        let held = self.fenced.lock().await;
+        match &*held {
+            Some(by) => Err(BuildStateError::Fenced { node: self.node.clone(), by: by.clone() }),
+            None => Ok(held),
+        }
+    }
+
+    /// Set the fence, after the mutation in flight (if any) committed. Returns whether it was set
+    /// by this call.
+    pub async fn fence(&self, by: &str) -> bool {
+        let mut held = self.fenced.lock().await;
+        if held.is_some() {
+            return false;
+        }
+        *held = Some(by.to_string());
+        true
+    }
 }
 
 impl FabricBuildStateAdapter {
@@ -185,6 +223,7 @@ impl FabricBuildStateAdapter {
         catch_up_seam: Option<Arc<dyn crate::wiring::CatchUpSeam>>,
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
+        let node_name = node.clone();
         let lookup = MemoryLookup::new();
         for p in &peers {
             lookup.add_endpoint_info(p.clone());
@@ -306,7 +345,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set) })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name) })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -329,6 +368,28 @@ impl FabricBuildStateAdapter {
         }
     }
 
+    /// The fabric-primary seat was yielded: set the sticky fence under the gate's lock (so a
+    /// decision in flight has committed durably), then hand every active committed fact to the
+    /// neighbours before the new holder acts. Returns how many facts were sent.
+    pub async fn yield_seat(&self, by: &str) -> Result<usize, BuildStateError> {
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-seat-fence", node = %self.authority.node, by, facts = tracing::field::Empty, fenced = tracing::field::Empty);
+        async {
+            let fenced = self.authority.fence(by).await;
+            tracing::Span::current().record("fenced", fenced);
+            let facts = active_facts(&*self.local, None).await;
+            let n = facts.len();
+            let (messages, _refused) = encode_chunks(facts);
+            let sender = self.sender.read().await.clone();
+            for bytes in messages {
+                sender.broadcast_neighbors(bytes).await.map_err(|e| BuildStateError::Io(format!("handing the committed Build facts to the neighbours: {e}")))?;
+            }
+            tracing::Span::current().record("facts", n as u64);
+            Ok(n)
+        }
+        .instrument(span)
+        .await
+    }
+
     /// Broadcast a fabric shutdown on the control channel (fabric-mesh-lifecycle.md §11.1).
     pub(crate) async fn publish_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<(), BuildStateError> {
         let sender = self.sender.read().await.clone();
@@ -344,11 +405,13 @@ impl FabricBuildStateAdapter {
 #[async_trait::async_trait]
 impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
+        let _gate = self.authority.enter().await?;
         self.local.publish_accepted(accepted).await?;
         self.broadcast(BuildFact::Accepted(accepted.clone())).await
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
+        let _gate = self.authority.enter().await?;
         self.local.open_attempt(opened).await?;
         self.broadcast(BuildFact::Opened(opened.clone())).await
     }
@@ -363,6 +426,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+        let _gate = self.authority.enter().await?;
         let outcome = self.local.claim_attempt(claim).await?;
         if outcome == ClaimOutcome::Won {
             self.broadcast(BuildFact::Claim(claim.clone())).await?;
@@ -389,12 +453,14 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        let _gate = self.authority.enter().await?;
         self.local.forget(build_id).await?;
         self.broadcast(BuildFact::Forget { build_id: build_id.clone() }).await
     }
 
 
     async fn publish_fabric(&self, record: &FabricRecord) -> Result<(), BuildStateError> {
+        let _gate = self.authority.enter().await?;
         let sender = self.sender.read().await.clone();
         sender.broadcast(encode_fabric(record)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting the Fabric record: {e}")))
     }
@@ -425,5 +491,29 @@ mod tests {
             let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
             assert_eq!(sent, 60, "no fact lost");
         }
+    }
+
+    /// CONTRACT (R-A2 item 2): the fence waits for the decision in flight (it commits wholly
+    /// before the fence returns), and every decision after it is refused by name.
+    #[tokio::test]
+    async fn a_fence_waits_for_the_decision_in_flight_and_refuses_every_later_one() {
+        let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into()));
+        let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = authority.enter().await.unwrap();
+        let (a, c) = (authority.clone(), committed.clone());
+        let fencing = tokio::spawn(async move {
+            let set = a.fence("leaving").await;
+            (set, c.load(std::sync::atomic::Ordering::SeqCst))
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!fencing.is_finished(), "the fence waits for the decision holding the gate");
+        committed.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(gate);
+        assert_eq!(fencing.await.unwrap(), (true, true), "the fence was set after the decision committed");
+        match authority.enter().await {
+            Err(BuildStateError::Fenced { node, by }) => assert_eq!((node.as_str(), by.as_str()), ("mesh1.admin.1", "leaving")),
+            other => panic!("a decision after the fence must be refused by name, got {:?}", other.map(|_| ())),
+        }
+        assert!(!authority.fence("again").await, "the fence is set once and sticky");
     }
 }

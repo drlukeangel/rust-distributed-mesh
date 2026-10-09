@@ -214,6 +214,8 @@ pub struct Watch {
     pub looker: Looker,
     /// Re-publishes this admin's presence and re-joins its mesh's members (`status_rpc::Republish`).
     pub republish: crate::status_rpc::Republish,
+    /// This admin's Build log: fenced when the fabric seat's record names another birth.
+    pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
 }
 
 /// Run the watch: a pass at each Concern heard and at the gossip interval (the cadence the view
@@ -221,8 +223,24 @@ pub struct Watch {
 pub async fn run(w: Watch) {
     let mut said = Said::default();
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
+    let mut seats_changed = w.membership.seats().subscribe();
+    let mut held_the_fabric_seat = false;
     loop {
+        // A fabric seat this birth held, now recorded to another birth: it yielded (planned or
+        // not), and its Build log is fenced before the new holder acts.
+        match w.membership.seats().fabric() {
+            Some(h) if h.is_birth(&me_birth.0, &me_birth.1) => held_the_fabric_seat = true,
+            Some(h) if held_the_fabric_seat => {
+                let by = format!("the seat is now {} {}", h.mesh, h.node_id);
+                if let Err(e) = w.builds.yield_seat(&by).await {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-seat-fence-unsent", node = %w.me, error = %e).in_scope(|| tracing::info!("the fence is set; the committed Build facts could not all be handed on"));
+                }
+                held_the_fabric_seat = false;
+            }
+            _ => {}
+        }
         tokio::select! {
+            _ = seats_changed.changed() => {}
             _ = w.membership.concerns().heard() => {}
             _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
         }
