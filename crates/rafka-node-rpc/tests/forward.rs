@@ -417,6 +417,34 @@ async fn an_unreachable_target_under_a_500ms_budget_is_carrier_edge_lost_inside_
     assert!(started.elapsed() < Duration::from_millis(500), "the named answer arrived inside the budget: {:?}", started.elapsed());
 }
 
+/// A carrier whose durable write of its own Direct fact is slow: reading the fact back waits 400 ms, naming
+/// it from the dial that just failed does not.
+struct SlowFactWrite;
+
+#[async_trait::async_trait]
+impl CarrierEdges for SlowFactWrite {
+    async fn edge_not_active(&self, _target: &NodeId) -> Option<String> {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        Some("Direct failed (read back)".into())
+    }
+    async fn edge_after_dial(&self, _node: &ResolvedNode, reason: &str) -> Option<String> {
+        Some(format!("Direct failed ({reason})"))
+    }
+}
+
+/// CONTRACT: the carrier's own failed dial is its Direct fact, so `CarrierEdgeLost` is answered from the dial's
+/// outcome and not from reading the fact back after its durable write: with a fact write that takes 400 ms the
+/// named answer still reaches the origin inside a 1 s budget, and it names the dial's own reason.
+#[tokio::test]
+async fn a_slow_direct_fact_write_is_not_on_the_carriers_reply_path() {
+    let r = rig_with(Some(Arc::new(SlowFactWrite)), false).await;
+    r.target.router.shutdown().await.unwrap();
+    let started = std::time::Instant::now();
+    let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &overall(Duration::from_millis(1000))).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierEdgeLost(e) if e.starts_with("Direct failed (") && !e.contains("read back"))), "{out:?}");
+    assert!(started.elapsed() < Duration::from_millis(1000), "the named answer arrived inside the budget: {:?}", started.elapsed());
+}
+
 /// A budget already spent down to the carrier's reserve when the frame is written.
 ///
 /// CONTRACT: the carrier makes no inner call and refuses by name before dispatch: the origin

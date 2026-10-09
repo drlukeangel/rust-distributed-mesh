@@ -77,6 +77,9 @@ pub struct CallEvidence {
     pub connection: Option<usize>,
     /// The connection came from the pool rather than a dial this call waited on.
     pub reused: bool,
+    /// The dial to the node ended with no connection, and why: the very fact the connection
+    /// observer was handed (`direct_failed`). A carrier answers `CarrierEdgeLost` from this.
+    pub dial_failure: Option<String>,
 }
 
 /// What a source observes of its own Direct connections (connections.md section 9 and
@@ -100,7 +103,7 @@ pub trait ConnectionObserver: Send + Sync {
 
 pub struct NodeRpcClient {
     endpoint: Endpoint,
-    resolver: Arc<dyn NodeResolver>,
+    pub(crate) resolver: Arc<dyn NodeResolver>,
     pool: Pool,
     /// The source-owned connections writer, when the process has one.
     observer: Option<Arc<dyn ConnectionObserver>>,
@@ -246,6 +249,7 @@ impl NodeRpcClient {
             committed: false,
             connection: None,
             reused: false,
+            dial_failure: None,
         };
         let key = PoolKey { scope: opts.scope.clone(), peer: node.endpoint_id, incarnation: node.incarnation.clone() };
         let spec = DialSpec {
@@ -276,6 +280,7 @@ impl NodeRpcClient {
             }
             Err(DialError::Deadline) => {
                 tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
+                evidence.dial_failure = Some("dial deadline".to_string());
                 if let Some(o) = &self.observer {
                     o.direct_failed(&node, "dial deadline");
                 }
@@ -283,6 +288,7 @@ impl NodeRpcClient {
             }
             Err(DialError::Failed(e)) => {
                 tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
+                evidence.dial_failure = Some(e.clone());
                 if let Some(o) = &self.observer {
                     o.direct_failed(&node, &e);
                 }

@@ -27,6 +27,15 @@ pub trait CarrierEdges: Send + Sync {
     /// observed is held only once its durable write lands, so an implementation answers after the
     /// observations already handed to it have landed.
     async fn edge_not_active(&self, target: &NodeId) -> Option<String>;
+
+    /// The edge text for a dial of this carrier's own that just ended with no connection to
+    /// `node`, `reason` being what the dial reported. The dial's outcome is the carrier's own
+    /// Direct fact, so the default reads it back through [`Self::edge_not_active`]; an
+    /// implementation that can name the fact from the dial alone answers without waiting for the
+    /// fact's durable write, which is not the reply's business.
+    async fn edge_after_dial(&self, node: &crate::resolve::ResolvedNode, _reason: &str) -> Option<String> {
+        self.edge_not_active(&node.node_id).await
+    }
 }
 
 impl ServerBuilder {
@@ -140,7 +149,15 @@ async fn carry_once(
             // Only a dial that ended in this carrier's own Direct fact speaks for the edge.
             let at_the_dial = matches!(n.reason(), NotSentReason::Connection(_) | NotSentReason::Deadline);
             let edge = match edges.filter(|_| at_the_dial) {
-                Some(e) => e.edge_not_active(&target).await,
+                Some(e) => match _evidence.as_ref().and_then(|ev| ev.dial_failure.clone()) {
+                    // The dial's own outcome is the fact: answered from it, not read back through the
+                    // fact's durable write.
+                    Some(reason) => match client.resolver.resolve(&NodeTarget::ExactNode(target.clone())) {
+                        Ok(node) => e.edge_after_dial(&node, &reason).await,
+                        Err(_) => e.edge_not_active(&target).await,
+                    },
+                    None => e.edge_not_active(&target).await,
+                },
                 None => None,
             };
             match edge {

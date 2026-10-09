@@ -370,6 +370,12 @@ impl ConnectionObserver for ConnectionsWriter {
 
 #[async_trait::async_trait]
 impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
+    /// The carrier's dial to `node` just failed: the edge is Failed by that very outcome, and the
+    /// text is the one the fact carries, named without waiting for the fact's write.
+    async fn edge_after_dial(&self, node: &ResolvedNode, reason: &str) -> Option<String> {
+        Some(format!("{} -> {} Direct {} ({reason})", self.inner.own.name, node.name, state_name(ConnectionState::Failed)))
+    }
+
     async fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
         // The dial that just failed handed its Failed fact to this writer; it is held once its write
         // has landed. The carrier answers from the facts, so it waits for them.
