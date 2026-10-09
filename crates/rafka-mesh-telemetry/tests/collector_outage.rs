@@ -43,7 +43,8 @@ async fn outage_child() {
 /// Run the child against `endpoint`; its exit time, stdout and stderr.
 fn run_child(endpoint: &str) -> (Duration, String, String) {
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "outage_child", "--nocapture"])
+        // The child runs this test alone: its libtest name carries the module path of this file.
+        .args(["--exact", &format!("{}::outage_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
         .env(CHILD, "1")
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
         .env_remove("RUST_LOG")

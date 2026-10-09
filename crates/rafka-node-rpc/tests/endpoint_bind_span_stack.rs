@@ -8,7 +8,6 @@
 
 use iroh::SecretKey;
 use rafka_node_rpc::endpoint::bind;
-use tracing_subscriber::layer::SubscriberExt;
 
 const WORKERS: usize = 4;
 
@@ -19,7 +18,8 @@ const WORKERS: usize = 4;
 fn concurrent_binds_leave_no_entered_span_on_any_worker() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(tracing_subscriber::fmt::layer().with_writer(std::io::sink))).unwrap();
+    // The executable's one global subscriber enables the spans the check reads.
+    let _ = crate::common::spans_exporter();
     // Every worker is checked from inside the runtime's own park hook: a worker parks only when it
     // holds no task, so the current span there must be none. Once all WORKERS are parked at the same
     // time, each one has parked after its last task: every worker is checked, whatever the load.
