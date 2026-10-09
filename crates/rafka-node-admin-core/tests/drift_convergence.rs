@@ -295,7 +295,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &|_| false, &|_| false, &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &self.accepted, &self.book, &self.provider, &*self.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
     }
 
     /// Every live admin runs its executor until no Build is active: claims, hand-offs and
@@ -571,7 +571,7 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
 }
 
@@ -595,7 +595,7 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
 
@@ -685,7 +685,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &|_| false, &|_| false, &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -760,10 +760,10 @@ async fn a_decided_peer_mesh_held_ready_from_topology_is_proven_and_repaired() {
     assert!(t.cohort(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let undecided = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &|_| false, &|_| false, &|_, _| {}).await;
+    let undecided = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
     let seen = std::sync::Mutex::new(Vec::new());
-    let decided = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &|_| false, &|m| m == lost, &|n, i| seen.lock().unwrap().push((n.clone(), i.clone()))).await;
+    let decided = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &|n, i| seen.lock().unwrap().push((n.clone(), i.clone()))).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
     assert_eq!(seen.lock().unwrap().len(), 2, "both proven exits are handed to the view, so neither dead admin holds the mesh's seat");
 }
@@ -792,6 +792,114 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
-    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &|_| false, &|_| false, &|_, _| {}).await;
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &|_, _| {}).await;
     assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
+}
+
+/// R-D1: a peer mesh the fabric primary holds unheard is held as a mesh. The provider's proof that one of
+/// its births exited is kept as evidence and authorizes no Restart, Replace or NodeDeleted; a heard mesh is
+/// repaired as ever; the hold ends with the silence and leaves nothing behind.
+mod unheard_mesh_hold {
+    use super::*;
+    use rafka_node_admin_core::investigate::PeerMesh;
+
+    type Held = HashSet<(NodeId, IncarnationId)>;
+
+    /// The fabric primary's mesh, and the other one.
+    async fn meshes(e: &Estate) -> (String, String) {
+        let fp = e.fabric_primary().await;
+        let own = fp.split('.').next().unwrap().to_string();
+        let peer = SHAPE.iter().map(|(m, _, _)| (*m).to_string()).find(|m| *m != own).expect("a peer mesh");
+        (own, peer)
+    }
+
+    async fn pass(e: &Estate, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync)) -> Option<(BuildId, u32)> {
+        let me: PathName = e.fabric_primary().await.parse().expect("a fabric-primary");
+        let t = e.view.read().await.clone();
+        let mut started = HashSet::new();
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|_, _| {}).await
+    }
+
+    const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), rebirth_decided: false });
+    const HEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: None, rebirth_decided: false });
+
+    #[tokio::test]
+    async fn an_exited_birth_of_an_unheard_peer_mesh_opens_no_attempt_and_is_kept_as_evidence_once() {
+        let e = estate().await;
+        let (_, peer_mesh) = meshes(&e).await;
+        let path = format!("{peer_mesh}.rpc.1");
+        let id = e.node_id(&path).await;
+        e.world.exit_with(&id, Some(137));
+        e.unheard(&[path.as_str()]).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let mut held = Held::new();
+        let unheard = |_: &str| UNHEARD;
+        assert_eq!(pass(&e, &mut held, &unheard).await, None, "the mesh is unheard: its exited birth authorizes nothing");
+        assert_eq!(held.len(), 1, "the evidence of the one exited birth is held: {held:?}");
+        assert_eq!(pass(&e, &mut held, &unheard).await, None);
+        assert_eq!(held.len(), 1, "the same birth is one hold, not one per pass");
+        let after = e.accepted.current(&*e.builds).await.unwrap();
+        assert_eq!(after.attempt, before.attempt, "no attempt was opened");
+        assert!(e.born().is_empty(), "no node was created: {:?}", e.born());
+    }
+
+    #[tokio::test]
+    async fn the_hold_ends_when_the_mesh_is_heard_again_and_the_exited_birth_is_repaired() {
+        let e = estate().await;
+        let (_, peer_mesh) = meshes(&e).await;
+        let path = format!("{peer_mesh}.rpc.1");
+        let id = e.node_id(&path).await;
+        e.world.exit_with(&id, Some(137));
+        e.unheard(&[path.as_str()]).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let mut held = Held::new();
+        assert_eq!(pass(&e, &mut held, &|_| UNHEARD).await, None);
+        assert_eq!(held.len(), 1);
+        let opened = pass(&e, &mut held, &|_| HEARD).await;
+        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the mesh is heard again: the exited birth is repaired as ever");
+        assert!(held.is_empty(), "the hold left nothing behind: {held:?}");
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path: p, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        assert_eq!(p.to_string(), path);
+    }
+
+    #[tokio::test]
+    async fn a_birth_of_the_fabric_primarys_own_mesh_is_never_held() {
+        let e = estate().await;
+        let (own, _) = meshes(&e).await;
+        let path = format!("{own}.rpc.1");
+        let id = e.node_id(&path).await;
+        e.world.exit_with(&id, Some(1));
+        e.unheard(&[path.as_str()]).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let mut held = Held::new();
+        let opened = pass(&e, &mut held, &|_| UNHEARD).await;
+        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the own mesh is heard by definition");
+        assert!(held.is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_first_recovering_node_admin_of_a_reborn_mesh_is_replaced_from_here() {
+        let e = estate().await;
+        let (_, peer_mesh) = meshes(&e).await;
+        let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
+        let rpc = format!("{peer_mesh}.rpc.1");
+        for p in admins.iter().chain([&rpc]) {
+            let id = e.node_id(p).await;
+            e.world.exit_with(&id, Some(1));
+        }
+        let all: Vec<&str> = admins.iter().map(String::as_str).chain([rpc.as_str()]).collect();
+        e.unheard(&all).await;
+        let before = e.accepted.current(&*e.builds).await.unwrap();
+        let mut held = Held::new();
+        assert_eq!(pass(&e, &mut held, &|_| UNHEARD).await, None, "before the ladder's decision the mesh's node-admins wait for it");
+        let rpc_id = e.node_id(&rpc).await;
+        assert_eq!(held.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>(), vec![rpc_id], "only the ordinary node's exit is held as evidence; the admins wait for the decision");
+        let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
+        let opened = pass(&e, &mut held, &decided).await;
+        assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        assert_eq!(path.to_string(), admins[0], "the first admin in path order");
+        let first = e.node_id(&admins[0]).await;
+        assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
+    }
 }

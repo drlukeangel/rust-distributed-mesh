@@ -501,3 +501,35 @@ async fn a_silent_node_absent_from_the_view_is_replaced_by_the_birth_the_caller_
     assert_eq!((b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("replace"), Some("mesh1.rpc.3")), "{b}");
     assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the named birth: {b}");
 }
+
+/// CONTRACT (R-D1): a restart or replace of a node of a peer mesh this fabric-primary holds unheard is refused
+/// 422 `unheard-mesh` and publishes nothing, whatever the node's status (a replace of an unheard birth is
+/// otherwise legal). A node of the fabric-primary's own mesh is never held. When the mesh is heard again the
+/// same replace is accepted. Canon: the R-D1 ruling (loss of peer-mesh control-plane visibility fences lifecycle
+/// mutation for every node of that mesh).
+#[tokio::test]
+async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_opens_nothing() {
+    use rafka_node_admin_core::investigate::PeerMesh;
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let mut t = mn();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", false));
+    t.nodes.push(node("mesh2.rpc.1", false));
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    t.nodes.iter_mut().find(|n| n.name.to_string() == "mesh2.rpc.1").unwrap().status = NodeStatus::Dead;
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t));
+    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let h = heard.clone();
+    let _ = cp.peer_mesh.set(Arc::new(move |mesh: &str| {
+        (mesh == "mesh2").then(|| PeerMesh { unheard_ms: (!h.load(std::sync::atomic::Ordering::SeqCst)).then_some(7_000), rebirth_decided: false })
+    }));
+    let app = router(cp.clone(), Router::new());
+    let seed = builds.facts().await.unwrap().len();
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/replace", None).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unheard-mesh")), "{v}");
+    assert!(v["detail"].as_str().is_some_and(|d| d.contains("mesh2") && d.contains("7000")), "the refusal names the mesh and how long it has gone unheard: {v}");
+    assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusal publishes nothing");
+    heard.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/replace", None).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "the mesh is heard again: the replace is accepted: {v}");
+}

@@ -43,6 +43,10 @@ pub struct ControlPlane {
     /// from: what a decision on one node reads, so it never acts on a snapshot up to one refresh
     /// old (set once by the admin that owns the inputs).
     pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> Topology + Send + Sync>>,
+    /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
+    /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
+    /// replaced or deleted from here (R-D1). Set once by the admin that owns the ladder.
+    pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
@@ -72,6 +76,7 @@ impl ControlPlane {
             fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
             view_now: std::sync::OnceLock::new(),
+            peer_mesh: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
         }
     }
@@ -238,6 +243,15 @@ impl ControlPlane {
                     let reason = if replace { "the node's status is neither live nor an unheard birth a replacement may retire" } else { "a restart needs a live node" };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
+                // A node of a peer mesh this fabric-primary holds unheard is not its to restart, replace or delete:
+                // the mesh's own authority, once heard again, reconciles it (R-D1).
+                if path.mesh != self.me.mesh {
+                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&path.mesh)).and_then(|p| p.unheard_ms) {
+                        let reject = BuildReject::UnheardMesh { node: path.to_string(), mesh: path.mesh.clone(), unheard_ms };
+                        outer.in_scope(|| reject_span(route, &reject));
+                        return Err(Refusal::Reject(reject));
+                    }
+                }
                 match n.incarnation_id.clone() {
                     Some(incarnation) => incarnation,
                     None => return Err(not_live(&outer, route, &path, n.status, "the node holds no incarnation id to fence the attempt to")),
@@ -288,7 +302,8 @@ fn reject_span(route: &'static str, reject: &BuildReject) {
         "mesh-already-exists",
         "fabric-mismatch",
         "empty-fabric",
-        "provider-mismatch"
+        "provider-mismatch",
+        "unheard-mesh"
     );
 }
 

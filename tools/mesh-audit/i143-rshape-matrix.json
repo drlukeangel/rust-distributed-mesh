@@ -713,6 +713,51 @@
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
+      "test": "mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "adversarial",
+      "job": "i143-rshape-adv-cut-restart-process",
+      "covers": [
+        "C9",
+        "C10"
+      ],
+      "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_restart_of_a_near_node_is_held_by_the_far_side -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "adversarial",
+      "job": "i143-rshape-adv-cut-spawn-process",
+      "covers": [
+        "C9",
+        "C10"
+      ],
+      "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
+      "issue": 2943,
+      "provider": "process",
+      "tier": "adversarial",
+      "job": "i143-rshape-adv-cut-kill-process",
+      "covers": [
+        "C9",
+        "C10"
+      ],
+      "canon": "R-D1; node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
+    },
+    {
       "test": "mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin",
       "issue": 2943,
       "provider": "process",

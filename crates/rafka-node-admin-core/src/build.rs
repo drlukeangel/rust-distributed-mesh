@@ -194,6 +194,9 @@ pub enum BuildReject {
     /// A mesh's paths and its per-path meta disagree: a materialized path with no meta, or meta
     /// for a path the mesh does not hold.
     NodeMetaMismatch { mesh: String, missing: Vec<String>, extra: Vec<String> },
+    /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
+    /// control-plane visibility fences lifecycle mutation for every node of it (R-D1).
+    UnheardMesh { node: String, mesh: String, unheard_ms: u64 },
 }
 
 impl BuildReject {
@@ -212,6 +215,7 @@ impl BuildReject {
             Self::EmptyFabric => "empty-fabric",
             Self::ProviderInBuild { .. } => "provider-mismatch",
             Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
+            Self::UnheardMesh { .. } => "unheard-mesh",
         }
     }
 }
@@ -232,6 +236,10 @@ impl fmt::Display for BuildReject {
             Self::ProviderInBuild { fabric_provider } => write!(
                 f,
                 "a Build may not choose a deployment provider; this fabric's policy is {fabric_provider:?}, fixed at bootstrap"
+            ),
+            Self::UnheardMesh { node, mesh, unheard_ms } => write!(
+                f,
+                "node `{node}` is in mesh `{mesh}`, which this fabric-primary has not heard for {unheard_ms} ms: a peer mesh held unheard is held as a mesh, and its nodes are not restarted, replaced or deleted from here until it is heard again"
             ),
             Self::NodeMetaMismatch { mesh, missing, extra } => write!(
                 f,

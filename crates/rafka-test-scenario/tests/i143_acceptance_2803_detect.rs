@@ -324,6 +324,23 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert_eq!(rebirths.len(), 1, "one rebirth: {rebirths:#?}");
     assert!(at_ns(rebirths[0]) >= at_ns(rebirth_verdict), "the verdict is recorded before the rebirth opens");
 
+    // R-D1: until the reborn mesh is heard again the fabric primary holds it as a mesh. The ladder's decision
+    // releases the first recovering node-admin only: one attempt, for mesh node-admin 1. Every other node of the
+    // mesh is reconciled once the mesh is heard again (by the reborn mesh primary's own sweep or the drift pass).
+    // The window ends when the fabric primary hears the reborn mesh again, or when it loses the seat to the reborn
+    // mesh (its drift pass is then no one's but the new holder's).
+    let heard_again = named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict")
+        .into_iter()
+        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again")
+        .map(at_ns)
+        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(rebirth_verdict)).map(at_ns))
+        .min()
+        .unwrap_or_else(|| panic!("{fp} heard {} again after the rebirth, or gave up the seat", f.lost));
+    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "authority") == fp && attr(sp, "scope").starts_with(&format!("{}.", f.lost))).collect();
+    let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(rebirth_verdict) && at_ns(sp) < heard_again).collect();
+    assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
+    assert!(attr(while_unheard[0], "scope").contains(&format!("{}.admin.1", f.lost)) && attr(while_unheard[0], "action") == "replace", "the first node-admin in path order is replaced: {:#?}", while_unheard[0]);
+
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));
     assert!(degraded_at >= at_ns(rebirth_verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");

@@ -86,6 +86,8 @@ pub enum Step {
 
 #[derive(Debug, Default)]
 struct State {
+    /// Backbone rounds the mesh has been unheard for, as of the latest step.
+    rounds: u64,
     tracked: bool,
     marked: bool,
     probes: [Option<ProbeOutcome>; 2],
@@ -98,6 +100,16 @@ impl State {
     fn probes_made(&self) -> u8 {
         self.probes.iter().flatten().count() as u8
     }
+}
+
+/// A peer mesh as the ladder holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerMesh {
+    /// `Some(ms unheard)` while the ladder tracks the mesh as unheard: loss of its control-plane
+    /// visibility fences lifecycle mutation for every node of the mesh (R-D1).
+    pub unheard_ms: Option<u64>,
+    /// The ladder has decided the rebirth of the mesh's node-admins.
+    pub rebirth_decided: bool,
 }
 
 /// One investigation per peer mesh the fabric primary has heard on the backbone.
@@ -135,12 +147,21 @@ impl Ladder {
         self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
 
+    /// What this ladder holds of `mesh`: `unheard_ms` is set while the ladder tracks the mesh as unheard
+    /// (from the rung [`Rungs::track`] on, until it is heard again), the same clock [`Self::step`] counts;
+    /// `None` when the ladder holds no investigation of the mesh at all.
+    pub fn peer_mesh(&self, mesh: &str, round: Duration) -> Option<PeerMesh> {
+        let st = self.meshes.get(mesh)?;
+        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.rounds * (round.as_millis() as u64).max(1)), rebirth_decided: st.verdict == Some(true) })
+    }
+
     /// What `mesh` being unheard for `rounds` asks next. One probe or the decision per call; the
     /// driver makes the probe, records it with [`Self::probed`], and asks again.
     pub fn step(&mut self, mesh: &str, rounds: u64) -> Vec<Step> {
         let r = self.rungs;
         let st = self.meshes.entry(mesh.to_string()).or_default();
         let mut out = Vec::new();
+        st.rounds = rounds;
         if rounds < r.track {
             if st.tracked && (st.probes_made() > 0 || st.marked || st.verdict.is_some()) {
                 out.push(Step::Cancel { rounds, probes: st.probes_made() });

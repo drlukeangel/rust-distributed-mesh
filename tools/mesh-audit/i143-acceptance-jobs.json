@@ -1083,6 +1083,42 @@
         }
       ]
     },
+    "i143-rshape-adv-cut-restart-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_restart_of_a_near_node_is_held_by_the_far_side -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side"
+        }
+      ]
+    },
+    "i143-rshape-adv-cut-spawn-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard"
+        }
+      ]
+    },
+    "i143-rshape-adv-cut-kill-process": {
+      "issue": 2943,
+      "layer": "chaos-process",
+      "cells": [
+        {
+          "name": "mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
+          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side"
+        }
+      ]
+    },
     "i143-rshape-adv-primary-victim-process": {
       "issue": 2943,
       "layer": "chaos-process",

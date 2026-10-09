@@ -568,6 +568,8 @@ pub async fn reconcile_drift(
     contexts: &crate::build_claim::AttemptContexts,
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
+    held: &mut HashSet<(NodeId, IncarnationId)>,
+    hold: &(dyn Fn(&str) -> Option<u64> + Sync),
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
     on_exit_proven: &(dyn Fn(&NodeId, &IncarnationId) + Sync),
@@ -606,6 +608,7 @@ pub async fn reconcile_drift(
             candidates.push(n);
         }
     }
+    let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
     for n in candidates {
         // A peer mesh with no live node-admin is reborn on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
@@ -621,7 +624,13 @@ pub async fn reconcile_drift(
             }
             continue;
         }
-        let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
+        // A peer mesh held unheard is held as a mesh (R-D1): none of its nodes is restarted, replaced or
+        // deleted from here, whatever the provider proves of its runtime. The one exception is the
+        // ladder's own decision, for the mesh's first recovering node-admin; once that admin stands, the
+        // mesh reconciles its ordinary nodes itself.
+        let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live());
+        let unheard_ms = if n.mesh != me.mesh && !first_recovering_admin { hold(&n.mesh) } else { None };
+        let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
         // A silent birth this authority cannot prove is named once, with what it lacks: it is not
         // drift until its exact runtime is inspected, and an authority that holds no fact for it
@@ -633,11 +642,11 @@ pub async fn reconcile_drift(
                     .in_scope(|| tracing::info!("a silent birth the accepted topology names cannot be proven exited by this authority"));
             }
         };
-        let (fact, data_dir, birth) = match (&held, row) {
+        let (fact, data_dir, birth) = match (&held_row, row) {
             (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
             (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
             _ => {
-                unprovable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held.is_some() { "a digest without a runtime" } else { "no digest of this birth" }));
+                unprovable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }));
                 continue;
             }
         };
@@ -659,6 +668,26 @@ pub async fn reconcile_drift(
                 _ => "exit-record",
             };
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
+            if let Some(unheard_ms) = unheard_ms {
+                // The evidence is kept and named once per birth for as long as the hold lasts; the exit
+                // authorizes nothing and is not recorded as the view's departure.
+                held_now.insert((n.node_id.clone(), incarnation.clone()));
+                if held.insert((n.node_id.clone(), incarnation.clone())) {
+                    tracing::info_span!(
+                        "rdm.node_admin.build.reject.via-unheard-mesh",
+                        node = %n.name,
+                        node_id = %n.node_id,
+                        incarnation_id = %incarnation.0,
+                        mesh = %n.mesh,
+                        unheard_ms,
+                        authority = %authority.name,
+                        exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
+                        exit_proof = source,
+                    )
+                    .in_scope(|| tracing::info!("the provider proves the birth exited, but its mesh is unheard: no attempt, no NodeDeleted, no birth from here"));
+                }
+                continue;
+            }
             on_exit_proven(&n.node_id, &incarnation);
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
@@ -666,6 +695,8 @@ pub async fn reconcile_drift(
             unprovable(format!("its runtime is not proven exited: {status:?}"));
         }
     }
+    // A hold ends with the silence: a mesh heard again holds no birth, and the next silence is a new hold.
+    held.retain(|k| held_now.contains(k));
     let short = crate::drift::shortfall(&current.topology, t, &exited);
     // One exited birth per attempt, in path.name order; the next pass takes the next remaining one.
     let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
@@ -677,6 +708,7 @@ pub async fn reconcile_drift(
         .nodes
         .iter()
         .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
+        .filter(|n| n.mesh == me.mesh || hold(&n.mesh).is_none())
         .map(|n| n.name.to_string())
         .collect();
     surplus.sort();
@@ -3046,6 +3078,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // drift check below to replace that mesh's node-admins.
     let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::RULED)));
     {
+        let (ladder, round) = (ladder.clone(), rafka_mesh_transport::membership::backbone_gossip_interval());
+        let _ = control.peer_mesh.set(Arc::new(move |mesh: &str| ladder.lock().unwrap().peer_mesh(mesh, round)));
+    }
+    {
         let held = connections.held();
         let watch = crate::investigate::Watch {
             me: name.clone(),
@@ -3089,6 +3125,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let ladder = ladder.clone();
         executor = tokio::spawn(async move {
             let mut started = HashSet::new();
+            let mut held = HashSet::new();
+            let round = rafka_mesh_transport::membership::backbone_gossip_interval();
             loop {
                 // A fabric shutdown freezes reconciliation: no Build attempt, no drift recovery, no
                 // rebirth from here on (fabric-mesh-lifecycle.md §11.1).
@@ -3105,7 +3143,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
+let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().peer_mesh(mesh, round).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                     // proven exited is not live there, and holds no seat.
                     if opened.is_some() {

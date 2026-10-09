@@ -347,8 +347,9 @@ pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
                         None => format!("attempt {attempt} did not end within {} s", DECOMMISSION_WAIT.as_secs()),
                     };
                 }
-                // One Build in flight, or the seat is moving: wait and ask again.
-                Err(e) if e.contains("BuildInProgress") || e.contains("409") || e.contains("NotAuthority") || e.contains("Unavailable") || e.contains("build-in-progress") => {
+                // One Build in flight, the seat is moving, or the fabric primary has not yet heard this mesh's
+                // restored authority (`unheard-mesh`): wait and ask again.
+                Err(e) if e.contains("BuildInProgress") || e.contains("409") || e.contains("NotAuthority") || e.contains("Unavailable") || e.contains("build-in-progress") || e.contains("unheard-mesh") => {
                     tokio::time::sleep(Duration::from_millis(300)).await;
                 }
                 Err(e) => break format!("refused: {e}"),
