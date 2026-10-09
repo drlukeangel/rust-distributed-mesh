@@ -1152,6 +1152,27 @@ async fn cancel_run(State(s): State<S>, AxPath(id): AxPath<String>) -> Response 
     Json(json!({"cancelled": id})).into_response()
 }
 
+/// The latest known status of every test any run in this server's history has touched, keyed
+/// `<crate>|<id>`: running and queued jobs count, the newest run wins.
+async fn test_status(State(s): State<S>) -> Json<Value> {
+    let runs = s.runs.lock().unwrap();
+    let mut map = serde_json::Map::new();
+    for r in runs.iter() {
+        for j in &r.jobs {
+            let done: HashMap<&str, &Outcome> = j.results.iter().map(|o| (o.id.as_str(), o)).collect();
+            for id in &j.test_ids {
+                let (status, message) = match done.get(id.as_str()) {
+                    Some(o) => (o.status.clone(), o.message.clone()),
+                    None => (j.state.clone(), j.note.clone()),
+                };
+                let wall = (j.test_ids.len() == 1).then_some(j.wall_ms).flatten();
+                map.insert(format!("{}|{id}", j.krate), json!({"status": status, "message": message, "run_id": r.id, "job": j.idx, "wall_ms": wall, "job_wall_ms": j.wall_ms, "traces": j.traces.as_ref().map(|t| t.distinct)}));
+            }
+        }
+    }
+    Json(Value::Object(map))
+}
+
 #[derive(Deserialize)]
 struct FileQuery {
     path: String,
@@ -1217,6 +1238,7 @@ pub fn router() -> Router {
         .route("/api/tests/runs/{id}", get(get_run))
         .route("/api/tests/runs/{id}/cancel", post(cancel_run))
         .route("/api/tests/runs/{id}/jobs/{idx}/files", get(job_files))
+        .route("/api/tests/status", get(test_status))
         .route("/api/tests/file", get(get_file))
         .with_state(state)
 }

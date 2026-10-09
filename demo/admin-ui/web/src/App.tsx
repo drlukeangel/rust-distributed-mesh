@@ -7,8 +7,9 @@ import { Builds } from "./tabs/Builds";
 import { BootWaterfall } from "./tabs/BootWaterfall";
 import { Chaos } from "./tabs/Chaos";
 import { Timeline } from "./tabs/Timeline";
+import { Tests } from "./tabs/Tests";
 
-const TABS = ["Topology", "Nodes", "Builds", "Boot Waterfall", "Chaos", "Timeline"] as const;
+const TABS = ["Topology", "Nodes", "Builds", "Boot Waterfall", "Chaos", "Timeline", "Tests"] as const;
 type Tab = (typeof TABS)[number];
 
 const STATE_COLOR: Record<string, string> = {
@@ -75,6 +76,7 @@ export function App() {
         {tab === "Boot Waterfall" && <BootWaterfall />}
         {tab === "Chaos" && <Chaos />}
         {tab === "Timeline" && <Timeline />}
+        {tab === "Tests" && <Tests />}
       </main>
     </div>
   );
