@@ -303,7 +303,7 @@ export function Tests() {
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr) minmax(480px, 1.2fr)", gap: 12, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr) minmax(0, 1.2fr)", gap: 12, alignItems: "start" }}>
         <div className="card" data-testid="test-tree">
           <div className="row" style={{ marginBottom: 8, flexWrap: "wrap" }}>
             <input data-testid="filter" placeholder="filter tests…" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ flex: 1, minWidth: 160 }} />
@@ -376,7 +376,7 @@ export function Tests() {
           )}
         </div>
 
-        <div>
+        <div style={{ minWidth: 0, overflowWrap: "anywhere" }}>
           <div className="card" style={{ marginBottom: 12 }} data-testid="run-history">
             <b>Run history</b>
             {runs.length === 0 && <div className="muted">no runs yet</div>}
