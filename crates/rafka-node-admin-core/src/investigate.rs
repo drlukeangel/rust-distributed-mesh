@@ -190,10 +190,9 @@ pub fn ping_budget(round: Duration) -> Duration {
     round * 2
 }
 
-/// The carried probe outlasts the carrier's one inner call (bounded to `CallOptions::default`'s
-/// budget by `call_via_bounded`) by two rounds, so the carrier's answer, carrier-edge-lost
-/// included, reaches the origin before it gives up: an inner dial to a dead node-admin runs to the
-/// inner call's whole bound.
+/// The carried probe outlasts the carrier's one inner call (made with `CallOptions::default`) by two
+/// rounds, so the carrier's answer, carrier-edge-lost included, reaches the origin before it gives
+/// up: an inner dial to a dead node-admin runs to the inner call's whole budget.
 pub fn carried_budget(round: Duration) -> Budget {
     match CallOptions::default().budget {
         Budget::Overall(inner) => Budget::Overall(inner + round * 2),
@@ -415,13 +414,7 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     w.note_carrier(mesh, carrier.name.clone());
     let req = StatusRequest::ProbeNodeState { node_id: admin.node_id.clone(), incarnation: admin.incarnation_id.clone().expect("filtered on it") };
     let opts = CallOptions { budget: carried_budget(w.round), ..CallOptions::default() };
-    // The carrier's one inner call is bounded by the default call budget, not by everything this
-    // origin has left, so the two rounds `carried_budget` adds are the carrier's margin to answer in.
-    let inner = match CallOptions::default().budget {
-        Budget::Overall(d) => d,
-        Budget::Split { reply, .. } => reply,
-    };
-    let (out, _) = w.client.call_via_bounded::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts, Some(inner)).await;
+    let (out, _) = w.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.node_id.clone()), &admin.node_id, &req, &opts).await;
     let (outcome, detail) = classify(&out, &admin.name);
     Found { outcome, target: admin.name.to_string(), members: members_asked, carrier: carrier.name.to_string(), detail }
 }
