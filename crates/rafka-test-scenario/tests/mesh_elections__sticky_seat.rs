@@ -183,3 +183,126 @@ async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
         iroh_observation_shape(sp).unwrap_or_else(|why| panic!("{why}"));
     }
 }
+
+fn at_ns(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().unwrap_or(0)
+}
+
+/// CONTRACT: the fabric primary P is replaced through the control API (a Build attempt the
+/// rectifier executes: install, transfer, retire; never a signal). P fences its Build log before
+/// the new holder N does anything as fabric primary, decides no claim after its fence, N takes the
+/// seat only after P yielded, no view ever shows two holders, no birth is made twice and no attempt
+/// has two winners, and the fabric is ready again under the same Build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
+    let cell = "a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts";
+    let (mut estate, nodes) = fabric(cell).await;
+    let p = fabric_primary(&nodes).expect("one fabric primary");
+    let p_node = node(&nodes, &p).clone();
+    let p_id = s(&p_node["node_id"]);
+    let mesh = s(&p_node["mesh"]);
+    // The heir is the other admin of P's mesh; control stays on it.
+    let n_name = if p.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    let n_id = s(&node(&nodes, &n_name)["node_id"]);
+    let n_base = s(&node(&nodes, &n_name)["admin_api_base"]);
+    estate.admin = n_base.clone();
+    let (_, before_build) = estate.get("/api/fabric").await;
+    let (status, r) = estate.post(&format!("/api/nodes/{p}/replace"), &json!({})).await;
+    assert_eq!(status, 202, "{r}");
+    let build = s(&r["build_id"]);
+    // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
+    let mut worst = 0usize;
+    let until = std::time::Instant::now() + Duration::from_secs(120);
+    let mut done = false;
+    while std::time::Instant::now() < until && !done {
+        let r = estate.nodes_at(&n_base).await;
+        let held = r.iter().filter(|x| x["is_fabric_primary"] == true).count();
+        worst = worst.max(held);
+        done = r.iter().any(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_node["incarnation_id"] && x["status"] == "ready-for-traffic") && held == 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(done, "the replaced admin's path is ready again under a new birth");
+    assert!(worst <= 1, "a view showed {worst} fabric primaries");
+    let (_, after) = estate.get("/api/fabric").await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let fence: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p).collect();
+    assert!(!fence.is_empty(), "P fenced its Build log");
+    let fenced_at = fence.iter().map(|sp| at_ns(sp)).min().unwrap();
+    // N's first fabric-primary action is its announcement of the seat.
+    let n_first = named(&spans, "rdm.mesh.seat.update.via-announce").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&n_id)).map(|sp| at_ns(sp)).min();
+    if let Some(n_first) = n_first {
+        assert!(fenced_at < n_first, "P fenced ({fenced_at}) before N acted ({n_first})");
+    }
+    // The Build facts were handed on with the fence.
+    assert!(fence.iter().any(|sp| sp["attributes"]["facts"].as_str().and_then(|f| f.parse::<u64>().ok()).is_some()), "the fence span names the facts handed on: {fence:#?}");
+    // No claim decided by P after its fence.
+    let late: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) > fenced_at && matches!(attr(sp, "outcome").as_str(), "won" | "lost" | "not-open")).collect();
+    assert!(late.is_empty(), "P decided a claim after its fence: {late:#?}");
+    // One winner per attempt; no birth made twice.
+    let mut won: std::collections::BTreeMap<(String, String), std::collections::BTreeSet<String>> = Default::default();
+    let mut made: std::collections::BTreeMap<(String, String, String), u32> = Default::default();
+    for sp in &spans {
+        match sp["name"].as_str() {
+            Some("rdm.node_admin.build.update.via-claim-decision") if attr(sp, "outcome") == "won" => {
+                won.entry((attr(sp, "build_id"), attr(sp, "attempt"))).or_default().insert(attr(sp, "executor"));
+            }
+            Some("rdm.node_admin.node.create.via-build") => *made.entry((attr(sp, "build_id"), attr(sp, "attempt"), attr(sp, "node"))).or_default() += 1,
+            _ => {}
+        }
+    }
+    assert!(won.values().all(|w| w.len() == 1), "conflicting winners: {won:#?}");
+    assert!(made.values().all(|c| *c == 1), "a birth made twice: {made:#?}");
+    assert_eq!(after["status"], "ready-for-traffic", "the fabric is ready again: {after}");
+    let _ = (before_build, build, p_id);
+}
+
+/// CONTRACT: the same hand-over while the fabric primary P is deciding claims of a running Build
+/// (mesh2 grows by two rpc nodes as P is replaced). A claim decided before P's fence committed
+/// wholly before the fence returned (its decision ended no later than the fence span), and P
+/// decides none after it: every claim request that reaches P after the fence is refused, never
+/// `won`. One winner per attempt, no birth twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_decided_after() {
+    let cell = "a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_decided_after";
+    let (mut estate, nodes) = fabric(cell).await;
+    let p = fabric_primary(&nodes).expect("one fabric primary");
+    let mesh = s(&node(&nodes, &p)["mesh"]);
+    let n_name = if p.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
+    estate.admin = s(&node(&nodes, &n_name)["admin_api_base"]);
+    let grow = json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 5},
+    ]});
+    let (status, g) = estate.post("/api/build", &grow).await;
+    assert_eq!(status, 202, "{g}");
+    let (status, r) = estate.post(&format!("/api/nodes/{p}/replace"), &json!({})).await;
+    assert_eq!(status, 202, "{r}");
+    let all: BTreeSet<String> = names().into_iter().chain(["mesh2.rpc.4".to_string(), "mesh2.rpc.5".to_string()]).collect();
+    wait_for("the grown fabric is settled under the new holder", Duration::from_secs(180), || async {
+        let ns = estate.nodes().await;
+        (all.iter().all(|n| ns.iter().any(|x| x["name"] == n.as_str() && x["status"] == "ready-for-traffic")) && ns.iter().filter(|x| x["is_fabric_primary"] == true).count() == 1).then_some(())
+    })
+    .await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let fence = named(&spans, "rdm.node_admin.build.update.via-seat-fence").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "fenced") == "true").min_by_key(|sp| at_ns(sp)).cloned().expect("P fenced");
+    let (f_start, f_end) = (at_ns(&fence), sp_end(&fence));
+    let mine: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == p && at_ns(sp) < sp_end(&fence) + 3_000_000_000).collect();
+    for sp in &mine {
+        if at_ns(sp) < f_start {
+            assert!(sp_end(sp) <= f_end, "a decision begun before the fence ended after it: {sp:#?}");
+        } else {
+            assert_ne!(attr(sp, "outcome"), "won", "P won a claim after its fence began: {sp:#?}");
+        }
+    }
+    let mut won: std::collections::BTreeMap<(String, String), BTreeSet<String>> = Default::default();
+    for sp in named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "outcome") == "won") {
+        won.entry((attr(sp, "build_id"), attr(sp, "attempt"))).or_default().insert(attr(sp, "executor"));
+    }
+    assert!(won.values().all(|w| w.len() == 1), "conflicting winners: {won:#?}");
+}
+
+fn sp_end(sp: &Value) -> u64 {
+    sp["end_unix_nano"].as_u64().unwrap_or(0)
+}
