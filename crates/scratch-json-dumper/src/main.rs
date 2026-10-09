@@ -99,6 +99,7 @@ fn main() {
         in_flight: None,
         extra: std::collections::BTreeMap::new(),
         load: None,
+        gossip: None,
     };
     let frame_digest = Frame::Digest { digest: digest.clone() };
     println!("=== Frame::Digest ===");

@@ -6,5 +6,6 @@ mod own_process;
 mod i143_acceptance_2900;
 mod i143_acceptance_2901;
 mod i143_acceptance_2902;
+mod gossip_stats;
 mod heartbeat_spans;
 mod seat_frames_wire;

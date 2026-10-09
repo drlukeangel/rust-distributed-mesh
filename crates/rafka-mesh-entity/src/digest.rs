@@ -75,6 +75,25 @@ pub struct MeshDigest {
     /// `in_flight`: it never moves the topology version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub load: Option<NodeLoad>,
+    /// How this birth's mesh channel is doing: evidence for operators, like `load`; never
+    /// liveness, order, election, tickle, or the topology version. A field added to the struct
+    /// moves the postcard wire format again and gets the same review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gossip: Option<GossipStats>,
+}
+
+/// One birth's view of its own mesh channel, sampled when it publishes its digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct GossipStats {
+    /// Members whose digest this birth holds as heard (its book's current digests).
+    pub heard: u32,
+    /// The active gossip neighbours on its mesh channel (NeighborUp minus NeighborDown), never
+    /// the seeded peer list.
+    pub neighbours: u32,
+    /// Membership frames this birth broadcast on its mesh channel since it started.
+    pub frames_sent: u64,
+    /// Membership frames this birth decoded from its mesh channel since it started.
+    pub frames_received: u64,
 }
 
 /// One process's CPU and RAM, as its digest carries them: what is used and the ceiling it runs

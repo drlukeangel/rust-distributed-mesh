@@ -293,6 +293,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
     let _ = own_digest_slot.set(admin_digest.clone());

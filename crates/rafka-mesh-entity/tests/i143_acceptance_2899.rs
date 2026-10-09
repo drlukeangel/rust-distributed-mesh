@@ -95,6 +95,7 @@ impl Birth {
             in_flight: None,
             extra: Default::default(),
             load: None,
+            gossip: None,
         }
     }
 }

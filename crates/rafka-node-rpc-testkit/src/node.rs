@@ -309,6 +309,7 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
         data_dir: Some(launch.data_dir.display().to_string()),
     };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the

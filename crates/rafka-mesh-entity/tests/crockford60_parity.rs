@@ -62,6 +62,7 @@ fn a_membership_digest_carries_its_product_ids_exactly() {
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
         data_dir: None,
     };
     let back = MeshDigest::decode(&d.encode()).unwrap();

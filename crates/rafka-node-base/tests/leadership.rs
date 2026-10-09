@@ -23,6 +23,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         listeners: vec![],
         declared: None,
         load: None,
+        gossip: None,
     }
 }
 

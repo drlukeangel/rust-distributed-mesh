@@ -988,6 +988,12 @@ struct Channel {
     joined: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     lookup: MemoryLookup,
     endpoint: Endpoint,
+    /// The active gossip neighbours on this channel (NeighborUp minus NeighborDown).
+    neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
+    /// Frames broadcast on this channel since this birth.
+    frames_sent: Arc<std::sync::atomic::AtomicU64>,
+    /// Frames decoded from this channel since this birth.
+    frames_received: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Channel {
@@ -1019,8 +1025,9 @@ impl Channel {
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, mut receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone() };
-        let neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>> = Arc::default();
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone(), neighbors: Arc::default(), frames_sent: Arc::default(), frames_received: Arc::default() };
+        let neighbors = me.neighbors.clone();
+        let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
         me.refeed(node.to_string(), channel.to_string(), neighbors.clone(), targets);
         let (shared, known, gossip, fabric, channel, node) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), node.to_string());
         tokio::spawn(async move {
@@ -1030,7 +1037,10 @@ impl Channel {
                     match &ev {
                         Some(Ok(Event::Received(m))) => {
                             match Frame::decode(&m.content) {
-                                Ok(f) => on_frame(f),
+                                Ok(f) => {
+                                    received.fetch_add(1, Ordering::Relaxed);
+                                    on_frame(f)
+                                }
                                 // A frame this build does not read is refused by name, with who
                                 // sent it, never dropped as if it had not arrived.
                                 Err(e) => tracing::info_span!(
@@ -1066,7 +1076,9 @@ impl Channel {
                                     .in_scope(|| tracing::info!("a neighbour came up: this primary says what it holds once"));
                             }
                             for f in frames {
-                                let _ = sender.broadcast(Bytes::from(f.encode())).await;
+                                if sender.broadcast(Bytes::from(f.encode())).await.is_ok() {
+                                    sent.fetch_add(1, Ordering::Relaxed);
+                                }
                             }
                         }
                         Some(Ok(Event::NeighborDown(p))) => {
@@ -1108,6 +1120,7 @@ impl Channel {
     async fn broadcast(&self, f: &Frame) -> Result<()> {
         let sender = self.sender.read().await.clone();
         sender.broadcast(Bytes::from(f.encode())).await?;
+        self.frames_sent.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1765,6 +1778,12 @@ impl Membership {
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         d.load = Some(self.load.sample());
+        d.gossip = Some(rafka_mesh_entity::GossipStats {
+            heard: self.book.current(self.book.staleness_floor()).len() as u32,
+            neighbours: self.mesh.neighbors.lock().unwrap().len() as u32,
+            frames_sent: self.mesh.frames_sent.load(Ordering::Relaxed),
+            frames_received: self.mesh.frames_received.load(Ordering::Relaxed),
+        });
         self.book.record(d.clone());
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
@@ -2880,8 +2899,22 @@ mod tests {
             in_flight: None,
             extra: Default::default(),
             load: None,
+            gossip: None,
             data_dir: None,
         }
+    }
+
+    /// CONTRACT: the gossip stats a digest carries never reach the topology view the version
+    /// orders, so a changed count is no topology change.
+    #[test]
+    fn topology_view_of_a_digest_with_gossip_stats_equals_the_view_without() {
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let plain = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 1);
+        let mut with = plain.clone();
+        with.gossip = Some(rafka_mesh_entity::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
+        assert_ne!(plain, with);
+        assert_eq!(crate::snapshot::topology_view(&with), crate::snapshot::topology_view(&plain));
+        assert_eq!(crate::snapshot::without_load(&with).gossip, None);
     }
 
     /// CONTRACT (rafka-v2 `register_peer_location_if_fresher`): a restart keeps the key and binds a

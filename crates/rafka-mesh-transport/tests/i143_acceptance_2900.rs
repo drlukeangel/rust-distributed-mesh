@@ -86,6 +86,7 @@ fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
     }
 }
 

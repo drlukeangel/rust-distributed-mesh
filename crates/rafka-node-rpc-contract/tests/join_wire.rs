@@ -33,6 +33,7 @@ fn digest() -> rafka_mesh_entity::MeshDigest {
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
     }
 }
 
@@ -69,4 +70,21 @@ fn replies_match_the_frozen_nine_variant_wire_schema() {
         assert_eq!(Join::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Join::decode_reply(&expected).unwrap(), reply);
     }
+}
+
+/// The digest's wire shape ends `load`, then `gossip`, every field present: `gossip` absent is one
+/// `00` byte after the `00` of an absent `load`; present it is `01` then `heard`, `neighbours`
+/// (u32 varints) and `frames_sent`, `frames_received` (u64 varints). A field added to the struct
+/// moves these bytes again.
+#[test]
+fn a_digest_wire_shape_ends_with_the_gossip_stats_positional_bytes() {
+    use rafka_mesh_entity::GossipStats;
+    let mut d = digest();
+    let none = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d) }).unwrap();
+    assert_eq!(&none[none.len() - 2..], bytes("0000").as_slice(), "load absent, gossip absent");
+    d.gossip = Some(GossipStats { heard: 2, neighbours: 3, frames_sent: 300, frames_received: 5 });
+    let some = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d) }).unwrap();
+    assert_eq!(&some[some.len() - 7..], bytes("00010203ac0205").as_slice());
+    let JoinRequest::JoinNode { digest: back } = Join::decode_request(&some).unwrap();
+    assert_eq!(rafka_mesh_entity::MeshDigest::from(back).gossip, d.gossip);
 }

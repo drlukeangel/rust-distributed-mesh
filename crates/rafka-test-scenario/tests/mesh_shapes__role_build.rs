@@ -85,6 +85,26 @@ async fn roles_are_born_by_build_under_their_kind() {
         assert!(l["cpu_used_millicores"].as_u64().is_some(), "{} cpu in use: {n}", n["name"]);
     }
 
+    // The same digest carries the node's mesh-channel counts (R-L2): it has heard the members of
+    // its mesh, holds a gossip neighbour, and has sent and decoded membership frames.
+    // A digest is a periodic sample: the Build is ready on declarations, before every member has
+    // published a sample taken after the others joined. Read /api/nodes until the samples are in.
+    let sampled = |ns: &[Value]| ns.iter().all(|n| n["gossip"]["neighbours"].as_u64().is_some_and(|k| k >= 1) && n["gossip"]["frames_received"].as_u64().is_some_and(|f| f >= 1));
+    let mut gossip_nodes = estate.nodes().await;
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while !sampled(&gossip_nodes) && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        gossip_nodes = estate.nodes().await;
+    }
+    estate.artifact("nodes-gossip.json", &json!(gossip_nodes));
+    for n in &gossip_nodes {
+        let g = &n["gossip"];
+        assert!(g["heard"].as_u64().is_some_and(|h| h >= 1), "{} has heard members: {n}", n["name"]);
+        assert!(g["neighbours"].as_u64().is_some_and(|k| k >= 1), "{} has an active neighbour: {n}", n["name"]);
+        assert!(g["frames_sent"].as_u64().is_some_and(|f| f >= 1), "{} sent frames: {n}", n["name"]);
+        assert!(g["frames_received"].as_u64().is_some_and(|f| f >= 1), "{} decoded frames: {n}", n["name"]);
+    }
+
     // The second Build drops the compute: its path is retired, the others keep their birth.
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()

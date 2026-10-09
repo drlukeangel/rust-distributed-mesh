@@ -117,6 +117,9 @@ pub struct NodeView {
     /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
     #[serde(default)]
     pub load: Option<rafka_mesh_entity::NodeLoad>,
+    /// The node's mesh-channel counts from its latest digest: heard, neighbours, frames.
+    #[serde(default)]
+    pub gossip: Option<rafka_mesh_entity::GossipStats>,
 }
 
 /// `MeshView`.

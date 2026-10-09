@@ -200,6 +200,7 @@ fn birth_as(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, 
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
     });
     n
 }

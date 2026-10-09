@@ -352,6 +352,7 @@ mod tests {
             in_flight: None,
             extra: Default::default(),
             load: None,
+            gossip: None,
         }
     }
 

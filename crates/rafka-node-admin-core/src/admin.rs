@@ -2237,6 +2237,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             in_flight: None,
             extra: BTreeMap::new(),
             load: None,
+            gossip: None,
             data_dir: Some(cfg.data_dir.display().to_string()),
         };
         node_rpc_resolver.apply(
@@ -2482,7 +2483,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let _ = control.connections.set(connections.held());
     {
         let book = book.clone();
-        let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter_map(|d| d.load.map(|l| (d.node.node_id.to_string(), l))).collect()));
+        let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter(|d| d.load.is_some() || d.gossip.is_some()).map(|d| (d.node.node_id.to_string(), (d.load, d.gossip))).collect()));
     }
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
@@ -2612,6 +2613,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         in_flight: None,
         extra: BTreeMap::new(),
         load: None,
+        gossip: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
     }));
     // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
@@ -3469,6 +3471,7 @@ mod tests {
             in_flight: None,
             extra: BTreeMap::new(),
             load: None,
+            gossip: None,
             data_dir: None,
         }
     }

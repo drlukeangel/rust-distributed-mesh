@@ -28,7 +28,8 @@ type OpKey = (String, u32, String);
 /// incarnation and lineage, the one transport address, the runtime fact and its metadata), the
 /// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
 /// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `in_flight` (the
-/// draining work count) and `load` (the process's CPU and RAM): the digest's load.
+/// draining work count), `load` (the process's CPU and RAM) and `gossip` (the channel's
+/// heard/neighbour/frame counts): the digest's load and gossip stats.
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
@@ -36,11 +37,12 @@ pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     v
 }
 
-/// The digest without its load: what an ordinary node holds of a member of a remote Mesh.
+/// The digest without its load and gossip stats: what an ordinary node holds of a member of a remote Mesh.
 pub(crate) fn without_load(d: &MeshDigest) -> MeshDigest {
     let mut v = d.clone();
     v.in_flight = None;
     v.load = None;
+    v.gossip = None;
     v
 }
 

@@ -55,7 +55,7 @@ pub struct ControlPlane {
     /// The CPU and RAM each member's latest digest carries, by node id (set once by the admin that
     /// owns the digest book). Load is served beside the view, never inside it: it changes every
     /// digest and never moves the topology.
-    pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, rafka_mesh_entity::NodeLoad> + Send + Sync>>,
+    pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rafka_mesh_entity::NodeLoad>, Option<rafka_mesh_entity::GossipStats>)> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
@@ -480,13 +480,18 @@ async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
     let t = cp.topology.read().await;
     let mut nodes = serde_json::to_value(&t.nodes).unwrap_or(Value::Null);
-    // Each node's CPU and RAM from its latest digest as this admin holds it; absent when its
+    // Each node's CPU and RAM and mesh-channel counts from its latest digest as this admin holds it; absent when its
     // digest carried none (a member of a peer mesh is held without its load).
     if let (Some(loads), Some(list)) = (cp.loads.get(), nodes.as_array_mut()) {
         let loads = loads();
         for n in list.iter_mut() {
-            if let Some(l) = n["node_id"].as_str().and_then(|id| loads.get(id)) {
-                n["load"] = serde_json::to_value(l).unwrap_or(Value::Null);
+            if let Some((l, g)) = n["node_id"].as_str().and_then(|id| loads.get(id)) {
+                if let Some(l) = l {
+                    n["load"] = serde_json::to_value(l).unwrap_or(Value::Null);
+                }
+                if let Some(g) = g {
+                    n["gossip"] = serde_json::to_value(g).unwrap_or(Value::Null);
+                }
             }
         }
     }

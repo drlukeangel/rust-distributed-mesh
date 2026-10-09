@@ -112,6 +112,7 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
         in_flight: None,
         extra: Default::default(),
         load: None,
+        gossip: None,
     }
 }
 
