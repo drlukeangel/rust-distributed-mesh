@@ -89,7 +89,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     // its mesh, holds a gossip neighbour, and has sent and decoded membership frames.
     // A digest is a periodic sample: the Build is ready on declarations, before every member has
     // published a sample taken after the others joined. Read /api/nodes until the samples are in.
-    let sampled = |ns: &[Value]| ns.iter().all(|n| n["gossip"]["neighbours"].as_u64().is_some_and(|k| k >= 1) && n["gossip"]["frames_received"].as_u64().is_some_and(|f| f >= 1));
+    let sampled = |ns: &[Value]| ns.iter().all(|n| n["gossip"]["neighbours"].as_u64().is_some_and(|k| k >= 1) && n["gossip"]["frames_received"].as_u64().is_some_and(|f| f >= 1) && n["gossip"]["frames_sent"].as_u64().is_some_and(|f| f >= 1));
     let mut gossip_nodes = estate.nodes().await;
     let until = std::time::Instant::now() + Duration::from_secs(15);
     while !sampled(&gossip_nodes) && std::time::Instant::now() < until {
