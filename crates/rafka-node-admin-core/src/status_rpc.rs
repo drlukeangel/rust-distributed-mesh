@@ -90,6 +90,8 @@ pub struct StatusAuthority {
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
+    /// Wakes this admin's declarer: a view this authority changed, and a down op's receipt.
+    pub wake: Arc<crate::status_declare::DeclareWake>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -227,7 +229,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.nodes.iter().find(|n| n.name == self.me) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.drain).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.drain, &self.wake).await {
                 return reply;
             }
         }
@@ -314,6 +316,8 @@ impl StatusAuthority {
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
                 n.declared = row.declared.clone();
             }
+            drop(t);
+            self.wake.poke();
         }
         reply
     }
@@ -378,7 +382,7 @@ pub type Drain = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future:
 /// `ApplyNodeState(Draining)`: the node enters `Draining` (or already is) and answers the work
 /// still in flight, the current count on every repeat. Any other state applied to a node-admin
 /// is not served in this build, by name.
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, drain: &Drain) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, drain: &Drain, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let (node_id, incarnation) = match req {
         StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } => (node_id, incarnation),
         _ => return None,
@@ -400,6 +404,11 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     let sender_name = sender.map(|n| n.name.to_string()).unwrap_or_default();
     match req {
         StatusRequest::ProbeNodeState { .. } => {
+            // The authority addressed this admin (R-S3's down op): every declaration owed to it is
+            // sent again, whatever its last outcome.
+            if let Some(from) = sender {
+                wake.addressed_by(&from.node_id);
+            }
             if let Some(republish) = republish.get() {
                 republish().await;
             }
@@ -488,11 +497,11 @@ mod tests {
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
         let (republish, drain) = (Republish::default(), Drain::default());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &drain).await;
+        let answered = self_subject(&admin, Some(&carrier), &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::Current { .. })), "{answered:?}");
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
-        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &drain).await.is_none(), "an apply from a member is not the subject's to answer");
-        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &drain).await.is_none(), "a node-admin is not its own sender");
-        assert!(self_subject(&admin, None, &probe, &republish, &drain).await.is_none(), "an unresolved peer is answered by no one");
+        assert!(self_subject(&admin, Some(&carrier), &apply, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "an apply from a member is not the subject's to answer");
+        assert!(self_subject(&admin, Some(&admin), &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "a node-admin is not its own sender");
+        assert!(self_subject(&admin, None, &probe, &republish, &drain, &crate::status_declare::DeclareWake::default()).await.is_none(), "an unresolved peer is answered by no one");
     }
 }

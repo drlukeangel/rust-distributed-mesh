@@ -2,12 +2,18 @@
 //! the authority answers by name.
 //!
 //! A declaration is a fact about this admin or its Mesh with a natural key; the declarer holds
-//! the ones not yet answered and re-sends each on its own cadence, resolving the authority from
-//! the current view at every attempt (the fabric-primary moves; the key does not). The outcomes:
+//! the ones not yet answered and resolves the authority from the current view at every round (the
+//! fabric-primary moves; the key does not). A declaration is sent when it becomes owed, and again
+//! only on an eligible event (R-S2): the authoritative destination changes to a deliverable birth,
+//! a failed delivery gains a viable route, or the authority addresses this admin with its down op
+//! (`DeclareWake::addressed_by`). A typed reply is terminal, `RejectedNotAuthority` included, and a
+//! target going unreachable sends nothing. One `DeclareWake` wakes the declarer; no timer does.
+//! The outcomes:
 //!
 //! ```text
 //! Applied | AlreadyApplied          done
-//! RejectedNotAuthority             the seat moved or the view is early: resolve again next round
+//! RejectedNotAuthority             terminal until an eligible event: the authority's down op, or
+//!                                  a destination change, sends it again
 //!
 //! A key is owed again when the authority is another node or a new incarnation of the same node.
 //! A Mesh declaration is owed by the Mesh's primary and a fabric event by the fabric-primary.
@@ -15,7 +21,8 @@
 //! new holder owes it from its own view.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
-//! NotSent | Indeterminate | other  retry the same declaration next round (never a negative state)
+//! NotSent | Indeterminate          failed delivery: sent again when the route is viable again
+//!                                  (never a negative state)
 //! ```
 //!
 //! Nothing here gates gossip or readiness: the admin's own `ReadyForTraffic` is published by
@@ -26,8 +33,87 @@ use crate::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+
+/// What wakes the declarer: ONE notify, poked by its inputs (the topology, this admin's own
+/// digest status, the declare gate, the meshes it holds and a down op's receipt), and the
+/// authorities that addressed this admin since the last round. `Notify` stores one permit, so a
+/// poke during a round is not lost and a burst of pokes runs one round.
+#[derive(Debug, Default)]
+pub struct DeclareWake {
+    notify: tokio::sync::Notify,
+    addressed: Mutex<BTreeSet<NodeId>>,
+}
+
+impl DeclareWake {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn poke(&self) {
+        self.notify.notify_one();
+    }
+
+    /// The authority `from` sent this admin its down op: every declaration owed to it is sent
+    /// again, whatever its last outcome.
+    pub fn addressed_by(&self, from: &NodeId) {
+        self.addressed.lock().unwrap().insert(from.clone());
+        self.poke();
+    }
+
+    /// Wait for a poke.
+    pub async fn woken(&self) {
+        self.notify.notified().await;
+    }
+
+    /// The authorities that addressed this admin since the last call; a down op arriving after
+    /// the take is kept for the next round.
+    pub fn take_addressed(&self) -> BTreeSet<NodeId> {
+        std::mem::take(&mut *self.addressed.lock().unwrap())
+    }
+}
+
+/// Where a declaration went: the exact birth, and the address facts the view held for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    pub node_id: NodeId,
+    pub incarnation: Option<IncarnationId>,
+    pub endpoint: Option<crate::model::EndpointId>,
+    pub addr: Option<std::net::SocketAddr>,
+}
+
+impl Destination {
+    fn of(n: &crate::model::Node) -> Self {
+        Self { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: n.endpoint_id.clone(), addr: n.transport_addr }
+    }
+}
+
+/// The last send of one declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sent {
+    pub to: Destination,
+    /// A typed reply came back: terminal until an eligible event.
+    pub typed: bool,
+    /// The view showed the target unreachable after an untyped failure: a viable route is a gain.
+    pub route_lost: bool,
+}
+
+/// Is a declaration due (R-S2)? Sent when it becomes owed, and again only when the authority
+/// addressed this admin, or the destination changed to a deliverable birth, or a failed delivery
+/// gained a viable route. A target that is not deliverable is sent nothing.
+pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
+    if addressed {
+        return true;
+    }
+    if !deliverable {
+        return false;
+    }
+    match sent {
+        None => true,
+        Some(s) => &s.to != now || (!s.typed && s.route_lost),
+    }
+}
 
 /// One declaration this admin owes, by natural key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -55,6 +141,8 @@ pub struct Pending {
     pub request: StatusRequest,
     pub attempts: u32,
     pub last: Option<String>,
+    /// The last send; `None` until the first.
+    pub sent: Option<Sent>,
 }
 
 /// The declarer's state: what is owed, and what was answered by name, and by which authority. A
@@ -79,7 +167,7 @@ impl Declarer {
         if self.done.lock().unwrap().contains_key(&key) {
             return;
         }
-        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None });
+        self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None });
     }
 
     pub fn answered(&self, key: &Key) -> Option<String> {
@@ -115,27 +203,48 @@ impl Declarer {
                     None => continue,
                 };
                 tracing::info!(node = %me, key = ?key, was = %by, "the authority moved: the declaration is owed again to the current one");
-                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None });
+                pending.insert(key.clone(), Pending { key, to, request, attempts: 0, last: None, sent: None });
             }
         }
     }
 
-    /// One round: send every owed declaration to its authority as the view names it now. When the
-    /// view names this admin, the declaration goes through this admin's own door (`authority`),
-    /// decided exactly as a peer's would be; no seat is assumed.
-    pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>) {
-        self.withdraw_unowned(me, view);
-        self.reowe_moved(me, view);
-        let owed: Vec<Pending> = self.pending.lock().unwrap().values().cloned().collect();
-        for p in owed {
+    /// The declarations due now, each with the authority the view names for it. Pure over the
+    /// declarer's state and the view: a send is due only on an eligible event ([`eligible`]).
+    /// The reachability a failed delivery waits on is observed here, every round, for every key.
+    pub fn due(&self, me_id: &NodeId, view: &Topology, addressed: &BTreeSet<NodeId>) -> Vec<(Pending, crate::model::Node)> {
+        let mut pending = self.pending.lock().unwrap();
+        let mut due = Vec::new();
+        for p in pending.values_mut() {
             let target = match &p.to {
                 Authority::FabricPrimary => view.fabric_primary(),
                 Authority::MeshPrimaryOf(mesh) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
             };
             let Some(target) = target else {
-                self.note(&p.key, 0, "no authority in view");
+                p.last = Some("no authority in view".into());
                 continue;
             };
+            let now = Destination::of(target);
+            let deliverable = &target.node_id == me_id || (target.status.is_live() && target.incarnation_id.is_some());
+            if let Some(s) = p.sent.as_mut() {
+                if !s.typed && !deliverable {
+                    s.route_lost = true;
+                }
+            }
+            if eligible(p.sent.as_ref(), &now, deliverable, addressed.contains(&target.node_id)) {
+                due.push((p.clone(), target.clone()));
+            }
+        }
+        due
+    }
+
+    /// One round: send every declaration that is due to its authority as the view names it now.
+    /// When the view names this admin, the declaration goes through this admin's own door
+    /// (`authority`), decided exactly as a peer's would be; no seat is assumed. `addressed` is
+    /// the authorities that sent this admin their down op since the last round.
+    pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>) {
+        self.withdraw_unowned(me, view);
+        self.reowe_moved(me, view);
+        for (p, target) in self.due(me_id, view, addressed) {
             let classify = |reply: &StatusReply| match reply {
                 StatusReply::Applied | StatusReply::AlreadyApplied => (reply.name().to_string(), true),
                 StatusReply::RejectedStaleIncarnation { .. }
@@ -145,25 +254,29 @@ impl Declarer {
                 | StatusReply::RejectedInvalidMeshTransition { .. } => (format!("{reply:?}"), true),
                 other => (format!("{other:?}"), false),
             };
-            let (outcome, finished, via) = if &target.node_id == me_id {
+            let (outcome, finished, typed, via) = if &target.node_id == me_id {
                 match authority {
                     Some(auth) => {
                         let reply = auth.apply(Some(target.clone()), &p.request).await;
                         let (o, f) = classify(&reply);
-                        (o, f, "self")
+                        (o, f, true, "self")
                     }
                     None => {
+                        // Unreachable: the declarer starts after the authority is filled.
+                        debug_assert!(false, "authority is self, but the Status authority is not filled");
                         self.note(&p.key, 0, "authority is self, but this admin holds no view yet");
                         continue;
                     }
                 }
             } else {
                 let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).await;
-                let (o, f) = match &out {
-                    RpcOutcome::Reply(r) => classify(r.value()),
-                    other => (format!("{}: {other:?}", other.name()), false),
-                };
-                (o, f, "node-rpc")
+                match &out {
+                    RpcOutcome::Reply(r) => {
+                        let (o, f) = classify(r.value());
+                        (o, f, true, "node-rpc")
+                    }
+                    other => (format!("{}: {other:?}", other.name()), false, false, "node-rpc"),
+                }
             };
             tracing::info_span!(
                 "rdm.node_admin.status.update.via-declare",
@@ -174,6 +287,7 @@ impl Declarer {
                 attempt = p.attempts + 1,
                 outcome = %outcome,
                 finished,
+                addressed = addressed.contains(&target.node_id),
             )
             .in_scope(|| tracing::info!("declared to the authority"));
             if finished {
@@ -181,6 +295,9 @@ impl Declarer {
                 self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));
             } else {
                 self.note(&p.key, 1, &outcome);
+                if let Some(held) = self.pending.lock().unwrap().get_mut(&p.key) {
+                    held.sent = Some(Sent { to: Destination::of(&target), typed, route_lost: false });
+                }
             }
         }
     }

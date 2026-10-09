@@ -144,11 +144,40 @@ pub struct RoundDriver {
     me: PathName,
     mesh: Option<Round>,
     fabric: Option<Round>,
+    /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
+    /// view's primary changing from this is what sends it again (R-S2).
+    addressed: BTreeMap<String, (crate::model::NodeId, Option<IncarnationId>)>,
 }
 
 impl RoundDriver {
     pub fn new(me: PathName) -> Self {
-        Self { me, mesh: None, fabric: None }
+        Self { me, mesh: None, fabric: None, addressed: BTreeMap::new() }
+    }
+
+    /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
+    /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
+    /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
+    /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
+    pub fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
+        if !is_fabric_primary {
+            self.addressed.clear();
+            return;
+        }
+        let mut targets = Vec::new();
+        let mut present = Vec::new();
+        for m in &view.meshes {
+            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.name != self.me) else { continue };
+            present.push(m.name.clone());
+            let now = (p.node_id.clone(), p.incarnation_id.clone());
+            if self.addressed.get(&m.name) != Some(&now) {
+                self.addressed.insert(m.name.clone(), now);
+                targets.push((m.name.clone(), Some(p.clone())));
+            }
+        }
+        self.addressed.retain(|mesh, _| present.contains(mesh));
+        if !targets.is_empty() {
+            send_down(&self.me, "fabric", &view.fabric.name, targets, client);
+        }
     }
 
     /// No status is adopted and waiting: no round is open.
@@ -209,6 +238,11 @@ impl RoundDriver {
                 .collect();
             if first {
                 let targets: Vec<(String, Option<crate::model::Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                for (mesh, p) in &targets {
+                    if let Some(p) = p {
+                        self.addressed.insert(mesh.clone(), (p.node_id.clone(), p.incarnation_id.clone()));
+                    }
+                }
                 send_down(&self.me, "fabric", &i.view.fabric.name, targets, i.client);
             }
             let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
