@@ -28,7 +28,7 @@ const CONSUMER: &str = "demo";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
 /// resolves to. Anything else named `rafka-*` is a business crate.
-const APPROVED_RDM: [&str; 9] = [
+const APPROVED_RDM: [&str; 10] = [
     "rafka-node-base",
     "rafka-node-admin-core",
     "rafka-mesh-transport",
@@ -38,6 +38,7 @@ const APPROVED_RDM: [&str; 9] = [
     "rafka-node-rpc-contract",
     "rafka-node-admin-client",
     "rafka-mesh-entity",
+    "rafka-chaos",
 ];
 
 fn root() -> PathBuf {

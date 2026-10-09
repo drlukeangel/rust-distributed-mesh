@@ -2,19 +2,14 @@
 name = "rafka-chaos"
 version = "0.1.0"
 edition = "2021"
+description = "Fault backends with typed outcomes: exact-runtime process signals, UDP cuts, Docker primitives"
+publish = false
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
-anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-reqwest = { version = "0.13.3", features = ["json"] }
-rand = { workspace = true }
-rand_chacha = "0.3.1"
-async-trait = "0.1.83"
-thiserror = "2.0"
-dhat = "0.3.3"
-iroh.workspace = true
-iroh-gossip = { workspace = true }
-tracing-subscriber.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+rafka-mesh-entity = { path = "../rafka-mesh-entity" }

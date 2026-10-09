@@ -71,7 +71,7 @@ import json, sys
 meta, cand, url = sys.argv[1:4]
 m = json.load(open(meta))
 APPROVED = {"rafka-node-base", "rafka-node-admin-core", "rafka-mesh-transport", "rafka-mesh-telemetry", "rafka-node-rpc-testkit",
-            "rafka-node-rpc", "rafka-node-rpc-contract", "rafka-node-admin-client", "rafka-mesh-entity"}
+            "rafka-node-rpc", "rafka-node-rpc-contract", "rafka-node-admin-client", "rafka-mesh-entity", "rafka-chaos"}
 bad = []
 rdm = []
 for p in m["packages"]:

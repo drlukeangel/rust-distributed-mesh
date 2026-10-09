@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-const APPROVED: [&str; 9] = [
+const APPROVED: [&str; 10] = [
     "rafka-node-base",
     "rafka-node-admin-core",
     "rafka-mesh-transport",
@@ -18,6 +18,7 @@ const APPROVED: [&str; 9] = [
     "rafka-node-rpc-contract",
     "rafka-node-admin-client",
     "rafka-mesh-entity",
+    "rafka-chaos",
 ];
 
 fn root() -> PathBuf {

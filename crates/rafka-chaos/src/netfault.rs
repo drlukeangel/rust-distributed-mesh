@@ -62,6 +62,7 @@ impl Drop for Partition {
     }
 }
 
+/// Udp ports.
 pub fn udp_ports(nodes: &[Value], names: &[String]) -> Vec<u16> {
     let mut out = Vec::new();
     for n in nodes.iter().filter(|n| names.contains(&s(&n["name"]))) {

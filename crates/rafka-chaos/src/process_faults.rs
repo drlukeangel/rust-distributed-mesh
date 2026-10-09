@@ -26,9 +26,13 @@ use std::time::{Duration, Instant};
 /// One birth's exact process runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExactRuntime {
+    /// The deployment the runtime belongs to.
     pub deployment_id: String,
+    /// The host's process control domain (boot and pid namespace).
     pub control_domain: String,
+    /// The process id.
     pub pid: u32,
+    /// The kernel's start token of the process.
     pub start: u64,
 }
 
@@ -45,6 +49,7 @@ pub enum Fault {
 }
 
 impl Fault {
+    /// Name.
     pub fn name(self) -> &'static str {
         match self {
             Fault::Kill => "kill",
@@ -67,25 +72,60 @@ impl Fault {
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
     /// The data dir holds no runtime record, or one that does not parse.
-    NoPublishedFact { reason: String },
+    NoPublishedFact {
+        /// The reason.
+        reason: String,
+    },
     /// The published fact is not a process runtime.
-    NotAProcess { provider: String },
+    NotAProcess {
+        /// The provider.
+        provider: String,
+    },
     /// The fact's control domain is not this host's: its pid means nothing here.
-    ForeignDomain { published: String, local: String },
+    ForeignDomain {
+        /// The published.
+        published: String,
+        /// The local.
+        local: String,
+    },
     /// The process at the pid started at another time: the pid is another process now.
-    NotThisRuntime { pid: u32, published_start: u64, observed_start: u64 },
+    NotThisRuntime {
+        /// The pid.
+        pid: u32,
+        /// The published start.
+        published_start: u64,
+        /// The observed start.
+        observed_start: u64,
+    },
     /// No process runs at the pid.
-    AlreadyExited { pid: u32 },
+    AlreadyExited {
+        /// The pid.
+        pid: u32,
+    },
     /// The signal was refused by the OS.
-    SignalFailed { pid: u32, errno: i32 },
+    SignalFailed {
+        /// The pid.
+        pid: u32,
+        /// The errno.
+        errno: i32,
+    },
     /// The signal was sent and the OS did not show its consequence within the bound.
-    NotAcknowledged { fault: Fault, pid: u32, state_after: Option<char> },
+    NotAcknowledged {
+        /// The fault.
+        fault: Fault,
+        /// The pid.
+        pid: u32,
+        /// The state after.
+        state_after: Option<char>,
+    },
 }
 
 /// The OS observation that acknowledged an applied fault.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Applied {
+    /// The fault applied.
     pub fault: Fault,
+    /// The exact runtime the fault was applied to.
     pub runtime: ExactRuntime,
     /// The process state letter after the signal (`T` stopped, `S`/`R` running); `None` once gone.
     pub state_after: Option<char>,
@@ -93,6 +133,7 @@ pub struct Applied {
     pub exited: bool,
 }
 
+/// The Outcome.
 pub type Outcome = Result<Applied, Refusal>;
 
 impl ExactRuntime {

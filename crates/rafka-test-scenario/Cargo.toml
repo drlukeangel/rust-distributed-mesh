@@ -15,6 +15,7 @@ yaml_serde = "0.10"
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 libc = "0.2"
+rafka-chaos = { path = "../rafka-chaos" }
 
 [dev-dependencies]
 # i143_acceptance_2782 captures the detector's own spans in process.

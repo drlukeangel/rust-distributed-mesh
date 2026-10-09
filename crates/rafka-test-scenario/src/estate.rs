@@ -111,7 +111,7 @@ fn mint_fabric_id() -> String {
 }
 
 /// The empty runtime image every node container runs from (the provider's `RUNTIME_IMAGE`).
-pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
+pub const RUNTIME_IMAGE: &str = rafka_chaos::container_faults::RUNTIME_IMAGE;
 
 /// Start the Day-0 node-admin of a new container fabric in a container on that fabric's own
 /// network: the Fabric id is minted here so the network exists before the admin does, the admin
@@ -1584,5 +1584,17 @@ mod iroh_observation_shape_tests {
         assert!(iroh_observation_shape(&sp(Some("unavailable"), Some(""))).is_err());
         assert!(iroh_observation_shape(&sp(Some("127.0.0.1"), Some(""))).is_err());
         assert!(iroh_observation_shape(&sp(Some("ip:127.0.0.1:1"), Some("ip:127.0.0.1:2"))).is_err());
+    }
+}
+
+impl rafka_chaos::container_faults::ContainerEstate for Estate {
+    fn fabric_id(&self) -> &str {
+        &self.fabric_id
+    }
+    fn container_of(&self, node: &str) -> Option<String> {
+        Estate::container_of(self, node)
+    }
+    fn live_containers(&self) -> Vec<(String, String)> {
+        Estate::live_containers(self)
     }
 }

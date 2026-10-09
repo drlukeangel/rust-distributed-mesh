@@ -12,9 +12,8 @@ Also installs the W3C `TraceContextPropagator` globally so HTTP-injected `tracep
 
 RDM-owned instrumentation MUST use `rdm.<component>.<entity>.<action>.<reason>`.
 Rafka-owned instrumentation uses `rafka.<component>.<entity>.<action>.<reason>`;
-third-party instrumentation retains its native namespace. The retained customer chaos
-harness uses `rafka.chaos.*` only inside `crates/rafka-chaos`. RDM's administration UI
-and CLI implementation use `rdm.ui.*` and `rdm.cli.*`; their existing suffixes are preserved.
+third-party instrumentation retains its native namespace. The chaos kit (`crates/rafka-chaos`) and RDM's
+administration UI (`demo/admin-ui`) emit `rdm.testkit.*` and `rdm.ui.*`.
 Historical sprint records retain the names emitted at the time of the record.
 
 The span prefix identifies implementation ownership. OTel resource `service.name` identifies
@@ -43,7 +42,7 @@ workspace and the explicitly retained chaos exception. `cargo run -p rafka-mesh-
 `init_telemetry_for_cli()`:
 - SimpleSpanProcessor — synchronous export on span close
 - Same exporter + propagator setup
-- Used by `rfa` and any future short-lived CLI
+- Used by any short-lived command-line process
 
 `TelemetryGuard::Drop` calls `force_flush()` then `shutdown()` to drain pending spans before process exit.
 

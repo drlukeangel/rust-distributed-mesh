@@ -41,61 +41,20 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 
 | Env var | Default | Effect |
 |---|---|---|
-| `RDM_TOPOLOGY_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
+| `RDM_ADMIN_UI_BIND_ADDR` | `127.0.0.1:19090` | HTTP listen addr |
 | `JAEGER_QUERY_URL` | `http://localhost:16686` | Where to ask "what's in the traces" |
 | `CARGO_TARGET_DIR` | derived from own exe path | Where spawned `rafka-*.exe` binaries live |
 
-## CLI: `rfa`
+## Demo admin UI tabs (`demo/admin-ui`)
 
-```bash
-# Node management
-rfa mesh node list                          # services known to Jaeger
-rfa mesh node add --type broker             # spawn via topology-ui
-rfa mesh node remove broker-XYZ             # DELETE via topology-ui
-rfa mesh node wait-converged --target 4 --timeout 30s
-
-# Chaos one-shots (every shipped primitive)
-rfa mesh chaos kill          [--target T --deadline-ms M]
-rfa mesh chaos restart       [--target T --deadline-ms M]
-rfa mesh chaos burst-kill    [--count N --deadline-ms M]
-rfa mesh chaos disk-full     [--target T --max-mb N --deadline-ms M]
-rfa mesh chaos wedge         [--target-type X --duration-ms M]
-rfa mesh chaos clock-skew    [--target T --skew-ms N --deadline-ms M]
-rfa mesh chaos slow-link     [--target T --latency-ms N --deadline-ms M]
-rfa mesh chaos lossy-link    [--target T --loss-pct N --deadline-ms M]
-rfa mesh chaos nat-shift     [--target T --deadline-ms M]
-rfa mesh chaos partition-pair --a NAME --b NAME [--duration-ms M]    # NEEDS ADMIN
-
-# Soak runner (the long-running smoke test)
-rfa mesh chaos soak --duration 1h --interval 20s --seed 42
-# Writes report to E:/tmp/rafka-chaos-soak-<seed>.json
-# Exit code 0 only on 100% pass
-```
-
-### Important: launching long-running soaks in the background
-
-The Claude Code Bash tool kills `&` children when its subshell exits.
-Use PowerShell `Start-Process` for true detach, or host the soak inside
-a `Monitor` task:
-
-```powershell
-$proc = Start-Process -FilePath "E:\cargo-target-v2\debug\rfa.exe" `
-  -ArgumentList "mesh","chaos","soak","--duration","1h","--interval","20s","--seed","42" `
-  -RedirectStandardOutput "E:\tmp\soak.out" `
-  -RedirectStandardError "E:\tmp\soak.err" `
-  -PassThru -NoNewWindow
-"soak pid: $($proc.Id)"
-```
-
-## Topology UI tabs
-
-| Tab | What it shows | Auto-poll |
+| Tab | What it shows | Source |
 |---|---|---|
-| Boot Waterfall | Last `rdm.mesh.node.ready` trace per service | manual |
-| Topology | SVG mesh graph; nodes grouped by mesh_id; cross-mesh edges dashed gold; per-node `N fr/m` activity badge | 5s |
-| Alerts | Chaos events with non-Passed result (last 10m) | 10s |
-| Heartbeat | Per-service peer_count + age_ms with color-coded staleness | 5s |
-| Chaos | Per-primitive count + 20 most recent .executed events (last 10m) | 10s |
+| Topology | Nodes by mesh with their seat; connection edges: Direct solid, Proxy dashed with its carrier, failed or disconnected red | node-admin `GET /api/nodes`, `GET /api/connections` |
+| Nodes | Per-node state; restart and remove (each a Build) | node-admin |
+| Builds | The accepted Build and the Builds the UI submitted, with attempts and steps | node-admin `GET /api/builds` |
+| Boot Waterfall | A node's boot trace | Jaeger |
+| Chaos | Per-node stop, continue and kill of its exact runtime; network cut of a node or a peer mesh; each fault's typed outcome. The fabric-primary is never a target. | `rafka-chaos` |
+| Timeline | The running log, newest first, from the nodes' own span records in `RDM_EVIDENCE_DIR`; high-volume events behind a toggle | evidence folder |
 
 ## Common operations
 
@@ -127,19 +86,12 @@ for n in $(curl -s http://localhost:19090/api/nodes/spawned | jq -r '.spawned[]'
 done
 ```
 
-### Verify a chaos primitive ran end-to-end via Jaeger
-
-```bash
-curl -s "http://localhost:16686/api/traces?service=rfa&operation=rafka.chaos.primitive.detected&limit=10&lookback=5m" \
-  | jq '.data[].spans[].tags[] | select(.key=="name" or .key=="result")'
-```
-
 ## Troubleshooting
 
 ### "Access is denied (os error 5)" during `cargo build`
 One or more `rafka-*.exe` binaries are still running and holding the file lock.
 ```powershell
-Get-Process rafka-*,rfa -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process rafka-* -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 Then re-run the build.
 

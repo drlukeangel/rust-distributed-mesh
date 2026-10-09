@@ -7,17 +7,16 @@
 //! in-process.
 
 pub mod canary;
-pub mod container_faults;
 pub mod elections;
 pub mod estate;
 pub mod faults;
 pub mod model;
 pub mod ledger;
-pub mod netfault;
-pub mod process_faults;
 pub mod replay;
 pub mod runner;
 pub mod scenario;
 pub mod sim;
 pub mod soak;
 pub mod wedge;
+
+pub use rafka_chaos::{container_faults, netfault, process_faults};

@@ -3351,20 +3351,11 @@ dependencies = [
 name = "rafka-chaos"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "dhat",
- "iroh",
- "iroh-gossip",
- "rand 0.8.6",
- "rand_chacha 0.3.1",
- "reqwest",
+ "libc",
+ "rafka-mesh-entity",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3610,6 +3601,7 @@ dependencies = [
  "libc",
  "opentelemetry",
  "opentelemetry_sdk",
+ "rafka-chaos",
  "rafka-mesh-entity",
  "rafka-mesh-transport",
  "rafka-node-admin-client",

@@ -21,7 +21,19 @@
 //! The fabric-primary node-admin's container is never named by a helper here; a scenario that
 //! silences a mesh chooses the side without it ([`silence`] refuses a node set that holds one).
 
-use crate::estate::Estate;
+
+/// The empty runtime image every node container runs from (the provider's `RUNTIME_IMAGE`).
+pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
+
+/// The container estate a fault is aimed into: its Fabric and the running container of each node.
+pub trait ContainerEstate {
+    /// The Fabric's id: its Docker network is `rafka-<fabric_id>`.
+    fn fabric_id(&self) -> &str;
+    /// The running container of `node`.
+    fn container_of(&self, node: &str) -> Option<String>;
+    /// Every running container of the Fabric as (node `path.name`, Docker id).
+    fn live_containers(&self) -> Vec<(String, String)>;
+}
 use serde::Serialize;
 use std::process::Command;
 
@@ -36,22 +48,26 @@ pub fn docker(args: &[&str]) -> Result<String, String> {
 }
 
 /// The Docker network of a Fabric.
-pub fn network_of(estate: &Estate) -> String {
-    format!("rafka-{}", estate.fabric_id)
+pub fn network_of(estate: &impl ContainerEstate) -> String {
+    format!("rafka-{}", estate.fabric_id())
 }
 
 /// A container disconnected from the fabric network, to be reconnected at the same address.
 #[derive(Debug, Clone, Serialize)]
 pub struct Unplugged {
+    /// The node's `path.name`.
     pub node: String,
+    /// The Docker id of the container.
     pub id: String,
+    /// The container's address on the Fabric network.
     pub ip: String,
+    /// The Fabric's Docker network.
     pub network: String,
 }
 
 /// Disconnect the running container of `node` from its Fabric's network.
-pub fn unplug(estate: &Estate, node: &str) -> Result<Unplugged, String> {
-    let id = estate.container_of(node).ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id))?;
+pub fn unplug(estate: &impl ContainerEstate, node: &str) -> Result<Unplugged, String> {
+    let id = estate.container_of(node).ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id()))?;
     let network = network_of(estate);
     let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}"), &id])?;
     if ip.is_empty() {
@@ -68,12 +84,12 @@ pub fn replug(u: &Unplugged) -> Result<(), String> {
 
 /// The Docker network's gateway: the host's address on it, the source of every call the host makes
 /// into the estate.
-pub fn gateway_of(estate: &Estate) -> Result<String, String> {
+pub fn gateway_of(estate: &impl ContainerEstate) -> Result<String, String> {
     docker(&["network", "inspect", "--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}", &network_of(estate)])
 }
 
 /// A container's address on its Fabric's network.
-pub fn address_of(estate: &Estate, id: &str) -> Result<String, String> {
+pub fn address_of(estate: &impl ContainerEstate, id: &str) -> Result<String, String> {
     let network = network_of(estate);
     let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}"), id])?;
     if ip.is_empty() {
@@ -100,7 +116,7 @@ fn in_netns(id: &str, tool: &str, args: &[&str], stdin: Option<&str>) -> Result<
             cmd.args(["-v", &format!("{d}:{d}:ro")]);
         }
     }
-    cmd.arg(crate::estate::RUNTIME_IMAGE).arg(format!("/usr/sbin/{tool}")).args(args);
+    cmd.arg(RUNTIME_IMAGE).arg(format!("/usr/sbin/{tool}")).args(args);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
@@ -117,8 +133,11 @@ fn in_netns(id: &str, tool: &str, args: &[&str], stdin: Option<&str>) -> Result<
 /// One container of an estate with the address it holds.
 #[derive(Debug, Clone, Serialize)]
 pub struct Member {
+    /// The node's `path.name`.
     pub node: String,
+    /// The Docker id of the container.
     pub id: String,
+    /// The container's address on the Fabric network.
     pub ip: String,
 }
 
@@ -129,8 +148,11 @@ pub struct Member {
 /// reads the silenced side's own view. A real network cut, never a container stop.
 #[derive(Debug, Clone, Serialize)]
 pub struct Silenced {
+    /// The Fabric's Docker network.
     pub network: String,
+    /// The network's gateway address on the host.
     pub gateway: String,
+    /// The containers on the silenced side.
     pub members: Vec<Member>,
     /// The containers the members no longer hear.
     pub unheard: Vec<Member>,
@@ -139,14 +161,14 @@ pub struct Silenced {
 /// Silence `nodes` against the rest of the estate. `fabric_primary` is the node-admin holding the
 /// fabric-primary seat: a set that holds it is refused before anything is touched. A member that
 /// cannot be silenced leaves the ones already silenced restored, and the error says which.
-pub fn silence(estate: &Estate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+pub fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
     if nodes.iter().any(|n| n == fabric_primary) {
         return Err(format!("refused: the silenced set {nodes:?} holds the fabric-primary node-admin {fabric_primary}"));
     }
     let gateway = gateway_of(estate)?;
     let mut members = Vec::new();
     for n in nodes {
-        let id = estate.container_of(n).ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id))?;
+        let id = estate.container_of(n).ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
         members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
     }
     let mut unheard = Vec::new();
@@ -217,14 +239,21 @@ pub fn unpause(id: &str) -> Result<(), String> {
 /// One container as the Docker daemon holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Inspected {
+    /// The Docker id of the container.
     pub id: String,
     /// `running`, `paused`, `exited`...
     pub status: String,
+    /// Whether the container is running.
     pub running: bool,
+    /// The process id.
     pub pid: u64,
+    /// When the container started.
     pub started_at: String,
+    /// How many times the daemon restarted the container.
     pub restart_count: u64,
+    /// The container's exit code.
     pub exit_code: i64,
+    /// Whether the daemon killed it for memory.
     pub oom_killed: bool,
     /// The names of the Docker networks the container is attached to now.
     pub networks: Vec<String>,
@@ -272,6 +301,7 @@ pub enum Fault {
 }
 
 impl Fault {
+    /// Name.
     pub fn name(self) -> &'static str {
         match self {
             Fault::Kill => "kill",
@@ -286,32 +316,85 @@ impl Fault {
 #[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum Refusal {
     /// The daemon holds no container with this id.
-    NoSuchContainer { id: String },
+    NoSuchContainer {
+        /// The id.
+        id: String,
+    },
     /// The daemon could not be read.
-    Unreadable { id: String, reason: String },
+    Unreadable {
+        /// The id.
+        id: String,
+        /// The reason.
+        reason: String,
+    },
     /// The container belongs to another Fabric.
-    WrongFabric { id: String, published: String, observed: String },
+    WrongFabric {
+        /// The id.
+        id: String,
+        /// The published.
+        published: String,
+        /// The observed.
+        observed: String,
+    },
     /// The container runs another node.
-    WrongNode { id: String, published: String, observed: String },
+    WrongNode {
+        /// The id.
+        id: String,
+        /// The published.
+        published: String,
+        /// The observed.
+        observed: String,
+    },
     /// The container at this id started at another time: it is another run of the container now.
-    NotThisContainer { id: String, published_started_at: String, observed_started_at: String },
+    NotThisContainer {
+        /// The id.
+        id: String,
+        /// The published started at.
+        published_started_at: String,
+        /// The observed started at.
+        observed_started_at: String,
+    },
     /// The container is not running.
-    AlreadyExited { id: String, status: String, exit_code: i64 },
+    AlreadyExited {
+        /// The id.
+        id: String,
+        /// The status.
+        status: String,
+        /// The exit code.
+        exit_code: i64,
+    },
     /// The daemon refused the command.
-    CommandFailed { id: String, fault: Fault, reason: String },
+    CommandFailed {
+        /// The id.
+        id: String,
+        /// The fault.
+        fault: Fault,
+        /// The reason.
+        reason: String,
+    },
     /// The command was accepted and the daemon did not show its consequence within the bound.
-    NotAcknowledged { id: String, fault: Fault, status: String },
+    NotAcknowledged {
+        /// The id.
+        id: String,
+        /// The fault.
+        fault: Fault,
+        /// The status.
+        status: String,
+    },
 }
 
 /// The daemon's observation that acknowledged an applied fault.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Applied {
+    /// The fault applied.
     pub fault: Fault,
+    /// The exact container the fault was applied to.
     pub container: ExactContainer,
     /// The container's status after the command (`paused`, `running`, `exited`).
     pub status_after: String,
     /// The container is no longer running: the terminal observation of a kill.
     pub exited: bool,
+    /// The container's exit code.
     pub exit_code: i64,
 }
 
@@ -319,17 +402,22 @@ pub struct Applied {
 /// it started. A fault acts on it only while the daemon still holds exactly that container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExactContainer {
+    /// The Docker id of the container.
     pub id: String,
+    /// The Fabric label the container carried.
     pub fabric_id: String,
+    /// The node's `path.name`.
     pub node: String,
+    /// When the container started.
     pub started_at: String,
+    /// The process id.
     pub pid: u64,
 }
 
 impl ExactContainer {
     /// The container the daemon holds for `node` of the estate's Fabric right now.
-    pub fn of(estate: &Estate, node: &str) -> Result<Self, Refusal> {
-        let id = estate.container_of(node).ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id) })?;
+    pub fn of(estate: &impl ContainerEstate, node: &str) -> Result<Self, Refusal> {
+        let id = estate.container_of(node).ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id()) })?;
         let i = inspect(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         let (fabric_id, node) = labels_of(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         Ok(Self { id, fabric_id, node, started_at: i.started_at, pid: i.pid })

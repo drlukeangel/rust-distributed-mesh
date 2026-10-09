@@ -46,6 +46,7 @@ pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-
 
 /// The public control/probe interfaces those crates may depend on.
 pub const PUBLIC_INTERFACES: &[&str] = &[
+    "rafka-chaos",
     "rafka-node-admin-client",
     "rafka-node-rpc-contract",
     "rafka-node-rpc-testkit",
