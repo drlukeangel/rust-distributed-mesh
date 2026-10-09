@@ -12,6 +12,7 @@ mod connections_integration;
 mod context;
 mod endpoint_bind_span_stack;
 mod exited_birth;
+mod flood;
 mod forward;
 mod forward_spans;
 mod i143_acceptance_2780;
