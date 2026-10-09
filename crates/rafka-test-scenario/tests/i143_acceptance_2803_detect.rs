@@ -675,11 +675,19 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
         async move { held.then_some(()) }
     })
     .await;
-    wait_for("a round of the mesh completes after the fault and its adopted status is republished", Duration::from_secs(120), || {
+    // The report is its own declaration, owed once the round completed and sent on the declarer's
+    // cadence: it follows the round, and the republish does not wait for it. The estate is stopped
+    // only once the fabric primary of the moment has it, or the stop outruns the declaration.
+    wait_for("a round of the mesh completes after the fault, its adopted status is republished and the mesh primary's round-complete report reaches the fabric primary", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let done = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().any(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms);
+        let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).min();
         let sent = !mesh_sends_after(&spans, &lost, fault_ms).is_empty();
-        async move { (done && sent).then_some(()) }
+        let reported = complete.is_some_and(|c| {
+            named(&spans, "rdm.node_admin.status.update.via-declaration")
+                .into_iter()
+                .any(|sp| attr(&sp, "op") == "declare-mesh-state" && attr(&sp, "sender").starts_with(&format!("{lost}.admin.")) && matches!(attr(&sp, "outcome").as_str(), "applied" | "already-applied") && at_ns(&sp) / 1_000_000 >= c)
+        });
+        async move { (sent && reported).then_some(()) }
     })
     .await;
     let fp = f.fabric_primary.clone();
