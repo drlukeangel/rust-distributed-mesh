@@ -1205,11 +1205,82 @@ impl AdminRunner {
         self.retire_with(build_id, attempt, node, RetireKind::Restart, false).await
     }
 
+    /// The target of a retire the view cannot name: the accepted Build's `Replace` action names the
+    /// exact birth, and the one data dir recorded for the path under this provider's data root
+    /// names its node and its exact runtime. Refused by name when no record names that birth; a
+    /// stored contact of the node, when this admin holds one, must agree on the incarnation.
+    async fn rebuild_absent_birth(&self, build_id: &crate::build::BuildId, path: &PathName) -> Result<(Node, DeploymentHandle), String> {
+        use tracing::Instrument;
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-rebuilt-birth", build_id = %build_id, node = %path, outcome = tracing::field::Empty);
+        self.rebuild_absent_birth_in(build_id, path).instrument(span).await
+    }
+
+    async fn rebuild_absent_birth_in(&self, build_id: &crate::build::BuildId, path: &PathName) -> Result<(Node, DeploymentHandle), String> {
+        let span = tracing::Span::current();
+        let refuse = |why: String| {
+            span.record("outcome", "refused");
+            format!("{path} is not in this admin's view and no durable record names the birth to retire: {why}")
+        };
+        let build = self.builds.read_build(build_id).await.map_err(|e| refuse(format!("the Build {build_id} could not be read: {e}")))?;
+        let from = match &build.action {
+            Some(crate::accepted::AttemptAction::Replace { path: p, from_incarnation }) if p == path => from_incarnation.clone(),
+            other => return Err(refuse(format!("the Build's action is {other:?}, not a replace of this path"))),
+        };
+        let prefix = format!("{path}-");
+        let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&self.template.data_root)
+            .map_err(|e| refuse(format!("{}: {e}", self.template.data_root.display())))?
+            .flatten()
+            .filter(|d| d.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|d| d.path())
+            .collect();
+        let dir = match dirs.as_slice() {
+            [one] => one.clone(),
+            [] => return Err(refuse(format!("no data dir {prefix}* under {}", self.template.data_root.display()))),
+            many => return Err(refuse(format!("{} data dirs match {prefix}*: {many:?}", many.len()))),
+        };
+        let node_id = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_prefix(&prefix))
+            .and_then(|id| NodeId::parse(id).ok())
+            .ok_or_else(|| refuse(format!("{} does not end in a node id", dir.display())))?;
+        let fact = match rafka_mesh_entity::RuntimeFact::read_record(&dir) {
+            Some(Ok(f)) => f,
+            Some(Err(e)) => return Err(refuse(format!("{}: {e}", dir.display()))),
+            None => return Err(refuse(format!("{} holds no runtime record", dir.display()))),
+        };
+        if let Some(store) = self.records.contacts.get() {
+            if let Some(c) = store.contacts().await.ok().and_then(|rows| rows.into_iter().find(|c| c.node_id == node_id)) {
+                if c.incarnation_id != from {
+                    return Err(refuse(format!("this admin's stored contact holds incarnation {}, the Build names {}", c.incarnation_id.0, from.0)));
+                }
+            }
+        }
+        let handle = crate::deployment::provider::adopt(&*self.provider, &fact).map_err(|r| refuse(format!("the runtime record is not adoptable: {r}")))?;
+        let mut record = Node::allocated(path.clone());
+        record.node_id = node_id;
+        record.incarnation_id = Some(from.clone());
+        record.deployment_id = Some(handle.deployment_id.clone());
+        record.data_dir = Some(dir.display().to_string());
+        span.record("outcome", "rebuilt");
+        tracing::info!(node = %path, incarnation_id = %from.0, deployment_id = %fact.deployment_id, "the birth to retire is rebuilt from the Build's replace action and its exact runtime record");
+        Ok((record, handle))
+    }
+
     async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind, observe_departure: bool) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
-            None => self.handles.lock().unwrap().get(node).cloned().ok_or_else(|| format!("{node} is not in this admin's view"))?,
+            None => {
+                let held = self.handles.lock().unwrap().get(node).cloned();
+                match held {
+                    Some(h) => h,
+                    // Silent past every window the view keeps: the Build names the birth, the
+                    // durable runtime record names its exact runtime (node-admin-lifecycle.md 4.2).
+                    None if kind == RetireKind::Removal => self.rebuild_absent_birth(build_id, node).await?,
+                    None => return Err(format!("{node} is not in this admin's view")),
+                }
+            }
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure };

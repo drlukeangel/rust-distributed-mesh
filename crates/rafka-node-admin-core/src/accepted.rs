@@ -316,6 +316,13 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         let (AttemptAction::Restart { path, from_incarnation } | AttemptAction::Replace { path, from_incarnation }) = a;
         observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| (path, from_incarnation))
     });
+    // A replacement of a birth the view does not hold at all (silent past every window the view
+    // keeps) is still the standard decommission: the exact runtime is retired from the durable
+    // records, then the node is created. A path the view holds under any birth is decided above.
+    let absent: Option<&PathName> = match action {
+        Some(AttemptAction::Replace { path, .. }) if decommission_unheard && observed.node(path).is_none() && topology.contains(path) => Some(path),
+        _ => None,
+    };
     for (name, m) in &topology.meshes {
         if !mesh_exists(name) {
             ops.push(BuildOperation::CreateMesh { mesh: name.clone() });
@@ -324,7 +331,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::fence_predecessor`).
-            if acted.is_some_and(|(a, _)| a == p) {
+            if acted.is_some_and(|(a, _)| a == p) || absent == Some(p) {
                 continue;
             }
             // An attempt that carries an action repairs exactly its birth. Another unheard birth is
@@ -336,6 +343,10 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
                 ops.push(BuildOperation::CreateNode { node: p.clone(), replaces: None });
             }
         }
+    }
+    if let Some(path) = absent {
+        ops.push(BuildOperation::RetireNode { node: path.clone() });
+        ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
     }
     if let (Some(a), Some((path, _))) = (action, acted) {
         let birth = observed.node(path).expect("acted names a held birth");
