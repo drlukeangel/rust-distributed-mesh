@@ -104,7 +104,7 @@ impl Declarer {
                     Key::OwnState(..) | Key::Mesh(..) => view.fabric_primary(),
                     Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
                 };
-                now.is_some_and(|n| &n.node_id != by || (n.incarnation_id.is_some() && &n.incarnation_id != by_birth))
+                now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
             })
             .map(|(k, _)| k.clone())
             .collect();
