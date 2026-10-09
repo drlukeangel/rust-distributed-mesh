@@ -609,6 +609,8 @@ pub async fn reconcile_drift(
         }
     }
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
+    // The ladder's release of a mesh's first recovering node-admin ends with the silence.
+    started.retain(|k| !(k.2.len() == 2 && k.2[0] == "recovery" && hold(&k.2[1]).is_none()));
     for n in candidates {
         // A peer mesh with no live node-admin is reborn on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
@@ -628,7 +630,8 @@ pub async fn reconcile_drift(
         // deleted from here, whatever the provider proves of its runtime. The one exception is the
         // ladder's own decision, for the mesh's first recovering node-admin; once that admin stands, the
         // mesh reconciles its ordinary nodes itself.
-        let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live());
+        let recovery = (current.build_id.clone(), 0u32, vec!["recovery".to_string(), n.mesh.clone()]);
+        let first_recovering_admin = n.kind == NodeKind::NodeAdmin && decided(&n.mesh) && !started.contains(&recovery);
         let unheard_ms = if n.mesh != me.mesh && !first_recovering_admin { hold(&n.mesh) } else { None };
         let held_row = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
         let row = durable.iter().find(|r| r.node_id == n.node_id && Some(&r.incarnation_id) == n.incarnation_id.as_ref());
@@ -730,6 +733,13 @@ pub async fn reconcile_drift(
     };
     if !started.insert((current.build_id.clone(), attempt, key)) {
         return None;
+    }
+    // A node-admin of a peer mesh opened on the ladder's decision is that mesh's first recovering
+    // node-admin: the decision releases no other from here until the mesh is heard again.
+    if let Some((path, _)) = first_exited {
+        if path.kind == NodeKind::NodeAdmin && path.mesh != me.mesh && decided(&path.mesh) {
+            started.insert((current.build_id.clone(), 0u32, vec!["recovery".to_string(), path.mesh.clone()]));
+        }
     }
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-proven-drift",

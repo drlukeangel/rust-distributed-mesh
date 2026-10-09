@@ -813,11 +813,10 @@ mod unheard_mesh_hold {
         (own, peer)
     }
 
-    async fn pass(e: &Estate, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync)) -> Option<(BuildId, u32)> {
+    async fn pass(e: &Estate, started: &mut HashSet<(BuildId, u32, Vec<String>)>, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync)) -> Option<(BuildId, u32)> {
         let me: PathName = e.fabric_primary().await.parse().expect("a fabric-primary");
         let t = e.view.read().await.clone();
-        let mut started = HashSet::new();
-        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], &mut started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|_, _| {}).await
+        rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|_, _| {}).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), rebirth_decided: false });
@@ -833,10 +832,11 @@ mod unheard_mesh_hold {
         e.unheard(&[path.as_str()]).await;
         let before = e.accepted.current(&*e.builds).await.unwrap();
         let mut held = Held::new();
+        let mut started = HashSet::new();
         let unheard = |_: &str| UNHEARD;
-        assert_eq!(pass(&e, &mut held, &unheard).await, None, "the mesh is unheard: its exited birth authorizes nothing");
+        assert_eq!(pass(&e, &mut started, &mut held, &unheard).await, None, "the mesh is unheard: its exited birth authorizes nothing");
         assert_eq!(held.len(), 1, "the evidence of the one exited birth is held: {held:?}");
-        assert_eq!(pass(&e, &mut held, &unheard).await, None);
+        assert_eq!(pass(&e, &mut started, &mut held, &unheard).await, None);
         assert_eq!(held.len(), 1, "the same birth is one hold, not one per pass");
         let after = e.accepted.current(&*e.builds).await.unwrap();
         assert_eq!(after.attempt, before.attempt, "no attempt was opened");
@@ -853,9 +853,10 @@ mod unheard_mesh_hold {
         e.unheard(&[path.as_str()]).await;
         let before = e.accepted.current(&*e.builds).await.unwrap();
         let mut held = Held::new();
-        assert_eq!(pass(&e, &mut held, &|_| UNHEARD).await, None);
+        let mut started = HashSet::new();
+        assert_eq!(pass(&e, &mut started, &mut held, &|_| UNHEARD).await, None);
         assert_eq!(held.len(), 1);
-        let opened = pass(&e, &mut held, &|_| HEARD).await;
+        let opened = pass(&e, &mut started, &mut held, &|_| HEARD).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the mesh is heard again: the exited birth is repaired as ever");
         assert!(held.is_empty(), "the hold left nothing behind: {held:?}");
         let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path: p, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
@@ -872,7 +873,8 @@ mod unheard_mesh_hold {
         e.unheard(&[path.as_str()]).await;
         let before = e.accepted.current(&*e.builds).await.unwrap();
         let mut held = Held::new();
-        let opened = pass(&e, &mut held, &|_| UNHEARD).await;
+        let mut started = HashSet::new();
+        let opened = pass(&e, &mut started, &mut held, &|_| UNHEARD).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the own mesh is heard by definition");
         assert!(held.is_empty());
     }
@@ -891,15 +893,23 @@ mod unheard_mesh_hold {
         e.unheard(&all).await;
         let before = e.accepted.current(&*e.builds).await.unwrap();
         let mut held = Held::new();
-        assert_eq!(pass(&e, &mut held, &|_| UNHEARD).await, None, "before the ladder's decision the mesh's node-admins wait for it");
+        let mut started = HashSet::new();
+        assert_eq!(pass(&e, &mut started, &mut held, &|_| UNHEARD).await, None, "before the ladder's decision the mesh's node-admins wait for it");
         let rpc_id = e.node_id(&rpc).await;
         assert_eq!(held.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>(), vec![rpc_id], "only the ordinary node's exit is held as evidence; the admins wait for the decision");
         let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
-        let opened = pass(&e, &mut held, &decided).await;
+        let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
         let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
+        // The attempt runs; the mesh is still unheard and its second node-admin's exit is proven too: held, not released.
+        e.converge().await;
+        e.unheard(&[admins[1].as_str(), rpc.as_str()]).await;
+        let second = pass(&e, &mut started, &mut held, &decided).await;
+        assert_eq!(second, None, "the decision released one node-admin; the second waits for the mesh to be heard");
+        let second_id = e.node_id(&admins[1]).await;
+        assert!(held.iter().any(|(n, _)| n.as_str() == second_id), "the second node-admin's exit is held as evidence: {held:?}");
     }
 }
