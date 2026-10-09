@@ -6729,24 +6729,10 @@ async fn mock_soak_replay_reproduces_qualified_invariants() {
         eprintln!("REPLAY {id} source={} seed={seed} secs={secs}", src.dir.display());
         let replay = soak_run_with(&replay_cell, src.story, seed, secs, Some(replay_dir.clone())).await;
 
-        // Schedule identities.
-        let (a, b) = (src.result["schedule"]["executed"].as_array().unwrap(), replay["schedule"]["executed"].as_array().unwrap());
-        let common = a.len().min(b.len());
-        let diverged = (0..common).find(|i| a[*i] != b[*i]);
-        assert!(common > 0 && diverged.is_none(), "{id}: the replay's executed actions diverge from the source's at step {diverged:?} of {common} compared: source {:?} replay {:?}", diverged.map(|i| &a[i]), diverged.map(|i| &b[i]));
-        assert_eq!(replay["seed"], src.result["seed"], "{id}: the replay ran another seed");
-        assert_eq!(replay["profile"], src.result["profile"], "{id}: the replay ran another profile");
-        // Continuous invariants.
-        let names = |v: &Value| -> BTreeSet<String> { v["invariants"].as_array().into_iter().flatten().map(|i| s(&i["invariant"])).collect() };
         let (src_inv, rep_inv) = (read_value(&src.dir.join("invariant-results.json")), read_value(&replay_dir.join("invariant-results.json")));
-        let (sn, rn) = (names(&src_inv), names(&rep_inv));
-        assert_eq!(sn, rn, "{id}: the replay checked other invariants than the source (only in source: {:?}; only in replay: {:?})", sn.difference(&rn).collect::<Vec<_>>(), rn.difference(&sn).collect::<Vec<_>>());
-        assert!(rep_inv["invariants"].as_array().unwrap().iter().all(|i| i["holds"] == json!(true)), "{id}: a replay invariant does not hold");
-        // Uncertainty classification.
-        let (sk, rk) = (uncertainty_kinds(&src.result), uncertainty_kinds(&replay));
-        let new_kinds: Vec<&String> = rk.difference(&sk).collect();
-        assert!(new_kinds.is_empty(), "{id}: the replay classified uncertainty the qualified source did not: {new_kinds:?} (source kinds {sk:?})");
-        assert!(replay["ledger"]["violations"].as_array().is_some_and(|v| v.is_empty()) && src.result["ledger"]["violations"].as_array().is_some_and(|v| v.is_empty()), "{id}: a ledger violation");
+        let cmp = compare_replay(id, &src.result, &src_inv, &replay, &rep_inv).unwrap_or_else(|why| panic!("{why}"));
+        let (a, b) = (src.result["schedule"]["executed"].as_array().unwrap(), replay["schedule"]["executed"].as_array().unwrap());
+        let (common, sn, sk, rk) = (cmp.compared, cmp.invariants, cmp.source_kinds, cmp.replay_kinds);
         entries.push(json!({
             "story": id,
             "source_dir": src.recorded_dir,
@@ -6772,4 +6758,104 @@ async fn mock_soak_replay_reproduces_qualified_invariants() {
         {"invariant": "each replay checked exactly the source's invariants and every one holds", "holds": true},
         {"invariant": "each replay classified no kind of uncertainty the source did not, and reconciled its ledger", "holds": true}]}));
     write_json(&out, "result.json", &json!({"cell": cell, "provider": provider, "tier": "canonical", "rdm_candidate_sha": candidate, "stories_replayed": entries.len(), "qualifies_export": qualifies, "manifest": "replay-manifest.json"}));
+}
+
+#[derive(Debug)]
+struct Comparison {
+    compared: usize,
+    invariants: BTreeSet<String>,
+    source_kinds: BTreeSet<String>,
+    replay_kinds: BTreeSet<String>,
+}
+
+/// The replay's verdict against its source: `Err` names the rule broken. Pure over the two runs'
+/// `result.json` and `invariant-results.json`.
+fn compare_replay(id: &str, src: &Value, src_inv: &Value, replay: &Value, rep_inv: &Value) -> Result<Comparison, String> {
+    let (a, b) = (src["schedule"]["executed"].as_array().ok_or("the source recorded no schedule")?, replay["schedule"]["executed"].as_array().ok_or("the replay recorded no schedule")?);
+    let common = a.len().min(b.len());
+    let diverged = (0..common).find(|i| a[*i] != b[*i]);
+    if common == 0 || diverged.is_some() {
+        return Err(format!("{id}: the replay's executed actions diverge from the source's at step {diverged:?} of {common} compared: source {:?} replay {:?}", diverged.map(|i| &a[i]), diverged.map(|i| &b[i])));
+    }
+    if replay["seed"] != src["seed"] {
+        return Err(format!("{id}: the replay ran another seed"));
+    }
+    if replay["profile"] != src["profile"] {
+        return Err(format!("{id}: the replay ran another profile"));
+    }
+    let names = |v: &Value| -> BTreeSet<String> { v["invariants"].as_array().into_iter().flatten().map(|i| s(&i["invariant"])).collect() };
+    let (sn, rn) = (names(src_inv), names(rep_inv));
+    if sn != rn {
+        return Err(format!("{id}: the replay checked other invariants than the source (only in source: {:?}; only in replay: {:?})", sn.difference(&rn).collect::<Vec<_>>(), rn.difference(&sn).collect::<Vec<_>>()));
+    }
+    if !rep_inv["invariants"].as_array().is_some_and(|a| a.iter().all(|i| i["holds"] == json!(true))) {
+        return Err(format!("{id}: a replay invariant does not hold"));
+    }
+    let (sk, rk) = (uncertainty_kinds(src), uncertainty_kinds(replay));
+    let new_kinds: Vec<&String> = rk.difference(&sk).collect();
+    if !new_kinds.is_empty() {
+        return Err(format!("{id}: the replay classified uncertainty the qualified source did not: {new_kinds:?} (source kinds {sk:?})"));
+    }
+    let clean = |v: &Value| v["ledger"]["violations"].as_array().is_some_and(|x| x.is_empty());
+    if !clean(src) || !clean(replay) {
+        return Err(format!("{id}: a ledger violation"));
+    }
+    Ok(Comparison { compared: common, invariants: sn, source_kinds: sk, replay_kinds: rk })
+}
+
+#[cfg(test)]
+mod replay_comparison {
+    use super::*;
+
+    fn run(actions: Value, kinds: &[&str]) -> Value {
+        json!({"seed": 7, "profile": "routing", "schedule": {"executed": actions}, "ledger": {"violations": []},
+               "indeterminate_operations": kinds.iter().map(|k| json!({"reason": k})).collect::<Vec<_>>()})
+    }
+    fn inv(names: &[&str], holds: bool) -> Value {
+        json!({"invariants": names.iter().map(|n| json!({"invariant": n, "holds": holds})).collect::<Vec<_>>()})
+    }
+    fn actions() -> Value {
+        json!([{"restart": {"node": "mesh1.broker.1"}}, {"kill": {"node": "mesh2.gateway.2"}}])
+    }
+
+    #[test]
+    fn replay_with_the_same_actions_invariants_and_uncertainty_is_reproduced() {
+        let src = run(actions(), &["timeout"]);
+        let longer = run(json!([{"restart": {"node": "mesh1.broker.1"}}, {"kill": {"node": "mesh2.gateway.2"}}, {"wedge": {"node": "x"}}]), &[]);
+        let c = compare_replay("S1", &src, &inv(&["a", "b"], true), &longer, &inv(&["a", "b"], true)).unwrap();
+        assert_eq!(c.compared, 2);
+    }
+
+    #[test]
+    fn replay_that_diverges_in_an_action_identity_is_refused() {
+        let other = run(json!([{"restart": {"node": "mesh1.broker.1"}}, {"kill": {"node": "mesh2.gateway.3"}}]), &[]);
+        let e = compare_replay("S1", &run(actions(), &[]), &inv(&["a"], true), &other, &inv(&["a"], true)).unwrap_err();
+        assert!(e.contains("diverge") && e.contains("Some(1)"), "{e}");
+    }
+
+    #[test]
+    fn replay_that_checks_other_invariants_is_refused() {
+        let e = compare_replay("S1", &run(actions(), &[]), &inv(&["a", "b"], true), &run(actions(), &[]), &inv(&["a"], true)).unwrap_err();
+        assert!(e.contains("other invariants") && e.contains("\"b\""), "{e}");
+    }
+
+    #[test]
+    fn replay_with_a_broken_invariant_is_refused() {
+        let e = compare_replay("S1", &run(actions(), &[]), &inv(&["a"], true), &run(actions(), &[]), &inv(&["a"], false)).unwrap_err();
+        assert!(e.contains("does not hold"), "{e}");
+    }
+
+    #[test]
+    fn replay_that_classifies_new_uncertainty_is_refused() {
+        let e = compare_replay("S1", &run(actions(), &["timeout"]), &inv(&["a"], true), &run(actions(), &["fenced"]), &inv(&["a"], true)).unwrap_err();
+        assert!(e.contains("uncertainty") && e.contains("fenced"), "{e}");
+    }
+
+    #[test]
+    fn replay_of_another_seed_is_refused() {
+        let mut other = run(actions(), &[]);
+        other["seed"] = json!(8);
+        let e = compare_replay("S1", &run(actions(), &[]), &inv(&["a"], true), &other, &inv(&["a"], true)).unwrap_err();
+        assert!(e.contains("another seed"), "{e}");
+    }
 }
