@@ -20,8 +20,9 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 
 [dev-dependencies]
-# i143_acceptance_2781 installs a custom PathSelector, which iroh gates behind this feature.
-iroh = { workspace = true, features = ["unstable-custom-transports"] }
+# i143_acceptance_2781 switches NAT traversal off on its endpoints (R-I3); `test-knobs` is a dev-dependency
+# feature only, and `dep-rules` refuses it anywhere else.
+iroh = { workspace = true, features = ["test-knobs"] }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 opentelemetry = { workspace = true }
