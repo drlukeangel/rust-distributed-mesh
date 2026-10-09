@@ -230,6 +230,9 @@ pub struct Records {
     /// This admin, as its mesh's primary, may declare its Mesh ready: it holds no adopted status
     /// waiting for its round (`crate::round`). Withdrawn when the role ends.
     declare_gate: std::sync::atomic::AtomicBool,
+    /// This admin does not hold the fabric-primary role and the last fabric status published is
+    /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
+    published_degraded: std::sync::atomic::AtomicBool,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -275,6 +278,15 @@ impl Records {
     /// Hold (or clear) the adopted `degraded`; whether the value changed.
     pub fn set_adopted_degraded(&self, on: bool) -> bool {
         self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
+    }
+
+    /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
+    pub fn published_degraded(&self) -> bool {
+        self.published_degraded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_published_degraded(&self, on: bool) {
+        self.published_degraded.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// May this admin declare its Mesh ready (see the field)?
@@ -3021,6 +3033,25 @@ mod tests {
     fn with_id(mut d: MeshDigest, id: &str) -> MeshDigest {
         d.node.node_id = NodeId::parse(id).unwrap();
         d
+    }
+
+    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
+    /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the holder
+    /// published, `degraded`, until the holder publishes ready. Must NOT happen: `ready-for-traffic`
+    /// because its own authority records (cleared with the seat) are empty.
+    #[test]
+    fn a_non_holder_projects_the_degraded_status_the_holder_published() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        for d in [with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000"), with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000")] {
+            book.record(d);
+        }
+        let records = Records::default();
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.fabric.status, ScopeStatus::ReadyForTraffic, "nothing published degraded: ready");
+        records.set_published_degraded(true);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the holder published degraded and has not published ready");
     }
 
     #[test]
