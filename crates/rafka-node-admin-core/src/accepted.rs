@@ -355,8 +355,10 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
             }
             // An attempt that carries an action repairs exactly its birth. Another unheard birth is
             // that birth's own proven drift, repaired by its own attempt, never swept up here.
-            if action.is_some() && observed.node(p).is_some_and(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)) {
-                continue;
+            if let Some(AttemptAction::Restart { path, .. } | AttemptAction::Replace { path, .. }) = action {
+                if path != p || observed.node(p).is_some_and(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)) {
+                    continue;
+                }
             }
             if !observed.node(p).is_some_and(|n| n.status.is_live()) {
                 ops.push(BuildOperation::CreateNode { node: p.clone(), replaces: None });
