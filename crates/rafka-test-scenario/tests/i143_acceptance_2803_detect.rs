@@ -9,7 +9,7 @@
 //! rounds (`RDM_BACKBONE_INTERVAL_MS`): probe 1 at 10 rounds unheard, the silent mark at 15,
 //! probe 2 at 20, the decision at 30 (20 s, 30 s, 40 s, 60 s at the 2 s default).
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{iroh_observation_shape, named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -495,7 +495,8 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
 /// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the
 /// frozen processes answer nothing and are not exited): both probes find no member that answers
 /// the Ping, the verdict at 30 rounds is `unreachable`, and the fabric primary holds. No rebirth,
-/// no degraded fabric. After the mesh is continued it is heard again.
+/// no degraded fabric. After the mesh is continued it is heard again. A frozen node-admin is
+/// tickled to round 2 and that failed tickle carries iroh's local view of it (A1).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     let cell = "peer_mesh_whose_members_all_stay_silent_is_held_not_reborn";
@@ -528,6 +529,12 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     }
     assert!(f.rebirths(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
+    // A1: a frozen node-admin's round-2 failed tickle carries iroh's local view of it.
+    let failed: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().filter(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).collect();
+    assert!(!failed.is_empty(), "a frozen node-admin of {} is tickled to round 2", f.lost);
+    for sp in &failed {
+        iroh_observation_shape(sp).unwrap_or_else(|why| panic!("{why}"));
+    }
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "verdict": verdict["attributes"]}));
 }
 

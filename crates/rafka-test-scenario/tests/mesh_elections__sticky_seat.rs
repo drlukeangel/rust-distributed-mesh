@@ -4,7 +4,7 @@
 //! Each cell runs a two-mesh fabric of two node-admins and three rpc nodes per mesh. A cell that
 //! kills the fabric primary is permitted by R-P1; no other cell kills a fabric-primary node-admin.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{iroh_observation_shape, named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -132,7 +132,8 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
 /// CONTRACT: every UDP path between the fabric primary's mesh and the other mesh is cut while
 /// all processes run. The other mesh's primary says the fabric primary's exact birth is silent (a
 /// Concern), the incumbent mesh's admins look at it, and the seat does not move on either side. The
-/// cut is healed and the seat is still where it was.
+/// cut is healed and the seat is still where it was. The Concern and the investigation carry
+/// iroh's local view of the holder (A1), in its shape and read as nothing more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     let (mut estate, nodes) = fabric("a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat").await;
@@ -177,4 +178,8 @@ async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     }
     assert_eq!(attr(&concern, "seat"), "fabric-primary");
     assert_ne!(attr(&looked, "finding"), "exit-proven", "a running birth is not a loss: {looked:#?}");
+    // A1: the Concern and the investigation carry iroh's local view of the holder.
+    for sp in [&concern, &looked] {
+        iroh_observation_shape(sp).unwrap_or_else(|why| panic!("{why}"));
+    }
 }

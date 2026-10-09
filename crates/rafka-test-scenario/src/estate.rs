@@ -1309,6 +1309,32 @@ pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
 }
 
+/// iroh's local view of a remote recorded on `sp` (A1, `rafka_mesh_transport::iroh_obs`) has its
+/// shape: `iroh_known_addrs` and `iroh_active_addrs` are both present; either both are
+/// `unavailable` (no record) or the known list is a non-empty comma list of `<kind>:<addr>` and
+/// every active address is one of them (none active is a reading). Shape only: the fields are
+/// iroh's observations, never proof of liveness, so nothing here reads what they say about it.
+pub fn iroh_observation_shape(sp: &Value) -> Result<(), String> {
+    let field = |k: &str| sp["attributes"][k].as_str().map(str::to_string).ok_or_else(|| format!("{} carries no {k}: {sp}", sp["name"]));
+    let (known, active) = (field("iroh_known_addrs")?, field("iroh_active_addrs")?);
+    match (known.as_str(), active.as_str()) {
+        ("unavailable", "unavailable") => Ok(()),
+        ("unavailable", _) | (_, "unavailable") => Err(format!("{}: one field unavailable, the other not: known={known:?} active={active:?}", sp["name"])),
+        ("", _) => Err(format!("{}: an empty known list stands for no record; it must say unavailable", sp["name"])),
+        _ => {
+            let list = |v: &str| v.split(',').filter(|a| !a.is_empty()).map(str::to_string).collect::<Vec<_>>();
+            let known_list = list(&known);
+            if let Some(bad) = known_list.iter().find(|a| !a.split_once(':').is_some_and(|(kind, addr)| !kind.is_empty() && !addr.is_empty())) {
+                return Err(format!("{}: {bad:?} is not <kind>:<addr> in {known:?}", sp["name"]));
+            }
+            match list(&active).into_iter().find(|a| !known_list.contains(a)) {
+                Some(a) => Err(format!("{}: active {a:?} is not among the known {known:?}", sp["name"])),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
 /// True when `child` descends from `ancestor` by `parent_span_id` links.
 /// The node-admin that decided the claim of `attempt` of `build_id` as won (the fabric-primary of that
 /// moment; `None` when no claim of it was won), read from its `via-claim-decision` span. An attempt's reconcile continues the trace of
@@ -1520,5 +1546,43 @@ mod tests {
         let why = binary_is_fresh("rafka-rpc-probe", &exe).unwrap_err();
         assert!(why.contains("rafka-rpc-probe") && why.contains("lib one.rs") && why.contains("cargo build -p rafka-node-rpc-testkit --bin rafka-rpc-probe"), "{why}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod iroh_observation_shape_tests {
+    use super::iroh_observation_shape;
+    use serde_json::json;
+
+    fn sp(known: Option<&str>, active: Option<&str>) -> serde_json::Value {
+        let mut a = serde_json::Map::new();
+        if let Some(k) = known {
+            a.insert("iroh_known_addrs".into(), json!(k));
+        }
+        if let Some(v) = active {
+            a.insert("iroh_active_addrs".into(), json!(v));
+        }
+        json!({"name": "rdm.test.span", "attributes": a})
+    }
+
+    /// CONTRACT (A1): a recorded observation is accepted in its shape: no record (both
+    /// `unavailable`), or known addresses with the active ones among them, none active included.
+    #[test]
+    fn a_recorded_observation_in_its_shape_is_accepted() {
+        assert_eq!(iroh_observation_shape(&sp(Some("unavailable"), Some("unavailable"))), Ok(()));
+        assert_eq!(iroh_observation_shape(&sp(Some("ip:127.0.0.1:40051"), Some("ip:127.0.0.1:40051"))), Ok(()));
+        assert_eq!(iroh_observation_shape(&sp(Some("ip:127.0.0.1:1,ip:127.0.0.1:2"), Some(""))), Ok(()));
+    }
+
+    /// CONTRACT (A1): a missing field, an empty known list standing for no record, one field
+    /// unavailable alone, a malformed address and an active address iroh does not know are refused.
+    #[test]
+    fn a_missing_or_misshapen_observation_is_refused() {
+        assert!(iroh_observation_shape(&sp(None, Some("unavailable"))).is_err());
+        assert!(iroh_observation_shape(&sp(Some("unavailable"), None)).is_err());
+        assert!(iroh_observation_shape(&sp(Some(""), Some(""))).is_err());
+        assert!(iroh_observation_shape(&sp(Some("unavailable"), Some(""))).is_err());
+        assert!(iroh_observation_shape(&sp(Some("127.0.0.1"), Some(""))).is_err());
+        assert!(iroh_observation_shape(&sp(Some("ip:127.0.0.1:1"), Some("ip:127.0.0.1:2"))).is_err());
     }
 }
