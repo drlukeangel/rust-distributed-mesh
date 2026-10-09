@@ -148,8 +148,10 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
                 assert_eq!(dir, format!("target/i143-acceptance/{issue}/{layer}/{name}"), "{job}/{name}");
             }
             if !c["source"].as_str().unwrap().ends_with(".sh") {
-                assert!(command.ends_with(&format!(" {test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
-                assert!(command.contains(" --test "), "{job}/{name}: the command names its test target");
+                assert!(command.ends_with(&format!("::{test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
+                assert!(command.contains(" --test main "), "{job}/{name}: the command names its crate's one test executable");
+                let stem = std::path::Path::new(c["source"].as_str().unwrap()).file_stem().unwrap().to_str().unwrap();
+                assert!(command.ends_with(&format!(" {stem}::{test} -- --exact")), "{job}/{name}: the command names the module of its source file {stem}: {command}");
             }
             assert!(root().join(c["source"].as_str().unwrap()).parent().unwrap().is_dir(), "{job}/{name}: the source's crate exists");
             match c.get("evidence").and_then(Value::as_str) {

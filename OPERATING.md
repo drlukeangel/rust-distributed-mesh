@@ -168,6 +168,12 @@ Get-Process rafka-broker,rafka-gateway,rafka-compute,rafka-registry,rafka-bridge
   -ErrorAction SilentlyContinue | Stop-Process -Force
 ```
 
+## Integration tests: one executable per crate
+
+Every crate with a `tests/` directory declares one test target, `main` (`tests/main.rs`, `autotests = false`), and each file in `tests/` is a `mod` of it, so a crate links once. A file (a stem) runs alone as `cargo test -p <crate> --test main -- <stem>::` or as `<exe> <stem>::`; a single cell as `<exe> <stem>::<test> --exact`. A new test file is added to `tests/main.rs` as `mod <stem>;`.
+
+A cell that changes process-wide state (the global tracing subscriber, evidence telemetry, an environment variable) calls `own_process::delegated(module_path!(), "<fn name>")` first (`tools/test-support/own_process.rs`, included from the crate's `tests/main.rs`): it re-runs that one cell in a fresh process of the same executable and returns. A cell that captures spans with a dispatcher on its own thread calls `enable_callsites()` first where the crate defines it. A cell that re-runs its own executable names itself with its module path (`module_path!()`).
+
 ## Where to find things
 
 | Thing | Where |

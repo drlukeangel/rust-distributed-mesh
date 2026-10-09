@@ -2,7 +2,7 @@
 # Run a command in a fresh network namespace with loopback only: no route
 # off the host, so nothing it starts can reach n0 DNS/Pkarr or any other
 # external service (i143.e4.s13 acceptance). Needs root (or `sudo`).
-#   scripts/netless.sh cargo test --offline -p rafka-test-scenario --test <t>
+#   scripts/netless.sh cargo test --offline -p rafka-test-scenario --test main <stem>::
 set -e
 if [ "$(id -u)" != 0 ]; then exec sudo -E env "PATH=$PATH" "$0" "$@"; fi
 exec unshare --net -- sh -c '
