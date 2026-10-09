@@ -3040,6 +3040,16 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                                 crate::offline::ViaPeerVerdict::NoPath { asked }
                             }
                         },
+                        |id| {
+                            // One read of iroh's local view of the node, recorded beside the event.
+                            let (endpoint, key) = (runner.endpoint.clone(), watched.get(&id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok()));
+                            async move {
+                                match endpoint {
+                                    Some(ep) => rafka_mesh_transport::iroh_obs::observe_remote(&ep, key).await,
+                                    None => rafka_mesh_transport::iroh_obs::IrohObservation::unavailable(),
+                                }
+                            }
+                        },
                     )
                     .await;
                 let write = async |id: &str, status: Option<NodeStatus>| {

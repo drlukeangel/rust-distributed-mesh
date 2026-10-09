@@ -1601,6 +1601,12 @@ pub struct Membership {
 }
 
 impl Membership {
+    /// The process's iroh endpoint this membership rides: for read-only observations
+    /// (`crate::iroh_obs`), never for sending.
+    pub fn endpoint(&self) -> Endpoint {
+        self.mesh.endpoint.clone()
+    }
+
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
     /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
     /// frame reads it.
@@ -2285,9 +2291,21 @@ impl Backbone {
 
     /// Say on the backbone that `seat`'s holder birth looks silent from here. A warning, once per
     /// call; the caller decides when a call is owed.
-    pub async fn concern(&self, seat: Seat, node_id: NodeId, incarnation: IncarnationId) {
-        tracing::info_span!("rdm.mesh.seat.update.via-concern", node = %self.node, seat = seat.name(), holder_node_id = %node_id, holder_incarnation = %incarnation.0)
-            .in_scope(|| tracing::info!("a seat holder looks silent: Concern published"));
+    ///
+    /// `holder_key` is the holder's iroh key, when known: the span carries iroh's local view of
+    /// it (`crate::iroh_obs`), read once; it decides nothing.
+    pub async fn concern(&self, seat: Seat, node_id: NodeId, incarnation: IncarnationId, holder_key: Option<iroh::EndpointId>) {
+        let seen = crate::iroh_obs::observe_remote(&self.channel.endpoint, holder_key).await;
+        tracing::info_span!(
+            "rdm.mesh.seat.update.via-concern",
+            node = %self.node,
+            seat = seat.name(),
+            holder_node_id = %node_id,
+            holder_incarnation = %incarnation.0,
+            iroh_known_addrs = %seen.known_addrs,
+            iroh_active_addrs = %seen.active_addrs,
+        )
+        .in_scope(|| tracing::info!("a seat holder looks silent: Concern published"));
         let _ = self.channel.broadcast(&Frame::Concern { seat, node_id, incarnation, observer: self.node.clone() }).await;
     }
 

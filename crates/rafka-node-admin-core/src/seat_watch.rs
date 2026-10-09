@@ -271,7 +271,8 @@ pub async fn run(w: Watch) {
         let view = w.topology.read().await.clone();
         let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);
         for (node_id, incarnation) in plan.concerns {
-            w.backbone.concern(Seat::FabricPrimary, node_id, incarnation).await;
+            let holder_key = view.nodes.iter().find(|n| n.node_id == node_id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
+            w.backbone.concern(Seat::FabricPrimary, node_id, incarnation, holder_key).await;
         }
         if plan.answer {
             // The Concern names this very birth: it is there, so it says so. Its neighbours are
@@ -308,7 +309,15 @@ pub async fn run(w: Watch) {
                 holds_fabric_seat = node.is_fabric_primary,
                 finding = tracing::field::Empty,
                 detail = tracing::field::Empty,
+                iroh_known_addrs = tracing::field::Empty,
+                iroh_active_addrs = tracing::field::Empty,
             );
+            // One read of iroh's local view of the suspect, recorded beside the investigation;
+            // the finding is the provider's and the Node RPC's, never this.
+            let key = node.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
+            let seen = rafka_mesh_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
+            span.record("iroh_known_addrs", seen.known_addrs.as_str());
+            span.record("iroh_active_addrs", seen.active_addrs.as_str());
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());

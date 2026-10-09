@@ -77,8 +77,10 @@ impl OfflineTickle {
     /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
     /// delay between round 1 and round 2; `tickle` makes the direct connect and `via_peer` the
-    /// via-peer step.
-    pub async fn tick<T, TF, V, VF>(
+    /// via-peer step. `observe` reads iroh's local view of a node once for the answered and the
+    /// failed span (`rafka_mesh_transport::iroh_obs`); it decides nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn tick<T, TF, V, VF, O, OF>(
         &mut self,
         now_ms: u64,
         holds_seat: bool,
@@ -87,12 +89,15 @@ impl OfflineTickle {
         staleness_floor_ms: u64,
         tickle: T,
         via_peer: V,
+        observe: O,
     ) -> OfflineTickReport
     where
         T: Fn(String) -> TF,
         TF: std::future::Future<Output = Result<(), String>>,
         V: Fn(String) -> VF,
         VF: std::future::Future<Output = ViaPeerVerdict>,
+        O: Fn(String) -> OF,
+        OF: std::future::Future<Output = rafka_mesh_transport::iroh_obs::IrohObservation>,
     {
         let mut report = OfflineTickReport::default();
         let silent_ids: HashSet<String> = silent.iter().map(|n| n.node_id.clone()).collect();
@@ -132,7 +137,15 @@ impl OfflineTickle {
                 Ok(()) => {
                     self.hold_down.remove(&id);
                     self.settled.insert(id.clone());
-                    tracing::info_span!("rdm.node_admin.node.resolve.via-offline-tickle-answered", node_id = %id, path = %path, "otel.kind" = "internal")
+                    let seen = observe(id.clone()).await;
+                    tracing::info_span!(
+                        "rdm.node_admin.node.resolve.via-offline-tickle-answered",
+                        node_id = %id,
+                        path = %path,
+                        iroh_known_addrs = %seen.known_addrs,
+                        iroh_active_addrs = %seen.active_addrs,
+                        "otel.kind" = "internal"
+                    )
                         .in_scope(|| tracing::info!(node_id = %id, "offline tickle answered — reachable-silent, recorded, no action"));
                     report.reachable_silent.push(id);
                 }
@@ -152,11 +165,14 @@ impl OfflineTickle {
                         if let Some(no_path_since) = self.hold_down.remove(&id) {
                             self.settled.insert(id.clone());
                             self.offline.insert(id.clone());
+                            let seen = observe(id.clone()).await;
                             tracing::info_span!(
                                 "rdm.node_admin.node.resolve.via-offline-tickle-failed",
                                 node_id = %id,
                                 path = %path,
                                 error = %e,
+                                iroh_known_addrs = %seen.known_addrs,
+                                iroh_active_addrs = %seen.active_addrs,
                                 round = 2i64,
                                 first_no_path_ms = no_path_since as i64,
                                 "otel.kind" = "internal",
@@ -189,11 +205,53 @@ mod tests {
     }
 
     async fn tick(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict) -> OfflineTickReport {
-        t.tick(now, seat, set, PROBE_DELAY, FLOOR, |_| async move { if direct { Ok(()) } else { Err("no answer".to_string()) } }, |_| {
-            let via = via.clone();
-            async move { via }
-        })
+        tick_observed(t, now, seat, set, direct, via, &std::sync::atomic::AtomicUsize::new(0)).await
+    }
+
+    /// `tick`, counting every iroh observation read in `reads`.
+    async fn tick_observed(t: &mut OfflineTickle, now: u64, seat: bool, set: Vec<SilentNode>, direct: bool, via: ViaPeerVerdict, reads: &std::sync::atomic::AtomicUsize) -> OfflineTickReport {
+        t.tick(
+            now,
+            seat,
+            set,
+            PROBE_DELAY,
+            FLOOR,
+            |_| async move { if direct { Ok(()) } else { Err("no answer".to_string()) } },
+            |_| {
+                let via = via.clone();
+                async move { via }
+            },
+            |_| {
+                reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() }
+            },
+        )
         .await
+    }
+
+    /// CONTRACT (A1, diagnostics only): iroh is read exactly once per answered or round-2 failed
+    /// event, never on a tick that records neither, and the reports are the tickle's own: the
+    /// answered node is reachable-silent and round 2 with no path is TRUE OFFLINE.
+    #[tokio::test]
+    async fn iroh_is_read_once_per_answered_or_failed_event_and_decides_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reads = AtomicUsize::new(0);
+        let mut t = OfflineTickle::new();
+        assert!(tick_observed(&mut t, 0, true, silent("a"), true, no_path(), &reads).await.tickled.is_empty());
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "no event, no read");
+        let r = tick_observed(&mut t, PROBE_DELAY, true, silent("a"), true, no_path(), &reads).await;
+        assert_eq!(r.reachable_silent, vec!["a".to_string()]);
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the answered event");
+
+        let reads = AtomicUsize::new(0);
+        let mut t = OfflineTickle::new();
+        tick_observed(&mut t, 0, true, silent("b"), false, no_path(), &reads).await;
+        let r1 = tick_observed(&mut t, PROBE_DELAY, true, silent("b"), false, no_path(), &reads).await;
+        assert!(r1.offline.is_empty(), "round 1 opens the hold-down");
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "the hold-down opening is not an observed event");
+        let r2 = tick_observed(&mut t, PROBE_DELAY + FLOOR, true, silent("b"), false, no_path(), &reads).await;
+        assert_eq!(r2.offline, vec!["b".to_string()], "round 2 is TRUE OFFLINE, as without the read");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "one read for the failed event");
     }
 
     fn no_path() -> ViaPeerVerdict {
