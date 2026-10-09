@@ -3177,7 +3177,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if let Ok(facts) = adapter.facts().await {
                     let in_flight = crate::build_state::in_flight_ops(&crate::build_state::fold(&facts));
                     for op in in_flight.ops {
-                        membership.book.deleting(op);
+                        if op.is_restart() {
+                            membership.book.restarting(op);
+                        } else {
+                            membership.book.deleting(op);
+                        }
                     }
                     for u in in_flight.unrecognised {
                         if named.insert((u.build_id.0.clone(), u.attempt, u.operation.clone(), u.step.clone())) {
