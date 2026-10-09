@@ -225,6 +225,12 @@ pub struct Records {
     /// The peer mesh the fabric primary's investigation decided to rebirth: the fabric is
     /// `degraded` from the decision until the mesh has a ready primary of a later birth.
     peer_recovery: Mutex<Option<PeerRecovery>>,
+    /// The fabric-primary role was taken while the fabric was `degraded`: the new holder adopted
+    /// the status and keeps it until every mesh primary reports for its round (`crate::round`).
+    adopted_degraded: std::sync::atomic::AtomicBool,
+    /// This admin, as its mesh's primary, may declare its Mesh ready: it holds no adopted status
+    /// waiting for its round (`crate::round`). Withdrawn when the role ends.
+    declare_gate: std::sync::atomic::AtomicBool,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -233,6 +239,8 @@ pub struct PeerRecovery {
     pub mesh: String,
     /// The Rafka-time of the decision.
     pub verdict_rafka_ms: u64,
+    /// When this admin took the decision: a report counts as the mesh's proof only if it arrived after.
+    pub opened_at: std::time::Instant,
     /// The node-admin births of the mesh the decision found.
     pub lost: Vec<IncarnationId>,
 }
@@ -258,6 +266,25 @@ impl Records {
 
     pub fn set_peer_recovery(&self, recovery: Option<PeerRecovery>) {
         *self.peer_recovery.lock().unwrap() = recovery;
+    }
+
+    /// The fabric is `degraded` because this admin took the fabric-primary role while it was.
+    pub fn adopted_degraded(&self) -> bool {
+        self.adopted_degraded.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Hold (or clear) the adopted `degraded`; whether the value changed.
+    pub fn set_adopted_degraded(&self, on: bool) -> bool {
+        self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
+    }
+
+    /// May this admin declare its Mesh ready (see the field)?
+    pub fn declare_gate(&self) -> bool {
+        self.declare_gate.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_declare_gate(&self, open: bool) {
+        self.declare_gate.store(open, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// A fabric shutdown is held: keep the seats as they were before any admin drained.
@@ -469,8 +496,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     }
     if topology.fabric_primary().is_some() {
         // The fabric primary authors `degraded` from the investigation's rebirth decision until the
-        // reborn mesh's primary authors ready (`crate::investigate`).
-        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
+        // reborn mesh's primary reports for its round (`crate::investigate`), and a successor holder
+        // keeps an adopted `degraded` until every mesh primary reports (`crate::round`).
+        topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
     }
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
@@ -2505,7 +2533,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 let view = topology.read().await.clone();
                 let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
-                crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, &view, &mesh_ids);
+                crate::status_declare::owed_from_view(&declarer, &me, &incarnation, own_ready, records.declare_gate(), &view, &mesh_ids);
                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref())).await;
                 tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
             }
@@ -2641,7 +2669,11 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
         let adapter = runner.builds.clone();
+        let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
         hierarchy = tokio::spawn(async move {
+            // The round a new primary runs before it republishes the status it adopted (`crate::round`).
+            let mut rounds = crate::round::RoundDriver::new(me.clone());
+            let mut was_fabric_primary = false;
             // Each unreadable pre-event step is named once, not every round.
             let mut named: std::collections::HashSet<(String, u32, String, String)> = std::collections::HashSet::new();
             loop {
@@ -2663,15 +2695,42 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // Cut off, or within one silence window of healing, its view
                 // authorizes nothing: it publishes as no primary.
                 let live = membership.authorizes();
-                backbone.set_mesh_primary(live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me));
-                backbone.set_fabric_primary(live && t.fabric_primary().is_some_and(|n| n.name == me));
+                let mesh_primary = live && t.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == me);
+                let fabric_primary = live && t.fabric_primary().is_some_and(|n| n.name == me);
+                backbone.set_mesh_primary(mesh_primary);
+                backbone.set_fabric_primary(fabric_primary);
+                // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
+                // new holder authors no ready on a topology reading.
+                if fabric_primary && !was_fabric_primary {
+                    let adopted = membership.fabric_status().is_some_and(|s| s.status == "degraded");
+                    records.set_adopted_degraded(adopted);
+                } else if !fabric_primary && was_fabric_primary {
+                    records.set_adopted_degraded(false);
+                }
+                was_fabric_primary = fabric_primary;
                 let heard = membership.book.current(membership.book.staleness_floor());
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                 backbone.publish(&membership, mine.clone()).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                backbone.announce_statuses(&mesh_status, &status_of(t.fabric.status)).await;
+                let fabric_status = |records: &Records| if records.adopted_degraded() { "degraded".to_string() } else { status_of(t.fabric.status) };
+                let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
+                // A status adopted from the previous publisher is republished only when its round is
+                // complete: the planned births checked in, every mesh primary reported.
+                if announced.mesh_awaiting_round || announced.fabric_awaiting_round {
+                    let planned = match accepted.current(&*adapter).await {
+                        Some(b) => Some(crate::round::planned(&b.topology, &mesh)),
+                        None => None,
+                    };
+                    let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
+                    if done.mesh || done.fabric {
+                        announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
+                    }
+                } else {
+                    rounds.end();
+                }
+                records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
                 let addr = rafka_mesh_transport::membership::gossip_addr;
                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                 builds.join_admins(admins.clone()).await;

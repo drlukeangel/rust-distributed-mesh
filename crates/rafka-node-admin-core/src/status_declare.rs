@@ -218,7 +218,7 @@ impl Declarer {
 
 /// The declarations an admin owes from its view and its own state, derived each round so a
 /// successor or a restarted admin owes the same ones from the same facts.
-pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_ready: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, once it is ready: to the fabric-primary.
     if own_ready {
         if let Some(my) = view.nodes.iter().find(|n| &n.name == me) {
@@ -231,8 +231,9 @@ pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_rea
     }
     let i_am_mesh_primary = view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|n| &n.name == me);
     let i_am_fabric_primary = view.fabric_primary().is_some_and(|n| &n.name == me);
-    // My Mesh's status, as its primary, to the fabric-primary.
-    if i_am_mesh_primary {
+    // My Mesh's status, as its primary, to the fabric-primary: the report that its round is complete,
+    // owed only once every planned birth of the accepted Build checked in (`crate::round`).
+    if i_am_mesh_primary && mesh_round_done {
         if let (Some(mesh), Some(id)) = (view.meshes.iter().find(|m| m.name == me.mesh), mesh_ids.get(&me.mesh)) {
             if mesh.status == crate::model::ScopeStatus::ReadyForTraffic {
                 d.owe(Key::Mesh(id.clone(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: match crate::model::MeshId::parse(id) { Ok(m) => m, Err(_) => return }, state: MeshState::ReadyForTraffic });

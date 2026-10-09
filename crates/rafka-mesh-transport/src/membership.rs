@@ -345,6 +345,9 @@ pub struct StatusReinforcement {
     held: Option<StatusFact>,
     sent: u32,
     next_at: Option<Instant>,
+    /// The held fact was adopted from the previous publisher and has not been republished: it waits
+    /// for the new publisher's round to complete.
+    awaiting_round: bool,
 }
 
 impl StatusReinforcement {
@@ -357,16 +360,37 @@ impl StatusReinforcement {
         }
         let fact = StatusFact { status: status.to_string(), changed_at_rafka_ms: now_ms };
         self.held = Some(fact.clone());
+        self.awaiting_round = false;
         self.sent = 1;
         self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
         Some(fact)
     }
 
-    /// Hold `fact` as already published (heard from the previous publisher): no send follows.
+    /// Hold `fact` as heard from the previous publisher: no transition is invented and nothing is
+    /// sent until [`Self::republish`] says the new publisher's round completed.
     pub fn adopt(&mut self, fact: StatusFact) {
         self.held = Some(fact);
         self.sent = STATUS_SENDS;
         self.next_at = None;
+        self.awaiting_round = true;
+    }
+
+    /// Whether the held fact is adopted and not yet republished.
+    pub fn awaiting_round(&self) -> bool {
+        self.awaiting_round
+    }
+
+    /// The adopted fact, sent for the first of its five sends at `now`: the same status and the
+    /// same `changed_at_rafka_ms` the previous publisher sent, because the state did not change.
+    /// Nothing when no adopted fact waits.
+    pub fn republish(&mut self, now: Instant) -> Option<StatusFact> {
+        if !self.awaiting_round {
+            return None;
+        }
+        self.awaiting_round = false;
+        self.sent = 1;
+        self.next_at = (self.sent < STATUS_SENDS).then(|| now + STATUS_EVERY);
+        self.held.clone()
     }
 
     /// The next reinforcing send due at `now`, if any.
@@ -443,8 +467,12 @@ impl StatusPublisher {
 
     /// The status as observed: a change is the frame to send at once. A publisher that holds the
     /// role for the first time and observes the status `heard` from the previous publisher adopts
-    /// it unchanged and sends nothing. Without the role: nothing.
-    pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, now: Instant, now_ms: u64) -> Option<Frame> {
+    /// it: the lifecycle state did not change, so the fact keeps its old `changed_at_rafka_ms`. It
+    /// is silent until `round_complete` (every member of the publisher's checklist checked in for
+    /// this round); then the adopted fact is the frame to send, the first of its five sends, under
+    /// this publisher. A status that differs from the adopted one is a change like any other.
+    /// Without the role: nothing.
+    pub fn observe(&mut self, status: &str, heard: Option<StatusFact>, round_complete: bool, now: Instant, now_ms: u64) -> Option<Frame> {
         if !self.role {
             return None;
         }
@@ -453,7 +481,15 @@ impl StatusPublisher {
                 self.schedule.adopt(h);
             }
         }
+        if self.schedule.awaiting_round() && self.schedule.held().is_some_and(|h| h.status == status) {
+            return round_complete.then(|| self.schedule.republish(now)).flatten().map(|f| self.frame(&f));
+        }
         self.schedule.observe(status, now, now_ms).map(|f| self.frame(&f))
+    }
+
+    /// Whether the publisher holds an adopted status it has not republished: its round is open.
+    pub fn awaiting_round(&self) -> bool {
+        self.role && self.schedule.awaiting_round()
     }
 
     /// The reinforcing send due at `now`: the same fact, the same instant, as the first send.
@@ -1562,6 +1598,13 @@ impl Membership {
 /// Node RPC client, the process composition hands it one.
 pub type TopUpFetch = std::sync::Arc<dyn Fn(MeshDigest) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::entry::EntryAnswer, String>> + Send>> + Send + Sync>;
 
+/// Which of a backbone's adopted statuses still wait for their round to complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Announced {
+    pub mesh_awaiting_round: bool,
+    pub fabric_awaiting_round: bool,
+}
+
 /// A node-admin's place on the backbone. What it hears there it holds; while
 /// it is its mesh's primary it publishes its mesh's members and forwards the
 /// other meshes' onto its mesh channel; while it is the fabric primary it
@@ -1700,17 +1743,19 @@ impl Backbone {
     /// The statuses as this node's topology states them now. While this node is its mesh's primary
     /// its mesh's status is sent when it changed, and while it is the fabric primary the fabric's;
     /// a status that did not change sends nothing. A change is sent at once and reinforced by the
-    /// status sender (five sends in all).
-    pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str) {
+    /// status sender (five sends in all). A status adopted from the previous publisher is sent
+    /// only once that scope's round is complete (`mesh_round` / `fabric_round`), with its old
+    /// instant. The answer says which adopted statuses still wait for their round.
+    pub async fn announce_statuses(&self, mesh_status: &str, fabric_status: &str, mesh_round: bool, fabric_round: bool) -> Announced {
         let (now, now_ms) = (Instant::now(), self.membership.clock.now_rafka_ms());
-        let first: Vec<Frame> = {
+        let (first, announced): (Vec<Frame>, Announced) = {
             let view = &self.membership.view;
             let heard_mesh = view.statuses.mesh(&self.mesh).map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
             let heard_fabric = view.statuses.fabric().map(|h| StatusFact { status: h.status, changed_at_rafka_ms: h.changed_at_rafka_ms });
-            [self.mesh_status.lock().unwrap().observe(mesh_status, heard_mesh, now, now_ms), self.fabric_status.lock().unwrap().observe(fabric_status, heard_fabric, now, now_ms)]
-                .into_iter()
-                .flatten()
-                .collect()
+            let mut mesh = self.mesh_status.lock().unwrap();
+            let mut fabric = self.fabric_status.lock().unwrap();
+            let frames = [mesh.observe(mesh_status, heard_mesh, mesh_round, now, now_ms), fabric.observe(fabric_status, heard_fabric, fabric_round, now, now_ms)].into_iter().flatten().collect();
+            (frames, Announced { mesh_awaiting_round: mesh.awaiting_round(), fabric_awaiting_round: fabric.awaiting_round() })
         };
         if !first.is_empty() {
             self.wake.notify_one();
@@ -1718,6 +1763,7 @@ impl Backbone {
         for f in first {
             self.send_status(&f).await;
         }
+        announced
     }
 
     fn role(flag: &AtomicBool, on: bool) -> Option<&'static str> {
@@ -2319,6 +2365,13 @@ impl DigestBook {
             .filter(|(d, at, _)| !(d.status == rafka_mesh_entity::MemberStatus::Leaving && now.saturating_duration_since(*at) > gossip_interval()))
             .map(|(d, _, _)| d.clone())
             .collect()
+    }
+
+    /// The digests this node received straight from their members (their own word, on the channel
+    /// they publish to) at or after `since`: the members that checked in since a round began. A
+    /// member known only from forwarded topology, or last heard before `since`, is not here.
+    pub fn heard_direct_since(&self, since: Instant) -> Vec<MeshDigest> {
+        self.inner.lock().unwrap().values().filter(|(_, at, heard)| *heard == Heard::Direct && *at >= since).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The member's latest digest and how long it has been silent.

@@ -29,6 +29,19 @@ pub struct Declared {
     pub meshes: std::collections::HashMap<MeshId, MeshState>,
     /// Per fabric id: the events applied, in order, each once.
     pub fabric: std::collections::HashMap<FabricId, Vec<String>>,
+    /// Per mesh name: the latest `ReadyForTraffic` report this admin received as the fabric-primary,
+    /// from the mesh's primary and the exact birth that sent it. Memory of this process's tenure; it is
+    /// never stored or rehydrated, because a report is evidence only while it is fresh.
+    pub reports: BTreeMap<String, MeshReport>,
+}
+
+/// A mesh primary's round-complete report, as the fabric-primary received it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshReport {
+    /// The birth of the node-admin that reported.
+    pub incarnation: IncarnationId,
+    /// When this admin received it.
+    pub at: std::time::Instant,
 }
 
 impl Declared {
@@ -227,6 +240,14 @@ impl StatusAuthority {
             Some(effect) => self.persist_then_commit(effect).await,
             None => reply,
         };
+        // A `ReadyForTraffic` Mesh declaration the authority took (applied now or already applied) is
+        // the mesh primary's round-complete report: the primary sends it only when its checklist is
+        // complete. Whichever it was, the report is what this admin received now from that exact birth.
+        if let (StatusRequest::DeclareMeshState { state: MeshState::ReadyForTraffic, .. }, StatusReply::Applied | StatusReply::AlreadyApplied, Some(from)) = (req, &reply, sender.as_ref()) {
+            if let Some(incarnation) = from.incarnation_id.clone() {
+                self.declared.lock().unwrap().reports.insert(from.mesh.clone(), MeshReport { incarnation, at: std::time::Instant::now() });
+            }
+        }
         tracing::info_span!(
             "rdm.node_admin.status.update.via-declaration",
             node = %self.me,
