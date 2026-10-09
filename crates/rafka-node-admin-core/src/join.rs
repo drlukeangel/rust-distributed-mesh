@@ -241,7 +241,7 @@ impl JoinDoor {
                 span.record("build_id", a.build_id.as_str());
                 span.record("attempt", a.attempt);
                 tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.0, "this admin ended the deployment of this birth before it reported");
-                JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id.to_string(), incarnation: a.deployed.incarnation.0 }
+                JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id, incarnation: a.deployed.incarnation }
             }
             Standing::Unknown => {
                 span.record("outcome", "not-authority");

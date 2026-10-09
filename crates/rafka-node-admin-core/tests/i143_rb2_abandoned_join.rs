@@ -202,7 +202,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let late = door.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(
             late,
-            JoinReply::DeploymentAbandoned { build_id: build_id.to_string(), attempt: 3, node_id: node_id.to_string(), incarnation: incarnation.0.clone() },
+            JoinReply::DeploymentAbandoned { build_id: build_id.to_string(), attempt: 3, node_id: node_id.clone(), incarnation: incarnation.clone() },
             "the late join names the Build, the attempt and the exact birth"
         );
         let other = IncarnationId::mint();

@@ -25,6 +25,7 @@
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use rafka_mesh_entity::wire::WireDigest;
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 
 /// The Join protocol: a launched node reports its digest to the node-admin that deployed it.
@@ -111,9 +112,9 @@ pub enum JoinReply {
         /// The attempt of that Build.
         attempt: u32,
         /// The abandoned birth's node id.
-        node_id: String,
+        node_id: NodeId,
         /// The abandoned birth's incarnation.
-        incarnation: String,
+        incarnation: IncarnationId,
     },
 }
 
@@ -191,7 +192,7 @@ mod tests {
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::ProtocolRefusal),
             (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
-            (JoinReply::DeploymentAbandoned { build_id: "bld-1".into(), attempt: 2, node_id: "n".into(), incarnation: "i".into() }, ReplyKind::ProtocolRefusal),
+            (JoinReply::DeploymentAbandoned { build_id: "bld-1".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("i".into()) }, ReplyKind::ProtocolRefusal),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),
             (Join::busy("b".into()), ReplyKind::Busy),

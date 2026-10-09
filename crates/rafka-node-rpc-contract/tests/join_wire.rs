@@ -4,6 +4,7 @@
 
 use rafka_mesh_entity::wire::WireDigest;
 use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 
@@ -64,7 +65,7 @@ fn replies_match_the_frozen_ten_variant_wire_schema() {
         (Draining { reason: "d".into() }, "060164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0702"),
         (Unauthorized { reason: "u".into() }, "080175"),
-        (DeploymentAbandoned { build_id: "b".into(), attempt: 2, node_id: "n".into(), incarnation: "i".into() }, "0901620201 6e0169"),
+        (DeploymentAbandoned { build_id: "b".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("i".into()) }, "09016202 0c 303132333435363738396162 0169"),
     ];
     for (reply, hex) in fixtures {
         let expected = bytes(&hex.replace(' ', ""));
