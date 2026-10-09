@@ -80,3 +80,10 @@ debug = "line-tables-only"
 # launch: the hash runs at release speed even in a debug build.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# Every dependency (iroh, noq, rustls, ring, tokio) runs optimised in a debug build; the code under test
+# stays unoptimised. A Node RPC call is two QUIC handshakes and the iroh endpoint actors, and at opt-level 0
+# one call burns ~45 ms of CPU where the 500 ms budget cells leave 100 ms for the hop and the reply: a
+# process that shares its core waits on the run queue for the CPU it needs and loses the budget.
+[profile.dev.package."*"]
+opt-level = 2
