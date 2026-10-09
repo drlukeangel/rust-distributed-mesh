@@ -767,3 +767,31 @@ async fn a_decided_peer_mesh_held_ready_from_topology_is_proven_and_repaired() {
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
     assert_eq!(seen.lock().unwrap().len(), 2, "both proven exits are handed to the view, so neither dead admin holds the mesh's seat");
 }
+
+/// CONTRACT: a departure is not drift. A birth whose proven departure the authority holds
+/// (`NodeDeleted`) may still have its durable runtime row; that row names a runtime that left on
+/// purpose, and no attempt repairs it. Must NOT happen: the deleted node is re-created as drift.
+#[tokio::test]
+async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
+    let e = estate().await;
+    let lost = "mesh1.admin.2";
+    let old = e.node_id(lost).await;
+    let (row, digest) = {
+        let (d, _) = e.book.get(&old).unwrap();
+        (rafka_node_admin_core::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }, d)
+    };
+    e.world.kill(&old);
+    let heard = DigestBook::default();
+    for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
+        heard.record(d);
+    }
+    heard.depart(rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("retire-node:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
+    let mut t = e.view.read().await.clone();
+    t.nodes.retain(|n| n.name.to_string() != lost);
+    rafka_node_admin_core::election::resolve(&mut t.nodes);
+    let me: PathName = t.fabric_primary().unwrap().name.clone();
+    let mut started = HashSet::new();
+    let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+    let opened = rafka_node_admin_core::admin::reconcile_drift(&me, &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, std::slice::from_ref(&row), &mut started, &|_| false, &|_| false, &|_, _| {}).await;
+    assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
+}
