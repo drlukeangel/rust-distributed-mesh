@@ -961,19 +961,14 @@ impl Estate {
                     true
                 }
             };
-            // The advertised holder refused or is gone: ask the entry admin and the admin that just
-            // refused (the entry may be gone: a replaced admin's port answers for nobody), then every
-            // admin they list, who holds the fabric now.
+            // The advertised holder refused or is gone: ask the entry admin, then every admin it
+            // lists, who holds the fabric now.
             if refused_or_gone {
-                let mut candidates = vec![entry.clone(), self.admin.clone()];
-                for asked in [entry.clone(), self.admin.clone()] {
-                    if self.fabric_at(&asked).await.is_none() {
-                        continue;
-                    }
-                    if let Some(r) = self.http.get(format!("{asked}/api/nodes")).timeout(Duration::from_secs(2)).send().await.ok() {
-                        let v: Value = r.json().await.unwrap_or(Value::Null);
-                        candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
-                    }
+                let mut candidates = vec![entry.clone()];
+                let entry_is_ours = self.fabric_at(&entry).await.is_some();
+                if let Some(r) = if entry_is_ours { self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await.ok() } else { None } {
+                    let v: Value = r.json().await.unwrap_or(Value::Null);
+                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
                 }
                 for c in candidates {
                     let Some(f) = self.fabric_at(&c).await else { continue };
