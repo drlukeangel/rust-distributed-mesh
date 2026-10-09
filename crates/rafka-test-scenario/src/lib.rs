@@ -19,4 +19,4 @@ pub mod sim;
 pub mod soak;
 pub mod wedge;
 
-pub use rafka_chaos::{container_faults, netfault, process_faults};
+pub use rafka_chaos::{container_faults, disk_faults, link_faults, netfault, process_faults};

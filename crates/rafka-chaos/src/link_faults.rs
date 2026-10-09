@@ -168,8 +168,9 @@ pub struct Flapped {
 }
 
 /// Cut and heal the link between node sets `a` and `b` `cycles` times: cut for `cut`, healed for
-/// `healed`. Bounded by [`MAX_FLAP_CYCLES`] and [`MAX_FLAP_PHASE`]. Returns healed: the last phase
-/// is the heal.
+/// `healed`. Bounded by [`MAX_FLAP_CYCLES`] and [`MAX_FLAP_PHASE`]; the last phase is a heal.
+/// `a` is the side whose link flaps and is never a protected node; `b` is whom it flaps against
+/// and may include one (a protected node loses a peer for a moment, it is not the one faulted).
 pub fn flap_link(nodes: &[Value], a: &[String], b: &[String], protected: &[String], cycles: u32, cut: Duration, healed: Duration) -> Result<Flapped, LinkRefusal> {
     let span = tracing::info_span!("rdm.testkit.fault.update.via-link-flap", a = %a.join(","), b = %b.join(","), cycles, cut_ms = cut.as_millis() as u64, healed_ms = healed.as_millis() as u64, outcome = tracing::field::Empty);
     let _g = span.enter();
@@ -185,7 +186,6 @@ fn flap_inner(nodes: &[Value], a: &[String], b: &[String], protected: &[String],
     non_empty("a", a)?;
     non_empty("b", b)?;
     refuse_protected(a, protected)?;
-    refuse_protected(b, protected)?;
     if cycles == 0 || cycles > MAX_FLAP_CYCLES {
         return Err(LinkRefusal::Unbounded { what: format!("cycles {cycles}"), max: MAX_FLAP_CYCLES as u64 });
     }
@@ -316,7 +316,7 @@ mod tests {
         assert!(matches!(flap_link(&view(), &a, &b, &[], MAX_FLAP_CYCLES + 1, ms, ms), Err(LinkRefusal::Unbounded { .. })));
         assert!(matches!(flap_link(&view(), &a, &b, &[], 1, MAX_FLAP_PHASE + ms, ms), Err(LinkRefusal::Unbounded { .. })));
         assert_eq!(flap_link(&view(), &a, &[], &[], 1, ms, ms), Err(LinkRefusal::EmptySet { set: "b".into() }));
-        assert_eq!(flap_link(&view(), &a, &b, &b, 1, ms, ms), Err(LinkRefusal::Protected { name: "mesh1.rpc.2".into() }));
+        assert_eq!(flap_link(&view(), &a, &b, &a, 1, ms, ms), Err(LinkRefusal::Protected { name: "mesh1.rpc.1".into() }));
     }
 
     #[test]

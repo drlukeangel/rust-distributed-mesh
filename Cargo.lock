@@ -3482,6 +3482,7 @@ dependencies = [
  "opentelemetry_sdk",
  "rafka-chaos",
  "rafka-mesh-entity",
+ "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",

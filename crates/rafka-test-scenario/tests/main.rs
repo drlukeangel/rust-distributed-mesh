@@ -5,6 +5,7 @@
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+mod chaos_kit__restored_faults;
 mod estate_teardown;
 mod fabric_build__accepted_topology;
 mod fabric_build__await_attempt;
