@@ -721,6 +721,25 @@ mod tests {
         assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
     }
 
+    /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
+    /// view plans it. Another member the view does not hold (silent longer than this view keeps it)
+    /// is that member's own attempt, never swept into this plan: two admins whose views keep a
+    /// different set of silent members would otherwise plan different first operations, and each
+    /// would believe the other executes it.
+    #[test]
+    fn an_action_plans_only_its_birth_whatever_other_members_the_view_lacks() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let from = IncarnationId::mint();
+        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+        let mut o = mn();
+        o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
+        let want = vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }];
+        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
+        // With no action the generic create still plans every missing member.
+        assert!(plan(&cur, &o, None).operations.len() >= 3);
+    }
+
     /// CONTRACT: once the departure of the exact birth a replace names is published on the
     /// provider's proof (the `NodeDeleted` receipt of that birth), a re-plan of the same attempt, or
     /// of the one that continues it on another admin, plans only the create; a receipt of another
