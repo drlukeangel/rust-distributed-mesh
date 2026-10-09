@@ -161,3 +161,47 @@ fn rule4_scenario_on_node_base_fails() {
         vec![Violation::PrivateInterface { package: "rafka-test-scenario".into(), dependency: "rafka-node-base".into() }]
     );
 }
+
+/// A throwaway workspace: `knobs` has a `test-knobs` feature, `app` (a binary) depends on it with the
+/// feature enabled from `[dependencies]` (`shipped`) or from `[dev-dependencies]` only.
+fn knobs_fixture(shipped: bool) -> Fixture {
+    let f = Fixture::new(&[("knobs", NONE), ("app", &[("knobs", "")])], &[]);
+    let ws = f.root();
+    std::fs::write(ws.join("knobs/Cargo.toml"), "[package]\nname = \"knobs\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\ntest-knobs = []\n").unwrap();
+    std::fs::create_dir_all(ws.join("app/src")).unwrap();
+    std::fs::write(ws.join("app/src/main.rs"), "fn main() {}\n").unwrap();
+    let dep = "knobs = { path = \"../knobs\", features = [\"test-knobs\"] }\n";
+    let manifest = if shipped {
+        format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{dep}")
+    } else {
+        format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nknobs = {{ path = \"../knobs\" }}\n\n[dev-dependencies]\n{dep}")
+    };
+    std::fs::write(ws.join("app/Cargo.toml"), manifest).unwrap();
+    f
+}
+
+#[test]
+fn rule5_binary_that_enables_test_knobs_in_dependencies_fails() {
+    let f = knobs_fixture(true);
+    assert_eq!(check(&f), vec![Violation::TestKnobsShipped { package: "app".into(), dependency: "knobs".into() }]);
+}
+
+#[test]
+fn rule5_binary_that_enables_test_knobs_from_dev_dependencies_only_passes() {
+    let f = knobs_fixture(false);
+    assert_eq!(check(&f), vec![]);
+    // The control: the dev edge does enable it, so the rule above passes because of what it reads, not
+    // because the feature is invisible.
+    assert_eq!(deps::packages_with_test_knobs(&f.root(), "app", "normal,build,dev").unwrap(), vec!["knobs".to_string()]);
+}
+
+#[test]
+fn rule5_test_knobs_is_a_dev_dependency_feature_of_the_rpc_crate_alone() {
+    let root = workspace_root();
+    let dev = deps::packages_with_test_knobs(&root, "rafka-node-rpc", "normal,build,dev").unwrap();
+    assert_eq!(dev, vec!["iroh".to_string()], "the lost-reply cell's iroh carries test-knobs in the dev closure");
+    for bin_package in ["rafka-node-admin-core", "rafka-node-rpc-testkit", "rafka-broker", "rafka-gateway", "rafka-compute", "rafka-registry", "rfa", "rafka-node-rpc"] {
+        let shipped = deps::packages_with_test_knobs(&root, bin_package, "normal,build").unwrap();
+        assert!(shipped.is_empty(), "{bin_package} ships test-knobs through {shipped:?}");
+    }
+}
