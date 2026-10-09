@@ -25,6 +25,7 @@ use tracing::Instrument as _;
 /// What a node-admin answers a Build-facts read from: its own Build state, and what it needs to say
 /// whether its own holdings are whole.
 pub struct BuildFactsDoor {
+    /// This admin's `path.name`.
     pub me: crate::model::PathName,
     /// The Build state this admin holds (its local log, through whatever decorates it).
     pub builds: Arc<dyn BuildStateAdapter>,
@@ -34,9 +35,12 @@ pub struct BuildFactsDoor {
     pub floor: Arc<std::sync::Mutex<Option<(BuildId, u32)>>>,
 }
 
+/// The door a running admin fills once it holds a view.
 pub type BuildFactsSlot = Arc<OnceLock<Arc<BuildFactsDoor>>>;
 
 impl BuildFactsDoor {
+    /// Answer a Build-facts read: stream the facts held for the requested Build in chunks and end
+    /// with whether the holdings are whole.
     pub async fn serve(&self, req: BuildFactsRequest, sink: ReplySink<BuildFacts, NotStarted>) -> BuildFactsReply {
         let BuildFactsRequest::FetchBuildFacts { build_id } = req;
         let span = tracing::info_span!(
@@ -114,8 +118,11 @@ pub fn serve(b: ServerBuilder, slot: BuildFactsSlot) -> ServerBuilder {
 /// The facts of one Build, read whole from one responder.
 #[derive(Debug)]
 pub struct Fetched {
+    /// The Build.
     pub build_id: BuildId,
+    /// The facts read.
     pub facts: Vec<BuildFact>,
+    /// The number of chunks the stream took.
     pub chunks: u32,
     /// The responder's statement that its holdings of the Build are whole (`End.complete`).
     pub complete: bool,

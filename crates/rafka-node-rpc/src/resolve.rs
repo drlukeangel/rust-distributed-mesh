@@ -8,6 +8,8 @@ use rafka_node_rpc_contract::outcome::ResolveFailure;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+/// The exact node a call is for. The domain chooses it; the resolver never chooses a role, fallback
+/// or retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeTarget {
     /// Whoever holds this stable path at the dial cut.
@@ -16,18 +18,24 @@ pub enum NodeTarget {
     ExactNode(NodeId),
 }
 
+/// Where a node is now: its identity, its endpoint and its current birth.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNode {
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's `path.name`.
     pub name: PathName,
     /// The node's Iroh public key.
     pub endpoint_id: iroh::PublicKey,
     /// The one address of the node's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
+    /// The incarnation of the node's current birth.
     pub incarnation: IncarnationId,
 }
 
+/// Answers where an exact target is now.
 pub trait NodeResolver: Send + Sync {
+    /// The node `target` names now, or the named reason it cannot be reached.
     fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure>;
 
     /// Ticks whenever an answer may have changed: a dial in flight re-resolves
@@ -53,15 +61,18 @@ impl Default for StaticResolver {
 }
 
 impl StaticResolver {
+    /// An empty table.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add or replace the node `n`, keyed by its id.
     pub fn insert(&self, n: ResolvedNode) {
         self.nodes.write().unwrap().insert(n.node_id.clone(), n);
         self.changed.send_modify(|v| *v += 1);
     }
 
+    /// Remove the node `id` and answer `Gone` for it from now on.
     pub fn remove_gone(&self, id: &NodeId) {
         self.nodes.write().unwrap().remove(id);
         self.gone.write().unwrap().push(id.clone());

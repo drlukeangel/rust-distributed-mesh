@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 /// versions start again without ever being compared with its previous birth's.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PublisherId {
+    /// The publisher's node name.
     pub node: String,
+    /// The incarnation of the birth that holds the seat.
     pub incarnation: IncarnationId,
 }
 

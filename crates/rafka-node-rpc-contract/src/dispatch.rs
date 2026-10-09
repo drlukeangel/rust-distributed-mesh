@@ -21,20 +21,48 @@ pub enum ServerAction {
     /// Keep reading.
     Continue,
     /// Reset the stream with `421 UNSERVED_OP`; no protocol dispatch.
-    ResetUnserved { op: u8 },
+    ResetUnserved {
+        /// The op that is not served.
+        op: u8,
+    },
     /// Reset the stream with `425 STALE_TARGET`: the fence names another node;
     /// no protocol dispatch.
-    ResetStale { op: u8, fence: Fence },
+    ResetStale {
+        /// The op.
+        op: u8,
+        /// The fence that names another node.
+        fence: Fence,
+    },
     /// Reply the protocol's typed `Malformed(kind)` on the send half, then
     /// stop the receive half with `422 REQUEST_STOP`. The handler never runs.
-    RefuseMalformed { op: u8, kind: MalformedKind },
+    RefuseMalformed {
+        /// The op.
+        op: u8,
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
     /// Reset with `424 PROTOCOL_VIOLATION`; the handler never runs.
-    ResetViolation { op: Option<u8>, reason: &'static str },
+    ResetViolation {
+        /// The op, when the fence could be read.
+        op: Option<u8>,
+        /// Which rule the request broke.
+        reason: &'static str,
+    },
     /// The sender reset the unfinished request (`499`) or the direction ended
     /// without a complete frame: drop it, never dispatch.
-    Drop { reason: &'static str },
+    Drop {
+        /// Why the request is dropped.
+        reason: &'static str,
+    },
     /// The complete, cleanly finished request: decode and dispatch.
-    Dispatch { op: u8, header: RequestHeader, payload: Vec<u8> },
+    Dispatch {
+        /// The op.
+        op: u8,
+        /// The fence and context.
+        header: RequestHeader,
+        /// The request body.
+        payload: Vec<u8>,
+    },
 }
 
 /// The request direction, fed by the transport.
@@ -152,6 +180,7 @@ pub enum ReplayVerdict {
     ReadMayRepeat,
 }
 
+/// Whether `outcome` of a call that `mutating` may be sent again as a new attempt.
 pub fn replay_verdict<R>(outcome: &RpcOutcome<R>, mutating: bool) -> ReplayVerdict {
     match outcome {
         RpcOutcome::Reply(_) => ReplayVerdict::Answered,

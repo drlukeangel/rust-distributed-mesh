@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 /// Written into the node's data dir at spawn: `{"deployment_id", "pid"}`.
-pub const DEPLOYMENT_FILE: &str = "deployment.json";
+pub(crate) const DEPLOYMENT_FILE: &str = "deployment.json";
 
 /// One child this provider started: its deployment, and its exit once seen.
 #[derive(Debug, Clone)]
@@ -29,6 +29,7 @@ struct Launched {
     exit: Option<Option<i32>>,
 }
 
+/// Realises runtimes as host processes.
 pub struct ProcessDeploymentProvider {
     /// Children this provider started. A watcher thread per child waits on
     /// it, so an exit is reaped at once (no zombie) and its code recorded.
@@ -44,6 +45,7 @@ impl Default for ProcessDeploymentProvider {
 }
 
 impl ProcessDeploymentProvider {
+    /// A provider with no children.
     pub fn new() -> Self {
         Self { children: Default::default(), domain: process_control_domain().unwrap_or_else(|e| format!("process:unknown:{e}")) }
     }

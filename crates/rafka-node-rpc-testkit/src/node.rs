@@ -35,11 +35,18 @@ pub fn core_protocols(b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClien
     b.serve_core(client, edges)
 }
 
+/// A node running on the imported substrate: its endpoint routers, membership, Node RPC server and
+/// tasks.
 pub struct RunningNode {
+    /// The endpoint's protocol routers.
     pub routers: Vec<Router>,
+    /// The node's membership.
     pub membership: Membership,
+    /// The node's Node RPC server.
     pub server: NodeRpcServer,
+    /// The node's own status, as it publishes it.
     pub status: Arc<Mutex<MemberStatus>>,
+    /// The node's current digest.
     pub digest: MeshDigest,
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
@@ -62,6 +69,7 @@ pub struct RunningNode {
 /// node-admin's stop grace.
 pub use rafka_mesh_transport::membership::leave_linger_from_env;
 
+/// The drain deadline from `RDM_DRAIN_DEADLINE_MS`, 5000 ms when unset.
 pub fn drain_deadline_from_env() -> Duration {
     Duration::from_millis(std::env::var("RDM_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
 }
@@ -72,7 +80,7 @@ impl RunningNode {
     /// admin answers `RejectedNotAuthority: receiver-not-primary` and the next is tried). A
     /// definitive answer ends the attempt; `NotSent`/`Indeterminate` leaves it to the next call
     /// site. Nothing here gates gossip: the digest already says the state.
-    pub async fn declare_own(&self, state: rafka_node_rpc_contract::status::NodeState) -> Option<String> {
+    pub(crate) async fn declare_own(&self, state: rafka_node_rpc_contract::status::NodeState) -> Option<String> {
         *self.owed_state.lock().unwrap() = Some(state);
         declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state).await
     }
@@ -177,7 +185,7 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
 
 /// [`start_with_seams`], stamping every gossip frame this node publishes with `clock`: the
 /// Rafka-time the executable composes (an RDM executable supplies the OS clock).
-pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
+pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     let key = load_or_mint_key(&launch.data_dir)?;
     // This process's one live resolver: a handler registered below may hold it; it is fed once
     // membership is joined.
@@ -434,7 +442,7 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rafka_nod
 
 
 /// What this node needs to answer a node-admin's status kick about itself.
-pub struct Kicked {
+pub(crate) struct Kicked {
     membership: Membership,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,

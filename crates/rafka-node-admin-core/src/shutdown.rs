@@ -37,14 +37,20 @@ pub enum ShutdownPhase {
 /// One runtime a stopper could not stop, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Incomplete {
+    /// The node that could not be stopped.
     pub node: String,
+    /// Why it could not be stopped.
     pub reason: String,
 }
 
+/// How far a fabric shutdown has progressed.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShutdownProgress {
+    /// The admin that initiated the shutdown.
     pub initiated_by: String,
+    /// The phase the shutdown is in.
     pub phase: ShutdownPhase,
+    /// The runtimes that could not be stopped.
     pub incomplete: Vec<Incomplete>,
 }
 
@@ -76,18 +82,21 @@ impl ShutdownControl {
     }
 
     /// Where this admin broadcasts a shutdown it initiates or hands to a neighbour.
-    pub fn set_publish(&self, publish: Publish) {
+    pub(crate) fn set_publish(&self, publish: Publish) {
         let _ = self.publish.set(publish);
     }
 
+    /// The shutdown held, when one is.
     pub fn held(&self) -> Option<FabricShutdown> {
         self.tx.borrow().clone()
     }
 
+    /// A receiver of the shutdown held.
     pub fn subscribe(&self) -> watch::Receiver<Option<FabricShutdown>> {
         self.tx.subscribe()
     }
 
+    /// The shutdown's progress, when one is held.
     pub fn progress(&self) -> Option<ShutdownProgress> {
         self.progress.lock().unwrap().clone()
     }
@@ -128,7 +137,7 @@ impl ShutdownControl {
     }
 
     /// The fabric-primary begins a shutdown: hold it, then broadcast it.
-    pub async fn initiate(&self, shutdown: FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
+    pub(crate) async fn initiate(&self, shutdown: FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         self.learn(shutdown, "initiated", "self").await?;
         let held = self.held().expect("held after learn");
         if let Some(p) = self.publish.get() {
@@ -139,7 +148,7 @@ impl ShutdownControl {
 }
 
 /// Every current live admin birth in `view` is `Draining`: the Fabric-wide freeze barrier.
-pub fn freeze_barrier(view: &Topology) -> bool {
+pub(crate) fn freeze_barrier(view: &Topology) -> bool {
     let admins: Vec<&Node> = view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
     !admins.is_empty() && admins.iter().all(|n| n.status == NodeStatus::Draining)
 }
@@ -151,7 +160,7 @@ fn present(n: &Node) -> bool {
 
 /// What one admin stops, in order, once the barrier holds: as `mesh`'s primary, its ordinary
 /// members, then its non-primary admins.
-pub fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<Node>) {
+pub(crate) fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<Node>) {
     let mesh = me.mesh.clone();
     let members = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && present(n)).cloned().collect();
     let admins = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.name != *me && present(n)).cloned().collect();
@@ -160,7 +169,7 @@ pub fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<Node>) 
 
 /// Whether every Mesh in `view` holds no runtime but its mesh-primary: what the fabric-primary
 /// waits on before stopping the spine. Returns the runtimes still present otherwise.
-pub fn drained_to_primaries(view: &Topology) -> Result<Vec<Node>, Vec<Node>> {
+pub(crate) fn drained_to_primaries(view: &Topology) -> Result<Vec<Node>, Vec<Node>> {
     let primaries: Vec<Node> = view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
     let left: Vec<Node> = view.nodes.iter().filter(|n| present(n) && !primaries.iter().any(|p| p.name == n.name)).cloned().collect();
     if left.is_empty() {

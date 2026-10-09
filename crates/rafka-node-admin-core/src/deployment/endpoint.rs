@@ -11,7 +11,9 @@ use std::net::{SocketAddr, UdpSocket};
 /// What a socket is: the Iroh transport (UDP) or a listener (TCP).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotTransport {
+    /// The Iroh transport.
     Udp,
+    /// A listener.
     Tcp,
 }
 
@@ -27,10 +29,10 @@ pub const RPC_NODE: KindSpec = KindSpec { listeners: &[] };
 
 /// A node-admin: its mesh transport (gossip and the Node RPC declarations it applies as an
 /// authority) and its control API (HTTP).
-pub const NODE_ADMIN: KindSpec = KindSpec { listeners: &["control"] };
+pub(crate) const NODE_ADMIN: KindSpec = KindSpec { listeners: &["control"] };
 
 /// What a node kind binds and serves.
-pub fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
+pub(crate) fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
     match kind {
         // A product kind binds the one transport here; its own listeners are the product's to
         // assign through its node-admin binding.
@@ -41,12 +43,12 @@ pub fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {
 
 /// Is something on this host holding UDP `addr`? A bind that fails with
 /// `AddrInUse` means yes.
-pub fn udp_port_is_held(addr: SocketAddr) -> bool {
+pub(crate) fn udp_port_is_held(addr: SocketAddr) -> bool {
     matches!(UdpSocket::bind(addr), Err(e) if e.kind() == std::io::ErrorKind::AddrInUse)
 }
 
 /// Is something on this host listening on TCP `addr`?
-pub fn tcp_port_is_held(addr: SocketAddr) -> bool {
+pub(crate) fn tcp_port_is_held(addr: SocketAddr) -> bool {
     matches!(std::net::TcpListener::bind(addr), Err(e) if e.kind() == std::io::ErrorKind::AddrInUse)
 }
 
@@ -58,7 +60,7 @@ pub fn tcp_port_is_held(addr: SocketAddr) -> bool {
 /// One socket on a port, as `/proc` lists it: its state, inode and the live process (if any)
 /// whose fd table holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortHolder {
+pub(crate) struct PortHolder {
     pub state: String,
     pub inode: u64,
     pub pid: Option<u32>,
@@ -70,7 +72,7 @@ pub struct PortHolder {
 /// by a live process other than `exited_pid`. A port another live process listens on is proof the
 /// exited runtime no longer holds it, however the probe's bind fares; only a socket still held by
 /// the exited pid (its group still tearing down) keeps the port "still held".
-pub fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Option<u32>) -> bool {
+pub(crate) fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Option<u32>) -> bool {
     let holders = port_holders(addr, transport);
     !holders.iter().any(|h| h.pid.is_some() && h.pid == exited_pid)
         && (holders.iter().any(|h| h.pid.is_some()) || !match transport {
@@ -79,6 +81,7 @@ pub fn released_by(addr: SocketAddr, transport: SlotTransport, exited_pid: Optio
         })
 }
 
+/// Who holds the socket at `addr` for `transport`, in words; `no socket` when none does.
 pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
     let holders = port_holders(addr, transport);
     if holders.is_empty() {
@@ -92,7 +95,7 @@ pub fn port_holder(addr: SocketAddr, transport: SlotTransport) -> String {
 }
 
 /// Every socket on `addr`'s port for `transport`, with its holder (see [`port_holder`]).
-pub fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Vec<PortHolder> {
+pub(crate) fn port_holders(addr: SocketAddr, transport: SlotTransport) -> Vec<PortHolder> {
     let tables: &[&str] = match transport {
         SlotTransport::Tcp => &["/proc/net/tcp", "/proc/net/tcp6"],
         SlotTransport::Udp => &["/proc/net/udp", "/proc/net/udp6"],

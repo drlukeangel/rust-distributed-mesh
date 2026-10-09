@@ -32,8 +32,11 @@ const RUNTIME_MOUNTS: &[&str] = &["/lib", "/lib64", "/usr"];
 /// The fabric's bridge network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricNetwork {
+    /// The network's name.
     pub name: String,
+    /// The network's base address.
     pub base: Ipv4Addr,
+    /// The network's prefix length.
     pub prefix: u8,
     /// The host's address on the network: node-admin is reachable here.
     pub gateway: Ipv4Addr,
@@ -56,6 +59,7 @@ struct NodeIps {
     held: HashMap<crate::model::PathName, IpAddr>,
 }
 
+/// Realises runtimes as containers on the fabric's bridge network.
 pub struct ContainerDeploymentProvider {
     fabric: String,
     network: FabricNetwork,
@@ -92,7 +96,7 @@ fn container_name(spec: &ResolvedNodeLaunch) -> String {
 
 /// Container names allow `[a-zA-Z0-9][a-zA-Z0-9_.-]`.
 /// Every address a container holds on `network` right now (`docker network inspect`).
-pub fn network_addresses(network: &str) -> std::collections::BTreeSet<IpAddr> {
+pub(crate) fn network_addresses(network: &str) -> std::collections::BTreeSet<IpAddr> {
     let out = std::process::Command::new("docker").args(["network", "inspect", "--format", "{{range .Containers}}{{.IPv4Address}} {{end}}", network]).output();
     out.map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().filter_map(|a| a.split('/').next()?.parse().ok()).collect()).unwrap_or_default()
 }
@@ -132,7 +136,8 @@ pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
 
 /// Is TCP `addr` listened on in the network namespace of `pid`
 /// (`/proc/<pid>/net/tcp`, state `0A` = LISTEN)?
-pub fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
+#[cfg(test)]
+pub(crate) fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
     netns_table_holds(pid, "tcp", addr, Some("0A"))
 }
 
@@ -158,7 +163,8 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
 /// Does process `pid` itself hold a socket at `addr` (`udp`, or a `tcp` listener)? The socket's
 /// inode in the namespace table is matched against the process's own descriptors, so a port held
 /// by another process (a squatter, or an earlier birth) never passes for this runtime's.
-pub fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
+#[cfg(test)]
+pub(crate) fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
     let inodes: Vec<String> = text
@@ -209,7 +215,7 @@ fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str
 
 /// `RDM_CONTAINER_SUBNET_POOL` (default `10.231.0.0/16`): the IPv4 block
 /// fabric networks are carved from, one `/24` each.
-pub fn subnet_pool_from_env() -> Result<(Ipv4Addr, u8), String> {
+pub(crate) fn subnet_pool_from_env() -> Result<(Ipv4Addr, u8), String> {
     let raw = std::env::var("RDM_CONTAINER_SUBNET_POOL").unwrap_or_else(|_| "10.231.0.0/16".into());
     match parse_cidr(&raw) {
         Some((base, prefix)) if prefix <= 24 => Ok((base, prefix)),
@@ -219,7 +225,7 @@ pub fn subnet_pool_from_env() -> Result<(Ipv4Addr, u8), String> {
 
 /// The `/24`s of `pool`, starting at one picked from `fabric` so concurrent
 /// fabrics rarely contend for the same one.
-pub fn candidate_subnets(pool: (Ipv4Addr, u8), fabric: &str) -> Vec<Ipv4Addr> {
+pub(crate) fn candidate_subnets(pool: (Ipv4Addr, u8), fabric: &str) -> Vec<Ipv4Addr> {
     let count = 1u32 << (24 - pool.1 as u32);
     let start = fabric.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32)) % count;
     let base = u32::from(pool.0) & !((1u32 << (32 - pool.1 as u32)) - 1);
@@ -305,6 +311,7 @@ impl ContainerDeploymentProvider {
         })
     }
 
+    /// The fabric's bridge network.
     pub fn network(&self) -> &FabricNetwork {
         &self.network
     }

@@ -18,44 +18,109 @@ use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// The resolve probe protocol on op `0x71`.
 pub struct ResolveProbe;
 
+/// The node a resolve probe names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProbeTarget {
+    /// Exactly this node id.
     Exact(String),
+    /// Whoever holds this `path.name`.
     Path(String),
 }
 
+/// A resolve probe call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveRequest {
-    Resolve { target: ProbeTarget },
+    /// Resolve `target` on the executing node.
+    Resolve {
+        /// The target to resolve.
+        target: ProbeTarget,
+    },
 }
 
 /// Who answered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnsweredBy {
+    /// The answering node's id.
     pub node_id: String,
+    /// The answering node's `path.name`.
     pub node: String,
+    /// The answering node's incarnation id.
     pub incarnation_id: String,
 }
 
+/// A resolve probe answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResolveReply {
-    Found { by: AnsweredBy, node_id: String, name: String, incarnation_id: String },
-    Gone { by: AnsweredBy },
-    Unknown { by: AnsweredBy },
-    Unavailable { by: AnsweredBy },
+    /// The target resolved.
+    Found {
+        /// Who answered.
+        by: AnsweredBy,
+        /// The resolved node's id.
+        node_id: String,
+        /// The resolved node's `path.name`.
+        name: String,
+        /// The resolved node's incarnation.
+        incarnation_id: String,
+    },
+    /// The node departed and does not return.
+    Gone {
+        /// Who answered.
+        by: AnsweredBy,
+    },
+    /// No node by that target was ever known.
+    Unknown {
+        /// Who answered.
+        by: AnsweredBy,
+    },
+    /// The node is known and cannot be reached now.
+    Unavailable {
+        /// Who answered.
+        by: AnsweredBy,
+    },
     /// The target does not parse.
-    BadTarget { by: AnsweredBy, reason: String },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    BadTarget {
+        /// Who answered.
+        by: AnsweredBy,
+        /// Why the target is refused.
+        reason: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl ResolveReply {
+    /// The resolution's name: `found`, `gone`, `unknown`, `unavailable` or `bad-target`.
     pub fn resolution(&self) -> &'static str {
         match self {
             Self::Found { .. } => "found",

@@ -10,36 +10,43 @@
 use serde::{Deserialize, Serialize};
 
 /// `caller_system`: at most this many bytes of `[a-z0-9-]`.
-pub const MAX_CALLER_SYSTEM_BYTES: usize = 32;
+pub(crate) const MAX_CALLER_SYSTEM_BYTES: usize = 32;
 /// `tracestate`: at most this many bytes.
 pub const MAX_TRACESTATE_BYTES: usize = 512;
 /// `baggage`: at most this many bytes.
 pub const MAX_BAGGAGE_BYTES: usize = 8192;
 
 /// Baggage keys a span exposes as attributes; every other key propagates and is not recorded.
-pub const BAGGAGE_ALLOWLIST: [&str; 3] = ["test_case", "scenario", "operation"];
+pub(crate) const BAGGAGE_ALLOWLIST: [&str; 3] = ["test_case", "scenario", "operation"];
 
 /// The observability context one invocation carries.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallContext {
     /// The originating system (`rdm`, `rafka`), kept across a carried hop.
     pub caller_system: Option<String>,
+    /// The W3C `traceparent`.
     pub traceparent: Option<String>,
+    /// The W3C `tracestate`.
     pub tracestate: Option<String>,
+    /// The W3C `baggage`.
     pub baggage: Option<String>,
 }
 
 /// Why a part of the context was dropped, in the words the span records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dropped {
+    /// The `caller_system` was malformed or over its bound.
     CallerSystem,
     /// An invalid `traceparent` takes `tracestate` with it.
     Traceparent,
+    /// The `tracestate` was over its bound.
     Tracestate,
+    /// The `baggage` was over its bound.
     Baggage,
 }
 
 impl Dropped {
+    /// The part's name as the span records it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CallerSystem => "caller_system",
@@ -53,7 +60,7 @@ impl Dropped {
 impl CallContext {
     /// A `traceparent` that is well-formed: `00-<32 hex>-<16 hex>-<2 hex>`, trace and parent
     /// ids not all zero.
-    pub fn traceparent_is_valid(tp: &str) -> bool {
+    pub(crate) fn traceparent_is_valid(tp: &str) -> bool {
         let parts: Vec<&str> = tp.split('-').collect();
         let [version, trace, parent, flags] = parts[..] else { return false };
         let hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
@@ -105,7 +112,7 @@ impl CallContext {
 
     /// Every baggage member as `(key, value)`, properties removed. A context with no baggage
     /// has none.
-    pub fn baggage_entries(&self) -> Vec<(String, String)> {
+    pub(crate) fn baggage_entries(&self) -> Vec<(String, String)> {
         self.baggage
             .as_deref()
             .map(|b| {

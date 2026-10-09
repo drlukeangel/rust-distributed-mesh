@@ -28,21 +28,30 @@ use tokio::sync::watch;
 /// What the deploying admin holds of one birth before it reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deployed {
+    /// The deployed node's `path.name`.
     pub name: PathName,
+    /// The deployed node's id.
     pub node_id: NodeId,
+    /// The incarnation of the deployed birth.
     pub incarnation: IncarnationId,
+    /// The incarnation the birth supersedes, when it restarts a node.
     pub supersedes: Option<IncarnationId>,
+    /// The birth's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The exact runtime its provider made available to the birth.
     pub runtime: RuntimeFact,
+    /// The birth's data directory.
     pub data_dir: String,
 }
 
 /// The first field of a digest that disagrees with what was deployed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mismatch {
+    /// The name of the field.
     pub field: &'static str,
+    /// The value deployed.
     pub deployed: String,
+    /// The value the birth reported.
     pub reported: String,
 }
 
@@ -109,6 +118,7 @@ impl Joins {
         self.slots.lock().unwrap().remove(node_id);
     }
 
+    /// How the deploying admin stands toward the birth `d` reports.
     pub fn standing(&self, d: &MeshDigest) -> Standing {
         match self.slots.lock().unwrap().get(&d.node.node_id) {
             None => Standing::Unknown,
@@ -129,7 +139,9 @@ impl Joins {
 
 /// Fills the admin's side of a join once the admin holds a view.
 pub struct JoinDoor {
+    /// This admin's `path.name`.
     pub me: PathName,
+    /// The births this admin deployed.
     pub joins: Arc<Joins>,
     /// What the admin answers a joiner with.
     pub answer: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<JoinAnswer, String>> + Send>> + Send + Sync>,
@@ -140,9 +152,12 @@ pub struct JoinDoor {
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
+/// The door a running admin fills once it holds a view.
 pub type JoinSlot = Arc<OnceLock<Arc<JoinDoor>>>;
 
 impl JoinDoor {
+    /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
+    /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
         let JoinRequest::JoinNode { digest } = req;
         let d = MeshDigest::from(digest);

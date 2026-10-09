@@ -1,5 +1,5 @@
 //! `rafka-node-admin`: a fabric member serving the control API. All
-//! configuration is the environment (`docs/i143/design.md` §3).
+//! configuration is the environment.
 
 #[tokio::main]
 async fn main() {

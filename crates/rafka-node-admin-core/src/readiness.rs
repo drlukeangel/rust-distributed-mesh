@@ -26,7 +26,7 @@ impl ShapeFacts {
 }
 
 /// Every reason `mesh` is not ready, named; empty means ready.
-pub fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<String> {
+pub(crate) fn mesh_not_ready(desired: &MeshDesired, observed: &Topology) -> Vec<String> {
     let mut why = Vec::new();
     if !observed.meshes.iter().any(|m| m.name == desired.name) {
         why.push(format!("mesh {} does not exist", desired.name));

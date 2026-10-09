@@ -59,11 +59,16 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+/// One step of creating a node, in the order of [`CreateStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateStep {
+    /// Mint the birth's incarnation and deployment id, and the node id unless the birth restarts a node.
     AllocateIdentity,
+    /// Ensure the node's transport key in its data directory and hand a node-admin its held runtime rows.
     PrepareStorage,
+    /// Record that the provider needs nothing per node: the host network namespace is shared and a container provider's network exists per fabric.
     PrepareNetwork,
+    /// Start the runtime through the provider.
     DeployRuntime,
     /// The provider's handle names its runtime exactly (a pid with its
     /// start token, an immutable container id).
@@ -72,6 +77,7 @@ pub enum CreateStep {
     ResolveProviderControlDomain,
     /// The normalized `RuntimeFact` is in the birth's data dir.
     MakeRuntimeFactAvailableToBirth,
+    /// Wait for the birth to report the addresses it bound.
     WaitForBind,
     /// The birth's projection: its node record and data dir, and the fact it
     /// publishes with its own membership digest.
@@ -81,8 +87,11 @@ pub enum CreateStep {
     /// is heard or asked to be Ready (e4.s11): a peer mesh's admin is heard on the backbone only
     /// once it is its mesh's primary, which needs Ready, which needs this.
     ApplyMeshPending,
+    /// Wait for the birth's own digest to reach the admin's membership.
     WaitForMeshJoin,
+    /// Wait for the birth to declare itself ready.
     WaitForNodeReady,
+    /// The node is created.
     Complete,
 }
 
@@ -95,6 +104,7 @@ pub const READY_PREREQUISITES: [CreateStep; 4] = [
 ];
 
 impl CreateStep {
+    /// Every create step in order.
     pub const ORDER: [CreateStep; 13] = [
         Self::AllocateIdentity,
         Self::PrepareStorage,
@@ -111,6 +121,7 @@ impl CreateStep {
         Self::Complete,
     ];
 
+    /// The step's name as it appears in receipts and spans.
     pub fn name(self) -> &'static str {
         match self {
             Self::AllocateIdentity => "AllocateIdentity",
@@ -130,15 +141,21 @@ impl CreateStep {
     }
 }
 
+/// One step of retiring a node, in the order of [`RetireStep::ORDER`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetireStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
+    /// Tell the exact birth to enter `Draining`.
     MarkDraining,
+    /// Wait, bounded, for the birth's in-flight work to finish.
     WaitForDrain,
+    /// Publish the birth's `Leaving` announcement.
     PublishLeaving,
+    /// Wait for the birth to stop admitting Node RPC calls.
     CloseRpcAdmission,
+    /// Stop the runtime through the provider.
     TerminateRuntime,
     /// The departure (a removal only): the provider proved the runtime terminal; the
     /// node has left.
@@ -152,11 +169,14 @@ pub enum RetireStep {
     /// own `Leaving` before the local cleanup (Luke 2026-10-05). Not in [`RetireStep::ORDER`],
     /// which is an ordinary node retire.
     ObserveDeparture,
+    /// Remove the node from the local topology.
     RemoveTopologyMembership,
+    /// The node is retired.
     Complete,
 }
 
 impl RetireStep {
+    /// Every retire step in order.
     pub const ORDER: [RetireStep; 10] = [
         Self::NodeDeleting,
         Self::MarkDraining,
@@ -170,6 +190,7 @@ impl RetireStep {
         Self::Complete,
     ];
 
+    /// The step's name as it appears in receipts and spans.
     pub fn name(self) -> &'static str {
         match self {
             Self::NodeDeleting => "NodeDeleting",
@@ -189,18 +210,25 @@ impl RetireStep {
 }
 
 /// Day 0: the externally started admin adopts its own runtime (PRD §5.3).
+/// One step of adopting the externally started admin's own runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdoptStep {
+    /// Take the current process as the admin's runtime.
     AdoptCurrentRuntime,
+    /// Register the exact handle of the runtime.
     RegisterExactRuntimeHandle,
+    /// Resolve the provider's control domain.
     ResolveProviderControlDomain,
+    /// Publish the runtime fact and its metadata.
     PublishRuntimeFactAndCurrentRuntimeMetadata,
 }
 
 impl AdoptStep {
+    /// Every adopt step in order.
     pub const ORDER: [AdoptStep; 4] =
         [Self::AdoptCurrentRuntime, Self::RegisterExactRuntimeHandle, Self::ResolveProviderControlDomain, Self::PublishRuntimeFactAndCurrentRuntimeMetadata];
 
+    /// The step's name as it appears in receipts and spans.
     pub fn name(self) -> &'static str {
         match self {
             Self::AdoptCurrentRuntime => "AdoptCurrentRuntime",
@@ -212,11 +240,11 @@ impl AdoptStep {
 }
 
 /// Where the Day-0 admin keeps its adoption receipts, in its data dir.
-pub const ADOPTION_RECEIPTS: &str = "runtime-adoption.json";
+pub(crate) const ADOPTION_RECEIPTS: &str = "runtime-adoption.json";
 
 /// One Day-0 adoption step's receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdoptionReceipt {
+pub(crate) struct AdoptionReceipt {
     pub step: String,
     pub outcome: StepOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,6 +310,7 @@ impl CurrentRuntimeAdoption {
         Ok(a)
     }
 
+    /// The runtime fact the adoption established.
     pub fn fact(&self) -> &RuntimeFact {
         self.fact.as_ref().expect("AdoptCurrentRuntime set the fact")
     }
@@ -326,7 +355,7 @@ impl CurrentRuntimeAdoption {
 }
 
 /// The Day-0 adoption steps `data_dir` holds no `Complete` receipt for.
-pub fn adoption_missing(data_dir: &std::path::Path) -> Vec<&'static str> {
+pub(crate) fn adoption_missing(data_dir: &std::path::Path) -> Vec<&'static str> {
     let receipts: Vec<AdoptionReceipt> = std::fs::read(data_dir.join(ADOPTION_RECEIPTS)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     AdoptStep::ORDER
         .iter()
@@ -364,7 +393,9 @@ pub trait NodeObserver: Send + Sync {
 /// The runtime part of a birth's own membership digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publication {
+    /// The runtime fact the birth publishes.
     pub runtime: Option<RuntimeFact>,
+    /// The birth's data directory.
     pub data_dir: Option<String>,
 }
 
@@ -411,7 +442,7 @@ fn last_ended_attempt(receipts: &[&BuildStepReceipt], operation: &str, attempt: 
 /// The prerequisites of [`READY_PREREQUISITES`] that `receipts` holds no
 /// `Complete` receipt for: of `operation`, from the runs after its last
 /// ended attempt ([`last_ended_attempt`]), up to and including `attempt`.
-pub fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &str, attempt: u32) -> Vec<&'static str> {
+pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operation: &str, attempt: u32) -> Vec<&'static str> {
     let ours: Vec<&BuildStepReceipt> = receipts.iter().filter(|r| r.operation == operation && r.attempt <= attempt).collect();
     let ended = last_ended_attempt(&ours, operation, attempt);
     READY_PREREQUISITES
@@ -440,7 +471,10 @@ pub enum RetireKind {
 #[serde(tag = "arm", rename_all = "kebab-case")]
 pub enum StorageDisposition {
     /// Released through the exact locator.
-    Released { locator: String },
+    Released {
+        /// The locator the storage was released through.
+        locator: String,
+    },
     /// `Persistent { on_retire: Preserve }`: left where it is.
     Preserved,
     /// The Build holds no meta for this path: left where it is, never destroyed on missing evidence.
@@ -457,7 +491,10 @@ pub enum AdmissionClosure {
     /// This deployment's own runtime has exited: it admits nothing.
     ThisRuntimeExited,
     /// The drain deadline passed with the closure unheard; the provider's terminal proof closes it.
-    Deadline { last_refusal: String },
+    Deadline {
+        /// The last refusal the closure check saw.
+        last_refusal: String,
+    },
     /// No drain was established, so no closure was awaited.
     DrainNotEstablished,
 }
@@ -469,15 +506,30 @@ pub enum AdmissionClosure {
 #[serde(tag = "arm", rename_all = "kebab-case")]
 pub enum DrainOutcome {
     /// The exact birth entered Draining; this much work was still in flight.
-    Established { in_flight: u64 },
+    Established {
+        /// The work still in flight.
+        in_flight: u64,
+    },
     /// The call never reached the birth (no route, dial refused, connection lost before the send).
-    NotSent { reason: String },
+    NotSent {
+        /// Why the call was not sent.
+        reason: String,
+    },
     /// The call may have reached the birth; no reply came back.
-    Indeterminate { reason: String },
+    Indeterminate {
+        /// Why the outcome is unknown.
+        reason: String,
+    },
     /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).
-    Refused { reply: String },
+    Refused {
+        /// The refusal's name.
+        reply: String,
+    },
     /// The drain was established and the lifecycle drain deadline passed before `Leaving`.
-    Deadline { last_in_flight: Option<u64> },
+    Deadline {
+        /// The last in-flight count seen, when one was.
+        last_in_flight: Option<u64>,
+    },
 }
 
 /// The arm one typed drain call is (`ApplyNodeState(Draining)` to the exact birth): only
@@ -499,9 +551,12 @@ pub fn drain_outcome(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafka_no
     }
 }
 
+/// Publishes the lifecycle events of a removal or a restart.
 #[async_trait::async_trait]
 pub trait LifecycleEvents: Send + Sync {
+    /// The removal is under way.
     async fn deleting(&self, op: &LifecycleOp);
+    /// The removal completed.
     async fn deleted(&self, op: &LifecycleOp);
     /// A restart's pre-event (`NodeRestarting`): the birth is held through its Leaving.
     async fn restarting(&self, op: &LifecycleOp);
@@ -523,8 +578,11 @@ impl LifecycleEvents for NoLifecycleEvents {
     }
 }
 
+/// The destination of a created node's record: the admin's topology.
 pub trait TopologySink: Send + Sync {
+    /// Publish `node`.
     fn publish(&self, node: Node);
+    /// Remove the node named `name`.
     fn remove(&self, name: &PathName);
 }
 
@@ -533,7 +591,9 @@ pub trait TopologySink: Send + Sync {
 pub struct LaunchTemplate {
     /// The Fabric's name (its label) and its identity.
     pub fabric: String,
+    /// The fabric's minted id.
     pub fabric_id: rafka_mesh_entity::FabricId,
+    /// The executable every launch runs.
     pub executable: PathBuf,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
@@ -541,6 +601,7 @@ pub struct LaunchTemplate {
     pub launcher: rafka_mesh_entity::launch::Launcher,
     /// Passed through to every node (`RDM_EVIDENCE_DIR`, `RUST_LOG`, ...).
     pub env: BTreeMap<String, String>,
+    /// The root of every node's data directory.
     pub data_root: PathBuf,
 }
 
@@ -553,11 +614,16 @@ impl LaunchTemplate {
     }
 }
 
+/// A request to create one node.
 #[derive(Debug, Clone)]
 pub struct CreateRequest {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
+    /// The node to create.
     pub node: PathName,
+    /// The endpoint plan of the node's kind.
     pub spec: &'static KindSpec,
     /// `Some(current record)` for a restart: same node id, data dir and
     /// transport key, a new incarnation.
@@ -570,14 +636,18 @@ pub struct CreateRequest {
 /// Work the executor does at the birth between its mesh join and its Ready: the fabric primary's
 /// Pending hand-off at a mesh's first admin. Runs as its own receipted step (`ApplyMeshPending`);
 /// a failure fails the create, so nothing downstream starts under an assumed state.
-pub type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
+/// A request to retire one node.
 #[derive(Debug, Clone)]
 pub struct RetireRequest {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
     /// The node's current record.
     pub node: Node,
+    /// The runtime handle of the birth.
     pub handle: DeploymentHandle,
     /// A removal of the logical node (the pre-notice and the departure are published, and the
     /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
@@ -588,9 +658,12 @@ pub struct RetireRequest {
     pub observe_departure: bool,
 }
 
+/// A step that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineError {
+    /// The step.
     pub step: &'static str,
+    /// Why it failed.
     pub reason: String,
 }
 
@@ -600,10 +673,14 @@ impl std::fmt::Display for PipelineError {
     }
 }
 
+/// The bounds of the pipeline's waits.
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
+    /// How long `WaitForBind` waits.
     pub bind: Duration,
+    /// How long `WaitForMeshJoin` waits.
     pub join: Duration,
+    /// How long `WaitForNodeReady` waits.
     pub ready: Duration,
     /// How long `WaitForDrain` and `CloseRpcAdmission` wait.
     pub drain: Duration,
@@ -627,7 +704,9 @@ impl Default for Timeouts {
 /// Where a birth reported it bound: the addresses its own digest names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bound {
+    /// The transport address the birth bound.
     pub transport: SocketAddr,
+    /// The non-Iroh listeners the birth bound, by name.
     pub listeners: Vec<(String, SocketAddr)>,
 }
 
@@ -649,22 +728,32 @@ impl Bound {
     }
 }
 
+/// The pipeline that creates and retires runtimes.
 pub struct DeploymentPipeline<'a> {
+    /// The provider that realises runtimes.
     pub provider: &'a dyn DeploymentProvider,
     /// The births this admin deployed and awaits a `JoinNode` from.
     pub joins: &'a Joins,
+    /// The observer of births' membership.
     pub observer: &'a dyn NodeObserver,
+    /// Where created nodes are published.
     pub sink: &'a dyn TopologySink,
+    /// Where lifecycle events are published.
     pub lifecycle: &'a dyn LifecycleEvents,
+    /// The Build state receipts are appended to.
     pub builds: &'a dyn BuildStateAdapter,
+    /// The facts every launch carries.
     pub template: &'a LaunchTemplate,
+    /// The bounds of the waits.
     pub timeouts: Timeouts,
 }
 
 /// A created node and the runtime realising it.
 #[derive(Debug, Clone)]
 pub struct Created {
+    /// The created node's record.
     pub node: Node,
+    /// The runtime realising the node.
     pub handle: DeploymentHandle,
 }
 
@@ -818,7 +907,7 @@ impl DeploymentPipeline<'_> {
 
     /// `create`, with `before_ready` run as the `ApplyMeshPending` step once the birth has joined
     /// its mesh and before it is asked to be Ready.
-    pub async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt, req.restart_of.is_some());
         self.create_steps(req, before_ready).instrument(span).await

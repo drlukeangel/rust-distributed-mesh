@@ -20,31 +20,81 @@ use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequ
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 
+/// The declare probe protocol on op `0x72`.
 pub struct DeclareProbe;
 
+/// The authority a declare probe names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareTarget {
+    /// Exactly this node id.
     Exact(String),
+    /// Whoever holds this `path.name`.
     Path(String),
 }
 
+/// A declare probe call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareRequest {
     /// Declare `state` for this node's own birth to `to`; the overrides are testkit-only.
-    Declare { to: DeclareTarget, state: NodeState, node_id: Option<String>, incarnation: Option<String> },
+    Declare {
+        /// The authority to declare to.
+        to: DeclareTarget,
+        /// The state to declare.
+        state: NodeState,
+        /// A node id to declare under instead of the node's own; testkit only.
+        node_id: Option<String>,
+        /// An incarnation to declare under instead of the node's own; testkit only.
+        incarnation: Option<String>,
+    },
 }
 
+/// A declare probe answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeclareReply {
     /// The authority answered: the Node RPC outcome name and, for a Reply, the typed status reply.
-    Answered { outcome: String, reply: Option<StatusReply>, reason: Option<String> },
-    BadTarget { reason: String },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    Answered {
+        /// The Node RPC outcome name.
+        outcome: String,
+        /// The typed status reply, when the call replied.
+        reply: Option<StatusReply>,
+        /// Why the call did not reply.
+        reason: Option<String>,
+    },
+    /// The target is refused.
+    BadTarget {
+        /// Why the target is refused.
+        reason: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl NodeProtocol for DeclareProbe {

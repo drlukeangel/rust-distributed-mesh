@@ -29,7 +29,7 @@ type OpKey = (String, u32, String);
 /// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
 /// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp) and `in_flight`,
 /// the draining work count, which is the digest's load.
-pub fn topology_view(d: &MeshDigest) -> MeshDigest {
+pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
@@ -37,7 +37,7 @@ pub fn topology_view(d: &MeshDigest) -> MeshDigest {
 }
 
 /// The digest without its load: what an ordinary node holds of a member of a remote Mesh.
-pub fn without_load(d: &MeshDigest) -> MeshDigest {
+pub(crate) fn without_load(d: &MeshDigest) -> MeshDigest {
     let mut v = d.clone();
     v.in_flight = None;
     v
@@ -53,6 +53,8 @@ pub struct Full {
 }
 
 impl Full {
+    /// A full from its members, the overlays still open and the departures retained; each keyed by
+    /// its node id.
     pub fn new(digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Self {
         Self {
             digests: digests.into_iter().map(|d| (d.node.node_id.to_string(), d)).collect(),
@@ -61,18 +63,22 @@ impl Full {
         }
     }
 
+    /// The members, ordered by node id.
     pub fn digests(&self) -> Vec<MeshDigest> {
         self.digests.values().cloned().collect()
     }
 
+    /// The overlays still open.
     pub fn in_flight(&self) -> Vec<LifecycleOp> {
         self.in_flight.values().cloned().collect()
     }
 
+    /// The retained departures.
     pub fn departed(&self) -> Vec<LifecycleOp> {
         self.departed.values().cloned().collect()
     }
 
+    /// The number of members.
     pub fn member_count(&self) -> usize {
         self.digests.len()
     }
@@ -130,11 +136,14 @@ pub struct Delta {
     pub changed: Vec<MeshDigest>,
     /// NodeIds no longer listed.
     pub removed: Vec<String>,
+    /// The overlays opened or advanced.
     pub in_flight: Vec<LifecycleOp>,
+    /// The departures recorded.
     pub departed: Vec<LifecycleOp>,
 }
 
 impl Delta {
+    /// Whether the delta moves nothing.
     pub fn is_empty(&self) -> bool {
         self.changed.is_empty() && self.removed.is_empty() && self.in_flight.is_empty() && self.departed.is_empty()
     }
@@ -160,10 +169,12 @@ impl SourceVersion {
         self.version
     }
 
+    /// The version of the last topology observed, 0 before any.
     pub fn version(&self) -> u64 {
         self.version
     }
 
+    /// The next snapshot id of this publisher.
     pub fn next_snapshot_id(&mut self) -> u64 {
         self.snapshots += 1;
         self.snapshots
@@ -220,15 +231,22 @@ pub fn chunks_of(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, 
 /// (gossip.md §3.3 "records the publisher and version baseline").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSnapshot {
+    /// The source mesh's name.
     pub mesh: String,
+    /// The publisher that put the snapshot on the backbone.
     pub publisher: PublisherId,
+    /// The snapshot's `topology_version`.
     pub topology_version: u64,
+    /// The members.
     pub digests: Vec<MeshDigest>,
+    /// The overlays still open.
     pub in_flight: Vec<LifecycleOp>,
+    /// The retained departures.
     pub departed: Vec<LifecycleOp>,
 }
 
 impl SourceSnapshot {
+    /// The snapshot as a [`Full`].
     pub fn full(&self) -> Full {
         Full::new(self.digests.clone(), self.in_flight.clone(), self.departed.clone())
     }
@@ -237,26 +255,40 @@ impl SourceSnapshot {
 /// One chunk of a snapshot, as a receiver reads it from a `Members` frame.
 #[derive(Debug, Clone)]
 pub struct Chunk {
+    /// The source mesh's name.
     pub mesh: String,
+    /// The publisher of the snapshot.
     pub publisher: PublisherId,
     /// `None` on the backbone; the forwarding primary on a Mesh's own channel.
     pub forwarded_by: Option<String>,
+    /// The snapshot's `topology_version`.
     pub topology_version: u64,
+    /// The publisher's own snapshot counter.
     pub snapshot_id: u64,
+    /// This chunk's index within the snapshot.
     pub chunk_index: u32,
+    /// The number of chunks in the snapshot.
     pub chunk_count: u32,
+    /// The members this chunk carries.
     pub digests: Vec<MeshDigest>,
+    /// The overlays this chunk carries.
     pub in_flight: Vec<LifecycleOp>,
+    /// The departures this chunk carries.
     pub departed: Vec<LifecycleOp>,
 }
 
 /// A complete snapshot, installed.
 #[derive(Debug, Clone)]
 pub struct Install {
+    /// The source mesh's name.
     pub mesh: String,
+    /// The publisher of the installed snapshot.
     pub publisher: PublisherId,
+    /// The installed `topology_version`.
     pub topology_version: u64,
+    /// The installed snapshot's id.
     pub snapshot_id: u64,
+    /// The installed topology.
     pub full: Full,
     /// The held publisher was another (or none): this snapshot is a new epoch.
     pub new_epoch: bool,
@@ -270,19 +302,51 @@ pub struct Install {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The chunk names an index outside its count, or a count that disagrees with its snapshot's.
-    MalformedChunk { chunk_index: u32, chunk_count: u32, why: &'static str },
+    /// The chunk is malformed.
+    MalformedChunk {
+        /// The chunk's index.
+        chunk_index: u32,
+        /// The chunk's count.
+        chunk_count: u32,
+        /// What is wrong with it.
+        why: &'static str,
+    },
     /// A complete snapshot older than the version held from the same publisher.
-    OlderThanHeld { held_version: u64, offered_version: u64 },
+    /// The snapshot is older than the version held from the same publisher.
+    OlderThanHeld {
+        /// The version held.
+        held_version: u64,
+        /// The version offered.
+        offered_version: u64,
+    },
     /// A chunk of a snapshot older than the one being assembled from the same source.
-    OlderThanPending { pending_version: u64, pending_snapshot: u64, offered_version: u64, offered_snapshot: u64 },
+    /// The chunk belongs to a snapshot older than the one being assembled from the same source.
+    OlderThanPending {
+        /// The version being assembled.
+        pending_version: u64,
+        /// The snapshot id being assembled.
+        pending_snapshot: u64,
+        /// The version the chunk names.
+        offered_version: u64,
+        /// The snapshot id the chunk names.
+        offered_snapshot: u64,
+    },
 }
 
 /// What a chunk did.
 #[derive(Debug, Clone)]
 pub enum Taken {
     /// The snapshot is not complete: nothing is installed and no version moved.
-    Waiting { held: u32, of: u32 },
+    /// Chunks are still missing.
+    Waiting {
+        /// The chunks held.
+        held: u32,
+        /// The chunks the snapshot has.
+        of: u32,
+    },
+    /// The snapshot completed and was installed.
     Installed(Box<Install>),
+    /// The chunk was refused.
     Refused(Refusal),
 }
 
@@ -292,9 +356,19 @@ pub enum Gap {
     /// No snapshot of this source is held.
     NoBaseline,
     /// The held snapshot is of another publisher (a new epoch): its full comes first.
-    OtherEpoch { held: PublisherId },
+    /// The held snapshot is of another publisher.
+    OtherEpoch {
+        /// The publisher held.
+        held: PublisherId,
+    },
     /// The held version is not the delta's base.
-    Version { held: u64, base: u64 },
+    /// The held version is not the delta's base.
+    Version {
+        /// The version held.
+        held: u64,
+        /// The version the delta moves from.
+        base: u64,
+    },
     /// The source was already desynchronized: its deltas are not applied until a snapshot or a top-up.
     AlreadyDesynced,
 }
@@ -314,11 +388,31 @@ impl std::fmt::Display for Gap {
 #[derive(Debug, Clone)]
 pub enum Moved {
     /// Applied at exactly its base: the held version is now `topology_version`.
-    Applied { mesh: String, base_version: u64, topology_version: u64, delta: Delta },
+    /// The delta applied.
+    Applied {
+        /// The source mesh's name.
+        mesh: String,
+        /// The version it moved from.
+        base_version: u64,
+        /// The version it moved to.
+        topology_version: u64,
+        /// The delta applied.
+        delta: Delta,
+    },
     /// The held version is at or past this delta's: a copy already applied. A no-op.
-    Duplicate { held_version: u64 },
+    /// The delta was already applied.
+    Duplicate {
+        /// The version held.
+        held_version: u64,
+    },
     /// Not applied: the source is desynchronized and its node tops up.
-    Desynced { mesh: String, gap: Gap },
+    /// The source is desynchronized and its node tops up.
+    Desynced {
+        /// The source mesh's name.
+        mesh: String,
+        /// Why the delta did not apply.
+        gap: Gap,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -642,6 +736,7 @@ impl Forwarder {
         v
     }
 
+    /// The publisher and version last published for `mesh`, when any.
     pub fn published_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
         self.published.get(mesh).map(|p| (p.publisher.clone(), p.version))
     }

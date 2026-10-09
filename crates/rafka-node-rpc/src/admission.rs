@@ -6,9 +6,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// The admission bounds of one op.
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
+    /// The most calls of the op the node runs at once.
     pub node_wide: usize,
+    /// The most calls of the op one caller runs at once.
     pub per_caller: usize,
 }
 
@@ -24,6 +27,8 @@ struct Counts {
     caller: HashMap<(u8, String), usize>,
 }
 
+/// Admission control: bounds each op's concurrent calls node-wide and per caller; a call over a
+/// bound is refused typed `Busy`.
 #[derive(Debug, Default, Clone)]
 pub struct Admission {
     limits: HashMap<u8, Limits>,
@@ -32,7 +37,7 @@ pub struct Admission {
 
 /// Held for the whole supervised invocation; released on every exit path.
 #[derive(Debug)]
-pub struct Permit {
+pub(crate) struct Permit {
     op: u8,
     caller: String,
     counts: Arc<Mutex<Counts>>,
@@ -51,12 +56,13 @@ impl Drop for Permit {
 }
 
 impl Admission {
+    /// Bound `op` to `limits`.
     pub fn set(&mut self, op: u8, limits: Limits) {
         self.limits.insert(op, limits);
     }
 
     /// `Err(reason)` is the typed `Busy` reason.
-    pub fn try_admit(&self, op: u8, caller: &str) -> Result<Permit, String> {
+    pub(crate) fn try_admit(&self, op: u8, caller: &str) -> Result<Permit, String> {
         let l = self.limits.get(&op).copied().unwrap_or_default();
         let mut c = self.counts.lock().unwrap();
         let node = *c.node.get(&op).unwrap_or(&0);

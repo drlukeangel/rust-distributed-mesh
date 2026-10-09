@@ -21,12 +21,15 @@ pub enum ResetCode {
 }
 
 /// Historical pre-Node-RPC codes: reserved forever, never emitted, never reassigned.
-pub const RETIRED_CODES: [u32; 3] = [413, 501, 503];
+#[cfg(test)]
+pub(crate) const RETIRED_CODES: [u32; 3] = [413, 501, 503];
 
 impl ResetCode {
+    /// Every code Node RPC emits.
     pub const ALL: [ResetCode; 6] =
         [Self::UnservedOp, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleTarget, Self::FrameNotSent];
 
+    /// The numeric code.
     pub fn code(self) -> u32 {
         self as u32
     }
@@ -45,7 +48,7 @@ impl ResetCode {
 
     /// The code a reset/stop carried, if it is one of ours. A retired code is
     /// recognised by number but is not a current `ResetCode`.
-    pub fn from_code(code: u64) -> Option<Self> {
+    pub(crate) fn from_code(code: u64) -> Option<Self> {
         Self::ALL.into_iter().find(|c| u64::from(c.code()) == code)
     }
 }

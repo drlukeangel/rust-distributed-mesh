@@ -17,7 +17,9 @@ use std::sync::Arc;
 /// The process's resolver and client, shared by clone.
 #[derive(Clone)]
 pub struct ProcessNodeRpc {
+    /// The process's live resolver.
     pub resolver: Arc<LiveNodeResolver>,
+    /// The process's client.
     pub client: Arc<NodeRpcClient>,
 }
 
@@ -37,7 +39,7 @@ impl ProcessNodeRpc {
 
     /// The same, on a client made earlier (a server that carries for others holds the
     /// process's one client before it seals).
-    pub fn with_client(resolver: Arc<LiveNodeResolver>, client: Arc<NodeRpcClient>, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
+    pub(crate) fn with_client(resolver: Arc<LiveNodeResolver>, client: Arc<NodeRpcClient>, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
         let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
         (Self { resolver, client }, feed)
     }

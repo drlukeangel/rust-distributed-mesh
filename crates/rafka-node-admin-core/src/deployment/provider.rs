@@ -10,14 +10,23 @@ use crate::model::ProviderKind;
 use std::fmt;
 
 /// The bootstrap selector.
-pub const SPAWN_TYPE_ENV: &str = "MESH_SPAWN_TYPE";
+pub(crate) const SPAWN_TYPE_ENV: &str = "MESH_SPAWN_TYPE";
 
+/// Why a deployment policy is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyRefusal {
     /// `MESH_SPAWN_TYPE` holds a value that names no provider.
-    UnknownProvider { value: String },
+    UnknownProvider {
+        /// The value that names no provider.
+        value: String,
+    },
     /// A joining admin's local value conflicts with the established fabric policy.
-    ProviderMismatch { fabric: ProviderKind, local: ProviderKind },
+    ProviderMismatch {
+        /// The provider the established fabric policy names.
+        fabric: ProviderKind,
+        /// The provider the joining admin's local value names.
+        local: ProviderKind,
+    },
 }
 
 impl fmt::Display for PolicyRefusal {
@@ -48,6 +57,7 @@ pub fn parse(value: Option<&str>) -> Result<Option<ProviderKind>, PolicyRefusal>
 /// The fabric's deployment policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FabricPolicy {
+    /// The provider that runs the fabric's nodes.
     pub provider: ProviderKind,
 }
 
@@ -70,7 +80,7 @@ impl FabricPolicy {
 
 /// True when a Build request body tries to choose a provider (a top-level or
 /// per-mesh `provider` field): the Build is refused, provider is fabric policy.
-pub fn build_names_a_provider(body: &serde_json::Value) -> bool {
+pub(crate) fn build_names_a_provider(body: &serde_json::Value) -> bool {
     body.get("provider").is_some()
         || body.get("meshes").and_then(|m| m.as_array()).is_some_and(|ms| ms.iter().any(|m| m.get("provider").is_some()))
 }
@@ -89,15 +99,22 @@ use std::path::PathBuf;
 /// Everything already decided by node-admin: identity, endpoints, storage, env.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNodeLaunch {
+    /// The node to run.
     pub node: PathName,
+    /// The deployment the runtime belongs to.
     pub deployment_id: DeploymentId,
+    /// The executable to run.
     pub executable: PathBuf,
+    /// The arguments to run it with.
     pub args: Vec<String>,
+    /// The environment to run it with.
     pub env: BTreeMap<String, String>,
+    /// The node's data directory.
     pub data_dir: PathBuf,
     /// The advertised sockets the runtime must bind: its Iroh transport and its
     /// listeners. The provider honours them; it never invents one.
     pub transport: std::net::SocketAddr,
+    /// The non-Iroh listeners the runtime must bind, by name.
     pub listeners: Vec<(String, std::net::SocketAddr)>,
 }
 
@@ -105,7 +122,9 @@ pub struct ResolvedNodeLaunch {
 /// container by its immutable id, each within its provider control domain.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DeploymentHandle {
+    /// The deployment the runtime belongs to.
     pub deployment_id: DeploymentId,
+    /// The provider that realised the runtime.
     pub provider: ProviderKind,
     /// Process id (process provider); a container's init pid (container provider).
     pub pid: Option<u32>,
@@ -144,11 +163,24 @@ impl DeploymentHandle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdoptRefusal {
     /// The fact is malformed or inexact.
-    Invalid { reason: String },
+    Invalid {
+        /// Why the fact is refused.
+        reason: String,
+    },
     /// Another provider realised it.
-    OtherProvider { fact: &'static str, here: ProviderKind },
+    OtherProvider {
+        /// The provider the fact names.
+        fact: &'static str,
+        /// This provider.
+        here: ProviderKind,
+    },
     /// Its locator means something only in another control domain.
-    ForeignControlDomain { fact_domain: String, here: String },
+    ForeignControlDomain {
+        /// The control domain the fact names.
+        fact_domain: String,
+        /// This provider's control domain.
+        here: String,
+    },
 }
 
 impl AdoptRefusal {
@@ -198,10 +230,15 @@ pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<De
     Ok(DeploymentHandle { deployment_id: DeploymentId(fact.deployment_id.clone()), provider: kind, pid, start, container, domain: Some(here) })
 }
 
+/// How a runtime is stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminationMode {
     /// SIGTERM (or the provider's stop), then a forced kill after `grace`.
-    Graceful { grace: std::time::Duration },
+    Graceful {
+        /// How long to wait before the forced kill.
+        grace: std::time::Duration,
+    },
+    /// Kill the runtime at once.
     Immediate,
 }
 
@@ -218,19 +255,44 @@ pub fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: Option
     }
 }
 
+/// What a provider knows of a runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentStatus {
+    /// The runtime is running.
     Running,
-    Exited { code: Option<i32> },
+    /// The runtime exited.
+    Exited {
+        /// The exit code, when its record proves one.
+        code: Option<i32>,
+    },
+    /// The runtime's state cannot be told.
     Unknown,
 }
 
+/// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployError {
-    Spawn { node: String, reason: String },
-    Terminate { deployment: String, reason: String },
+    /// The runtime could not be started.
+    Spawn {
+        /// The node.
+        node: String,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The runtime could not be stopped.
+    Terminate {
+        /// The deployment.
+        deployment: String,
+        /// Why it failed.
+        reason: String,
+    },
     /// The provider cannot run on this host (named, never a silent pass).
-    Unsupported { provider: ProviderKind, reason: String },
+    Unsupported {
+        /// The provider.
+        provider: ProviderKind,
+        /// Why it cannot run.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for DeployError {
@@ -243,13 +305,19 @@ impl std::fmt::Display for DeployError {
     }
 }
 
+/// Realises and retires runtimes: starts a launch, stops a runtime and reports what it knows of
+/// one.
 #[async_trait::async_trait]
 pub trait DeploymentProvider: Send + Sync {
+    /// The provider's kind.
     fn kind(&self) -> ProviderKind;
     /// The provider control domain this provider's locators mean something in.
     fn control_domain(&self) -> String;
+    /// Start the launch `spec` and return the exact handle of its runtime.
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
+    /// Stop the runtime `handle` as `mode` says.
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
+    /// The state of the runtime `handle`.
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
 
     /// Stage one of the stop ladder: ask the runtime to drain and stop

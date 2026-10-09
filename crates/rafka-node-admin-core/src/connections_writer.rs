@@ -27,6 +27,7 @@ use std::time::Duration;
 /// How often an owed Proxy retirement whose write was refused is attempted again.
 pub const RETIREMENT_RETRY: Duration = Duration::from_millis(500);
 
+/// Writes the connection facts of one source node and holds the projection they build.
 #[derive(Clone)]
 pub struct ConnectionsWriter {
     inner: Arc<Inner>,
@@ -104,6 +105,7 @@ impl ConnectionsWriter {
         Self { inner }
     }
 
+    /// The projection the writer holds.
     pub fn held(&self) -> Arc<Mutex<ConnectionsHeld>> {
         self.inner.held.clone()
     }

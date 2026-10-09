@@ -1,5 +1,5 @@
 //! `rafka-rpc-node`: the generic RPC proof node a node-admin deploys.
-//! All configuration is the launch environment (`docs/i143/design.md` §3).
+//! All configuration is the launch environment.
 
 use rafka_node_rpc_testkit::launch::Launch;
 use rafka_node_rpc_testkit::{declare_probe, node, proof_store, resolve_probe};

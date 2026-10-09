@@ -15,7 +15,9 @@ use std::sync::Arc;
 /// The process's resolver and client, shared by clone.
 #[derive(Clone)]
 pub struct ProcessNodeRpc {
+    /// The process's live resolver.
     pub resolver: Arc<LiveNodeResolver>,
+    /// The process's client.
     pub client: Arc<NodeRpcClient>,
 }
 
@@ -34,7 +36,7 @@ impl ProcessNodeRpc {
 
     /// The same, with this process's source-owned connections writer hearing every Direct fact
     /// the client observes about its own pooled connections.
-    pub fn start_observed(
+    pub(crate) fn start_observed(
         resolver: Arc<LiveNodeResolver>,
         endpoint: iroh::Endpoint,
         book: &DigestBook,

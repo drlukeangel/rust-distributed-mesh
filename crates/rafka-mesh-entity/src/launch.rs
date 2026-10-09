@@ -1,5 +1,5 @@
 //! The launch environment node-admin hands a node it deploys, and the node
-//! reads back (`docs/i143/design.md` §3). One contract, one owner.
+//! reads back. One contract, one owner.
 
 type Result<T> = std::result::Result<T, String>;
 use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
@@ -7,17 +7,29 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// The fabric's name.
 pub const ENV_FABRIC: &str = "RDM_FABRIC";
+/// The fabric's minted id.
 pub const ENV_FABRIC_ID: &str = "RDM_FABRIC_ID";
+/// The node's `path.name`.
 pub const ENV_NODE_NAME: &str = "RDM_NODE_NAME";
+/// The node's minted id.
 pub const ENV_NODE_ID: &str = "RDM_NODE_ID";
+/// The id of the node's incarnation.
 pub const ENV_INCARNATION: &str = "RDM_INCARNATION_ID";
+/// The incarnation this birth supersedes, when it is a restart.
 pub const ENV_SUPERSEDES: &str = "RDM_SUPERSEDES";
+/// The address the process's Iroh endpoint binds, with port 0.
 pub const ENV_TRANSPORT_ADDR: &str = "RDM_TRANSPORT_ADDR";
+/// The non-Iroh listeners the process binds, as `name=addr` entries joined by commas.
 pub const ENV_LISTENERS: &str = "RDM_LISTENERS";
+/// The members to join gossip through, as `<public key>@<addr>` entries joined by commas.
 pub const ENV_SEEDS: &str = "RDM_SEEDS";
+/// The node-admin that deployed the birth, as `<path.name>,<node id>,<incarnation id>`.
 pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
+/// The node's data directory.
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
+/// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
@@ -27,8 +39,11 @@ pub const ENV_FABRIC_PRIMARY: &str = "RDM_FABRIC_PRIMARY";
 /// The node-admin that deployed a birth: the target of its `JoinNode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launcher {
+    /// The launching node-admin's `path.name`.
     pub name: PathName,
+    /// The launching node-admin's node id.
     pub node_id: NodeId,
+    /// The launching node-admin's incarnation.
     pub incarnation: IncarnationId,
 }
 
@@ -37,10 +52,15 @@ pub struct Launcher {
 pub struct Launch {
     /// The Fabric's name (its label) and its identity.
     pub fabric: String,
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// The node's `path.name`.
     pub name: PathName,
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The id of this birth.
     pub incarnation: IncarnationId,
+    /// The incarnation this birth supersedes, when it is a restart.
     pub supersedes: Option<IncarnationId>,
     /// Where the process's Iroh endpoint binds (gossip and Node RPC): the host address with port
     /// 0. The operating system assigns the port; the node reports the address it really bound in
@@ -53,6 +73,7 @@ pub struct Launch {
     pub launcher: Option<Launcher>,
     /// `(public key hex, address)` of members to join gossip through.
     pub seeds: Vec<(String, SocketAddr)>,
+    /// The node's data directory.
     pub data_dir: PathBuf,
     /// The id of the node's mesh: it names the mesh's membership channel.
     pub mesh_id: Option<MeshId>,
@@ -74,6 +95,8 @@ pub fn encode_listeners(listeners: &[(String, SocketAddr)]) -> String {
     listeners.iter().map(|(n, a)| format!("{n}={a}")).collect::<Vec<_>>().join(",")
 }
 
+/// Decode `name=addr` entries joined by commas; an entry that is not `name=addr` is refused by
+/// name.
 pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
     s.split(',')
         .filter(|x| !x.is_empty())
@@ -109,6 +132,8 @@ pub fn decode_seeds(s: &str) -> Result<Vec<(String, SocketAddr)>> {
 }
 
 impl Launch {
+    /// The launch as the environment a launched process reads, one entry per `ENV_*` variable that
+    /// applies.
     pub fn to_env(&self) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
         m.insert(ENV_FABRIC.into(), self.fabric.clone());
@@ -132,6 +157,8 @@ impl Launch {
         m
     }
 
+    /// Read a launch from the environment `get` reads; a required variable that is absent, empty or
+    /// malformed is refused by name.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         let req = |k: &str| get(k).filter(|v| !v.trim().is_empty()).ok_or_else(|| format!("{k} is required and must not be empty"));
         Ok(Self {

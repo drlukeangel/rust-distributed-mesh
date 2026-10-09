@@ -11,26 +11,58 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// The observed topology of one fabric: its record, its meshes and its nodes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Topology {
+    /// The fabric record.
     pub fabric: Fabric,
+    /// The fabric's meshes.
     pub meshes: Vec<Mesh>,
+    /// The fabric's nodes.
     pub nodes: Vec<Node>,
 }
 
 /// A topology that is not (yet) converged, named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopologyViolation {
+    /// A node path appears twice.
     DuplicateNode(PathName),
+    /// A mesh name appears twice.
     DuplicateMesh(String),
-    NodeInUnknownMesh { node: PathName, mesh: String },
+    /// A node names a mesh the fabric does not hold.
+    NodeInUnknownMesh {
+        /// The node concerned.
+        node: PathName,
+        /// The mesh concerned.
+        mesh: String,
+    },
+    /// A node's kind or mesh field disagrees with its `path.name`.
     KindMismatch(PathName),
-    NoCohortPrimary { mesh: String, kind: NodeKind },
-    SplitCohortPrimary { mesh: String, kind: NodeKind, primaries: Vec<PathName> },
+    /// A cohort has no primary.
+    NoCohortPrimary {
+        /// The mesh concerned.
+        mesh: String,
+        /// The kind of the cohort.
+        kind: NodeKind,
+    },
+    /// A cohort has more than one primary.
+    SplitCohortPrimary {
+        /// The mesh concerned.
+        mesh: String,
+        /// The kind of the cohort.
+        kind: NodeKind,
+        /// The nodes that hold the primary seat.
+        primaries: Vec<PathName>,
+    },
+    /// A primary is not live.
     PrimaryNotLive(PathName),
+    /// The fabric does not hold exactly one fabric primary.
     FabricPrimaryCount(usize),
+    /// The fabric primary is not a node-admin.
     FabricPrimaryNotAdmin(PathName),
+    /// The fabric primary is not the node-admin primary of its own mesh.
     FabricPrimaryNotMeshPrimary(PathName),
+    /// A node-admin primary advertises no control endpoint.
     AdminPrimaryWithoutControlEndpoint(PathName),
 }
 
@@ -58,26 +90,39 @@ impl fmt::Display for TopologyViolation {
     }
 }
 
-/// `MeshView` (`docs/i143/design.md` §4).
+/// A mesh as clients see it (`MeshView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshView {
+    /// The mesh's minted id, when it has one.
     pub id: Option<crate::model::MeshId>,
+    /// The mesh's name.
     pub name: String,
+    /// The mesh's lifecycle state.
     pub status: crate::model::ScopeStatus,
+    /// The mesh's primary node-admin, when one is seated.
     pub primary_admin: Option<PathName>,
+    /// The control API base of the mesh's primary.
     pub admin_api_base: Option<String>,
+    /// The `path.name` of every node of the mesh.
     pub nodes: Vec<PathName>,
 }
 
-/// `FabricView` (`docs/i143/design.md` §4).
+/// The fabric as clients see it (`FabricView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricView {
+    /// The fabric's minted id.
     pub id: crate::model::FabricId,
+    /// The fabric's name.
     pub name: String,
+    /// The fabric's lifecycle state.
     pub status: crate::model::ScopeStatus,
+    /// The provider that runs the fabric's nodes.
     pub provider: crate::model::ProviderKind,
+    /// The fabric's primary node-admin, when one is seated.
     pub fabric_primary: Option<PathName>,
+    /// The control API base of the fabric primary.
     pub admin_api_base: Option<String>,
+    /// The fabric's meshes.
     pub meshes: Vec<MeshView>,
 }
 
@@ -95,6 +140,7 @@ impl Topology {
         p.next().is_none().then_some(first)
     }
 
+    /// The fabric primary, when exactly one live node holds the role.
     pub fn fabric_primary(&self) -> Option<&Node> {
         let mut p = self.nodes.iter().filter(|n| n.is_fabric_primary && n.status.is_live());
         let first = p.next()?;
@@ -102,15 +148,16 @@ impl Topology {
     }
 
     /// The live owning node-admin control endpoint of `mesh` (its admin primary's).
-    pub fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
+    pub(crate) fn mesh_control_endpoint(&self, mesh: &str) -> Option<&str> {
         self.cohort_primary(mesh, NodeKind::NodeAdmin)?.admin_api_base.as_deref()
     }
 
     /// The fabric-primary's control endpoint.
-    pub fn fabric_control_endpoint(&self) -> Option<&str> {
+    pub(crate) fn fabric_control_endpoint(&self) -> Option<&str> {
         self.fabric_primary()?.admin_api_base.as_deref()
     }
 
+    /// The node named `name`.
     pub fn node(&self, name: &PathName) -> Option<&Node> {
         self.nodes.iter().find(|n| &n.name == name)
     }
@@ -173,10 +220,12 @@ impl Topology {
         out
     }
 
+    /// Whether the topology has no violation.
     pub fn is_converged(&self) -> bool {
         self.violations().is_empty()
     }
 
+    /// The mesh named or identified by `id_or_name`, as clients see it.
     pub fn mesh_view(&self, id_or_name: &str) -> Option<MeshView> {
         let m = self.meshes.iter().find(|m| m.name == id_or_name || m.id.as_ref().is_some_and(|i| i.as_str() == id_or_name))?;
         let mut nodes: Vec<PathName> = self.nodes.iter().filter(|n| n.mesh == m.name).map(|n| n.name.clone()).collect();
@@ -191,6 +240,7 @@ impl Topology {
         })
     }
 
+    /// The fabric as clients see it.
     pub fn fabric_view(&self) -> FabricView {
         FabricView {
             id: self.fabric.id.clone(),

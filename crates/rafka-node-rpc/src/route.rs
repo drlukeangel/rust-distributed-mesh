@@ -27,14 +27,23 @@ use tracing::Instrument;
 /// retires it; the seam needs only the carrier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteChoice {
+    /// Dial the target's own endpoint.
     Direct,
     /// The exact carrier process connections chose: its logical id is dialled, never its path's
     /// current holder, so a carrier replaced after resolution is refused rather than substituted.
-    ViaPeer { carrier: NodeId, path: PathName },
+    /// Reach the target through a carrier.
+    ViaPeer {
+        /// The carrier's node id.
+        carrier: NodeId,
+        /// The carrier's `path.name`.
+        path: PathName,
+    },
+    /// No active route to the target exists.
     NoActiveRoute,
 }
 
 impl RouteChoice {
+    /// The choice's name as it appears in spans and evidence.
     pub fn token(&self) -> &'static str {
         match self {
             RouteChoice::Direct => "direct",
@@ -60,13 +69,19 @@ impl From<&EffectiveRoute> for RouteChoice {
 /// Which leg the composition executed, as evidence for the caller and the spans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteLeg {
+    /// The call was made directly.
     Direct,
-    ViaPeer { carrier: String },
+    /// The call was carried.
+    ViaPeer {
+        /// The carrier's `path.name`.
+        carrier: String,
+    },
     /// No leg: nothing was resolved, dialled or sent.
     None,
 }
 
 impl RouteLeg {
+    /// The leg's name as it appears in spans and evidence.
     pub fn token(&self) -> &'static str {
         match self {
             RouteLeg::Direct => "direct",
@@ -116,10 +131,15 @@ impl NodeRpcClient {
 /// retires. The seam writes nothing (i143.e6.s5).
 #[derive(Debug)]
 pub struct ConnectedCall<R> {
+    /// How the call ended.
     pub outcome: RpcOutcome<R>,
+    /// The wire evidence of the call, when it reached the wire.
     pub evidence: Option<CallEvidence>,
+    /// The leg the call executed.
     pub leg: RouteLeg,
+    /// The route the call took.
     pub route: EffectiveRoute,
+    /// The caller's own Proxy found invalid, with the reason, for the caller to retire.
     pub retire: Option<(NodeConnection, &'static str)>,
 }
 

@@ -27,8 +27,11 @@ use std::sync::Mutex;
 /// is never written whole.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricRecord {
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// The fabric's name.
     pub name: String,
+    /// The Build the pointer names, when one was accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<crate::build::BuildId>,
 }
@@ -37,7 +40,9 @@ pub struct FabricRecord {
 /// and never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricIdentity {
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// The fabric's name.
     pub name: String,
 }
 
@@ -46,7 +51,9 @@ pub struct FabricIdentity {
 /// build_id)`, so a row written late by a lagging writer never moves the pointer back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricPointer {
+    /// The Build the pointer moved to.
     pub build_id: crate::build::BuildId,
+    /// When the Build was submitted, in milliseconds since the Unix epoch.
     pub submitted_at_ms: u64,
 }
 
@@ -74,8 +81,11 @@ fn folded(identity: Option<FabricIdentity>, pointer: Option<FabricPointer>) -> O
 /// disappearance from its own view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricShutdown {
+    /// The admin that initiated the shutdown.
     pub initiated_by: String,
+    /// The node id of that admin.
     pub initiated_by_node_id: String,
+    /// When the shutdown was initiated, in milliseconds since the Unix epoch.
     pub initiated_at_ms: u64,
 }
 
@@ -93,12 +103,14 @@ pub trait FabricStorage: Send + Sync {
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError>;
     /// Put the pointer row for one move: a blind put of its own key.
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError>;
+    /// The shutdown held, when one is.
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
     /// Hold `shutdown` if none is held (insert-and-fail on its key): the first shutdown held is
     /// kept, a later one never replaces it, and it is never removed. Returns the record now held.
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
 }
 
+/// A fabric store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
@@ -107,6 +119,7 @@ pub struct MemoryFabricStorage {
 }
 
 impl MemoryFabricStorage {
+    /// An empty store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -157,6 +170,8 @@ pub struct FileFabricStorage {
 }
 
 impl FileFabricStorage {
+    /// Open the store under the admin's own data directory; a directory holding a retired record is
+    /// refused by name.
     pub fn open(own_data_dir: &Path) -> Result<Self, FabricStorageError> {
         let records = crate::record_store::FileRecords::open(own_data_dir, FABRIC_DIR)?;
         if records.holds(RETIRED_RECORD_KEY) {

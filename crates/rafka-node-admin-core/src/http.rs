@@ -29,11 +29,13 @@ use tokio::sync::{Notify, RwLock};
 /// topology projection and the executor's wake-up — and no way to touch a
 /// runtime.
 pub struct ControlPlane {
+    /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// `Fabric.build_id` as this admin holds it (`crate::accepted`).
     pub accepted: Arc<AcceptedStore>,
     /// This admin's path.name: topology is accepted only while it is the fabric-primary.
     pub me: PathName,
+    /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// Why the view lacks a name right now: what the digest book, the removed set and the
     /// records hold for it (set once by the admin that owns them). An unknown-node refusal from
@@ -59,12 +61,17 @@ pub struct ControlPlane {
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
 pub struct ShutdownSeat {
+    /// The shutdown control.
     pub control: Arc<crate::shutdown::ShutdownControl>,
+    /// This admin's `path.name`.
     pub me: crate::model::PathName,
+    /// This admin's node id.
     pub node_id: crate::model::NodeId,
 }
 
 impl ControlPlane {
+    /// A control plane for the admin `me` over its Build state, its accepted-Build store and an
+    /// initial `topology`.
     pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology) -> Self {
         Self {
             builds,
@@ -314,9 +321,13 @@ fn now_ms() -> u64 {
 /// A refused request, rendered with every non-leaking detail.
 #[derive(Debug)]
 pub enum Refusal {
+    /// The request names a Build the topology rules refuse.
     Reject(BuildReject),
+    /// The request is not valid.
     BadRequest(String),
+    /// The thing requested does not exist.
     NotFound(String),
+    /// The request conflicts with the current state.
     Conflict(String),
     /// Another Build is still reconciling: one accepted topology, one Build in flight.
     BuildInProgress(BuildId),
@@ -326,6 +337,7 @@ pub enum Refusal {
     AttemptTaken(String),
     /// The admin cannot decide the request yet (not hydrated).
     Unavailable(String),
+    /// The Build state could not be read or written.
     State(BuildStateError),
 }
 
@@ -362,7 +374,9 @@ impl IntoResponse for Refusal {
 /// attempt. A Build that is accepted starts at attempt 1; an opened attempt is the one it opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
 }
 

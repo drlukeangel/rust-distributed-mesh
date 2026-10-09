@@ -25,7 +25,9 @@ use std::sync::{Arc, Mutex};
 /// One Mesh of the accepted topology: every node it should have, by `path.name`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshTopology {
+    /// The mesh's name.
     pub name: String,
+    /// Every node the mesh should have, by `path.name`.
     pub nodes: BTreeSet<PathName>,
     /// The typed desired-state meta of every materialized path, explicit after ingress
     /// normalization: one entry per node, no entry without a node (`validate`).
@@ -67,10 +69,12 @@ impl MeshTopology {
         MeshDesired::of(self.name.clone(), NodeKind::ALL.map(|k| (k, self.count(k))))
     }
 
+    /// The nodes of `kind`.
     pub fn cohort(&self, kind: NodeKind) -> impl Iterator<Item = &PathName> {
         self.nodes.iter().filter(move |p| p.kind == kind)
     }
 
+    /// The number of nodes of `kind`.
     pub fn count(&self, kind: NodeKind) -> u32 {
         self.cohort(kind).count() as u32
     }
@@ -79,7 +83,9 @@ impl MeshTopology {
 /// The complete accepted Fabric topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricTopology {
+    /// The fabric's name.
     pub fabric: String,
+    /// The accepted meshes, by name.
     pub meshes: BTreeMap<String, MeshTopology>,
 }
 
@@ -91,10 +97,12 @@ impl FabricTopology {
         Self { fabric: fabric.into(), meshes }
     }
 
+    /// The accepted mesh named `name`.
     pub fn mesh(&self, name: &str) -> Option<&MeshTopology> {
         self.meshes.get(name)
     }
 
+    /// Whether the topology names `node`.
     pub fn contains(&self, node: &PathName) -> bool {
         self.meshes.get(&node.mesh).is_some_and(|m| m.nodes.contains(node))
     }
@@ -153,17 +161,37 @@ impl FabricTopology {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TopologyChange {
     /// The whole fabric's meshes and counts (`POST /api/build`).
-    ReconcileFabric { desired: FabricDesired },
+    ReconcileFabric {
+        /// The fabric's desired meshes.
+        desired: FabricDesired,
+    },
     /// One mesh's counts (grow/shrink).
-    ReconcileMesh { desired: MeshDesired },
+    ReconcileMesh {
+        /// The mesh's desired counts.
+        desired: MeshDesired,
+    },
     /// `POST /api/nodes/spawn`: one more node of `node_kind` in `mesh`.
-    AddNode { mesh: String, node_kind: NodeKind },
+    AddNode {
+        /// The mesh to add the node to.
+        mesh: String,
+        /// The kind of node to add.
+        node_kind: NodeKind,
+    },
     /// `DELETE /api/nodes/{name}`.
-    RemoveNode { node: PathName },
+    RemoveNode {
+        /// The node to remove.
+        node: PathName,
+    },
     /// `POST /api/meshes`.
-    CreateMesh { desired: MeshDesired },
+    CreateMesh {
+        /// The mesh's desired counts.
+        desired: MeshDesired,
+    },
     /// `DELETE /api/meshes/{id|name}`.
-    RemoveMesh { mesh: String },
+    RemoveMesh {
+        /// The mesh to remove.
+        mesh: String,
+    },
 }
 
 /// What one attempt of a Build does beyond realizing its topology: a same-path restart or
@@ -171,8 +199,20 @@ pub enum TopologyChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
-    Restart { path: PathName, from_incarnation: IncarnationId },
-    Replace { path: PathName, from_incarnation: IncarnationId },
+    /// Restart the exact birth at a path.
+    Restart {
+        /// The node.
+        path: PathName,
+        /// The birth restarted.
+        from_incarnation: IncarnationId,
+    },
+    /// Replace the birth at a path with a new node.
+    Replace {
+        /// The node.
+        path: PathName,
+        /// The birth replaced.
+        from_incarnation: IncarnationId,
+    },
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -302,14 +342,15 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// sendable, terminate and inspect, `NodeDeleted` only on proven exit) and a new node is created
 /// after it. Proven drift (`ProvenDrift`) names a runtime already proven exited, which needs no
 /// retirement.
-pub fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
+#[cfg(test)]
+pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
     plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, false)
 }
 
 /// [`plan_for`] for `build`'s current attempt, given what its receipts say already ran. A retire of
 /// a birth the view never held again leaves the view as it was, so the receipt, not the view, says
 /// the retire is done: the create that follows it is what is left.
-pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
+pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
     let retired = match &build.action {
         Some(AttemptAction::Replace { path, from_incarnation }) => {
             // The departure published on the provider's proof names the exact birth: that receipt
@@ -423,14 +464,17 @@ pub struct AcceptedStore {
 }
 
 impl AcceptedStore {
+    /// A store over `storage`, held by the admin named `node`.
     pub fn new(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Self {
         Self { storage, wanted: Mutex::new(None), node: node.into() }
     }
 
+    /// The fabric record held, when one is.
     pub async fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         self.storage.fabric().await
     }
 
+    /// The Build the pointer names, when it names one.
     pub async fn build_id(&self) -> Option<BuildId> {
         self.storage.fabric().await.ok().flatten().and_then(|r| r.build_id)
     }
@@ -486,7 +530,7 @@ impl AcceptedStore {
     }
 
     /// The Build a remembered Fabric record names: the pointer this admin heard and cannot take yet.
-    pub fn wanted_build_id(&self) -> Option<BuildId> {
+    pub(crate) fn wanted_build_id(&self) -> Option<BuildId> {
         self.wanted.lock().unwrap().as_ref().and_then(|r| r.build_id.clone())
     }
 

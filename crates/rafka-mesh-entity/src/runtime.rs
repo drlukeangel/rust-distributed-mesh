@@ -37,11 +37,14 @@ pub const MAX_FACT_BYTES: usize = 384;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeProvider {
+    /// A host process.
     Process,
+    /// A container.
     Container,
 }
 
 impl RuntimeProvider {
+    /// The provider's name as it appears in records and spans.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Process => "process",
@@ -56,12 +59,23 @@ impl RuntimeProvider {
 pub enum RuntimeLocator {
     /// A pid and the kernel's start time of that process (clock ticks since
     /// boot): together they never name a later process.
-    Process { pid: u32, start: u64 },
+    /// A host process.
+    Process {
+        /// The process id.
+        pid: u32,
+        /// The kernel's start time of the process.
+        start: u64,
+    },
     /// The immutable container id (64 lowercase hex).
-    Container { id: String },
+    /// A container.
+    Container {
+        /// The container id.
+        id: String,
+    },
 }
 
 impl RuntimeLocator {
+    /// The locator's kind name: `process-pid-start` or `container-id`.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Process { .. } => "process-pid-start",
@@ -73,10 +87,13 @@ impl RuntimeLocator {
 /// One birth's exact runtime.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RuntimeFact {
+    /// The deployment that runs the birth.
     pub deployment_id: String,
+    /// The provider that runs the birth.
     pub provider: RuntimeProvider,
     /// Opaque, compared by equality: where `locator` means something.
     pub control_domain: String,
+    /// Where the runtime is.
     pub locator: RuntimeLocator,
 }
 
@@ -84,13 +101,31 @@ pub struct RuntimeFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeFactError {
     /// A field is missing or malformed.
-    Malformed { reason: String },
+    /// A field is missing or malformed.
+    Malformed {
+        /// What is wrong.
+        reason: String,
+    },
     /// The encoded fact exceeds [`MAX_FACT_BYTES`].
-    TooLarge { bytes: usize },
+    /// The encoded fact is too large.
+    TooLarge {
+        /// The encoded size.
+        bytes: usize,
+    },
     /// The provider and the locator disagree.
-    ProviderMismatch { provider: RuntimeProvider, locator: &'static str },
+    /// The provider and the locator disagree.
+    ProviderMismatch {
+        /// The provider the fact names.
+        provider: RuntimeProvider,
+        /// The locator's kind.
+        locator: &'static str,
+    },
     /// The record describes another runtime than the one reading it.
-    NotThisRuntime { reason: String },
+    /// The record describes another runtime than the one reading it.
+    NotThisRuntime {
+        /// How it differs.
+        reason: String,
+    },
 }
 
 impl fmt::Display for RuntimeFactError {
@@ -156,6 +191,7 @@ impl RuntimeFact {
         Ok(fact)
     }
 
+    /// This process's runtime as a host process: its pid, start token and control domain.
     pub fn of_this_process(deployment_id: &str) -> Result<Self, String> {
         let pid = std::process::id();
         let start = process_start_token(pid).ok_or_else(|| format!("no start token for pid {pid}"))?;
@@ -357,16 +393,20 @@ mod container_id_tests {
 pub const TRANSPORT_STOPPED_EXIT_CODE: i32 = 4;
 
 /// The record a process runtime writes into its own data dir before it exits on purpose.
-pub const EXIT_FILE: &str = "exit.json";
+pub(crate) const EXIT_FILE: &str = "exit.json";
 
 /// A runtime's own statement of why it ended, keyed to the one deployment and incarnation that
 /// wrote it. It is the proof a successor admin reads for a process it did not launch, whose exit
 /// code its provider cannot see.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitRecord {
+    /// The deployment that wrote the record.
     pub deployment_id: String,
+    /// The incarnation that wrote the record.
     pub incarnation: String,
+    /// The exit code.
     pub code: i32,
+    /// The named reason the process exited.
     pub reason: String,
 }
 
@@ -396,8 +436,11 @@ impl ExitRecord {
 /// The identity this process exits under: its data dir, deployment and incarnation.
 #[derive(Debug, Clone)]
 pub struct OwnExit {
+    /// The data directory the record is written into.
     pub data_dir: std::path::PathBuf,
+    /// The deployment the process runs under.
     pub deployment_id: String,
+    /// The incarnation the process runs as.
     pub incarnation: String,
 }
 

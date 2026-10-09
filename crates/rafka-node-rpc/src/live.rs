@@ -33,7 +33,11 @@ pub enum Applied {
     /// A node this process did not hold, now `Found`.
     Joined,
     /// The node's next birth (it names the held one as superseded).
-    Restarted { old: IncarnationId },
+    /// The node's next birth: it names the held one as superseded.
+    Restarted {
+        /// The incarnation the new birth supersedes.
+        old: IncarnationId,
+    },
     /// The held birth's address changed.
     Updated,
     /// The fact matches what is held.
@@ -48,13 +52,35 @@ pub enum Applied {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// The logical node departed; a departed node never returns.
-    Departed { node_id: NodeId },
+    /// The logical node departed and a departed node never returns.
+    Departed {
+        /// The departed node.
+        node_id: NodeId,
+    },
     /// A birth this process already saw superseded.
-    StaleIncarnation { node_id: NodeId, incarnation: IncarnationId },
+    /// The birth offered was already seen superseded.
+    StaleIncarnation {
+        /// The node the birth belongs to.
+        node_id: NodeId,
+        /// The superseded incarnation that was offered.
+        incarnation: IncarnationId,
+    },
     /// Another birth of the node that does not name the held one as superseded.
-    UnknownLineage { node_id: NodeId, held: IncarnationId, offered: IncarnationId },
+    /// The birth offered does not name the held one as superseded.
+    UnknownLineage {
+        /// The node the births belong to.
+        node_id: NodeId,
+        /// The incarnation this process holds.
+        held: IncarnationId,
+        /// The incarnation that was offered.
+        offered: IncarnationId,
+    },
     /// A restart keeps the node's transport identity.
-    TransportChanged { node_id: NodeId },
+    /// The offered birth moves the node to another transport identity, which a restart never does.
+    TransportChanged {
+        /// The node whose transport identity differs.
+        node_id: NodeId,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -104,6 +130,7 @@ impl Default for LiveNodeResolver {
 }
 
 impl LiveNodeResolver {
+    /// A resolver that keeps a departed node's answer `Gone` for `departed_retention`.
     pub fn new(departed_retention: Duration) -> Self {
         Self { live: RwLock::default(), retention: departed_retention, changed: tokio::sync::watch::Sender::new(0) }
     }
@@ -194,13 +221,14 @@ impl LiveNodeResolver {
         self.tick();
     }
 
-    /// [`NodeResolver::resolve`] as of `now`.
     /// The live node whose Iroh key is `endpoint`: the peer of an accepted connection. A key
     /// this process holds no live node for (a probe's ephemeral key, a departed birth) is `None`.
-    pub fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+    pub(crate) fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
         self.live.read().unwrap().nodes.values().find(|n| &n.endpoint_id == endpoint).cloned()
     }
 
+    /// Resolve `target` as of `now`: the exact live answer, `Gone` for a node that departed within
+    /// the retention, otherwise `Unknown` or `Unavailable`.
     pub fn resolve_at(&self, target: &NodeTarget, now: Instant) -> Result<ResolvedNode, ResolveFailure> {
         let live = self.live.read().unwrap();
         let current = |n: &ResolvedNode| if live.exited.contains(&(n.node_id.clone(), n.incarnation.clone())) { Err(ResolveFailure::Unavailable) } else { Ok(n.clone()) };

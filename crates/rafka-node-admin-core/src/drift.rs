@@ -1,5 +1,4 @@
-//! Proven drift: a birth the accepted topology names is gone (RDM #47;
-//! `docs/i143/design.md` §2.2, §2.4).
+//! Proven drift: a birth the accepted topology names is gone (RDM #47).
 //!
 //! The fabric authority (the fabric primary, while its view authorizes)
 //! compares the current Build's topology with the births it holds. A birth
@@ -21,7 +20,7 @@ use std::collections::HashSet;
 /// One birth whose exact runtime the provider proved exited, and the exit code that proof carries
 /// (`None` when no code is provable: the exit is then unplanned and unexplained).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExitedBirth {
+pub(crate) struct ExitedBirth {
     pub node_id: crate::model::NodeId,
     pub incarnation: IncarnationId,
     pub code: Option<i32>,
@@ -40,7 +39,7 @@ impl ExitedBirth {
 
 /// One cohort below what the topology names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shortfall {
+pub(crate) struct Shortfall {
     pub mesh: String,
     pub kind: NodeKind,
     pub desired: u32,
@@ -66,7 +65,7 @@ pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
 /// counting every held birth but those in `exited` (incarnations whose exact
 /// runtime was inspected and found exited). A cohort short without a proven
 /// exit is not drift.
-pub fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
+pub(crate) fn shortfall(topology: &FabricTopology, t: &Topology, exited: &HashSet<IncarnationId>) -> Vec<Shortfall> {
     let mut out = Vec::new();
     for m in topology.meshes.values() {
         for kind in NodeKind::ALL {

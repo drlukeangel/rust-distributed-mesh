@@ -1,18 +1,24 @@
 //! `path.name`: the stable topology slot `<mesh>.<kind>.<ordinal>`. The kinds are the Mesh's own
 //! (`admin`, the proof `rpc`) and the product roles RDM has always named (`broker`, `gateway`,
-//! `compute`); RDM's proof shapes use only the first two (`docs/i143/design.md` §1).
+//! `compute`); RDM's proof shapes use only the first two.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
+/// What a node is in its mesh. The kind is the second segment of its `path.name`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
+    /// A node-admin.
     NodeAdmin,
+    /// A plain product node that serves core protocols only.
     RpcNode,
+    /// A broker.
     Broker,
+    /// A gateway.
     Gateway,
+    /// A compute node.
     Compute,
 }
 
@@ -33,6 +39,7 @@ impl NodeKind {
 }
 
 impl NodeKind {
+    /// The kind's `path.name` segment: `admin`, `rpc`, `broker`, `gateway` or `compute`.
     pub fn segment(self) -> &'static str {
         match self {
             Self::NodeAdmin => "admin",
@@ -43,6 +50,7 @@ impl NodeKind {
         }
     }
 
+    /// The kind a `path.name` segment names, `None` for any other segment.
     pub fn from_segment(s: &str) -> Option<Self> {
         match s {
             "admin" => Some(Self::NodeAdmin),
@@ -55,18 +63,27 @@ impl NodeKind {
     }
 }
 
+/// A node's stable logical address `<mesh>.<kind>.<ordinal>`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathName {
+    /// The mesh's name.
     pub mesh: String,
+    /// The node's kind.
     pub kind: NodeKind,
+    /// The node's ordinal within its mesh and kind, from 1.
     pub ordinal: u32,
 }
 
+/// Why a `path.name` was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathNameError {
+    /// The text is not `<mesh>.<kind>.<ordinal>`.
     Shape(String),
+    /// The mesh name does not match `[a-z0-9][a-z0-9-]{0,63}`.
     MeshName(String),
+    /// The kind segment is not `admin`, `rpc`, `broker`, `gateway` or `compute`.
     Kind(String),
+    /// The ordinal is not a number of at least 1.
     Ordinal(String),
 }
 
@@ -91,6 +108,7 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 }
 
 impl PathName {
+    /// A `path.name` from its parts.
     pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
         Self { mesh: mesh.into(), kind, ordinal }
     }

@@ -25,6 +25,7 @@ impl fmt::Display for WireError {
 impl std::error::Error for WireError {}
 
 impl WireError {
+    /// An error naming `reason`.
     pub fn new(reason: impl Into<String>) -> Self {
         Self(reason.into())
     }

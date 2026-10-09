@@ -27,17 +27,27 @@ use crate::protocol::{DecodeFailure, NodeProtocol};
 /// Shared reply semantics; the bytes stay protocol-owned (node-rpc.md §25).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReplyKind {
+    /// The reply is a success.
     Success,
+    /// The reply says the peer the call needed could not be resolved.
     PeerUnresolved,
+    /// The reply says the node is not ready.
     NotReady,
+    /// The reply says the node is at its admission bound.
     Busy,
+    /// The reply says the node is draining.
     Draining,
+    /// The reply says the request frame was malformed, and how.
     Malformed(MalformedKind),
+    /// The reply says the caller is not allowed the call.
     Unauthorized,
+    /// The reply is the protocol's own typed refusal.
     ProtocolRefusal,
+    /// The reply bytes were handed across undecoded.
     Unclassified,
 }
 
+/// How a request frame was malformed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MalformedKind {
     /// Declared length over the protocol ceiling; body never read.
@@ -69,17 +79,29 @@ pub enum NotSentReason {
     CarrierEdgeLost(String),
     /// The origin's remaining budget did not exceed the carrier's reply reserve, so the carrier
     /// made no inner call. Both are whole milliseconds.
-    CarrierNoBudget { remaining_ms: u64, reserve_ms: u64 },
+    CarrierNoBudget {
+        /// The origin's remaining budget.
+        remaining_ms: u64,
+        /// The carrier's reply reserve.
+        reserve_ms: u64,
+    },
     /// The protocol is not forwardable, so it never travels through a carrier.
-    NotForwardable { op: u8 },
+    NotForwardable {
+        /// The op that is not forwardable.
+        op: u8,
+    },
     /// Connections chose no route to the exact target: no leg was started.
     NoActiveRoute,
 }
 
+/// Why a resolver gave no node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveFailure {
+    /// No node by that target was ever known.
     Unknown,
+    /// The node departed and does not return.
     Gone,
+    /// The node is known and cannot be reached now.
     Unavailable,
 }
 
@@ -102,6 +124,7 @@ pub enum IndeterminateReason {
     Carried(String),
 }
 
+/// A decoded reply and how its protocol classified it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replied<R> {
     value: R,
@@ -109,34 +132,41 @@ pub struct Replied<R> {
 }
 
 impl<R> Replied<R> {
+    /// The decoded reply.
     pub fn value(&self) -> &R {
         &self.value
     }
+    /// How the protocol classified the reply.
     pub fn class(&self) -> ReplyKind {
         self.class
     }
+    /// Take the decoded reply.
     pub fn into_value(self) -> R {
         self.value
     }
 }
 
+/// A call that ended before its commit cut: the request never reached a protocol handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotSent {
     reason: NotSentReason,
 }
 
 impl NotSent {
+    /// Why the call ended before the cut.
     pub fn reason(&self) -> &NotSentReason {
         &self.reason
     }
 }
 
+/// A call the receiver answered `421 UNSERVED_OP`: the op was never dispatched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unserved {
     op: u8,
 }
 
 impl Unserved {
+    /// The op the receiver does not serve.
     pub fn op(&self) -> u8 {
         self.op
     }
@@ -155,12 +185,14 @@ impl RejectedStale {
     }
 }
 
+/// A committed call with no stronger proof than that it may have executed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Indeterminate {
     reason: IndeterminateReason,
 }
 
 impl Indeterminate {
+    /// Why no stronger proof exists.
     pub fn reason(&self) -> &IndeterminateReason {
         &self.reason
     }
@@ -185,6 +217,7 @@ pub enum RpcOutcome<R> {
 }
 
 impl<R> RpcOutcome<R> {
+    /// The outcome's variant name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Reply(_) => "Reply",
@@ -201,6 +234,7 @@ impl<R> RpcOutcome<R> {
         matches!(self, Self::NotSent(_) | Self::Unserved(_) | Self::RejectedStale(_))
     }
 
+    /// The reply, when the outcome is a `Reply`.
     pub fn reply(&self) -> Option<&Replied<R>> {
         match self {
             Self::Reply(r) => Some(r),
@@ -237,10 +271,12 @@ pub struct Committed {
 }
 
 impl PreCommit {
+    /// A call for `op` that has not crossed its commit cut.
     pub fn begin(op: u8) -> Self {
         Self { op }
     }
 
+    /// The op of the call.
     pub fn op(&self) -> u8 {
         self.op
     }
@@ -291,12 +327,11 @@ pub struct EarlyRefusal {
 }
 
 impl EarlyRefusal {
+    /// The op of the refused request.
     pub fn op(&self) -> u8 {
         self.op
     }
 
-    /// A valid typed reply is the refusal (`Reply`); without one the request
-    /// is still provably undispatched (`NotSent`).
     /// The early refusal's payload undecoded, for a carrier handing it across verbatim.
     pub fn relayed(self, reply_payload: Option<&[u8]>) -> RpcOutcome<Vec<u8>> {
         match reply_payload {
@@ -305,6 +340,8 @@ impl EarlyRefusal {
         }
     }
 
+    /// A valid typed reply is the refusal (`Reply`); without one the request
+    /// is still provably undispatched (`NotSent`).
     pub fn reply<P: NodeProtocol>(self, reply_payload: Option<&[u8]>) -> RpcOutcome<P::Reply> {
         match reply_payload.map(P::decode_reply) {
             Some(Ok(value)) => {
@@ -317,6 +354,7 @@ impl EarlyRefusal {
 }
 
 impl Committed {
+    /// The op of the committed call.
     pub fn op(&self) -> u8 {
         self.op
     }

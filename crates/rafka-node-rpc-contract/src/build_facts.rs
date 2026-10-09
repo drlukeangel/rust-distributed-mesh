@@ -29,15 +29,21 @@ use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use serde::{Deserialize, Serialize};
 
+/// The BuildFacts protocol: a stream of the facts a node holds for one Build.
 pub struct BuildFacts;
 
+/// A BuildFacts call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildFactsRequest {
     /// Every fact the target holds for `build_id`.
-    FetchBuildFacts { build_id: String },
+    FetchBuildFacts {
+        /// The Build whose facts are fetched.
+        build_id: String,
+    },
 }
 
 impl BuildFactsRequest {
+    /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
         match self {
             Self::FetchBuildFacts { .. } => "fetch-build-facts",
@@ -45,27 +51,74 @@ impl BuildFactsRequest {
     }
 }
 
+/// One frame of a BuildFacts read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildFactsReply {
     /// One chunk of the snapshot: `facts` is one postcard frame of the Build topic's message.
-    Facts { build_id: String, chunk_index: u32, chunk_count: u32, facts: Vec<u8> },
+    Facts {
+        /// The Build the chunk belongs to.
+        build_id: String,
+        /// This chunk's index.
+        chunk_index: u32,
+        /// The number of chunks.
+        chunk_count: u32,
+        /// One postcard frame of the Build topic's message.
+        facts: Vec<u8>,
+    },
     /// The stream is over. `facts` counts the facts sent in `chunks` chunks. `complete` is the
     /// responder's statement that these are all of its holdings of the Build and that they are whole.
-    End { build_id: String, facts: u32, chunks: u32, complete: bool },
+    End {
+        /// The Build read.
+        build_id: String,
+        /// The number of facts sent.
+        facts: u32,
+        /// The number of chunks sent.
+        chunks: u32,
+        /// Whether the responder holds no other fact of the Build and these are whole.
+        complete: bool,
+    },
     /// The target cannot answer yet; `reason` names what it waits for.
-    NotReady { reason: String },
+    /// The target is not ready to serve.
+    NotReady {
+        /// What the target waits for.
+        reason: String,
+    },
     /// The target holds no fact of `build_id`.
-    UnknownBuild { build_id: String },
-    PeerUnresolved { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    UnknownBuild {
+        /// The Build requested.
+        build_id: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The target is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The target is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
     /// The stream begins: sent before the first chunk of an accepted read.
     Started,
 }
 
 impl BuildFactsReply {
+    /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Facts { .. } => "facts",

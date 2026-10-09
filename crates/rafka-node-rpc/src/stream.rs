@@ -34,7 +34,13 @@ pub enum SinkError {
     /// The caller stopped the reply direction or the connection is gone.
     CallerGone(String),
     /// The encoded frame exceeds the protocol's reply-frame limit.
-    TooLarge { size: usize, max: usize },
+    /// The encoded frame is larger than the limit.
+    TooLarge {
+        /// The encoded size in bytes.
+        size: usize,
+        /// The protocol's reply-frame limit in bytes.
+        max: usize,
+    },
     /// The frame breaks the stream order.
     Order(String),
 }
@@ -51,7 +57,7 @@ struct OutInner {
 /// The server side of one stream: the reply direction and its order. Shared by the sink and the
 /// runtime, which takes the stream back to write the terminal frame.
 #[derive(Clone)]
-pub struct StreamOut(Arc<tokio::sync::Mutex<OutInner>>);
+pub(crate) struct StreamOut(Arc<tokio::sync::Mutex<OutInner>>);
 
 impl StreamOut {
     pub(crate) fn new(send: SendStream, max: usize) -> Self {
@@ -152,7 +158,7 @@ fn final_frame(order: &mut FrameOrder, kind: FrameKind) -> Result<(), String> {
 }
 
 /// How a streaming handler ended.
-pub enum StreamEnd {
+pub(crate) enum StreamEnd {
     /// Its returned frame (terminal, or a refusal before `Started`), classified.
     Final { kind: FrameKind, payload: Vec<u8> },
     Fault(HandlerFault),
@@ -160,6 +166,7 @@ pub enum StreamEnd {
 
 /// `ReplySink` states.
 pub struct NotStarted;
+/// The state of a sink that has written its first frame.
 pub struct Streaming;
 
 /// The one typed sink a streaming handler writes through.
@@ -283,7 +290,9 @@ pub enum StreamFailure {
 /// One received item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamItem<R> {
+    /// A frame of the stream: its kind and its decoded body.
     Frame(FrameKind, R),
+    /// The stream ended in a failure.
     Failed(StreamFailure),
 }
 

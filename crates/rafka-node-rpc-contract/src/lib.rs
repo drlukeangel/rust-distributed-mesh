@@ -4,6 +4,8 @@
 //! Pure types and codecs: framing, the reserved reset/stop namespace, the
 //! local outcome algebra and the protocol trait. It depends on no transport;
 //! `rafka-node-rpc` executes this contract over Iroh.
+#![deny(missing_docs)]
+
 
 pub mod build_claim;
 pub mod build_facts;

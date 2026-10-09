@@ -12,6 +12,7 @@ use std::fmt;
 pub struct DeploymentId(pub String);
 
 impl DeploymentId {
+    /// A fresh deployment id.
     pub fn mint() -> Self {
         Self(hex::encode(rand::random::<[u8; 16]>()))
     }
@@ -32,9 +33,13 @@ pub use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshId, NodeId,
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeStatus {
+    /// Created and not yet ready for traffic.
     Pending,
+    /// Ready: it takes traffic.
     ReadyForTraffic,
+    /// Draining: it takes no new work.
     Draining,
+    /// Leaving: it has announced its departure.
     Leaving,
     /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
     /// the silent peer in place and keeps it; its next digest flips it back (fabric-node-lifecycle.md
@@ -62,9 +67,13 @@ impl NodeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScopeStatus {
+    /// Created and not yet ready for traffic.
     Pending,
+    /// Ready: it takes traffic.
     ReadyForTraffic,
+    /// Draining: it takes no new work.
     Draining,
+    /// Retired: it has been taken out of service.
     Retired,
     /// The fabric primary has decided a peer mesh is reborn (`investigate`).
     Degraded,
@@ -74,24 +83,38 @@ pub enum ScopeStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
+    /// Each node is an OS process.
     Process,
+    /// Each node is a container.
     Container,
 }
 
 /// One node as the fabric control projection knows it (`NodeView`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
+    /// The node's `path.name`.
     pub name: PathName,
+    /// The node's kind.
     pub kind: NodeKind,
+    /// The name of the node's mesh.
     pub mesh: String,
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's fabric endpoint id, once known.
     pub endpoint_id: Option<EndpointId>,
+    /// The incarnation of the node's current birth, once launched.
     pub incarnation_id: Option<IncarnationId>,
+    /// The deployment that runs the node, once created.
     pub deployment_id: Option<DeploymentId>,
+    /// The provider that runs the node.
     pub provider: Option<ProviderKind>,
+    /// The node's data directory.
     pub data_dir: Option<String>,
+    /// The node's lifecycle state.
     pub status: NodeStatus,
+    /// Whether the node holds its cohort's primary seat.
     pub is_primary: bool,
+    /// Whether the node holds the fabric-primary seat.
     pub is_fabric_primary: bool,
     /// The control API base a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
@@ -139,20 +162,27 @@ impl Node {
     }
 }
 
+/// A mesh as the fabric record holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mesh {
     /// `None` until a member of the mesh has said which id it carries.
     pub id: Option<MeshId>,
+    /// The mesh's name.
     pub name: String,
+    /// The mesh's lifecycle state.
     pub status: ScopeStatus,
 }
 
+/// The fabric record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fabric {
     /// The logical Fabric's identity, kept for its lifetime; the name is its label.
     pub id: FabricId,
+    /// The fabric's name.
     pub name: String,
+    /// The fabric's lifecycle state.
     pub status: ScopeStatus,
+    /// The provider that runs the fabric's nodes.
     pub provider: ProviderKind,
 }
 

@@ -26,6 +26,7 @@ use tracing::Instrument as _;
 
 /// What a node serves a topology read from.
 pub struct TopologyDoor {
+    /// The membership the door reads held topology from.
     pub membership: Membership,
     /// This node's own digest, as it publishes it now.
     pub own: Arc<dyn Fn() -> MeshDigest + Send + Sync>,
@@ -39,7 +40,9 @@ pub struct TopologyDoor {
 /// it stored for each mesh.
 #[derive(Debug, Clone, Default)]
 pub struct StoredMap {
+    /// The births the target stored.
     pub nodes: Vec<StoredNode>,
+    /// The mesh id the target stored for each mesh, by mesh name.
     pub mesh_ids: std::collections::BTreeMap<String, rafka_mesh_entity::MeshId>,
 }
 
@@ -50,6 +53,7 @@ pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Futur
 const STORED_PER_FRAME: usize = 24;
 
 impl TopologyDoor {
+    /// A door over `membership` and the node's own digest.
     pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>) -> Self {
         Self { membership, own, stored: None, snapshots: AtomicU64::new(0) }
     }
@@ -65,6 +69,7 @@ impl TopologyDoor {
     }
 }
 
+/// The door a running node fills once it holds a view.
 pub type TopologySlot = Arc<OnceLock<Arc<TopologyDoor>>>;
 
 /// The chunks of one held source as the replies that carry them, in the one chunking gossip uses.
@@ -230,16 +235,24 @@ pub struct TopologyRead {
 /// A mesh answered from the target's stored map.
 #[derive(Debug, Clone)]
 pub struct StoredMesh {
+    /// The mesh's name.
     pub mesh: String,
+    /// The id the target stored for the mesh, when it stored one.
     pub mesh_id: Option<rafka_mesh_entity::MeshId>,
+    /// The births the target stored.
     pub nodes: Vec<StoredNode>,
 }
 
+/// A mesh answered from a gossiped snapshot.
 #[derive(Debug, Clone)]
 pub struct ReadMesh {
+    /// The mesh's name.
     pub mesh: String,
+    /// The publisher of the snapshot.
     pub publisher: PublisherId,
+    /// The snapshot's `topology_version`.
     pub topology_version: u64,
+    /// The members of the snapshot.
     pub members: Vec<MeshDigest>,
 }
 
@@ -277,7 +290,7 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
 /// or not at all, and returned. A recovering admin reads a local node's topology only to know
 /// whom to reach; what it holds as members stays what it hears itself.
-pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+pub(crate) async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let mut receiver = rafka_mesh_transport::snapshot::SnapshotReceiver::default();
     read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
 }

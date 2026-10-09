@@ -29,6 +29,7 @@ use tracing::Instrument;
 /// Who is calling, as the transport proved it.
 #[derive(Debug, Clone)]
 pub struct PeerContext {
+    /// The calling node's endpoint id, as the transport proved it.
     pub endpoint_id: iroh::PublicKey,
     /// The observability context the request carried, already sanitized: what a carrier
     /// hands into its inner call unchanged.
@@ -41,9 +42,11 @@ pub struct PeerContext {
 pub struct HandlerFault(String);
 
 impl HandlerFault {
+    /// A fault for a broken invariant, naming `what` was broken.
     pub fn invariant_broken(what: impl Into<String>) -> Self {
         Self(what.into())
     }
+    /// The named reason the fault carries.
     pub fn reason(&self) -> &str {
         &self.0
     }
@@ -146,17 +149,25 @@ pub(crate) fn apply_context(span: &tracing::Span, peer: &PeerContext) {
 /// counted, not root-spanned per call; node-rpc.md §38.1).
 #[derive(Debug, Default)]
 pub struct ServerStats {
+    /// Requests that reached a handler.
     pub dispatched: AtomicU64,
+    /// Requests dropped because the sender finished or reset before the request was complete.
     pub dropped_unfinished: AtomicU64,
+    /// Requests refused because no handler serves the op (`421 UNSERVED_OP`).
     pub unserved: AtomicU64,
+    /// Requests refused because a frame exceeded its op's size bound.
     pub too_large: AtomicU64,
+    /// Requests refused typed `Busy` by admission.
     pub busy: AtomicU64,
+    /// Requests refused typed `Draining` while the server drains.
     pub draining: AtomicU64,
     /// Requests refused typed `NotReady` by a closed ready gate.
     pub not_ready: AtomicU64,
+    /// Requests reset as protocol violations.
     pub violations: AtomicU64,
     /// Requests refused `425 STALE_TARGET` (another node).
     pub stale: AtomicU64,
+    /// Handlers that failed or panicked.
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (WaitForDrain reads it).
     pub in_flight: AtomicU64,
@@ -180,6 +191,7 @@ impl Drop for InFlight {
 }
 
 impl ServerStats {
+    /// Read `c` with sequential consistency.
     pub fn get(c: &AtomicU64) -> u64 {
         c.load(Ordering::SeqCst)
     }
@@ -212,6 +224,7 @@ struct Inbound {
 }
 
 impl ServerBuilder {
+    /// An empty builder: no handlers, default admission, no ready gate.
     pub fn new() -> Self {
         Self {
             catalog: CatalogBuilder::new(),
@@ -245,6 +258,8 @@ impl ServerBuilder {
         self
     }
 
+    /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
+    /// catalog.
     pub fn ledger(mut self, rows: impl IntoIterator<Item = rafka_node_rpc_contract::catalog::LedgerEntry>) -> Self {
         self.catalog = self.catalog.ledger(rows);
         self
@@ -269,6 +284,7 @@ impl ServerBuilder {
         self
     }
 
+    /// Bound admission for `op` to `limits`.
     pub fn limits(mut self, op: u8, limits: Limits) -> Self {
         self.admission.set(op, limits);
         self
@@ -300,17 +316,21 @@ impl ServerBuilder {
 /// The exact birth a server is: what every request's fence is checked against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedBirth {
+    /// The served node's id.
     pub node_id: String,
+    /// The served node's incarnation id.
     pub incarnation: String,
 }
 
 /// Which part of a request's fence this node is not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FenceMismatch {
+    /// The request named another node.
     NodeId,
 }
 
 impl FenceMismatch {
+    /// The mismatch's name as it appears in spans and refusals.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NodeId => "node_id",
@@ -349,13 +369,14 @@ fn code(c: ResetCode) -> VarInt {
 impl NodeRpcServer {
     /// Is `fence` this node? `Err` names what is not. The op is the catalog's
     /// to check.
-    pub fn check_fence(&self, fence: &Fence) -> Result<(), FenceMismatch> {
+    pub(crate) fn check_fence(&self, fence: &Fence) -> Result<(), FenceMismatch> {
         if fence.target_node_id != self.inner.birth.node_id {
             return Err(FenceMismatch::NodeId);
         }
         Ok(())
     }
 
+    /// Whether `fence` names this node.
     pub fn is_current(&self, fence: &Fence) -> bool {
         self.check_fence(fence).is_ok()
     }
@@ -365,6 +386,7 @@ impl NodeRpcServer {
         &self.inner.catalog
     }
 
+    /// The server's counters.
     pub fn stats(&self) -> Arc<ServerStats> {
         self.inner.stats.clone()
     }

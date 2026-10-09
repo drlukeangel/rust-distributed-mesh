@@ -9,11 +9,15 @@ use std::collections::BTreeMap;
 /// One process birth of a logical node, as it publishes itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshNode {
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's `path.name`.
     pub name: PathName,
+    /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The one address of the birth's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
+    /// The id of this birth.
     pub incarnation: IncarnationId,
     /// The incarnation this birth replaces; `None` for the first birth.
     pub supersedes: Option<IncarnationId>,
@@ -26,9 +30,13 @@ pub struct MeshNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MemberStatus {
+    /// The node has not yet declared itself ready.
     Pending,
+    /// The node takes traffic.
     ReadyForTraffic,
+    /// The node takes no new work.
     Draining,
+    /// The node has announced its departure.
     Leaving,
 }
 
@@ -37,7 +45,9 @@ pub enum MemberStatus {
 pub struct MeshDigest {
     /// The logical Fabric this member belongs to.
     pub fabric_id: FabricId,
+    /// The birth the digest describes.
     pub node: MeshNode,
+    /// The member's status.
     pub status: MemberStatus,
     /// The control API a node-admin serves; `None` for other kinds.
     pub admin_api_base: Option<String>,
@@ -63,10 +73,12 @@ pub struct MeshDigest {
 }
 
 impl MeshDigest {
+    /// The digest as JSON bytes.
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("digest serializes")
     }
 
+    /// The digest a JSON byte string holds, `None` when it is not one.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         serde_json::from_slice(bytes).ok()
     }

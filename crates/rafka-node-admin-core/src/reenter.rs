@@ -21,13 +21,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A node's fixed deadline in the sweep.
-pub const SWEEP_DEADLINE: Duration = Duration::from_secs(2);
+pub(crate) const SWEEP_DEADLINE: Duration = Duration::from_secs(2);
 /// The most nodes pinged at once.
-pub const SWEEP_CONCURRENCY: usize = 8;
+pub(crate) const SWEEP_CONCURRENCY: usize = 8;
 
 /// One birth of the topology map: what a Ping needs to reach it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MapNode {
+pub(crate) struct MapNode {
     pub node_id: NodeId,
     pub name: PathName,
     pub endpoint_id: EndpointId,
@@ -58,7 +58,7 @@ impl MapNode {
     /// The birth as the view holds it until membership speaks for it: `status` is what the map
     /// knows (`ReadyForTraffic` for a birth that answered a Ping, `PendingReconnect` for one not
     /// yet reached; never `Dead`).
-    pub fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
+    pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
         let mut node = crate::model::Node::allocated(self.name.clone());
         node.node_id = self.node_id.clone();
         node.endpoint_id = Some(self.endpoint_id.clone());
@@ -78,7 +78,7 @@ impl MapNode {
 }
 
 /// The births of one topology read, as the map a Ping reaches.
-pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mesh_entity::FabricId) -> Vec<MapNode> {
+pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mesh_entity::FabricId) -> Vec<MapNode> {
     read.installed
         .iter()
         .flat_map(|m| m.members.iter())
@@ -106,7 +106,7 @@ pub fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mes
 /// The births of a stored map the maker answered with, as the map a Ping reaches. A stored map has
 /// no version and says nothing of who lives: every birth is settled-for-the-sweep and not ready.
 /// It is for reaching a local node of the own mesh and is never installed as topology.
-pub fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<MapNode> {
+pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<MapNode> {
     read.stored
         .iter()
         .flat_map(|m| m.nodes.iter())
@@ -127,7 +127,7 @@ pub fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<MapNode> 
 }
 
 /// Where a topology is read from.
-pub enum TopologySource<'a> {
+pub(crate) enum TopologySource<'a> {
     /// This admin's durable map (nodes.storage), with no maker.
     DurableMap(&'a [NodeRecord]),
     /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
@@ -160,7 +160,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
 }
 
 /// What the entering admin has.
-pub struct EntryCtx {
+pub(crate) struct EntryCtx {
     pub me: PathName,
     pub me_id: NodeId,
     pub client: Arc<NodeRpcClient>,
@@ -170,7 +170,7 @@ pub struct EntryCtx {
 
 /// What the sweep found.
 #[derive(Debug, Clone, Default)]
-pub struct SweepReport {
+pub(crate) struct SweepReport {
     /// The own-mesh node the topology was read from, when one answered.
     pub local: Option<PathName>,
     pub reached: Vec<MapNode>,
@@ -195,7 +195,7 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
 
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
 /// local node, read the current topology from it, then sweep the own mesh once.
-pub async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
+pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
     let started = Instant::now();
     let mesh = ctx.me.mesh.clone();
     let own = |nodes: &[MapNode]| -> Vec<MapNode> {
@@ -272,7 +272,7 @@ pub async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec
 }
 
 /// What the standard decommission of an unreached node needs.
-pub struct Decommission {
+pub(crate) struct Decommission {
     pub me: PathName,
     pub topology: Arc<tokio::sync::RwLock<crate::topology::Topology>>,
     pub accepted: Arc<crate::accepted::AcceptedStore>,
@@ -281,13 +281,13 @@ pub struct Decommission {
 }
 
 /// How long one node's decommission waits for the Build to be free and its attempt to complete.
-pub const DECOMMISSION_WAIT: Duration = Duration::from_secs(180);
+pub(crate) const DECOMMISSION_WAIT: Duration = Duration::from_secs(180);
 
 /// Why the sweep's decommission of `n` needs no attempt of this sweeper's: the node is heard again
 /// as the same birth (`heard`), or another birth holds its path (`replaced-by-another-attempt`,
 /// the other admin of the mesh sweeps too and its attempt ran first). Neither is a completed
 /// attempt of this sweeper; an attempt this sweeper opened ends `attempt N` and is never decided here.
-pub fn sweep_ended_without_attempt(held: Option<&crate::model::Node>, swept: &crate::model::IncarnationId) -> Option<&'static str> {
+pub(crate) fn sweep_ended_without_attempt(held: Option<&crate::model::Node>, swept: &crate::model::IncarnationId) -> Option<&'static str> {
     let held = held?;
     if held.incarnation_id.as_ref() != Some(swept) {
         Some("replaced-by-another-attempt")
@@ -304,7 +304,7 @@ pub fn sweep_ended_without_attempt(held: Option<&crate::model::Node>, swept: &cr
 /// sendable, terminates and inspects the exact runtime, and publishes `NodeDeleted` only on a
 /// proven exit; the node is then created again as the accepted Build requires. A node heard again
 /// meanwhile is not decommissioned.
-pub async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
+pub(crate) async fn decommission_unreached(d: &Decommission, mut nodes: Vec<MapNode>) {
     nodes.sort_by_key(|n| n.name.to_string());
     for n in nodes {
         let started = Instant::now();

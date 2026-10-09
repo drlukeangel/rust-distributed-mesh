@@ -625,6 +625,7 @@ impl WireMessage {
 pub struct JoinAnswer {
     /// The answering admin's path name.
     pub served_by: String,
+    /// The control facts the answer carries.
     pub control: JoinControl,
     /// The statuses the admin holds (original publisher and instant kept).
     pub statuses: Vec<rafka_mesh_transport::membership::Frame>,
@@ -635,15 +636,20 @@ pub struct JoinAnswer {
 pub struct JoinControl {
     /// The deployment provider the fabric's policy names.
     pub provider: crate::model::ProviderKind,
+    /// The Fabric record the admin holds.
     pub fabric: Option<FabricRecord>,
+    /// The shutdown the admin holds.
     pub shutdown: Option<FabricShutdown>,
     /// The attempt of the pointed Build the joiner's copy of its facts must reach before Ready.
     pub build: Option<BuildFloor>,
 }
 
+/// The attempt of the pointed Build a joiner's copy must reach before Ready.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildFloor {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
 }
 

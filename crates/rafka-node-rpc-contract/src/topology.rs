@@ -24,15 +24,22 @@ use rafka_mesh_entity::wire::WireDigest;
 use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
 use serde::{Deserialize, Serialize};
 
+/// The topology read protocol: a stream of one mesh's snapshot chunks, or of every mesh a node
+/// holds.
 pub struct Topology;
 
 /// One node of a stored map: how to reach a birth the target stored, with no claim that it lives.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredNode {
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's `path.name`.
     pub name: String,
+    /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
+    /// The incarnation the target stored.
     pub incarnation: IncarnationId,
+    /// The address the target stored for the node's endpoint.
     pub transport_addr: std::net::SocketAddr,
 }
 
@@ -40,18 +47,27 @@ pub struct StoredNode {
 /// `topology_version` is compared only inside one publisher.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceVersion {
+    /// The source mesh's primary birth that published the version, the epoch of `topology_version`.
     pub publisher: PublisherId,
+    /// The version held.
     pub topology_version: u64,
 }
 
+/// A topology read call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopologyRequest {
     /// `mesh = None` asks for every mesh the target holds. A held `since` for a mesh answers
     /// `Unchanged` for it.
-    GetTopology { mesh: Option<String>, since: Option<SourceVersion> },
+    GetTopology {
+        /// The mesh to read; `None` for every mesh the target holds.
+        mesh: Option<String>,
+        /// The source version the caller already holds, when any.
+        since: Option<SourceVersion>,
+    },
 }
 
 impl TopologyRequest {
+    /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
         match self {
             Self::GetTopology { .. } => "get-topology",
@@ -59,43 +75,97 @@ impl TopologyRequest {
     }
 }
 
+/// One frame of a topology read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopologyReply {
     /// One chunk of one mesh's snapshot.
     Snapshot {
+        /// The source mesh's name.
         mesh: String,
+        /// The publisher of the snapshot.
         publisher: PublisherId,
+        /// The snapshot's `topology_version`.
         topology_version: u64,
+        /// The publisher's own snapshot counter, shared by every chunk of the snapshot.
         snapshot_id: u64,
+        /// This chunk's index within the snapshot.
         chunk_index: u32,
+        /// The number of chunks in the snapshot.
         chunk_count: u32,
+        /// The members this chunk carries.
         digests: Vec<WireDigest>,
+        /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
+        /// The retained proven departures this chunk carries.
         departed: Vec<LifecycleOp>,
     },
     /// The caller's `since` is the target's held source version for `mesh`.
-    Unchanged { mesh: String, publisher: PublisherId, topology_version: u64 },
+    Unchanged {
+        /// The source mesh's name.
+        mesh: String,
+        /// The publisher of the version held.
+        publisher: PublisherId,
+        /// The version held.
+        topology_version: u64,
+    },
     /// The stream is complete; `meshes` counts the meshes answered, `Unchanged` included.
-    End { meshes: u32 },
+    End {
+        /// The number of meshes answered.
+        meshes: u32,
+    },
     /// The target holds no topology yet.
-    NotReady { reason: String },
+    NotReady {
+        /// Why the target holds no topology.
+        reason: String,
+    },
     /// The requested mesh is not one the target holds.
-    UnknownMesh { mesh: String },
-    PeerUnresolved { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    UnknownMesh {
+        /// The mesh requested.
+        mesh: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound the node is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why the node refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
     /// The stream begins: sent before the first snapshot of an accepted read.
     Started,
     /// A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is
     /// never installed as the mesh's topology. It names births to reach, nothing more. One mesh may
     /// arrive in several frames; `End.meshes` counts the mesh once. `mesh_id` is the id the target
     /// stored for the mesh, when it stored one: the mesh keeps its id through a recovery.
-    Stored { mesh: String, mesh_id: Option<MeshId>, nodes: Vec<StoredNode> },
+    Stored {
+        /// The mesh's name.
+        mesh: String,
+        /// The id the target stored for the mesh, when it stored one.
+        mesh_id: Option<MeshId>,
+        /// The births the target stored for the mesh.
+        nodes: Vec<StoredNode>,
+    },
 }
 
 impl TopologyReply {
+    /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Snapshot { .. } => "snapshot",

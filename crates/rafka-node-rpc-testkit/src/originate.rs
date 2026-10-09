@@ -25,80 +25,212 @@ use std::sync::Arc;
 /// node (the product's own policies are the product's).
 pub const POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
 
+/// The originate door protocol on op `0x73`.
 pub struct Originate;
 
+/// A proof-store operation the originating node makes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofOp {
-    Get { key: Vec<u8> },
-    Put { key: Vec<u8>, value: Vec<u8> },
+    /// Read `key`.
+    Get {
+        /// The key to read.
+        key: Vec<u8>,
+    },
+    /// Write `value` under `key`.
+    Put {
+        /// The key to write.
+        key: Vec<u8>,
+        /// The value to write.
+        value: Vec<u8>,
+    },
 }
 
+/// An originate door call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateRequest {
     /// Call `destination` (a path) with `op`, over this node's held projection.
-    Call { destination: String, op: ProofOp },
+    Call {
+        /// The `path.name` to call.
+        destination: String,
+        /// The proof-store operation to make.
+        op: ProofOp,
+    },
     /// Refuse the next `refuse_index` index writes and `refuse_history` history appends, after
     /// letting `pass_history` history appends through.
-    ArmFault { refuse_index: u32, refuse_history: u32, pass_history: u32 },
+    ArmFault {
+        /// The number of index writes to refuse.
+        refuse_index: u32,
+        /// The number of history appends to refuse.
+        refuse_history: u32,
+        /// The number of history appends to let through first.
+        pass_history: u32,
+    },
+    /// Release the armed storage fault.
     ReleaseFault,
+    /// Answer a snapshot of what the node holds and owes.
     Snapshot,
     /// Seed this node's own durable facts toward `destination` as a proven carried path leaves
     /// them (connections.md section 7): `failed_attempts` Direct Failed observations through the
     /// writer's own observer path, then `Proxy Connected` through `carrier`, both naming the
     /// births this node's membership holds now. Testkit only: the product writes a Proxy after
     /// cold discovery, which nothing in this repository runs.
-    RecordProxy { destination: String, carrier: String, failed_attempts: u32 },
+    RecordProxy {
+        /// The `path.name` the facts concern.
+        destination: String,
+        /// The `path.name` of the carrier.
+        carrier: String,
+        /// The number of Direct Failed observations to record first.
+        failed_attempts: u32,
+    },
     /// One direct core Ping to `destination`, outside route resolution, as a node's own
     /// background traffic reaches a peer: the pooled connection it opens is reported to the
     /// destination's writer as Direct Connected from the destination's side (accepted) and to
     /// this node's writer as its own dial.
-    Dial { destination: String },
+    Dial {
+        /// The `path.name` to ping.
+        destination: String,
+    },
     /// Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription
     /// does (`membership::mark_transport_stopped`): the node exits through the one transport-stopped
     /// exit, recording its reason in its data dir. The reply is sent before the mark.
-    StopTransport { reason: String },
+    StopTransport {
+        /// The reason the transport stopped.
+        reason: String,
+    },
 }
 
 /// Who answered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnsweredBy {
+    /// The answering node's id.
     pub node_id: String,
+    /// The answering node's `path.name`.
     pub node: String,
+    /// The answering node's incarnation id.
     pub incarnation_id: String,
 }
 
+/// An originate door answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OriginateReply {
+    /// The call was made.
     Called {
+        /// Who made the call.
         by: AnsweredBy,
+        /// The destination's node id.
         destination_node_id: String,
         /// The effective route's token: `via-peer`, `direct`, `direct-unknown` or `no-active-route`.
         route: String,
+        /// The carrier the route used, when it used one.
         carrier: Option<String>,
         /// The own Proxy the resolution found invalid, and why, if any.
         retired: Option<String>,
+        /// The call's outcome name.
         outcome: String,
+        /// The proof-store reply, when the call replied.
         reply: Option<ProofReply>,
         /// The source's pooled connections after the call, by target path.
         pooled: Vec<String>,
     },
-    FaultArmed { by: AnsweredBy, refuse_index: u32, refuse_history: u32 },
-    FaultReleased { by: AnsweredBy, refused: u32 },
-    Snapshot { by: AnsweredBy, own_active_proxies: Vec<NodeConnection>, own_latest_directs: Vec<NodeConnection>, active_len: usize, owed: Vec<NodeConnection>, fault_refused: u32 },
+    /// The storage fault was armed.
+    FaultArmed {
+        /// Who armed it.
+        by: AnsweredBy,
+        /// Index writes still to refuse.
+        refuse_index: u32,
+        /// History appends still to refuse.
+        refuse_history: u32,
+    },
+    /// The storage fault was released.
+    FaultReleased {
+        /// Who released it.
+        by: AnsweredBy,
+        /// The number of writes the fault refused.
+        refused: u32,
+    },
+    /// What the node holds and owes.
+    Snapshot {
+        /// Who answered.
+        by: AnsweredBy,
+        /// The node's active Proxy entries.
+        own_active_proxies: Vec<NodeConnection>,
+        /// The node's latest Direct entry per destination.
+        own_latest_directs: Vec<NodeConnection>,
+        /// The number of active Direct facts held that name a destination process still current.
+        active_len: usize,
+        /// The Proxy retirements the node owes now.
+        owed: Vec<NodeConnection>,
+        /// The number of writes the fault has refused.
+        fault_refused: u32,
+    },
     /// The destination does not parse or does not resolve on this node.
-    BadDestination { by: AnsweredBy, reason: String },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    BadDestination {
+        /// Who answered.
+        by: AnsweredBy,
+        /// Why the destination is refused.
+        reason: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
     /// The facts a `RecordProxy` wrote, with the births they name.
-    ProxyRecorded { by: AnsweredBy, destination_node_id: String, destination_incarnation: String, carrier_node_id: String, carrier_incarnation: String, failed_attempts: u32 },
+    ProxyRecorded {
+        /// Who recorded the facts.
+        by: AnsweredBy,
+        /// The destination's node id.
+        destination_node_id: String,
+        /// The destination incarnation the facts name.
+        destination_incarnation: String,
+        /// The carrier's node id.
+        carrier_node_id: String,
+        /// The carrier incarnation the facts name.
+        carrier_incarnation: String,
+        /// The Direct Failed observations recorded.
+        failed_attempts: u32,
+    },
     /// The answer of a `Dial`: the typed outcome name of the one Ping.
-    Dialed { by: AnsweredBy, destination_node_id: String, outcome: String },
+    Dialed {
+        /// Who dialled.
+        by: AnsweredBy,
+        /// The destination's node id.
+        destination_node_id: String,
+        /// The Ping's outcome name.
+        outcome: String,
+    },
     /// The transport stop is marked; the process is exiting.
-    TransportStopMarked { by: AnsweredBy, reason: String },
+    TransportStopMarked {
+        /// Who marked the stop.
+        by: AnsweredBy,
+        /// The reason recorded.
+        reason: String,
+    },
 }
 
 impl NodeProtocol for Originate {
@@ -152,9 +284,13 @@ impl NodeProtocol for Originate {
 /// The process seams the door acts through.
 #[derive(Clone)]
 pub struct Seams {
+    /// The resolver the door acts through.
     pub resolver: Arc<LiveNodeResolver>,
+    /// The client the door calls through.
     pub client: Arc<NodeRpcClient>,
+    /// The connections writer the door records through.
     pub connections: Arc<ConnectionsWriter>,
+    /// The storage fault the door arms and releases.
     pub fault: Arc<StorageFault>,
 }
 

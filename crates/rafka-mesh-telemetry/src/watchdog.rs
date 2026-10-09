@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How often the runtime stamps its heartbeat.
-pub const BEAT: Duration = Duration::from_millis(100);
+pub(crate) const BEAT: Duration = Duration::from_millis(100);
 /// A heartbeat older than this is a stall.
-pub const STALL: Duration = Duration::from_millis(500);
+pub(crate) const STALL: Duration = Duration::from_millis(500);
 
 fn now_ms(origin: Instant) -> u64 {
     origin.elapsed().as_millis() as u64
@@ -33,7 +33,7 @@ fn runqueue_wait_ms() -> u64 {
 /// What every thread of this process is doing now: `comm:state:wchan` with a count each, the most
 /// common first (state R = running, S = sleeping, D = uninterruptible; wchan = the kernel
 /// function a sleeping thread waits in).
-pub fn thread_states() -> String {
+pub(crate) fn thread_states() -> String {
     let Ok(tasks) = std::fs::read_dir("/proc/self/task") else { return String::new() };
     let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
     for t in tasks.flatten() {

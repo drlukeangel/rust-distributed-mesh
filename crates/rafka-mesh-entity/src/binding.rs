@@ -28,7 +28,9 @@ pub const ENV_EXECUTABLE_CANDIDATE: &str = "RDM_EXECUTABLE_CANDIDATE";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Candidate {
+    /// The exact source revision the executables were built from.
     pub sha: String,
+    /// The build the executables came from.
     pub build: String,
 }
 
@@ -36,7 +38,9 @@ pub struct Candidate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binding {
+    /// The launch id the executable runs.
     pub launch_id: String,
+    /// The path of the executable.
     pub executable: PathBuf,
     /// Lowercase hex sha256 of the executable's bytes.
     pub sha256: String,
@@ -49,9 +53,11 @@ pub struct Binding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BindingSet {
+    /// The candidate the executables were built from.
     pub candidate: Candidate,
     /// Every launch id the consumer declares; each is bound exactly once.
     pub launch_ids: Vec<String>,
+    /// The binding of each declared launch id.
     pub bindings: Vec<Binding>,
 }
 
@@ -62,6 +68,7 @@ pub struct Expect<'a> {
     pub candidate_sha: &'a str,
     /// Launch ids the run will launch; each must be declared and bound. `node_admin` is always required.
     pub required: &'a [&'a str],
+    /// What the provider runs a node in.
     pub provider_image: ProviderImage<'a>,
 }
 
@@ -76,25 +83,123 @@ pub enum ProviderImage<'a> {
     Container(&'a str),
 }
 
+/// Why a binding set is refused. Each arm names the launch id or file at fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindingError {
-    Unreadable { path: PathBuf, reason: String },
-    Parse { path: PathBuf, reason: String },
-    UnknownLaunchId { launch_id: String },
-    DuplicateDeclaration { launch_id: String },
-    DuplicateBinding { launch_id: String },
-    UndeclaredBinding { launch_id: String },
-    MissingBinding { launch_id: String },
-    NotRequiredByTheSet { launch_id: String },
-    ExecutableAbsent { launch_id: String, path: PathBuf, reason: String },
-    NotExecutable { launch_id: String, path: PathBuf },
-    BadHash { launch_id: String, value: String },
-    HashMismatch { launch_id: String, path: PathBuf, expected: String, actual: String },
-    CandidateMismatch { expected: String, bound: String },
-    ImageMismatch { launch_id: String, bound: String, provider: String },
-    ImageUnderProcessProvider { launch_id: String, bound: String },
-    NoImageBound { launch_id: String, provider: String },
-    Unbound { launch_id: String },
+    /// The binding file cannot be read.
+    Unreadable {
+        /// The path concerned.
+        path: PathBuf,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The binding file does not parse.
+    Parse {
+        /// The path concerned.
+        path: PathBuf,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The launch id is not a launch template of this mesh product.
+    UnknownLaunchId {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The launch id is declared more than once.
+    DuplicateDeclaration {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The launch id is bound more than once.
+    DuplicateBinding {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The launch id is bound but not declared in `launch_ids`.
+    UndeclaredBinding {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The launch id is declared but has no binding.
+    MissingBinding {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The run requires the launch id and the set does not declare it.
+    NotRequiredByTheSet {
+        /// The launch id concerned.
+        launch_id: String,
+    },
+    /// The executable cannot be read.
+    ExecutableAbsent {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The path concerned.
+        path: PathBuf,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The path is not an executable file.
+    NotExecutable {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The path concerned.
+        path: PathBuf,
+    },
+    /// The expected hash is not 64 lowercase hex characters.
+    BadHash {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The expected hash as written.
+        value: String,
+    },
+    /// The executable's hash differs from the binding's.
+    HashMismatch {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The path concerned.
+        path: PathBuf,
+        /// The hash the binding expects.
+        expected: String,
+        /// The hash of the file's bytes.
+        actual: String,
+    },
+    /// The set was built from another candidate than the run's.
+    CandidateMismatch {
+        /// The candidate the run is of.
+        expected: String,
+        /// The candidate the set was built from.
+        bound: String,
+    },
+    /// The binding names another image than the provider runs.
+    ImageMismatch {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The image the binding names.
+        bound: String,
+        /// The image the provider runs every node in.
+        provider: String,
+    },
+    /// The binding names an image under a provider that runs host processes.
+    ImageUnderProcessProvider {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The image the binding names.
+        bound: String,
+    },
+    /// The provider runs nodes in an image and the binding names none.
+    NoImageBound {
+        /// The launch id concerned.
+        launch_id: String,
+        /// The image the provider runs every node in.
+        provider: String,
+    },
+    /// The launch id has no explicit binding; an explicit binding set never falls back to a
+    /// built-in executable.
+    Unbound {
+        /// The launch id concerned.
+        launch_id: String,
+    },
 }
 
 impl fmt::Display for BindingError {
@@ -146,6 +251,7 @@ fn is_executable(path: &Path) -> std::io::Result<bool> {
 }
 
 impl BindingSet {
+    /// Read the binding set from the file at `path`.
     pub fn load(path: &Path) -> Result<Self, BindingError> {
         let bytes = std::fs::read(path).map_err(|e| BindingError::Unreadable { path: path.to_path_buf(), reason: e.to_string() })?;
         serde_json::from_slice(&bytes).map_err(|e| BindingError::Parse { path: path.to_path_buf(), reason: e.to_string() })
@@ -236,14 +342,20 @@ pub struct Validated {
 /// The executable a launch will run, as bound and as re-verified at the launch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Resolved {
+    /// The launch id the launch runs.
     pub launch_id: String,
+    /// The path of the executable.
     pub executable: PathBuf,
+    /// The sha256 of the executable's bytes, lowercase hex.
     pub sha256: String,
+    /// The image the executable runs in, when the binding names one.
     pub image: Option<String>,
+    /// The candidate the executable was built from.
     pub candidate: Candidate,
 }
 
 impl Validated {
+    /// The binding set that was validated.
     pub fn set(&self) -> &BindingSet {
         &self.set
     }

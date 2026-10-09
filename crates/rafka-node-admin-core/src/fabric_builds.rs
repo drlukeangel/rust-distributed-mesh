@@ -43,8 +43,11 @@ use std::sync::Arc;
 /// the facts of the Build it names and of every active Build. Facts and the Fabric record
 /// travel in their wire shapes (`crate::wire`), never the JSON-shaped domain types.
 pub struct BuildMessage {
+    /// The message's nonce.
     pub nonce: u64,
+    /// The Build facts the message carries.
     pub facts: Vec<BuildFact>,
+    /// The Fabric record the message carries.
     pub fabric: Option<FabricRecord>,
     /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
     /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
@@ -149,7 +152,7 @@ fn refeed(
 }
 
 /// The fabric's Build topic.
-pub fn build_topic(fabric: &rafka_mesh_entity::FabricId) -> TopicId {
+pub(crate) fn build_topic(fabric: &rafka_mesh_entity::FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-builds:{fabric}").as_bytes()).as_bytes())
 }
 
@@ -327,7 +330,7 @@ impl FabricBuildStateAdapter {
     }
 
     /// Broadcast a fabric shutdown on the control channel (fabric-mesh-lifecycle.md §11.1).
-    pub async fn publish_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<(), BuildStateError> {
+    pub(crate) async fn publish_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<(), BuildStateError> {
         let sender = self.sender.read().await.clone();
         sender.broadcast(encode_shutdown(shutdown)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting fabric shutdown: {e}")))
     }

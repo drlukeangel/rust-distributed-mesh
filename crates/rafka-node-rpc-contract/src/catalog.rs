@@ -30,8 +30,10 @@ pub enum OpOwner {
 /// family is ever allocated one, and no testkit family lives outside them.
 pub const TESTKIT_OPS: std::ops::RangeInclusive<u8> = 0x70..=0x7F;
 
+/// Whether an allocated op is served or reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpState {
+    /// The op is served.
     Live,
     /// Reserved forever; never served, never reassigned.
     Retired,
@@ -40,15 +42,19 @@ pub enum OpState {
 /// One op-ledger row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerEntry {
+    /// The op tag.
     pub op: u8,
+    /// The family the op belongs to.
     pub family: String,
+    /// The product that owns the op.
     pub owner: OpOwner,
+    /// Whether the op is live or retired.
     pub state: OpState,
 }
 
 /// RDM's ledger: core allocations plus the product reservations entering
 /// migration (ownership amendment §10), so RDM never allocates them.
-pub fn core_ledger() -> Vec<LedgerEntry> {
+pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
     let rafka = |op: u8, family: &str| LedgerEntry {
         op,
         family: family.into(),
@@ -85,9 +91,12 @@ pub fn core_ledger() -> Vec<LedgerEntry> {
     ]
 }
 
+/// Whether a call has one reply frame or a stream of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
+    /// One request, one reply frame.
     Unary,
+    /// One request, a stream of reply frames.
     ServerStreaming,
 }
 
@@ -98,19 +107,30 @@ pub enum EntryKind {
     Canonical,
     /// A product's sealed adapter for a pre-Node-RPC family, carried only
     /// until `migration_unit` removes it. RDM runs no handler of its own.
-    Transitional { migration_unit: String },
+    Transitional {
+        /// The unit that removes the adapter.
+        migration_unit: String,
+    },
 }
 
 /// One served catalog entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogEntry {
+    /// The op tag.
     pub op: u8,
+    /// The protocol's name.
     pub name: String,
+    /// The product that owns the op.
     pub owner: OpOwner,
+    /// Whether the entry is canonical or a transitional adapter.
     pub kind: EntryKind,
+    /// Whether the op is unary or streaming.
     pub shape: Shape,
+    /// The largest request frame the op accepts, in bytes.
     pub max_request_frame_bytes: usize,
+    /// The largest reply frame the op sends, in bytes.
     pub max_reply_frame_bytes: usize,
+    /// Whether the op may be carried through a peer.
     pub forwardable: bool,
     /// Served while the node drains (lifecycle control), never refused `Draining`.
     pub served_while_draining: bool,
@@ -151,24 +171,85 @@ impl CatalogEntry {
 /// Why a catalog refuses to seal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SealError {
-    DuplicateTag { op: u8, first: String, second: String },
-    RetiredTag { op: u8, name: String },
+    /// Two entries serve the same op tag.
+    DuplicateTag {
+        /// The op tag concerned.
+        op: u8,
+        /// The first entry's name.
+        first: String,
+        /// The second entry's name.
+        second: String,
+    },
+    /// The op tag is retired.
+    RetiredTag {
+        /// The op tag concerned.
+        op: u8,
+        /// The entry's name.
+        name: String,
+    },
     /// The op has no ledger row: allocate it in the ledger before serving it.
-    UnledgeredTag { op: u8, name: String },
+    UnledgeredTag {
+        /// The op tag with no ledger row.
+        op: u8,
+        /// The protocol's catalog name.
+        name: String,
+    },
     /// The ledger names a different owner for this op.
-    OwnerMismatch { op: u8, name: String, ledger: OpOwner, entry: OpOwner },
+    OwnerMismatch {
+        /// The op tag.
+        op: u8,
+        /// The entry's name.
+        name: String,
+        /// The owner the ledger names.
+        ledger: OpOwner,
+        /// The owner the entry names.
+        entry: OpOwner,
+    },
     /// A transitional adapter must be a product family, never core.
-    CoreTransitional { op: u8, name: String },
+    /// A transitional adapter names core as its owner.
+    CoreTransitional {
+        /// The op tag concerned.
+        op: u8,
+        /// The entry's name.
+        name: String,
+    },
     /// A server-streaming protocol may not be forwardable (node-rpc.md §36.3).
-    ForwardableStream { op: u8, name: String },
+    /// A server-streaming protocol is declared forwardable.
+    ForwardableStream {
+        /// The op tag concerned.
+        op: u8,
+        /// The entry's name.
+        name: String,
+    },
     /// Two ledger rows for one op.
-    DuplicateLedgerRow { op: u8 },
-    ZeroCeiling { op: u8, name: String },
+    /// The ledger holds two rows for the op.
+    DuplicateLedgerRow {
+        /// The op tag concerned.
+        op: u8,
+    },
+    /// A protocol declares a zero request or reply frame ceiling.
+    ZeroCeiling {
+        /// The op tag concerned.
+        op: u8,
+        /// The entry's name.
+        name: String,
+    },
     /// A ledger row breaks the testkit range: a testkit family outside
     /// [`TESTKIT_OPS`], or a core/product family inside it.
-    TestkitRange { op: u8, family: String, owner: OpOwner },
+    TestkitRange {
+        /// The op tag.
+        op: u8,
+        /// The ledger row's family.
+        family: String,
+        /// The ledger row's owner.
+        owner: OpOwner,
+    },
     /// Op `0` is reserved as invalid: a zeroed fence is never served.
-    ReservedZero { name: String },
+    /// An entry serves op 0.
+    ReservedZero {
+        /// The entry's name.
+        name: String,
+    },
 }
 
 impl fmt::Display for SealError {
@@ -214,6 +295,7 @@ impl CatalogBuilder {
         self
     }
 
+    /// Add `entry` to the served set.
     pub fn serve(mut self, entry: CatalogEntry) -> Self {
         self.entries.push(entry);
         self
@@ -295,10 +377,11 @@ impl SealedCatalog {
     }
 
     /// The request ceiling for framing (`framing::parse_request_head`).
-    pub fn request_ceiling(&self, op: u8) -> Option<usize> {
+    pub(crate) fn request_ceiling(&self, op: u8) -> Option<usize> {
         self.lookup(op).map(|e| e.max_request_frame_bytes)
     }
 
+    /// Every served entry.
     pub fn entries(&self) -> impl Iterator<Item = &CatalogEntry> {
         self.served.values()
     }

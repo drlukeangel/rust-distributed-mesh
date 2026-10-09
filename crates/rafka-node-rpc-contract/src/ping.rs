@@ -6,22 +6,57 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 
+/// The Ping protocol: echo a payload to prove a node answers.
 pub struct Ping;
 
+/// A Ping call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PingRequest {
-    Ping { payload: Vec<u8> },
+    /// Echo the payload.
+    Ping {
+        /// The bytes to echo.
+        payload: Vec<u8>,
+    },
 }
 
+/// A Ping answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PingReply {
-    Pong { payload: Vec<u8> },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    /// The payload echoed.
+    Pong {
+        /// The bytes echoed.
+        payload: Vec<u8>,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl NodeProtocol for Ping {

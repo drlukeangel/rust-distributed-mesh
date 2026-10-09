@@ -123,9 +123,11 @@ impl From<WireDigest> for MeshDigest {
 /// `#[serde(with = "crate::wire::digest")]`: one digest in a frame.
 pub mod digest {
     use super::*;
+    /// Serialize a digest in its wire shape.
     pub fn serialize<S: Serializer>(d: &MeshDigest, s: S) -> Result<S::Ok, S::Error> {
         WireDigest::from(d).serialize(s)
     }
+    /// Deserialize a digest from its wire shape.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<MeshDigest, D::Error> {
         WireDigest::deserialize(d).map(Into::into)
     }
@@ -134,9 +136,11 @@ pub mod digest {
 /// `#[serde(with = "crate::wire::digests")]`: a run of digests in a frame.
 pub mod digests {
     use super::*;
+    /// Serialize digests in their wire shape.
     pub fn serialize<S: Serializer>(ds: &[MeshDigest], s: S) -> Result<S::Ok, S::Error> {
         s.collect_seq(ds.iter().map(WireDigest::from))
     }
+    /// Deserialize digests from their wire shape.
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<MeshDigest>, D::Error> {
         Vec::<WireDigest>::deserialize(d).map(|v| v.into_iter().map(Into::into).collect())
     }

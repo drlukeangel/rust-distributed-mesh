@@ -4,6 +4,8 @@
 //! (logical node id + process incarnation) and membership. Incarnations are
 //! opaque and compared by equality/supersession, never ordered. No Application
 //! EF, no product state.
+#![deny(missing_docs)]
+
 
 pub mod binding;
 pub mod connections;

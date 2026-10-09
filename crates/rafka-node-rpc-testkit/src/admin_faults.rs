@@ -45,24 +45,49 @@ pub enum CutSpec {
     /// A deployment-pipeline or Build step: the step's work is done and its receipt is not yet
     /// durable. `operation` is a prefix of the receipt's operation key (`create-node`,
     /// `retire-node`); `node` is the operation's path.
-    Receipt { step: String, #[serde(default)] operation: Option<String>, #[serde(default)] node: Option<String> },
+    Receipt {
+        /// The step name.
+        step: String,
+        /// A prefix of the receipt's operation key.
+        #[serde(default)] operation: Option<String>,
+        /// The operation's path.
+        #[serde(default)] node: Option<String>,
+    },
     /// A lifecycle event a retirement publishes (`deleting`, `restarting`, `deleted`): the step's
     /// receipt is durable and the event is not yet published.
-    Event { event: String, #[serde(default)] node: Option<String> },
+    Event {
+        /// The event name: `deleting`, `restarting` or `deleted`.
+        event: String,
+        /// The node the event concerns.
+        #[serde(default)] node: Option<String>,
+    },
     /// A lifecycle hook phase of the `Node: Pending -> ReadyForTraffic` transition.
-    Hook { phase: String, #[serde(default)] node: Option<String> },
+    Hook {
+        /// The hook phase.
+        phase: String,
+        /// The node the hook concerns.
+        #[serde(default)] node: Option<String>,
+    },
     /// An accepted Build is durable (`publish_accepted` returned) and `Fabric.build_id` has not moved.
     AcceptedBuild,
     /// A write of the Fabric record to `fabric.storage` has begun and is not durable. With
     /// `moves_pointer`, only a write that names a Build (the `Fabric.build_id` pointer moving).
-    PointerWrite { #[serde(default)] moves_pointer: bool },
+    PointerWrite {
+        /// Only a write that names a Build (the pointer moving).
+        #[serde(default)] moves_pointer: bool,
+    },
     /// The deployment provider reports a control domain no held birth's runtime fact is in: the
     /// admin cannot adopt what it hears, so its Ready gate stays blocked until the release.
     ProviderDomain,
     /// The admin's leave withholds the listed announcements (1-based) on `channel` (`mesh`,
     /// `backbone` or `any`): the leave skips that one publish call, so the frame is never offered
     /// to the channel. It models a lost announcement at the send seam, not in a peer queue.
-    LeaveAnnouncement { announcements: Vec<u32>, channel: String },
+    LeaveAnnouncement {
+        /// The announcements to withhold, 1-based.
+        announcements: Vec<u32>,
+        /// The channel: `mesh`, `backbone` or `any`.
+        channel: String,
+    },
     /// The admin withholds the catch-up it sends every neighbour that comes up on the Build topic
     /// (the shutdown in force, the Fabric record and the active Builds' facts): the NeighborUp task
     /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
@@ -73,14 +98,61 @@ pub enum CutSpec {
 /// What a decorator offers the cuts at the moment it is called.
 #[derive(Debug, Clone)]
 pub enum Probe {
-    Receipt { step: String, operation: String, build_id: String, attempt: u32 },
-    Event { event: &'static str, op: LifecycleOp },
-    Hook { phase: &'static str, target: String, transition_id: String },
-    Accepted { build_id: String },
-    Pointer { build_id: Option<String> },
+    /// A Build step receipt about to become durable.
+    Receipt {
+        /// The step name.
+        step: String,
+        /// The receipt's operation key.
+        operation: String,
+        /// The Build.
+        build_id: String,
+        /// The attempt.
+        attempt: u32,
+    },
+    /// A lifecycle event about to be published.
+    Event {
+        /// The event name.
+        event: &'static str,
+        /// The lifecycle operation the event names.
+        op: LifecycleOp,
+    },
+    /// A lifecycle hook about to run.
+    Hook {
+        /// The hook phase.
+        phase: &'static str,
+        /// The hook's target.
+        target: String,
+        /// The transition the hook belongs to.
+        transition_id: String,
+    },
+    /// An accepted Build about to move the pointer.
+    Accepted {
+        /// The Build.
+        build_id: String,
+    },
+    /// A write of the Fabric record.
+    Pointer {
+        /// The Build the write names, when it names one.
+        build_id: Option<String>,
+    },
+    /// The provider reports a control domain no held birth is in.
     ProviderDomain,
-    LeaveAnnouncement { node: String, announcement: u32, channel: &'static str },
-    CatchUp { node: String, neighbour: String },
+    /// A leave announcement about to be published.
+    LeaveAnnouncement {
+        /// The announcing node.
+        node: String,
+        /// The announcement's 1-based number.
+        announcement: u32,
+        /// The channel it is published on.
+        channel: &'static str,
+    },
+    /// A catch-up about to be sent to a neighbour.
+    CatchUp {
+        /// The sending node.
+        node: String,
+        /// The neighbour.
+        neighbour: String,
+    },
 }
 
 impl CutSpec {
@@ -137,6 +209,7 @@ struct Armed {
 
 /// The armed cuts of one node-admin process.
 pub struct AdminFaults {
+    /// The admin's name.
     pub name: String,
     cuts: Mutex<BTreeMap<String, Armed>>,
     /// Every Build step receipt the Build decorator saw, by call (a consequence counter).
@@ -144,6 +217,7 @@ pub struct AdminFaults {
 }
 
 impl AdminFaults {
+    /// The cuts of the admin named `name`; none armed.
     pub fn new(name: impl Into<String>) -> Arc<Self> {
         Arc::new(Self { name: name.into(), cuts: Mutex::new(BTreeMap::new()), receipts_seen: AtomicU64::new(0) })
     }
@@ -251,7 +325,7 @@ impl AdminFaults {
 // ---- the decorators ------------------------------------------------------------------------------
 
 /// The Build state, with the step-receipt and accepted-Build cuts.
-pub struct FaultedBuilds {
+pub(crate) struct FaultedBuilds {
     inner: Arc<dyn BuildStateAdapter>,
     faults: Arc<AdminFaults>,
 }
@@ -302,7 +376,7 @@ impl BuildStateAdapter for FaultedBuilds {
 }
 
 /// `fabric.storage`, with the `Fabric.build_id` pointer-write cut.
-pub struct FaultedFabricStorage {
+pub(crate) struct FaultedFabricStorage {
     inner: Arc<dyn FabricStorage>,
     faults: Arc<AdminFaults>,
 }
@@ -329,7 +403,7 @@ impl FabricStorage for FaultedFabricStorage {
 }
 
 /// The deployment provider; its control domain reads foreign while the provider-domain cut is armed.
-pub struct FaultedProvider {
+pub(crate) struct FaultedProvider {
     inner: Arc<dyn DeploymentProvider>,
     faults: Arc<AdminFaults>,
 }
@@ -374,7 +448,7 @@ impl DeploymentProvider for FaultedProvider {
 }
 
 /// The lifecycle events a retirement publishes, each with its cut before the publish.
-pub struct FaultedEvents {
+pub(crate) struct FaultedEvents {
     inner: Arc<dyn LifecycleEvents>,
     faults: Arc<AdminFaults>,
 }
@@ -399,7 +473,7 @@ impl LifecycleEvents for FaultedEvents {
 }
 
 /// A registered lifecycle hook that does nothing but cross its phase's cut.
-pub struct FaultedHook {
+pub(crate) struct FaultedHook {
     phase: HookPhase,
     faults: Arc<AdminFaults>,
 }
@@ -432,7 +506,7 @@ impl rafka_node_admin_core::wiring::LeaveSeam for FaultedLeave {
 
 /// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
 /// drain phases belong to a transition into `Draining`, which no admin path runs.
-pub const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
+pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
 
 /// The `Wiring` that puts every decorator and hook of `faults` into a node-admin.
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
@@ -489,7 +563,7 @@ pub fn router(faults: Arc<AdminFaults>) -> Router {
 
 /// Where a node's door address and boot arms live: `<root>/faults/<path.name>.door` and
 /// `<root>/faults/<path.name>.boot.json`, with `root` the directory holding every node's data dir.
-pub fn faults_dir(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn faults_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("faults")
 }
 

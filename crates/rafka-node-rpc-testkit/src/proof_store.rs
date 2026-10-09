@@ -26,22 +26,48 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// The proof store protocol on op `0x70`.
 pub struct ProofStore;
 
+/// The longest key, in bytes.
 pub const MAX_KEY_BYTES: usize = 256;
+/// The longest value, in bytes.
 pub const MAX_VALUE_BYTES: usize = 64 * 1024;
 
+/// A proof store call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofRequest {
-    Get { key: Vec<u8> },
-    Put { key: Vec<u8>, value: Vec<u8> },
-    Delete { key: Vec<u8> },
+    /// Read `key`.
+    Get {
+        /// The key to read.
+        key: Vec<u8>,
+    },
+    /// Write `value` under `key`.
+    Put {
+        /// The key to write.
+        key: Vec<u8>,
+        /// The value to write.
+        value: Vec<u8>,
+    },
+    /// Delete `key`.
+    Delete {
+        /// The key to delete.
+        key: Vec<u8>,
+    },
     /// Swap when the held value equals `expected` (`None`: the key is absent);
     /// `new: None` deletes the key.
-    CompareAndSwap { key: Vec<u8>, expected: Option<Vec<u8>>, new: Option<Vec<u8>> },
+    CompareAndSwap {
+        /// The key to swap.
+        key: Vec<u8>,
+        /// The value the key must hold; `None` when it must be absent.
+        expected: Option<Vec<u8>>,
+        /// The value to store; `None` deletes the key.
+        new: Option<Vec<u8>>,
+    },
 }
 
 impl ProofRequest {
+    /// The operation the request is.
     pub fn op(&self) -> ProofOp {
         match self {
             Self::Get { .. } => ProofOp::Get,
@@ -58,15 +84,21 @@ impl ProofRequest {
     }
 }
 
+/// The operation a request or a reply concerns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofOp {
+    /// Read.
     Get,
+    /// Write.
     Put,
+    /// Delete.
     Delete,
+    /// Compare and swap.
     CompareAndSwap,
 }
 
 impl ProofOp {
+    /// The operation's name as it appears in replies and spans.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Get => "get",
@@ -80,31 +112,103 @@ impl ProofOp {
 /// Where a call executed, as the executing node knows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Provenance {
+    /// The executing node's id.
     pub node_id: String,
+    /// The executing node's `path.name`.
     pub node: String,
+    /// The executing node's mesh.
     pub mesh: String,
+    /// The executing node's incarnation id.
     pub incarnation_id: String,
+    /// The operation executed.
     pub op: ProofOp,
 }
 
+/// A proof store answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofReply {
-    Value { at: Provenance, value: Vec<u8> },
-    Absent { at: Provenance },
-    Stored { at: Provenance },
-    Deleted { at: Provenance },
-    Swapped { at: Provenance },
-    Mismatch { at: Provenance, current: Option<Vec<u8>> },
+    /// The value of the key.
+    Value {
+        /// Where the call executed.
+        at: Provenance,
+        /// The value held.
+        value: Vec<u8>,
+    },
+    /// The key is absent.
+    Absent {
+        /// Where the call executed.
+        at: Provenance,
+    },
+    /// The value was stored.
+    Stored {
+        /// Where the call executed.
+        at: Provenance,
+    },
+    /// The key was deleted.
+    Deleted {
+        /// Where the call executed.
+        at: Provenance,
+    },
+    /// The swap was made.
+    Swapped {
+        /// Where the call executed.
+        at: Provenance,
+    },
+    /// The held value differs from the expected one.
+    Mismatch {
+        /// Where the call executed.
+        at: Provenance,
+        /// The value held, `None` when absent.
+        current: Option<Vec<u8>>,
+    },
     /// A key or value over its limit; nothing was read or written.
-    TooLarge { at: Provenance, field: String, limit: u32, got: u32 },
+    TooLarge {
+        /// Where the call executed.
+        at: Provenance,
+        /// The field over its limit.
+        field: String,
+        /// The limit.
+        limit: u32,
+        /// The size received.
+        got: u32,
+    },
     /// The store file could not be read or written; nothing changed.
-    StoreFailed { at: Provenance, reason: String },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    StoreFailed {
+        /// Where the call executed.
+        at: Provenance,
+        /// Why the store failed.
+        reason: String,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl ProofReply {
@@ -177,7 +281,7 @@ impl NodeProtocol for ProofStore {
 }
 
 /// The store file inside a node's data dir.
-pub const STORE_FILE: &str = "proof-store.json";
+pub(crate) const STORE_FILE: &str = "proof-store.json";
 const FORMAT: &str = "proof-store/1";
 
 #[derive(Serialize, Deserialize)]
@@ -220,6 +324,7 @@ impl FileProofStore {
         Ok(Self { path, map: Mutex::new(map) })
     }
 
+    /// The store file's path.
     pub fn path(&self) -> &Path {
         &self.path
     }

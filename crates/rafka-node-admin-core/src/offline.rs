@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 /// One silent node of this tick's silent set.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SilentNode {
+pub(crate) struct SilentNode {
     pub node_id: String,
     pub path: String,
 }
@@ -25,7 +25,7 @@ pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
 /// Verdict of asking live peer nodes to tickle a target node.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ViaPeerVerdict {
+pub(crate) enum ViaPeerVerdict {
     /// A peer answered the tickle: reachable via that peer, unreachable from this observer.
     Answered { via: String },
     /// No candidate path answered: either no candidates, or every asked peer failed or refused.
@@ -36,7 +36,7 @@ pub enum ViaPeerVerdict {
 
 /// What one [`OfflineTickle::tick`] did.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct OfflineTickReport {
+pub(crate) struct OfflineTickReport {
     pub tickled: Vec<String>,
     pub reachable_silent: Vec<String>,
     pub offline: Vec<String>,
@@ -44,7 +44,7 @@ pub struct OfflineTickReport {
 }
 
 #[derive(Debug, Default)]
-pub struct OfflineTickle {
+pub(crate) struct OfflineTickle {
     /// Every node held as silent: node id -> the instant (ms) it was first seen silent. Kept
     /// whether or not this node-admin holds the seat.
     first_seen: HashMap<String, u64>,
@@ -62,12 +62,14 @@ impl OfflineTickle {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn is_in_hold_down(&self, id: &str) -> bool {
         self.hold_down.contains_key(id)
     }
 
     /// Is this node held true offline?
-    pub fn is_offline(&self, id: &str) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_offline(&self, id: &str) -> bool {
         self.offline.contains(id)
     }
 

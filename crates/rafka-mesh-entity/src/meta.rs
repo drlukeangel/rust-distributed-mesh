@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeMeta {
+    /// What survives a restart or a retirement.
     pub storage: StorageMeta,
+    /// Placement constraints.
     pub placement: PlacementMeta,
 }
 
@@ -22,7 +24,10 @@ pub enum StorageMeta {
     /// Fresh storage at every birth; nothing survives a restart or a retirement.
     Ephemeral,
     /// Storage survives a restart; `on_retire` says what an intentional retirement does with it.
-    Persistent { on_retire: PersistentRetireDisposition },
+    Persistent {
+        /// What an intentional retirement does with the storage.
+        on_retire: PersistentRetireDisposition,
+    },
 }
 
 /// The journaled shape of `StorageMeta`, read field by field so an illegal combination is
@@ -60,6 +65,7 @@ impl TryFrom<StorageMetaRow> for StorageMeta {
     }
 }
 
+/// What an intentional retirement does with persistent storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PersistentRetireDisposition {
@@ -74,10 +80,6 @@ pub enum PersistentRetireDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlacementMeta {}
-
-/// The version of the per-kind migration defaults below: a change to what a kind gets by default
-/// is a new version, so an accepted Build can say which defaults normalized it.
-pub const NODE_META_DEFAULTS_VERSION: u32 = 1;
 
 impl NodeMeta {
     /// The migration default for a kind: what ingress normalization gives a materialized path that

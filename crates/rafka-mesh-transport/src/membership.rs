@@ -1,6 +1,5 @@
 //! Hierarchical fabric membership over iroh-gossip (HyParView + Plumtree;
-//! never a hand-rolled delivery layer). `docs/i143/design.md` §2.2 and
-//! rafka `gossip.md` §6:
+//! never a hand-rolled delivery layer). rafka `gossip.md` §6:
 //!
 //! - each mesh has its own membership channel ([`mesh_topic`]); a member
 //!   publishes its [`MeshDigest`] there, and only there;
@@ -227,6 +226,7 @@ where
 pub enum Frame {
     /// A member's own digest (its mesh channel only).
     Digest {
+        /// The member's digest, in its wire shape.
         #[serde(with = "crate::wire::digest")]
         digest: MeshDigest,
     },
@@ -242,17 +242,30 @@ pub enum Frame {
     /// split across them; a receiver installs the snapshot only once it holds every chunk.
     /// `published_at_rafka_ms` makes each publication distinct.
     Members {
+        /// The source mesh's name.
         mesh: String,
+        /// The source mesh's primary birth that published the snapshot, the epoch of
+        /// `topology_version`.
         publisher: PublisherId,
+        /// The local primary that forwards the snapshot onto its own channel; `None` on the
+        /// backbone.
         forwarded_by: Option<String>,
+        /// The topology version the snapshot carries.
         topology_version: u64,
+        /// The Rafka-time of the publication, making each publication distinct.
         published_at_rafka_ms: u64,
+        /// The publisher's own snapshot counter, shared by every chunk of the snapshot.
         snapshot_id: u64,
+        /// This chunk's index within the snapshot.
         chunk_index: u32,
+        /// The number of chunks in the snapshot.
         chunk_count: u32,
+        /// The members this chunk carries.
         #[serde(with = "crate::wire::digests")]
         digests: Vec<MeshDigest>,
+        /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
+        /// The retained proven departures this chunk carries.
         departed: Vec<LifecycleOp>,
     },
     /// What moved a source Mesh's held projection from `base_version` to `topology_version`,
@@ -261,42 +274,89 @@ pub enum Frame {
     /// when it holds exactly that version of `source_publisher`'s Mesh. Loads are omitted.
     /// `in_flight` and `departed` are the overlays and departures added since `base_version`.
     MembersDelta {
+        /// The source mesh's name.
         mesh: String,
+        /// The source mesh's primary birth the delta is derived from.
         source_publisher: PublisherId,
+        /// The version a receiver must hold for the delta to apply.
         base_version: u64,
+        /// The version the delta moves to.
         topology_version: u64,
+        /// The Rafka-time of the publication.
         published_at_rafka_ms: u64,
+        /// The births added or changed.
         #[serde(with = "crate::wire::digests")]
         changed: Vec<MeshDigest>,
+        /// The node ids no longer listed.
         removed: Vec<String>,
+        /// The overlays added since the base version.
         in_flight: Vec<LifecycleOp>,
+        /// The departures added since the base version.
         departed: Vec<LifecycleOp>,
     },
     /// The mesh executor holding `op` has started removing its exact birth:
     /// the node is still found, and application routing stops selecting it.
     /// Published on the executor's own mesh channel and the backbone; a peer
     /// mesh primary forwards it onto its own channel (`forwarded_by`).
-    NodeDeleting { op: LifecycleOp, forwarded_by: Option<String> },
+    NodeDeleting {
+        /// The removal being executed.
+        op: LifecycleOp,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
     /// channels as `NodeDeleting`; retained afterwards in `Members.departed`.
-    NodeDeleted { op: LifecycleOp, forwarded_by: Option<String> },
+    NodeDeleted {
+        /// The removal that completed.
+        op: LifecycleOp,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
     /// The mesh executor holding `op` (`restart-node:<path>`) is restarting its exact birth:
     /// commanded silence (fabric-node-lifecycle.md: node-admin took it down and owns bringing it
     /// back). The node stays held through its own `Leaving` and silence, not routable, until a
     /// later birth of the same NodeId is heard. Same channels as `NodeDeleting`; carried in
     /// `Members.in_flight` while open.
-    NodeRestarting { op: LifecycleOp, forwarded_by: Option<String> },
+    NodeRestarting {
+        /// The restart being executed.
+        op: LifecycleOp,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
     /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
     /// restates it as its own. `changed_at_rafka_ms` is the instant of the CHANGE: all five sends
     /// of one change carry the same value (gossip.md §3.1, §3.2).
-    MeshStatus { mesh: String, status: String, publisher: String, forwarded_by: Option<String>, changed_at_rafka_ms: u64 },
+    MeshStatus {
+        /// The mesh the status belongs to.
+        mesh: String,
+        /// The status.
+        status: String,
+        /// The mesh primary that authored the status.
+        publisher: String,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+        /// The Rafka-time of the change.
+        changed_at_rafka_ms: u64,
+    },
     /// The fabric's status, authored by the fabric primary alone; same channels, forwarding and
     /// `changed_at_rafka_ms` as [`Frame::MeshStatus`].
-    FabricStatus { fabric: FabricId, status: String, publisher: String, forwarded_by: Option<String>, changed_at_rafka_ms: u64 },
+    FabricStatus {
+        /// The fabric the status belongs to.
+        fabric: FabricId,
+        /// The status.
+        status: String,
+        /// The fabric primary that authored the status.
+        publisher: String,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+        /// The Rafka-time of the change.
+        changed_at_rafka_ms: u64,
+    },
 }
 
 impl Frame {
+    /// The frame as one postcard message.
     pub fn encode(&self) -> Vec<u8> {
         crate::wire::encode(self).expect("frame serializes")
     }
@@ -309,16 +369,22 @@ impl Frame {
 /// The fabric status a node holds, with its publisher and the instant of the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FabricStatus {
+    /// The status.
     pub status: String,
+    /// The node that authored it.
     pub publisher: String,
+    /// The Rafka-time of the change.
     pub changed_at_rafka_ms: u64,
 }
 
 /// A mesh's status a node holds, with its publisher and the instant of the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshStatus {
+    /// The status.
     pub status: String,
+    /// The node that authored it.
     pub publisher: String,
+    /// The Rafka-time of the change.
     pub changed_at_rafka_ms: u64,
 }
 
@@ -332,7 +398,9 @@ pub const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// A status change: the status and the instant it changed. Every send of one change carries both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusFact {
+    /// The status.
     pub status: String,
+    /// The Rafka-time of the change.
     pub changed_at_rafka_ms: u64,
 }
 
@@ -341,7 +409,7 @@ pub struct StatusFact {
 /// over an explicit clock: the caller says when it observes the status and when it asks what is
 /// due, and sends what it is given.
 #[derive(Debug, Default)]
-pub struct StatusReinforcement {
+pub(crate) struct StatusReinforcement {
     held: Option<StatusFact>,
     sent: u32,
     next_at: Option<Instant>,
@@ -422,7 +490,9 @@ impl StatusReinforcement {
 /// Which status a [`StatusPublisher`] authors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusScope {
+    /// A mesh's status, by mesh name.
     Mesh(String),
+    /// The fabric's status.
     Fabric(FabricId),
 }
 
@@ -438,6 +508,7 @@ pub struct StatusPublisher {
 }
 
 impl StatusPublisher {
+    /// A publisher run by `node` for `scope`; it holds no role until [`StatusPublisher::set_role`].
     pub fn new(node: &str, scope: StatusScope) -> Self {
         Self { node: node.to_string(), scope, role: false, schedule: StatusReinforcement::default() }
     }
@@ -450,6 +521,7 @@ impl StatusPublisher {
         self.role = primary;
     }
 
+    /// Whether the node holds the publisher role.
     pub fn has_role(&self) -> bool {
         self.role
     }
@@ -500,6 +572,7 @@ impl StatusPublisher {
         self.schedule.due(now).map(|f| self.frame(&f))
     }
 
+    /// When the next send of the status is due, when the role is held and a send remains.
     pub fn next_due(&self) -> Option<Instant> {
         self.role.then(|| self.schedule.next_due()).flatten()
     }
@@ -550,10 +623,12 @@ impl StatusBook {
         }
     }
 
+    /// The status held for `mesh`.
     pub fn mesh(&self, mesh: &str) -> Option<MeshStatus> {
         self.meshes.lock().unwrap().get(mesh).cloned()
     }
 
+    /// The fabric status held.
     pub fn fabric(&self) -> Option<FabricStatus> {
         self.fabric.lock().unwrap().clone()
     }
@@ -647,9 +722,13 @@ pub fn refeed_backoff(prev: Duration) -> Duration {
 /// how long its coverage has been stale.
 #[derive(Debug, Clone)]
 pub struct RepairTarget {
+    /// The member's gossip address.
     pub addr: EndpointAddr,
+    /// The member's logical name.
     pub node: String,
+    /// The member's node id.
     pub node_id: String,
+    /// How long the member has gone unheard.
     pub silent_for: Duration,
 }
 
@@ -663,6 +742,7 @@ pub struct RepairSchedule {
 }
 
 impl RepairSchedule {
+    /// A schedule that attempts a member once per `window`.
     pub fn new(window: Duration) -> Self {
         Self { window, last: Default::default() }
     }
@@ -686,7 +766,7 @@ impl RepairSchedule {
 
 /// The held members of `book` that `pick` selects, each with how long it has gone unheard; a
 /// terminal `Leaving` is a graceful departure, never a repair target.
-pub fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
+pub(crate) fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
     // A member under an open restart or removal is held through it, but its address is a birth's
     // that is going or gone: it is never handed to a channel again.
@@ -707,12 +787,14 @@ fn overlaid_nodes(book: &DigestBook) -> BTreeSet<String> {
 /// and the keys whose birth is under an open restart or removal, whose addresses the channel
 /// forgets.
 pub struct Held {
+    /// The members due a repair attempt.
     pub targets: Vec<RepairTarget>,
+    /// The keys of births under an open restart or removal, whose addresses the channel forgets.
     pub retired: Vec<iroh::EndpointId>,
 }
 
 /// [`Held`] from `book` for the members `pick` selects.
-pub fn held_view(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool + Copy) -> Held {
+pub(crate) fn held_view(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool + Copy) -> Held {
     let overlaid = overlaid_nodes(book);
     let retired = book
         .all()
@@ -723,6 +805,8 @@ pub fn held_view(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool + Copy) -
     Held { targets: held_targets(book, pick), retired }
 }
 
+/// The members of `live` not yet in `joined`, recording them as joined; members that left `live`
+/// are dropped from `joined`.
 pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::EndpointId]) -> Vec<iroh::EndpointId> {
     let mut joined = joined.lock().unwrap();
     joined.retain(|id| live.contains(id));
@@ -1309,6 +1393,7 @@ pub struct Membership {
     view: View,
     fabric: FabricId,
     cut_off: Arc<Mutex<CutOff>>,
+    /// The digest book this membership holds.
     pub book: DigestBook,
     /// The Rafka-time this process composes; every gossip stamp on this membership reads it.
     clock: SharedClock,
@@ -1410,13 +1495,6 @@ impl Membership {
     /// This node's path name, as it publishes itself.
     pub fn node(&self) -> &str {
         &self.view.node
-    }
-
-    /// Cut off: this node heard other members and now hears none. What it
-    /// holds then authorizes nothing (an admin executes no Build, publishes
-    /// nothing as a primary).
-    pub fn is_cut_off(&self) -> bool {
-        self.cut_off.lock().unwrap().is_off()
     }
 
     /// May this node's view authorize anything now: not cut off, and not
@@ -1672,12 +1750,14 @@ pub struct TopUpDone {
 /// Reads the topology of `meshes` from a mesh primary and installs it into the given membership
 /// (the topology read, over Node RPC): membership holds no Node RPC client, the process
 /// composition hands it one.
-pub type TopUpFetch = std::sync::Arc<dyn Fn(Membership, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
+pub(crate) type TopUpFetch = std::sync::Arc<dyn Fn(Membership, MeshDigest, Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TopUpDone, String>> + Send>> + Send + Sync>;
 
 /// Which of a backbone's adopted statuses still wait for their round to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Announced {
+    /// The mesh status still waits for its round to complete.
     pub mesh_awaiting_round: bool,
+    /// The fabric status still waits for its round to complete.
     pub fabric_awaiting_round: bool,
 }
 
@@ -1985,7 +2065,7 @@ impl Backbone {
 /// again, which every live member does within one staleness floor. A view
 /// authorizes nothing while cut off, nor for one staleness floor after it healed.
 #[derive(Debug)]
-pub struct CutOff {
+pub(crate) struct CutOff {
     off: bool,
     healed_at: Option<Instant>,
     staleness_floor: Duration,
@@ -1998,7 +2078,7 @@ impl Default for CutOff {
 }
 
 impl CutOff {
-    pub fn with_floor(staleness_floor: Duration) -> Self {
+    pub(crate) fn with_floor(staleness_floor: Duration) -> Self {
         Self { off: false, healed_at: None, staleness_floor }
     }
 
@@ -2013,10 +2093,6 @@ impl CutOff {
             self.healed_at = Some(now);
         }
         Some(if off { "start" } else { "stop" })
-    }
-
-    pub fn is_off(&self) -> bool {
-        self.off
     }
 
     /// May the view authorize anything at `now`?
@@ -2114,12 +2190,12 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 }
 
 impl DigestBook {
-    pub fn with_retention(retention: Duration) -> Self {
+    pub(crate) fn with_retention(retention: Duration) -> Self {
         Self::with_floor(retention, staleness_floor(), backbone_gossip_interval())
     }
 
     /// A book with this staleness floor and backbone gossip interval.
-    pub fn with_floor(retention: Duration, staleness_floor: Duration, backbone_gossip_interval: Duration) -> Self {
+    pub(crate) fn with_floor(retention: Duration, staleness_floor: Duration, backbone_gossip_interval: Duration) -> Self {
         Self {
             inner: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
@@ -2139,7 +2215,7 @@ impl DigestBook {
     /// The staleness floor of a member heard only through forwarded topology: the staleness floor,
     /// plus one backbone gossip interval, plus the time its mesh's next primary takes to forward it
     /// (the staleness floor and one backbone gossip interval), gossip.md §3.2.
-    pub fn forwarded_staleness_floor(&self) -> Duration {
+    pub(crate) fn forwarded_staleness_floor(&self) -> Duration {
         self.staleness_floor + self.backbone_gossip_interval + self.staleness_floor + self.backbone_gossip_interval
     }
 
@@ -2157,7 +2233,7 @@ impl DigestBook {
     }
 
     /// Is `node_id` held as departed at `now`?
-    pub fn is_departed_at(&self, node_id: &str, now: Instant) -> bool {
+    pub(crate) fn is_departed_at(&self, node_id: &str, now: Instant) -> bool {
         self.expire_departed_at(now);
         self.departed.lock().unwrap().contains_key(node_id)
     }
@@ -2339,7 +2415,7 @@ impl DigestBook {
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a
     /// member it hears: an equal copy of the held digest keeps the member
     /// heard (the primary's word that it still is). Otherwise as [`Self::record`].
-    pub fn record_forwarded(&self, d: MeshDigest) -> bool {
+    pub(crate) fn record_forwarded(&self, d: MeshDigest) -> bool {
         self.record_forwarded_at(d, Instant::now())
     }
 
@@ -2347,7 +2423,7 @@ impl DigestBook {
     /// omitted, or an entry answer). A forwarded word is not liveness: it never refreshes when a
     /// held member was heard, and a member held only from forwards never ages to silent. A
     /// member already heard keeps its instant and how it was heard; only its digest moves on.
-    pub fn record_topology(&self, d: MeshDigest) -> bool {
+    pub(crate) fn record_topology(&self, d: MeshDigest) -> bool {
         let now = Instant::now();
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
@@ -2424,6 +2500,7 @@ impl DigestBook {
         self.births.subscribe()
     }
 
+    /// The digests heard within `fresh`.
     pub fn current(&self, fresh: Duration) -> Vec<MeshDigest> {
         self.current_at(fresh, Instant::now())
     }
@@ -2431,7 +2508,7 @@ impl DigestBook {
     /// Digests heard within `fresh` of `now`. A graceful departure (a terminal `Leaving`, then
     /// nothing for one gossip interval) is gone within that tick (fabric-node-lifecycle.md §6): it
     /// is not current, so no view and no aggregate carries it on.
-    pub fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
+    pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
         self.inner
             .lock()
@@ -2461,6 +2538,7 @@ impl DigestBook {
         self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, extra, now)))
     }
 
+    /// Every digest held.
     pub fn all(&self) -> Vec<MeshDigest> {
         self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect()
     }
@@ -2485,7 +2563,7 @@ impl DigestBook {
     }
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
-    pub fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
+    pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
         let extra = self.forwarded_staleness_floor() - self.staleness_floor;
         self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, extra, now))).collect()
     }

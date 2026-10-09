@@ -135,3 +135,27 @@ async fn refusals_keep_their_status_and_named_reason() {
     let gone = NodeAdminClient::new("http://127.0.0.1:9");
     assert!(matches!(gone.nodes().await.unwrap_err(), ClientError::Transport { .. }));
 }
+
+/// CONTRACT: every lifecycle state node-admin can publish on a node or on a mesh/fabric decodes into
+/// the client's status enums; a state the client lacks would make a whole view undecodable.
+#[test]
+fn client_status_enums_decode_every_state_the_core_publishes() {
+    use rafka_node_admin_core::model::{NodeStatus as Core, ScopeStatus as CoreScope};
+    // Exhaustive matches: a new core variant stops this compiling until the client carries it.
+    let nodes = [Core::Pending, Core::ReadyForTraffic, Core::Draining, Core::Leaving, Core::PendingReconnect, Core::Restarting, Core::Dead];
+    for s in nodes {
+        match s {
+            Core::Pending | Core::ReadyForTraffic | Core::Draining | Core::Leaving | Core::PendingReconnect | Core::Restarting | Core::Dead => {}
+        }
+        let wire = serde_json::to_value(s).unwrap();
+        serde_json::from_value::<NodeStatus>(wire.clone()).unwrap_or_else(|e| panic!("the client cannot decode node status {wire}: {e}"));
+    }
+    let scopes = [CoreScope::Pending, CoreScope::ReadyForTraffic, CoreScope::Draining, CoreScope::Retired, CoreScope::Degraded];
+    for s in scopes {
+        match s {
+            CoreScope::Pending | CoreScope::ReadyForTraffic | CoreScope::Draining | CoreScope::Retired | CoreScope::Degraded => {}
+        }
+        let wire = serde_json::to_value(s).unwrap();
+        serde_json::from_value::<rafka_node_admin_client::ScopeStatus>(wire.clone()).unwrap_or_else(|e| panic!("the client cannot decode scope status {wire}: {e}"));
+    }
+}

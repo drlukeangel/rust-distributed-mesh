@@ -12,21 +12,28 @@ use crate::protocol::NodeProtocol;
 pub enum FrameKind {
     /// A refusal: legal only as the first and only frame.
     Refusal(ReplyKind),
+    /// The frame that begins an accepted stream.
     Started,
+    /// A frame of data.
     Data,
+    /// The frame that ends the stream.
     Terminal,
 }
 
 /// A server-streaming protocol: its reply frames are `Self::Reply`.
 pub trait StreamingProtocol: NodeProtocol {
+    /// The kind of reply frame `frame` is.
     fn frame_kind(frame: &Self::Reply) -> FrameKind;
 }
 
 /// Where a stream stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderState {
+    /// No frame has been sent.
     NotStarted,
+    /// The stream has begun and is not terminated.
     Streaming,
+    /// The stream is terminated.
     Done,
 }
 
@@ -43,10 +50,12 @@ impl Default for FrameOrder {
 }
 
 impl FrameOrder {
+    /// A new enforcer, at `NotStarted`.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The state of the stream.
     pub fn state(&self) -> OrderState {
         self.state
     }

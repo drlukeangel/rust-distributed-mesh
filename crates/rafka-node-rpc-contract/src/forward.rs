@@ -14,10 +14,12 @@ use rafka_mesh_entity::NodeId;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// The Forward protocol: a carrier makes one inner call to an exact final target for a caller that
+/// cannot reach it directly.
 pub struct Forward;
 
 /// The largest inner request or reply a carrier hands across.
-pub const MAX_CARRIED_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_CARRIED_BYTES: usize = 1024 * 1024;
 
 /// What the carrier keeps back from the origin's remaining budget so its reply still reaches the
 /// origin inside that budget: the request's transit from origin to carrier (the origin measures
@@ -26,12 +28,16 @@ pub const MAX_CARRIED_BYTES: usize = 1024 * 1024;
 /// transport and serialization allowance, not a policy margin.
 pub const FORWARD_REPLY_RESERVE: Duration = Duration::from_millis(100);
 
+/// A Forward call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardRequest {
+    /// Make `inner_op` on `target` and hand its reply back.
     Forward {
         /// The exact final target's logical NodeId.
         target: NodeId,
+        /// The inner call's op.
         inner_op: u8,
+        /// The inner call's request frame, as encoded for `inner_op`.
         inner: Vec<u8>,
         /// The origin's remaining time budget for this call, in whole milliseconds, measured
         /// immediately before this frame is written to the carrier (after the carrier was
@@ -42,34 +48,85 @@ pub enum ForwardRequest {
     },
 }
 
+/// A carrier's answer to a Forward call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardReply {
     /// The inner call reached the target, which answered: its reply payload, verbatim.
-    Relayed { inner: Vec<u8> },
+    Relayed {
+        /// The inner reply payload.
+        inner: Vec<u8>,
+    },
     /// The carrier proved the inner call never committed at the target.
-    InnerNotSent { reason: String },
+    InnerNotSent {
+        /// Why the inner call never committed.
+        reason: String,
+    },
     /// The target does not serve the inner op.
-    InnerUnserved { op: u8 },
+    InnerUnserved {
+        /// The op the target does not serve.
+        op: u8,
+    },
     /// The target refused the inner call's fence (`425 STALE_TARGET`): it is not that node.
-    InnerRejectedStale { target_node_id: NodeId },
+    InnerRejectedStale {
+        /// The node the inner call addressed.
+        target_node_id: NodeId,
+    },
     /// The inner call committed at the target and its outcome is unknown.
-    InnerIndeterminate { reason: String },
+    InnerIndeterminate {
+        /// Why the outcome is unknown.
+        reason: String,
+    },
     /// The inner protocol is not forwardable through this carrier.
-    NotForwardable { op: u8 },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    NotForwardable {
+        /// The inner op that is not forwardable.
+        op: u8,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The carrier is not ready to serve.
+    NotReady {
+        /// Why the carrier is not ready.
+        reason: String,
+    },
+    /// The carrier is at its admission bound.
+    Busy {
+        /// Which bound the carrier is at.
+        reason: String,
+    },
+    /// The carrier is draining and takes no new work.
+    Draining {
+        /// Why the carrier refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
     /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
     /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
     /// toward the target. The origin retires its Proxy through this carrier with the structural
     /// reason `carrier-edge-lost`.
-    CarrierEdgeLost { reason: String },
+    CarrierEdgeLost {
+        /// The carrier's latest Direct fact toward the target.
+        reason: String,
+    },
     /// The origin's remaining budget does not exceed [`FORWARD_REPLY_RESERVE`], so the carrier
     /// made no inner call. Both are whole milliseconds.
-    NoInnerBudget { remaining_ms: u64, reserve_ms: u64 },
+    NoInnerBudget {
+        /// The origin's remaining budget.
+        remaining_ms: u64,
+        /// The carrier's reply reserve.
+        reserve_ms: u64,
+    },
 }
 
 impl NodeProtocol for Forward {
