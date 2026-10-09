@@ -151,7 +151,7 @@ fn retire_attempts_rpc_drain_first_fails_when_termination_precedes_the_drain() {
 #[test]
 fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    Refused { reply: String },\n", "");
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
@@ -181,7 +181,7 @@ fn retire_receipt_names_drain_arm_fails_an_untagged_outcome() {
 #[test]
 fn drain_success_is_not_refusal_fails_when_the_applied_reply_is_gone() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "NodeDrainingApplied { in_flight: u64 }", "NodeDrainingApplied");
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "NodeDrainingApplied {\n        /// The work still in flight.\n        in_flight: u64,\n    }", "NodeDrainingApplied");
     only(check(t.root()), Ratchet::DrainSuccessIsNotRefusal);
 }
 
@@ -202,7 +202,7 @@ fn postcard_section_bounds_fails_when_the_declared_length_is_no_longer_refused_f
 #[test]
 fn typed_protocol_identity_fails_a_string_id_in_a_request() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "ProbeNodeState { node_id: NodeId, incarnation: IncarnationId }", "ProbeNodeState { node_id: String, incarnation: IncarnationId }");
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "/// The birth probed.\n        node_id: NodeId,", "/// The birth probed.\n        node_id: String,");
     let v = only(check(t.root()), Ratchet::TypedProtocolIdentity);
     assert!(matches!(&v[0], Violation::Token { token, .. } if token == "node_id: String"));
 }
@@ -210,7 +210,7 @@ fn typed_protocol_identity_fails_a_string_id_in_a_request() {
 #[test]
 fn typed_protocol_evidence_fails_untyped_held_evidence() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "RejectedStaleMesh { held: MeshId }", "RejectedStaleMesh { held: String }");
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "/// The mesh id held.\n        held: MeshId,", "/// The mesh id held.\n        held: String,");
     only(check(t.root()), Ratchet::TypedProtocolEvidence);
 }
 

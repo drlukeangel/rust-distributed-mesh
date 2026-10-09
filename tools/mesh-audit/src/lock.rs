@@ -319,12 +319,20 @@ fn scan_tokens(root: &Path, files: &[PathBuf], tokens: &[&str], ratchet: Ratchet
     }
 }
 
+/// A source's declared shape: doc comment lines dropped, whitespace removed and a trailing comma
+/// before a closing brace removed, so a needle names an item whatever its layout.
+fn shape_of(text: &str) -> String {
+    let code: String = text.lines().filter(|l| !l.trim_start().starts_with("///")).collect::<Vec<_>>().join("\n");
+    code.split_whitespace().collect::<String>().replace(",}", "}")
+}
+
 fn require(root: &Path, file: &str, needles: &[&str], ratchet: Ratchet, out: &mut Vec<Violation>) {
     match read(root, file) {
         None => out.push(Violation::Missing { ratchet, file: file.into(), what: "the file itself".into() }),
         Some(text) => {
+            let shape = shape_of(&text);
             for n in needles {
-                if !text.contains(n) {
+                if !shape.contains(&shape_of(n)) {
                     out.push(Violation::Missing { ratchet, file: file.into(), what: format!("`{n}`") });
                 }
             }
