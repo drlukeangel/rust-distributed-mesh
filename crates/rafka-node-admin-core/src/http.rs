@@ -49,6 +49,9 @@ pub struct ControlPlane {
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// replaced or deleted from here (R-D1). Set once by the admin that owns the ladder.
     pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
+    /// The connection facts this admin holds (set once by the admin that owns its connections
+    /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
+    pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rafka_mesh_entity::connections::ConnectionsHeld>>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
@@ -83,6 +86,7 @@ impl ControlPlane {
             fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
             view_now: std::sync::OnceLock::new(),
+            connections: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
         }
@@ -490,6 +494,43 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
     Json(v)
 }
 
+/// `GET /api/connections`: the connection facts this admin holds, read-only. Each names its
+/// source, destination, kind (`direct` or `proxy`, a proxy with its carrier), state and when it
+/// was observed. An admin that holds none lists none.
+async fn get_connections(State(cp): State<Shared>) -> Json<Value> {
+    use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
+    let mut facts: Vec<NodeConnection> = Vec::new();
+    let mut complete = false;
+    if let Some(held) = cp.connections.get() {
+        let held = held.lock().unwrap();
+        complete = held.is_complete();
+        facts.extend(held.active_directs().into_iter().cloned());
+        for own in held.own_latest_directs().into_iter().chain(held.own_active_proxies()) {
+            let key = own.index();
+            match facts.iter().position(|f| f.index() == key) {
+                Some(i) if facts[i].stamp() >= own.stamp() => {}
+                Some(i) => facts[i] = own.clone(),
+                None => facts.push(own.clone()),
+            }
+        }
+    }
+    let connections: Vec<Value> = facts
+        .iter()
+        .map(|f| {
+            json!({
+                "source": f.source.name.to_string(),
+                "destination": f.destination.name.to_string(),
+                "kind": match f.kind { ConnectionKind::Direct => "direct", ConnectionKind::Proxy => "proxy" },
+                "state": match f.state { ConnectionState::Connected => "connected", ConnectionState::Disconnected => "disconnected", ConnectionState::Failed => "failed" },
+                "carrier": f.carrier.as_ref().map(|c| c.name.to_string()),
+                "reason": f.reason,
+                "logged_at_ms": f.logged_at_ms,
+            })
+        })
+        .collect();
+    Json(json!({"node": cp.me.to_string(), "complete": complete, "connections": connections}))
+}
+
 async fn create_mesh(State(cp): State<Shared>, raw: String) -> Result<Response, Refusal> {
     let desired: MeshDesired = body(&raw)?;
     Ok(accepted(cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired }).await?))
@@ -557,6 +598,7 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/meshes", post(create_mesh))
         .route("/api/meshes/{id}", get(get_mesh).delete(delete_mesh))
         .route("/api/fabric", get(get_fabric))
+        .route("/api/connections", get(get_connections))
         .route("/api/shutdown", post(shutdown))
         .with_state(cp)
         .merge(runtime_routes)

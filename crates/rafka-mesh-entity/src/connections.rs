@@ -309,6 +309,15 @@ impl ConnectionsHeld {
         out
     }
 
+    /// Every active Direct fact held, whatever its source, leaving out a fact that names a
+    /// superseded destination process; sorted by source then destination.
+    pub fn active_directs(&self) -> Vec<&NodeConnection> {
+        let mut out: Vec<&NodeConnection> =
+            self.cells.values().filter_map(|c| c.active.as_ref()).filter(|e| !self.names_superseded_destination(e)).collect();
+        out.sort_by(|a, b| (&a.source.name, &a.destination.name).cmp(&(&b.source.name, &b.destination.name)));
+        out
+    }
+
     /// This node's active Proxy entries, sorted by destination.
     pub fn own_active_proxies(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_proxies.values().collect();

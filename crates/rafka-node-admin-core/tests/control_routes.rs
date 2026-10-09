@@ -549,3 +549,39 @@ async fn connections_route_answers_the_facts_this_admin_holds_and_none_before_it
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["connections"], json!([]), "an admin that holds no connection fact lists none: {v}");
 }
+
+#[tokio::test]
+async fn connections_route_lists_a_direct_a_proxy_with_its_carrier_and_a_failed_direct() {
+    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+    use rafka_mesh_entity::{IncarnationId, NodeId};
+    let end = |n: &str| ConnectionEnd { name: n.parse().unwrap(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) };
+    let fact = |s: &str, d: &str, kind, state, carrier: Option<&str>| NodeConnection {
+        source: end(s),
+        destination: end(d),
+        kind,
+        state,
+        carrier: carrier.map(end),
+        recovery: None,
+        reason: (state != ConnectionState::Connected).then(|| "dial-refused".to_string()),
+        logged_at_ms: 1_000,
+    };
+    let mut held = ConnectionsHeld::new();
+    held.set_own_source("mesh1.admin.1".parse().unwrap());
+    held.apply(fact("mesh1.rpc.1", "mesh1.rpc.2", ConnectionKind::Direct, ConnectionState::Connected, None)).unwrap();
+    held.apply(fact("mesh1.admin.1", "mesh1.rpc.3", ConnectionKind::Proxy, ConnectionState::Connected, Some("mesh1.admin.2"))).unwrap();
+    let mut failed = fact("mesh1.admin.1", "mesh1.rpc.1", ConnectionKind::Direct, ConnectionState::Failed, None);
+    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    held.apply(failed).unwrap();
+    let h = harness(Router::new()).await;
+    h.cp.connections.set(Arc::new(Mutex::new(held))).ok().expect("set once");
+    let (status, v) = call(&h.app, "GET", "/api/connections", None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let rows = v["connections"].as_array().unwrap();
+    let row = |s: &str, d: &str| rows.iter().find(|r| r["source"] == s && r["destination"] == d).unwrap_or_else(|| panic!("no fact {s}->{d} in {v}"));
+    assert_eq!((row("mesh1.rpc.1", "mesh1.rpc.2")["kind"].as_str(), row("mesh1.rpc.1", "mesh1.rpc.2")["state"].as_str()), (Some("direct"), Some("connected")));
+    let proxy = row("mesh1.admin.1", "mesh1.rpc.3");
+    assert_eq!((proxy["kind"].as_str(), proxy["carrier"].as_str()), (Some("proxy"), Some("mesh1.admin.2")), "{proxy}");
+    let bad = row("mesh1.admin.1", "mesh1.rpc.1");
+    assert_eq!((bad["state"].as_str(), bad["reason"].as_str()), (Some("failed"), Some("dial-refused")), "{bad}");
+    assert_eq!(rows.len(), 3, "{v}");
+}
