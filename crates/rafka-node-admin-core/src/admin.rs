@@ -567,6 +567,14 @@ pub async fn reconcile_drift(
         // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
         // other birth, a node-admin of a mesh that still has one included, is proven here as ever.
         if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+            // The hold is named, every ten seconds it lasts: an unnamed deferral is a rebirth nobody
+            // is waiting on.
+            let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
+            let key = (current.build_id.clone(), 0u32, vec!["deferred".to_string(), n.mesh.clone(), (now_ms() / 10_000).to_string()]);
+            if started.insert(key) {
+                tracing::info_span!("rdm.node_admin.build.reject.via-drift-deferred", node = %me, mesh = %n.mesh, birth = %n.name, unheard_ms = unheard.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "none".into()))
+                    .in_scope(|| tracing::info!("the peer mesh's node-admins wait for the investigation's rebirth decision"));
+            }
             continue;
         }
         let held = book.get(n.node_id.as_str()).filter(|(dg, _)| Some(&dg.node.incarnation) == n.incarnation_id.as_ref());
