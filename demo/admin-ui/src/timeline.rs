@@ -37,7 +37,6 @@ const MEANINGFUL: &[&str] = &[
     "rdm.mesh.election.",
     "rdm.mesh.fabric.",
     "rdm.mesh.node.",
-    "rdm.mesh.connection.",
 ];
 /// Inside the meaningful prefixes, still too frequent to read as a story.
 const HIGH_VOLUME: &[&str] = &["rdm.node_admin.deployment.update.via-pipeline"];
@@ -79,6 +78,8 @@ fn clip(s: &str, n: usize) -> String {
 #[derive(Default)]
 pub struct Evidence {
     offsets: HashMap<PathBuf, u64>,
+    /// The node each process file belongs to, learned from the first span in it that names one.
+    owners: HashMap<PathBuf, String>,
     meaningful: Vec<Event>,
     high_volume: Vec<Event>,
     high_volume_seen: usize,
@@ -108,9 +109,15 @@ impl Evidence {
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
             let complete = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-            let label = file.split('-').next().unwrap_or(&file).to_string();
-            for line in buf[..complete].split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-                let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+            let stem = file.splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
+            let parsed: Vec<Value> = buf[..complete].split(|b| *b == b'\n').filter(|l| !l.is_empty()).filter_map(|l| serde_json::from_slice(l).ok()).collect();
+            if !self.owners.contains_key(&path) {
+                if let Some(n) = parsed.iter().find_map(|v| v["attributes"]["node"].as_str().filter(|n| !n.is_empty())) {
+                    self.owners.insert(path.clone(), n.to_string());
+                }
+            }
+            let label = self.owners.get(&path).cloned().unwrap_or(stem);
+            for v in parsed {
                 let Some(ev) = event_of(&v, &label) else { continue };
                 if ev.high_volume {
                     self.high_volume_seen += 1;

@@ -21,17 +21,33 @@ function BuildCard({ b, current }: { b: BuildView; current: boolean }) {
       </div>
       {b.last_failure && <div style={{ color: "var(--err)" }} className="mono">last failure: {b.last_failure}</div>}
       {attempts.length === 0 && <div className="muted">no step receipts yet</div>}
-      {attempts.map((a) => (
-        <div key={a} style={{ marginTop: 6 }}>
-          <div className="muted mono">attempt {a}</div>
-          {b.steps.filter((s) => s.attempt === a).map((s, i) => (
-            <div key={i} className="mono" style={{ fontSize: 12, padding: "1px 0 1px 14px" }}>
-              <span className="muted">{s.operation}</span> · {s.step} ·{" "}
-              <span style={{ color: s.outcome === "complete" ? "var(--ok)" : "var(--err)" }}>{outcomeText(s.outcome)}</span>
-            </div>
-          ))}
-        </div>
-      ))}
+      {attempts.map((a) => {
+        const ops = Array.from(new Set(b.steps.filter((s) => s.attempt === a).map((s) => s.operation)));
+        return (
+          <div key={a} style={{ marginTop: 6 }}>
+            <div className="muted mono">attempt {a} · {ops.length} operations</div>
+            {ops.map((op) => {
+              const steps = b.steps.filter((s) => s.attempt === a && s.operation === op);
+              const failed = steps.filter((s) => s.outcome !== "complete");
+              return (
+                <details key={op} style={{ paddingLeft: 14 }}>
+                  <summary className="mono" style={{ fontSize: 12 }}>
+                    {op} · {steps.length} steps ·{" "}
+                    <span style={{ color: failed.length ? "var(--err)" : "var(--ok)" }}>
+                      {failed.length ? `${failed.length} failed` : "all complete"}
+                    </span>
+                  </summary>
+                  {steps.map((s, i) => (
+                    <div key={i} className="mono" style={{ fontSize: 11, paddingLeft: 16 }}>
+                      {s.step} · <span style={{ color: s.outcome === "complete" ? "var(--ok)" : "var(--err)" }}>{outcomeText(s.outcome)}</span>
+                    </div>
+                  ))}
+                </details>
+              );
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }

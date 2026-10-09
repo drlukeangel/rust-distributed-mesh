@@ -11,7 +11,7 @@ const bad = (e: Edge) => e.state !== "connected";
 function layout(nodes: TopologyNode[]): FlowNode[] {
   const meshes = Array.from(new Set(nodes.map((n) => n.mesh))).sort();
   const out: FlowNode[] = [];
-  const W = 520, H = 440, GAP = 580;
+  const W = 560, H = 460, GAP = 620;
   meshes.forEach((m, i) => {
     const members = nodes.filter((n) => n.mesh === m).sort((a, b) => a.name.localeCompare(b.name));
     out.push({
@@ -32,13 +32,13 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
     });
     members.forEach((n, idx) => {
       const ang = (2 * Math.PI * idx) / Math.max(1, members.length) - Math.PI / 2;
-      const r = 150;
+      const r = 165;
       const c = KIND_COLOR[n.kind] ?? "#8b949e";
       out.push({
         id: n.name,
         parentNode: `group-${m}`,
         extent: "parent",
-        position: { x: W / 2 + r * Math.cos(ang) - 70, y: H / 2 + r * Math.sin(ang) - 40 },
+        position: { x: W / 2 + r * Math.cos(ang) - 85, y: H / 2 + r * Math.sin(ang) - 46 },
         data: {
           label: (
             <div style={{ textAlign: "center", lineHeight: 1.2 }} data-testid={`node-${n.name}`}>
@@ -48,7 +48,7 @@ function layout(nodes: TopologyNode[]): FlowNode[] {
             </div>
           ),
         },
-        style: { background: `${c}22`, border: `2px solid ${c}`, color: "#fff", width: 140, height: 80, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" },
+        style: { background: `${c}22`, border: `2px solid ${c}`, color: "#fff", width: 170, height: 92, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" },
       });
     });
   });
@@ -60,6 +60,7 @@ function flowEdges(edges: Edge[]): FlowEdge[] {
     const colour = bad(e) ? "#f85149" : e.kind === "direct" ? "#3fb950" : "#58a6ff";
     return {
       id: `${e.source}>${e.destination}:${e.kind}:${i}`,
+      type: "straight",
       source: e.source,
       target: e.destination,
       label: e.kind === "proxy" ? `proxy via ${e.carrier ?? "?"}${bad(e) ? ` (${e.state})` : ""}` : bad(e) ? e.state : undefined,
