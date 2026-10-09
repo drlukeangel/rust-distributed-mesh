@@ -478,6 +478,7 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
     assert!(by("mesh1.rpc.2").iter().all(|f| f.get("status").map(String::as_str) == Some("restarting") && f.get("reason").is_some_and(|r| !r.is_empty())), "{rejects:?}");
     assert_eq!(by("mesh1.rpc.3").len(), 1);
     assert_eq!(by("mesh1.rpc.3")[0].get("status").map(String::as_str), Some("dead"), "{rejects:?}");
+}
 
 /// CONTRACT: a node being replaced is the node nobody hears, so the replace resolves it from the
 /// accepted Build, never from the heard view. A path the Build names, absent from the view,
