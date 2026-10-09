@@ -213,6 +213,8 @@ pub struct ServerBuilder {
     /// The source-owned connections observer and the resolver that names an accepted peer,
     /// when the process writes its own connection facts (connections.md §10).
     inbound: Option<Inbound>,
+    /// Test seam: withholds the next reply after the handler has applied it.
+    withhold: Option<Arc<ReplyWithhold>>,
 }
 
 /// An accepted connection reported to the process's connections observer as Direct Connected
@@ -234,7 +236,15 @@ impl ServerBuilder {
             carried: HashMap::new(),
             carried_table: None,
             inbound: None,
+            withhold: None,
         }
+    }
+
+    /// Test seam: let `withhold` hold back the reply of the next call it is armed for. An unarmed
+    /// seam changes nothing.
+    pub fn withhold_replies(mut self, withhold: Arc<ReplyWithhold>) -> Self {
+        self.withhold = Some(withhold);
+        self
     }
 
     /// Report every accepted connection whose peer `resolver` names as a live node to
@@ -308,8 +318,70 @@ impl ServerBuilder {
                 stats: Arc::new(ServerStats::default()),
                 birth,
                 inbound: self.inbound,
+                withhold: self.withhold,
             }),
         })
+    }
+}
+
+/// Test seam (R-I3): withholds the reply of the next call after its handler has run, until the test
+/// releases it, then writes the reply and records what the caller's side of the stream did with it.
+/// The server, its wire format and the reply bytes are the production ones; only the moment of the
+/// write moves. Unarmed, it is inert.
+#[derive(Default)]
+pub struct ReplyWithhold {
+    armed: AtomicBool,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    landed: tokio::sync::Notify,
+    late: std::sync::Mutex<Option<LateReply>>,
+}
+
+/// What became of a withheld reply once it was released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LateReply {
+    /// The caller's `STOP_SENDING` for the call's reply stream, as the server observed it
+    /// (`Ok(Some(code))`), or why it observed none.
+    pub stopped: Result<Option<u64>, String>,
+    /// The late reply's write: `Err` when the caller's side had already abandoned the stream.
+    pub written: Result<(), String>,
+}
+
+impl ReplyWithhold {
+    /// Withhold the reply of the next call that reaches its write.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Resolves once a handler has finished and its reply is being withheld.
+    pub async fn reached(&self) {
+        self.reached.notified().await;
+    }
+
+    /// Let the withheld reply go.
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+
+    /// Resolves with what became of the released reply.
+    pub async fn late_reply(&self) -> LateReply {
+        self.landed.notified().await;
+        self.late.lock().unwrap().take().expect("a landed late reply is recorded")
+    }
+
+    fn take_armed(&self) -> bool {
+        self.armed.swap(false, Ordering::SeqCst)
+    }
+
+    async fn hold(&self, send: &mut SendStream, bytes: &[u8]) {
+        self.reached.notify_one();
+        self.release.notified().await;
+        // The caller's abandonment of the reply stream is waited for, not slept for: it is the
+        // fact the release is ordered after.
+        let stopped = send.stopped().await.map(|c| c.map(|v| v.into_inner())).map_err(|e| e.to_string());
+        let written = send.write_all(bytes).await.map_err(|e| e.to_string());
+        *self.late.lock().unwrap() = Some(LateReply { stopped, written });
+        self.landed.notify_one();
     }
 }
 
@@ -347,6 +419,7 @@ struct Inner {
     stats: Arc<ServerStats>,
     birth: ServedBirth,
     inbound: Option<Inbound>,
+    withhold: Option<Arc<ReplyWithhold>>,
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
@@ -534,7 +607,12 @@ impl NodeRpcServer {
                 drop(permit);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
-                        let _ = send.write_all(&encode_frame(&reply)).await;
+                        let bytes = encode_frame(&reply);
+                        if let Some(w) = self.inner.withhold.as_ref().filter(|w| w.take_armed()) {
+                            w.hold(&mut send, &bytes).await;
+                        } else {
+                            let _ = send.write_all(&bytes).await;
+                        }
                         let _ = send.finish();
                     }
                     Ok(Ok(_)) => {

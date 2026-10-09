@@ -15,7 +15,7 @@ use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, Scope
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
@@ -54,6 +54,8 @@ struct Rig {
     storage: Arc<MemoryNodesStorage>,
     topology: Arc<tokio::sync::RwLock<Topology>>,
     mesh_ids: BTreeMap<String, MeshId>,
+    /// Inert until a cell arms it.
+    withhold: Arc<ReplyWithhold>,
 }
 
 impl Rig {
@@ -98,7 +100,8 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
-    let server = rafka_node_admin_core::status_rpc::serve(ServerBuilder::new(), slot)
+    let withhold = Arc::new(ReplyWithhold::default());
+    let server = rafka_node_admin_core::status_rpc::serve(ServerBuilder::new().withhold_replies(withhold.clone()), slot)
         .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().0 })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -111,7 +114,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         transport_addr: addr,
         incarnation: admin.node.incarnation_id.clone().unwrap(),
     };
-    (Rig { admin, server, _router: router, resolved, authority, storage, topology, mesh_ids: rig_mesh_ids }, others)
+    (Rig { admin, server, _router: router, resolved, authority, storage, topology, mesh_ids: rig_mesh_ids, withhold }, others)
 }
 
 /// A birth's client to the authority, speaking as that birth.
@@ -247,6 +250,43 @@ async fn a_cut_applies_nothing_and_a_lost_reply_is_indeterminate_then_already_ap
     assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
 }
 
+
+/// CONTRACT: a declaration is applied and its reply is withheld past the caller's reply deadline, so the
+/// caller classifies the call `Indeterminate`. The reply is released only AFTER that; the caller had
+/// already abandoned the call's reply stream, so the late reply is refused at the stream and cannot
+/// change the completed call. The same declaration again is `AlreadyApplied`, and the node applied it
+/// exactly once (the handler ran for the first call and the retry, and the state was moved by the first
+/// alone).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_already_applied() {
+    let (rig, b) = rig().await;
+    let rpc1 = &b["rpc1"];
+    let c = client_of(&rig, rpc1).await;
+    let target = NodeTarget::ExactNode(rig.admin.node.node_id.clone());
+    rig.withhold.arm();
+    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(600) }, ..Default::default() };
+    let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &opts).await;
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rafka_node_rpc_contract::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
+    assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");
+    rig.withhold.reached().await;
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id).map(|(_, s)| s), Some(NodeState::ReadyForTraffic), "applied before the reply was withheld");
+    assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 1, "the handler ran once for the lost call");
+
+    // The reply goes out only now, after the caller classified the call.
+    rig.withhold.release();
+    let late = tokio::time::timeout(Duration::from_secs(10), rig.withhold.late_reply())
+        .await
+        .expect("the caller never abandoned the reply stream of a call it had already classified");
+    assert!(matches!(late.stopped, Ok(Some(_))), "the caller stopped the reply stream when it classified the call: {late:?}");
+    assert!(late.written.is_err(), "the late reply was refused at the abandoned stream: {late:?}");
+
+    // The completed call is unchanged and the retry is one logical event.
+    let (out, _) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &CallOptions::default()).await;
+    assert_eq!(reply(&out), StatusReply::AlreadyApplied, "one logical event");
+    assert_eq!(ServerStats::get(&rig.server.stats().dispatched), 2, "the lost call and the retry, nothing replayed");
+    let row = rig.storage.contacts().await.unwrap().into_iter().find(|c| c.node_id == rpc1.node.node_id).expect("the subject's row");
+    assert_eq!(row.declared.as_deref(), Some("ReadyForTraffic"));
+}
 
 /// Drain admission never prevents an authority from receiving the upward certainty calls
 /// that finish lifecycle work. The status handler must still enforce its own authority checks.
