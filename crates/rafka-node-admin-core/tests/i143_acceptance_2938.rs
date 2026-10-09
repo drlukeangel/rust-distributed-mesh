@@ -57,6 +57,9 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
 /// pair; superseded evidence never revives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn source_reconnect_failures_grow_log_keep_two_current_members() {
+    if crate::own_process::delegated(module_path!(), "source_reconnect_failures_grow_log_keep_two_current_members") {
+        return;
+    }
     let cell = "source_reconnect_failures_grow_log_keep_two_current_members";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();

@@ -180,6 +180,9 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 /// election move because of the silence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_network_partitions_heals_preserves_live_runtimes() {
+    if crate::own_process::delegated(module_path!(), "container_network_partitions_heals_preserves_live_runtimes") {
+        return;
+    }
     run_isolation(CELL, Cut::PeerMesh).await;
 }
 
@@ -190,6 +193,9 @@ async fn container_network_partitions_heals_preserves_live_runtimes() {
 /// no serve span, and after the release the same birth serves the value stored before the cut.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_node_unheard_heals_serves_same_birth() {
+    if crate::own_process::delegated(module_path!(), "container_node_unheard_heals_serves_same_birth") {
+        return;
+    }
     run_isolation(NODE_CELL, Cut::Node).await;
 }
 
@@ -502,6 +508,9 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// killed, a new Build or MeshId, a surviving member re-created, the seat moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
+    if crate::own_process::delegated(module_path!(), "container_peer_mesh_lost_recovers_under_same_mesh_id") {
+        return;
+    }
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
     let cell = LOSS_CELL;
     let dir = acceptance_dir(cell);
@@ -658,6 +667,9 @@ const RETIRE_CELL: &str = "container_primary_mesh_retired_hands_off_authority_be
 /// endpoint that belongs to no birth of the run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_primary_mesh_retired_hands_off_authority_before_its_containers_end() {
+    if crate::own_process::delegated(module_path!(), "container_primary_mesh_retired_hands_off_authority_before_its_containers_end") {
+        return;
+    }
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
     let cell = RETIRE_CELL;
     let dir = acceptance_dir(cell);
@@ -909,6 +921,9 @@ fn fabric_primary_of(nodes: &[Value]) -> String {
 /// fabric-primary node-admin touched, or a mesh left without a node-admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth() {
+    if crate::own_process::delegated(module_path!(), "container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth") {
+        return;
+    }
     use container_faults::{ExactContainer, Fault, Refusal};
     assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
     let cell = EXACT_CELL;

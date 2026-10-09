@@ -178,6 +178,7 @@ where
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_build() {
     let spans = Spans::default();
+    crate::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let topology = Arc::new(RwLock::new(observed()));
 

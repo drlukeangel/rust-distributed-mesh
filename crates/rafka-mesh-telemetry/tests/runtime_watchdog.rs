@@ -20,6 +20,9 @@ impl Write for Buf {
 /// sampled while it was blocked; a runtime that runs is never reported.
 #[test]
 fn a_blocked_runtime_is_reported_with_its_length_and_its_threads() {
+    if crate::own_process::delegated(module_path!(), "a_blocked_runtime_is_reported_with_its_length_and_its_threads") {
+        return;
+    }
     let buf = Buf::default();
     let w = buf.clone();
     tracing::subscriber::set_global_default(tracing_subscriber::fmt().with_writer(move || w.clone()).with_ansi(false).finish()).unwrap();

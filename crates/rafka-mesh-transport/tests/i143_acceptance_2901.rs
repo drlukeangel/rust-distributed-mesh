@@ -77,6 +77,9 @@ fn sweep(p: &mut StatusPublisher, base: Instant, from: Duration, span: Duration,
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
+    if crate::own_process::delegated(module_path!(), "status_publisher_reinforces_changed_state_five_times_then_stops") {
+        return;
+    }
     let cell = "status_publisher_reinforces_changed_state_five_times_then_stops";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
