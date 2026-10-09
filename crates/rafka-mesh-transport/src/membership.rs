@@ -677,9 +677,17 @@ impl StatusBook {
 
 /// The seat holders a node holds: each seat's record with the latest epoch, until a record that
 /// supersedes it (`SeatHolder::supersedes`). A record that does not is refused by name.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SeatBook {
     inner: Arc<Mutex<HeldSeats>>,
+    /// Ticks whenever a record is held: whoever persists the records, or looks at the seats, wakes on it.
+    changed: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl Default for SeatBook {
+    fn default() -> Self {
+        Self { inner: Arc::default(), changed: Arc::new(tokio::sync::watch::Sender::new(0)) }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -712,6 +720,7 @@ impl SeatBook {
                     Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
                     previous => {
                         held.meshes.insert(holder.mesh.clone(), holder.clone());
+                        self.changed.send_modify(|v| *v += 1);
                         SeatTaken::Held { previous }
                     }
                 };
@@ -722,6 +731,7 @@ impl SeatBook {
             Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
             previous => {
                 *slot = Some(holder.clone());
+                self.changed.send_modify(|v| *v += 1);
                 SeatTaken::Held { previous }
             }
         }
@@ -729,6 +739,11 @@ impl SeatBook {
 
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
+    }
+
+    /// A receiver that wakes each time a record is held.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 
     pub fn mesh(&self, mesh: &str) -> Option<SeatHolder> {
@@ -1273,7 +1288,6 @@ struct View {
     node: String,
     book: DigestBook,
     statuses: StatusBook,
-    seats: SeatBook,
     concerns: ConcernInbox,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
@@ -1530,7 +1544,7 @@ impl View {
 
     /// Hold a seat record this node heard, naming what it did with it.
     fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> SeatTaken {
-        let taken = self.seats.take(seat, holder);
+        let taken = self.book.seats.take(seat, holder);
         let (outcome, previous) = match &taken {
             SeatTaken::Held { previous } => ("held", previous.as_ref().map(ToString::to_string).unwrap_or_default()),
             SeatTaken::Same => ("same", String::new()),
@@ -1572,7 +1586,7 @@ impl Membership {
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
-                frames.extend(replay_view.seats.held_frames());
+                frames.extend(replay_view.book.seats.held_frames());
                 frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
                 frames
             } else {
@@ -1692,7 +1706,7 @@ impl Membership {
 
     /// The seat holders this node holds.
     pub fn seats(&self) -> &SeatBook {
-        &self.view.seats
+        &self.view.book.seats
     }
 
     /// The Concerns this node heard.
@@ -2005,7 +2019,7 @@ impl Backbone {
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let mut frames = replay_view.statuses.held_frames(&replay_fabric, &replay_me);
-                frames.extend(replay_view.seats.held_frames());
+                frames.extend(replay_view.book.seats.held_frames());
                 frames
             } else {
                 Vec::new()
@@ -2334,6 +2348,8 @@ pub struct DigestBook {
     staleness_floor: Duration,
     /// The backbone topic's gossip interval.
     backbone_gossip_interval: Duration,
+    /// The seat holders this node holds (`Frame::Seated`, an entry read): an input to every election.
+    pub seats: SeatBook,
 }
 
 impl Default for DigestBook {
@@ -2404,6 +2420,7 @@ impl DigestBook {
             retention,
             staleness_floor,
             backbone_gossip_interval,
+            seats: SeatBook::default(),
         }
     }
 

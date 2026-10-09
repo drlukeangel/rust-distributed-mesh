@@ -42,6 +42,12 @@ impl FabricStorage for HoldsFirstWrite {
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         self.inner.put_shutdown(shutdown).await
     }
+    async fn put_seat(&self, row: &rafka_node_admin_core::fabric_storage::SeatRow) -> Result<(), FabricStorageError> {
+        self.inner.put_seat(row).await
+    }
+    async fn seats(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatRow>, FabricStorageError> {
+        self.inner.seats().await
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

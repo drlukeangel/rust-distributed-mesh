@@ -149,6 +149,8 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership.node(), None, None)
                 .await
                 .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
+            // The seats this node's mesh knows are held: an entering admin computes none before it has them.
+            membership.learn_seats(&read.seats, "entry");
             membership.join_peers(vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
             let fabric = read.installed.iter().flat_map(|m| m.members.iter()).find(|d| d.node.node_id == node.node_id).map(|d| d.fabric_id.clone());
             let Some(fabric) = fabric else {

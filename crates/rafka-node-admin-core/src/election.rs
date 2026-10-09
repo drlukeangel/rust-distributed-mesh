@@ -82,14 +82,15 @@ pub struct Incumbency {
     pub fabric: Option<SeatHolder>,
     /// Each mesh's node-admin primary holder record, by mesh name.
     pub meshes: BTreeMap<String, SeatHolder>,
-    /// Exact births proven gone: the provider found their runtime exited, or a departure was
-    /// heard. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
-    pub lost: HashSet<(NodeId, IncarnationId)>,
+    /// Exact births proven gone, by incarnation (an incarnation names one birth of one node): the
+    /// provider found their runtime exited, a departure was heard, or a later birth announced it
+    /// replaced them. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
+    pub lost: HashSet<IncarnationId>,
 }
 
 impl Incumbency {
     fn is_lost(&self, n: &Node) -> bool {
-        n.incarnation_id.as_ref().is_some_and(|i| self.lost.contains(&(n.node_id.clone(), i.clone())))
+        n.incarnation_id.as_ref().is_some_and(|i| self.lost.contains(i))
     }
 }
 
@@ -104,7 +105,7 @@ enum Holding {
 }
 
 fn holding(nodes: &[Node], h: &SeatHolder, inc: &Incumbency) -> Holding {
-    if inc.lost.contains(&(h.node_id.clone(), h.incarnation.clone())) {
+    if inc.lost.contains(&h.incarnation) {
         return Holding::Yielded;
     }
     let Some(i) = nodes.iter().position(|n| n.node_id == h.node_id) else { return Holding::Unseen };
@@ -499,8 +500,8 @@ mod tests {
         Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), lost: HashSet::new() }
     }
 
-    fn lose(inc: &mut Incumbency, node_id: &str, incarnation: &str) {
-        inc.lost.insert((id(node_id), IncarnationId(incarnation.into())));
+    fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
+        inc.lost.insert(IncarnationId(incarnation.into()));
     }
 
     fn fabric_name(nodes: &[Node]) -> Option<String> {

@@ -75,6 +75,36 @@ fn folded(identity: Option<FabricIdentity>, pointer: Option<FabricPointer>) -> O
     identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) })
 }
 
+/// One seat record this admin held: who held a seat, and from which epoch. Each is its own row
+/// (a blind put of its own key); a reader keeps, per seat and mesh, the one that supersedes the
+/// others, so a late write never moves a seat back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeatRow {
+    pub seat: rafka_mesh_entity::Seat,
+    pub holder: rafka_mesh_entity::SeatHolder,
+}
+
+impl SeatRow {
+    fn key(&self) -> String {
+        format!("{}-{}-{:020}-{}", self.seat.name(), self.holder.mesh, self.holder.epoch, self.holder.node_id)
+    }
+}
+
+/// The rows that stand: per seat (and per mesh for a mesh primary), the one that supersedes the rest.
+fn standing(rows: impl IntoIterator<Item = SeatRow>) -> Vec<SeatRow> {
+    let mut held: std::collections::BTreeMap<(rafka_mesh_entity::Seat, String), SeatRow> = Default::default();
+    for r in rows {
+        let key = (r.seat, if r.seat == rafka_mesh_entity::Seat::MeshPrimary { r.holder.mesh.clone() } else { String::new() });
+        match held.get(&key) {
+            Some(h) if !r.holder.supersedes(&h.holder) => {}
+            _ => {
+                held.insert(key, r);
+            }
+        }
+    }
+    held.into_values().collect()
+}
+
 /// A fabric shutdown in progress. `initiated_by` names the fabric-primary that began it;
 /// `initiated_at_ms` is a diagnostic and takes no part in authority or ordering. The record holds no
 /// drain progress: every admin derives the freeze barrier (every live admin `Draining`) and runtime
@@ -108,6 +138,10 @@ pub trait FabricStorage: Send + Sync {
     /// Hold `shutdown` if none is held (insert-and-fail on its key): the first shutdown held is
     /// kept, a later one never replaces it, and it is never removed. Returns the record now held.
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
+    /// Put the row for one seat record: a blind put of its own key.
+    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError>;
+    /// The seat records that stand: per seat and mesh, the one that supersedes the others.
+    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError>;
 }
 
 /// A fabric store held in memory.
@@ -116,6 +150,7 @@ pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
     pointers: Mutex<Vec<FabricPointer>>,
     shutdown: Mutex<Option<FabricShutdown>>,
+    seats: Mutex<Vec<SeatRow>>,
 }
 
 impl MemoryFabricStorage {
@@ -147,11 +182,22 @@ impl FabricStorage for MemoryFabricStorage {
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         Ok(self.shutdown.lock().unwrap().get_or_insert_with(|| shutdown.clone()).clone())
     }
+    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
+        let mut rows = self.seats.lock().unwrap();
+        rows.retain(|r| r.key() != row.key());
+        rows.push(row.clone());
+        Ok(())
+    }
+    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
+        Ok(standing(self.seats.lock().unwrap().iter().cloned()))
+    }
 }
 
 /// The directory inside an admin's data dir.
 pub const FABRIC_DIR: &str = "fabric";
 const POINTERS_DIR: &str = "fabric/pointers";
+const SEATS_DIR: &str = "fabric/seats";
+const SEAT_FORMAT: &str = "fabric-seat/1";
 const IDENTITY_KEY: &str = "identity";
 const SHUTDOWN_KEY: &str = "shutdown";
 /// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and pointer in
@@ -167,6 +213,7 @@ const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 pub struct FileFabricStorage {
     records: crate::record_store::FileRecords,
     pointers: crate::record_store::FileRecords,
+    seats: crate::record_store::FileRecords,
 }
 
 impl FileFabricStorage {
@@ -180,7 +227,7 @@ impl FileFabricStorage {
                 reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} and {POINTER_FORMAT} rows"),
             });
         }
-        Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)? })
+        Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)?, seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR)? })
     }
 }
 
@@ -205,6 +252,12 @@ impl FabricStorage for FileFabricStorage {
         self.records.insert(SHUTDOWN_KEY, SHUTDOWN_FORMAT, shutdown).await?;
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT)?.ok_or_else(|| FabricStorageError::Io { file: "shutdown.json".into(), reason: "the shutdown row vanished after its insert".into() })
     }
+    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
+        self.seats.write(&row.key(), SEAT_FORMAT, row).await
+    }
+    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
+        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT)?))
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +279,41 @@ mod tests {
             let other = FabricShutdown { initiated_by: "mesh2.admin.1".into(), ..shutdown() };
             assert_eq!(s.put_shutdown(&other).await.unwrap(), shutdown(), "the first initiation is kept");
         }
+    }
+
+    fn seat_row(seat: rafka_mesh_entity::Seat, mesh: &str, node: &str, epoch: u64) -> SeatRow {
+        SeatRow {
+            seat,
+            holder: rafka_mesh_entity::SeatHolder { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(format!("i{epoch}")), epoch },
+        }
+    }
+
+    /// CONTRACT (R-A2): the seat records that stand are the superseding one per seat and mesh,
+    /// whatever order they were written in, and a file store reloads them. What must NOT happen: a
+    /// late write of an older record moving a seat back.
+    #[tokio::test]
+    async fn the_seat_records_that_stand_are_the_superseding_ones_whatever_the_write_order() {
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&tempdir()).unwrap())] {
+            assert!(s.seats().await.unwrap().is_empty());
+            for row in [
+                seat_row(FabricPrimary, "mesh1", "100000000000", 3),
+                seat_row(FabricPrimary, "mesh2", "200000000000", 5),
+                seat_row(FabricPrimary, "mesh1", "100000000000", 1),
+                seat_row(MeshPrimary, "mesh1", "100000000000", 1),
+                seat_row(MeshPrimary, "mesh2", "200000000000", 2),
+            ] {
+                s.put_seat(&row).await.unwrap();
+            }
+            let standing = s.seats().await.unwrap();
+            assert_eq!(standing.len(), 3);
+            assert!(standing.contains(&seat_row(FabricPrimary, "mesh2", "200000000000", 5)));
+            assert!(standing.contains(&seat_row(MeshPrimary, "mesh1", "100000000000", 1)));
+            assert!(standing.contains(&seat_row(MeshPrimary, "mesh2", "200000000000", 2)));
+        }
+        let d = tempdir();
+        FileFabricStorage::open(&d).unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
+        assert_eq!(FileFabricStorage::open(&d).unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
     }
 
     #[tokio::test]

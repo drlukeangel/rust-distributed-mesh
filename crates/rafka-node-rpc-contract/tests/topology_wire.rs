@@ -3,7 +3,7 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rafka_mesh_entity::wire::WireDigest;
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, PublisherId};
+use rafka_mesh_entity::{IncarnationId, LifecycleOp, PublisherId, Seat, SeatHolder};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
 use rafka_node_rpc_contract::streaming::{FrameKind, StreamingProtocol};
@@ -57,7 +57,7 @@ fn requests_match_the_frozen_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twelve_variant_wire_schema() {
+fn replies_match_the_frozen_thirteen_variant_wire_schema() {
     use TopologyReply::*;
     let fixtures = [
         (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0161 0162 07"),
@@ -71,14 +71,16 @@ fn replies_match_the_frozen_twelve_variant_wire_schema() {
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
         (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rafka_mesh_entity::EndpointId("k".into()), incarnation: IncarnationId("i".into()), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 00 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0169 00 7f000001 50"),
+        (Seats { seat: Seat::FabricPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId("i".into()), epoch: 2 } }, "0c 01 016d 0c 303472616a303970337a7037 0169 02"),
+        (Seats { seat: Seat::MeshPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId("i".into()), epoch: 300 } }, "0c 00 016d 0c 303472616a303970337a7037 0169 ac02"),
         (Stored { mesh: "m".into(), mesh_id: Some(rafka_mesh_entity::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rafka_mesh_entity::EndpointId("k".into()), incarnation: IncarnationId("i".into()), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0169 00 7f000001 50"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Topology::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Topology::REPLY_VARIANTS, 12);
-    assert_eq!(Topology::decode_reply(&[12]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Topology::REPLY_VARIANTS, 13);
+    assert_eq!(Topology::decode_reply(&[13]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -118,6 +120,8 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Topology::frame_kind(&Started), FrameKind::Started);
     assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 1 }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&End { meshes: 0 }), FrameKind::Terminal);
+    let holder = SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId("i".into()), epoch: 1 };
+    assert_eq!(Topology::frame_kind(&Seats { seat: Seat::FabricPrimary, holder }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
     assert_eq!(Topology::frame_kind(&UnknownMesh { mesh: "m".into() }), FrameKind::Refusal(ReplyKind::ProtocolRefusal));
 }

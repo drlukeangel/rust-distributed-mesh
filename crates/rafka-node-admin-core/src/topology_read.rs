@@ -118,6 +118,7 @@ impl TopologyDoor {
             snapshots = tracing::field::Empty,
             unchanged = tracing::field::Empty,
             stored = tracing::field::Empty,
+            seats = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
@@ -191,6 +192,20 @@ impl TopologyDoor {
                 }
                 answered += 1;
             }
+            // The seat records this node holds: who holds the fabric seat and each mesh's, so the
+            // reader computes no seat before it knows them (ruling R-A2).
+            let mut records: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)> = self.membership.seats().meshes().into_values().map(|h| (rafka_mesh_entity::Seat::MeshPrimary, h)).collect();
+            records.extend(self.membership.seats().fabric().map(|h| (rafka_mesh_entity::Seat::FabricPrimary, h)));
+            let seat_records = records.len() as u64;
+            for (seat, holder) in records {
+                let r = TopologyReply::Seats { seat, holder };
+                bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                if let Err(e) = sink.data(r).await {
+                    span.record("outcome", format!("caller-gone: {e:?}").as_str());
+                    return TopologyReply::End { meshes: answered };
+                }
+            }
+            span.record("seats", seat_records);
             span.record("stored", stored_meshes);
             span.record("meshes", answered);
             span.record("snapshots", snapshots);
@@ -230,6 +245,8 @@ pub struct TopologyRead {
     /// Each mesh the target answered from its stored map, with no version: births to reach, never
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
+    /// The seat records the target holds, in the order it sent them.
+    pub seats: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)>,
 }
 
 /// A mesh answered from the target's stored map.
@@ -284,7 +301,11 @@ impl std::fmt::Display for TopologyFailure {
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await
+    let read = read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await?;
+    // The seat records the target holds are this node's too, wherever they supersede its own: it
+    // computes no seat before it has them.
+    membership.learn_seats(&read.seats, "entry");
+    Ok(read)
 }
 
 /// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
@@ -361,6 +382,7 @@ async fn read_with(
                 Some(m) => m.nodes.extend(nodes),
                 None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
+            StreamItem::Frame(_, TopologyReply::Seats { seat, holder }) => read.seats.push((seat, holder)),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

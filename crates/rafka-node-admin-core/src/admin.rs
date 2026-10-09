@@ -243,10 +243,14 @@ pub struct Records {
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     published_degraded: std::sync::atomic::AtomicBool,
-    /// The exact births the fabric authority proved exited from their runtimes (`reconcile_drift`).
-    /// Shown `Dead` whatever their last digest said: a view that learned a birth from topology alone
-    /// holds it ready, and a proven exit is the evidence that topology never was.
+    /// The exact births an admin proved exited from their runtimes (`reconcile_drift`, the seat
+    /// watch `crate::seat_watch`). Shown `Dead` whatever their last digest said: a view that learned
+    /// a birth from topology alone holds it ready, and a proven exit is the evidence that topology
+    /// never was. It is also the proof an election takes that a seat's holder is gone.
     exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// This admin is entering an existing mesh and has not yet been told who holds the seats: it
+    /// computes none until its entry read has (ruling R-A2).
+    entering: std::sync::atomic::AtomicBool,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -304,6 +308,20 @@ impl Records {
     /// Whether the birth's exit was proven by the fabric authority.
     pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         self.exited.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
+    }
+
+    /// The admin has been told (or needs no telling of) who holds the seats: elections run.
+    pub fn set_entering(&self, entering: bool) {
+        self.entering.store(entering, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn is_entering(&self) -> bool {
+        self.entering.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The incarnations proven exited by an admin of this fabric.
+    fn exited_incarnations(&self) -> std::collections::HashSet<IncarnationId> {
+        self.exited.lock().unwrap().iter().map(|(_, i)| i.clone()).collect()
     }
 
     /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
@@ -386,6 +404,17 @@ impl TopologySink for Records {
         let gone = self.nodes.lock().unwrap().remove(name);
         self.removed.lock().unwrap().insert((name.clone(), gone.and_then(|n| n.incarnation_id)));
     }
+}
+
+/// What an election takes beside the nodes: the seat records this admin holds, and the births
+/// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
+/// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
+/// unreachable path and the observer-inferred `Dead` prove nothing.
+fn incumbency_of(book: &DigestBook, records: &Records) -> crate::election::Incumbency {
+    let mut lost = records.exited_incarnations();
+    lost.extend(book.departed().into_iter().map(|op| op.incarnation));
+    lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
 }
 
 /// The observed topology from membership digests and this admin's records,
@@ -530,7 +559,15 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     let mesh_names: BTreeSet<String> = mesh_ids.keys().cloned().chain(topology.nodes.iter().map(|n| n.mesh.clone())).collect();
     // Every seat, by the one election function (`election`); through a fabric shutdown, the
     // seats held when it was learned (`Seats`).
-    crate::election::resolve(&mut topology.nodes);
+    if records.is_entering() {
+        // Not told yet who holds the seats: this view elects nobody.
+        for n in topology.nodes.iter_mut() {
+            n.is_primary = false;
+            n.is_fabric_primary = false;
+        }
+    } else {
+        crate::election::resolve_with(&mut topology.nodes, &incumbency_of(book, records));
+    }
     {
         let mut seats = records.seats.lock().unwrap();
         match &seats.held {
@@ -2198,6 +2235,34 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
     }
     let shutdown_control = Arc::new(crate::shutdown::ShutdownControl::open(fabric_storage.clone(), name.to_string()).await.map_err(|e| e.to_string())?);
+    let mut tasks_early: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // The seat records this admin held before it stopped (`fabric.storage`): it enters knowing who
+    // held the seats, and every record it hears from here on is written as its own row.
+    for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
+        membership.seats().take(row.seat, &row.holder);
+    }
+    {
+        let (seats, storage) = (membership.seats().clone(), fabric_storage.clone());
+        let mut changed = seats.subscribe();
+        tasks_early.push(tokio::spawn(async move {
+            let mut written: HashSet<(rafka_mesh_entity::Seat, String, u64)> = HashSet::new();
+            loop {
+                let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
+                rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
+                for row in rows {
+                    if written.insert((row.seat, row.holder.mesh.clone(), row.holder.epoch)) {
+                        if let Err(e) = storage.put_seat(&row).await {
+                            written.remove(&(row.seat, row.holder.mesh.clone(), row.holder.epoch));
+                            tracing::info_span!("rdm.node_admin.seat.reject.via-storage", seat = row.seat.name(), holder = %row.holder, error = %e).in_scope(|| tracing::info!("a seat record could not be written to fabric.storage"));
+                        }
+                    }
+                }
+                if changed.changed().await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
     // `Fabric.build_id`: Day 0 accepts the first Build itself; every other admin hydrates it from
     // its entry pull or the fabric control topic.
     let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
@@ -2318,6 +2383,9 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     }
 
     let records = Arc::new(Records::default());
+    // A restart that enters its mesh from its durable map elects nobody until its entry read has
+    // told it who holds the seats.
+    records.set_entering(entering_existing_mesh && cfg.launch.is_none());
     let _ = records.contacts.set(nodes_storage.clone());
     // A fabric primary reborn from its data dir holds its durable topology as its map (rule 5):
     // every birth the accepted Build names that nodes.storage heard is in its view as not yet
@@ -2673,6 +2741,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         })
     };
     let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task];
+    tasks.extend(tasks_early);
     // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
     // primary reborn into its mesh from its durable map): connect to a local node, read its
     // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
@@ -2691,6 +2760,8 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let digest = digest.clone();
         tasks.push(tokio::spawn(async move {
             let report = crate::reenter::enter_existing_mesh(&ctx, source, map).await;
+            // The entry read has told this admin what the mesh knows of its seats (or no one could).
+            records.set_entering(false);
             // A reply proves a live exact birth: the view holds it (until membership speaks for
             // it). A node that did not answer stays in the map as not yet reached.
             for n in &report.reached {
@@ -3002,6 +3073,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
     // channel through every member of its mesh it knows.
     {
         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
+        let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
         let adapter = runner.builds.clone();
         let (records, accepted, rpc_client) = (records.clone(), accepted.clone(), node_rpc.client.clone());
         hierarchy = tokio::spawn(async move {
@@ -3050,6 +3122,23 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                     records.set_adopted_degraded(false);
                 }
                 was_fabric_primary = fabric_primary;
+                // A seat taken is announced once, when it changes hands: the mesh primary first, then
+                // the fabric primary (R-A2). The record this admin already holds for itself needs no
+                // announcement.
+                for (seat, holds) in [(rafka_mesh_entity::Seat::MeshPrimary, mesh_primary), (rafka_mesh_entity::Seat::FabricPrimary, fabric_primary)] {
+                    if !holds {
+                        continue;
+                    }
+                    let held = match seat {
+                        rafka_mesh_entity::Seat::MeshPrimary => membership.seats().mesh(&mesh),
+                        rafka_mesh_entity::Seat::FabricPrimary => membership.seats().fabric(),
+                    };
+                    if held.as_ref().is_some_and(|h| h.is_birth(&seat_node_id, &seat_incarnation)) {
+                        continue;
+                    }
+                    let holder = rafka_mesh_entity::SeatHolder { mesh: mesh.clone(), node_id: seat_node_id.clone(), incarnation: seat_incarnation.clone(), epoch: held.map(|h| h.epoch + 1).unwrap_or(1) };
+                    backbone.announce_seat(seat, holder).await;
+                }
                 let heard = membership.book.current(membership.book.staleness_floor());
                 let mine: Vec<MeshDigest> = heard.iter().filter(|d| d.node.name.mesh == mesh).cloned().collect();
                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
@@ -3349,6 +3438,70 @@ mod tests {
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().status, NodeStatus::Dead);
         assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
+    }
+
+    fn holder_of(d: &MeshDigest, epoch: u64) -> rafka_mesh_entity::SeatHolder {
+        rafka_mesh_entity::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    }
+
+    /// CONTRACT (R-A2, the dw33-1 shape): the seat records an admin holds decide its projection. A
+    /// ready admin with a lower NodeId that appears, in any mesh, changes no seat; a view that has
+    /// not been told who holds the seats (an entering admin) elects nobody; the holder proven
+    /// exited, or replaced by a later birth that says so, hands the seat to its own mesh.
+    #[test]
+    fn the_projection_keeps_a_recorded_holder_and_elects_nobody_before_it_is_told() {
+        use MemberStatus::*;
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        let book = DigestBook::default();
+        let holder = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
+        let sibling = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
+        for d in [&holder, &sibling] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&holder, 1));
+        book.seats.take(FabricPrimary, &holder_of(&holder, 1));
+        let records = Records::default();
+        let seat_names = |t: &Topology| (t.fabric_primary().map(|n| n.name.to_string()), t.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.name.to_string()));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())));
+
+        // A lower NodeId appears in another mesh and one in the incumbent mesh, both ready: nothing moves.
+        book.record(with_id(digest("mesh3.admin.1", ReadyForTraffic), "100000000000"));
+        book.record(with_id(digest("mesh1.admin.3", ReadyForTraffic), "200000000000"));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat_names(&t), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "a lower NodeId never displaces a living holder");
+        assert_eq!(t.cohort_primary("mesh3", NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh3.admin.1"));
+
+        // An entering admin has not been told who holds the seats: it computes none.
+        records.set_entering(true);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert!(t.nodes.iter().all(|n| !n.is_primary && !n.is_fabric_primary), "no seat before the entry read");
+        records.set_entering(false);
+
+        // Proven exited: the lowest Ready NodeId of ITS mesh fills both seats, not mesh3's lower id.
+        records.mark_exited(&holder.node.node_id, &holder.node.incarnation);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(seat_names(&t), (Some("mesh1.admin.3".into()), Some("mesh1.admin.3".into())));
+    }
+
+    /// CONTRACT (R-A2): a later birth that names the recorded holder's incarnation as the one it
+    /// replaced proves that birth gone: the seat goes to the lowest Ready admin of its mesh.
+    #[test]
+    fn a_later_birth_that_supersedes_the_holder_proves_it_gone() {
+        use MemberStatus::*;
+        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        let book = DigestBook::default();
+        let holder = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
+        book.record(holder.clone());
+        book.seats.take(MeshPrimary, &holder_of(&holder, 1));
+        book.seats.take(FabricPrimary, &holder_of(&holder, 1));
+        let mut reborn = with_id(digest("mesh1.admin.1", Pending), "900000000000");
+        reborn.node.supersedes = Some(holder.node.incarnation.clone());
+        book.record(reborn.clone());
+        let ready = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
+        book.record(ready);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! by the one method gossip's `Members` snapshots use:
 //!
 //! ```text
-//! Started  (Snapshot* | Unchanged* | Stored*)  End { meshes }       a stream
+//! Started  (Snapshot* | Unchanged* | Stored*) Seats*  End { meshes }   a stream
 //! NotReady | UnknownMesh                                  one refusal, nothing started
 //! ```
 //!
@@ -21,7 +21,7 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::streaming::{FrameKind, StreamingProtocol};
 use rafka_mesh_entity::wire::WireDigest;
-use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
+use rafka_mesh_entity::{EndpointId, IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId, Seat, SeatHolder};
 use serde::{Deserialize, Serialize};
 
 /// The topology read protocol: a stream of one mesh's snapshot chunks, or of every mesh a node
@@ -162,6 +162,15 @@ pub enum TopologyReply {
         /// The births the target stored for the mesh.
         nodes: Vec<StoredNode>,
     },
+    /// The record the target holds for one seat: a node entering the fabric learns who holds the
+    /// seats before it computes any (ruling R-A2). One frame per record, sent before `End`; it is
+    /// not a mesh and `End.meshes` does not count it.
+    Seats {
+        /// The seat the record is for.
+        seat: Seat,
+        /// The seat's holder as the target records it.
+        holder: SeatHolder,
+    },
 }
 
 impl TopologyReply {
@@ -180,6 +189,7 @@ impl TopologyReply {
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
             Self::Stored { .. } => "stored",
+            Self::Seats { .. } => "seats",
         }
     }
 }
@@ -193,14 +203,14 @@ impl NodeProtocol for Topology {
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 12;
+    const REPLY_VARIANTS: u32 = 13;
 
     type Request = TopologyRequest;
     type Reply = TopologyReply;
 
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
             TopologyReply::UnknownMesh { .. } => ReplyKind::ProtocolRefusal,
             TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
@@ -234,7 +244,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } => FrameKind::Data,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }
