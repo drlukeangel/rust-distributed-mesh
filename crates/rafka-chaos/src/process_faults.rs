@@ -222,6 +222,96 @@ impl ExactRuntime {
     }
 }
 
+/// Why a burst kill signalled nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "burst_refusal", rename_all = "snake_case")]
+pub enum BurstRefusal {
+    /// The burst names no runtime.
+    Empty,
+    /// The same runtime is named twice.
+    Duplicate {
+        /// The pid named twice.
+        pid: u32,
+    },
+    /// A target is one the caller protects (a fabric-primary's runtime): nothing was signalled.
+    Protected {
+        /// The protected runtime named in the burst.
+        runtime: ExactRuntime,
+    },
+    /// A target is not its published runtime: nothing was signalled, for any target.
+    Target {
+        /// The runtime the check refused.
+        runtime: ExactRuntime,
+        /// Why.
+        refusal: Refusal,
+    },
+}
+
+/// A burst kill the OS acknowledged for every target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BurstApplied {
+    /// Each target with its acknowledgement, in the order named.
+    pub killed: Vec<Applied>,
+    /// Milliseconds between the first and the last SIGKILL leaving this process.
+    pub signal_spread_ms: u128,
+}
+
+/// SIGKILL every runtime in `targets` in one pass, all of them or none: each target is checked
+/// as its published runtime first (domain and start token), and a single refusal, or a target
+/// that is also in `protected`, signals nothing. The signals then leave back to back, and each
+/// is acknowledged by its exit. One span, `rdm.testkit.fault.update.via-process-burst`.
+pub fn burst_kill(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Result<BurstApplied, BurstRefusal> {
+    let span = tracing::info_span!("rdm.testkit.fault.update.via-process-burst", fault = "kill", targets = targets.len(), pids = %targets.iter().map(|t| t.pid.to_string()).collect::<Vec<_>>().join(","), outcome = tracing::field::Empty);
+    let _g = span.enter();
+    let out = burst_kill_inner(targets, protected);
+    span.record("outcome", tracing::field::display(match &out {
+        Ok(a) => json!({"applied": "kill", "exited": a.killed.iter().filter(|k| k.exited).count(), "signal_spread_ms": a.signal_spread_ms as u64}),
+        Err(r) => serde_json::to_value(r).unwrap_or(Value::Null),
+    }));
+    out
+}
+
+fn burst_kill_inner(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Result<BurstApplied, BurstRefusal> {
+    if targets.is_empty() {
+        return Err(BurstRefusal::Empty);
+    }
+    for (i, t) in targets.iter().enumerate() {
+        if targets[..i].iter().any(|o| o.pid == t.pid) {
+            return Err(BurstRefusal::Duplicate { pid: t.pid });
+        }
+        if protected.iter().any(|p| p.pid == t.pid && p.start == t.start) {
+            return Err(BurstRefusal::Protected { runtime: t.clone() });
+        }
+    }
+    for t in targets {
+        t.check().map_err(|refusal| BurstRefusal::Target { runtime: t.clone(), refusal })?;
+    }
+    let first = Instant::now();
+    let mut failed = Vec::new();
+    for t in targets {
+        // SAFETY: kill(2) of a pid whose start token was checked just above; no memory is touched.
+        if unsafe { libc::kill(t.pid as i32, 9) } != 0 {
+            failed.push((t.clone(), std::io::Error::last_os_error().raw_os_error().unwrap_or(0)));
+        }
+    }
+    let spread = first.elapsed().as_millis();
+    if let Some((runtime, errno)) = failed.into_iter().next() {
+        return Err(BurstRefusal::Target { refusal: Refusal::SignalFailed { pid: runtime.pid, errno }, runtime });
+    }
+    let until = Instant::now() + Duration::from_secs(10);
+    let mut killed = Vec::new();
+    for t in targets {
+        while !gone(t.pid) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !gone(t.pid) {
+            return Err(BurstRefusal::Target { runtime: t.clone(), refusal: Refusal::NotAcknowledged { fault: Fault::Kill, pid: t.pid, state_after: proc_state(t.pid) } });
+        }
+        killed.push(Applied { fault: Fault::Kill, runtime: t.clone(), state_after: None, exited: true });
+    }
+    Ok(BurstApplied { killed, signal_spread_ms: spread })
+}
+
 /// This host's process control domain: its boot and its pid namespace. A pid and start token mean
 /// one process only within the same boot and namespace.
 pub fn local_control_domain() -> String {
@@ -292,5 +382,26 @@ mod tests {
         assert!(killed.exited);
         let _ = child.wait();
         assert!(matches!(rt.apply(Fault::Kill), Err(Refusal::AlreadyExited { .. })));
+    }
+
+    #[test]
+    fn a_burst_kill_signals_every_target_or_none_and_never_a_protected_one() {
+        let (mut a, ra) = sleeper();
+        let (mut b, rb) = sleeper();
+        let (mut keep, rk) = sleeper();
+        assert_eq!(burst_kill(&[], &[]), Err(BurstRefusal::Empty));
+        assert!(matches!(burst_kill(&[ra.clone(), ra.clone()], &[]), Err(BurstRefusal::Duplicate { pid }) if pid == ra.pid));
+        assert!(matches!(burst_kill(&[ra.clone(), rk.clone()], &[rk.clone()]), Err(BurstRefusal::Protected { runtime }) if runtime == rk));
+        let forged = rb.with_start(rb.start + 1);
+        assert!(matches!(burst_kill(&[ra.clone(), forged], &[]), Err(BurstRefusal::Target { refusal: Refusal::NotThisRuntime { .. }, .. })));
+        assert!(!gone(ra.pid) && !gone(rb.pid) && !gone(rk.pid), "a refused burst signalled nothing, not even its valid targets");
+        let done = burst_kill(&[ra.clone(), rb.clone()], &[rk.clone()]).unwrap();
+        assert_eq!(done.killed.len(), 2);
+        assert!(done.killed.iter().all(|k| k.exited));
+        let _ = (a.wait(), b.wait());
+        assert!(!gone(rk.pid), "the protected runtime was not touched");
+        assert!(matches!(burst_kill(&[ra], &[]), Err(BurstRefusal::Target { refusal: Refusal::AlreadyExited { .. } | Refusal::NotThisRuntime { .. }, .. })));
+        let _ = keep.kill();
+        let _ = keep.wait();
     }
 }
