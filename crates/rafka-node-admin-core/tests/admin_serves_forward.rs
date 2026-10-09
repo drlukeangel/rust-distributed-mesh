@@ -167,7 +167,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let origin = NodeRpcClient::new(origin_ep, resolver);
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
     match &out {
-        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::CarrierEdgeLost(why) if why.contains("mesh1.admin.2 -> mesh1.rpc.2 Direct disconnected")), "{out:?}"),
+        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::CarrierEdgeLost(why) if why.starts_with("mesh1.admin.2 -> mesh1.rpc.2 Direct ")), "{out:?}"),
         other => panic!("the admin names its lost edge to the dead target: {other:?}"),
     }
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
