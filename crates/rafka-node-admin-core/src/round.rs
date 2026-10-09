@@ -214,9 +214,10 @@ impl RoundDriver {
         // A node-admin that is not a mesh primary owes its own birth to this admin as well, and
         // this admin's view of it can trail the admin's first declaration: the receiver cannot
         // resolve the sender yet and refuses it by name, and a refusal is terminal. The down op is
-        // what asks again, once per birth and endpoint the view holds.
+        // what asks again, once per birth and endpoint the view holds. Only a ready admin owes its
+        // declaration: one not yet ready is asked when it is.
         let mut admins = Vec::new();
-        for n in view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.name != self.me) {
+        for n in view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.name != self.me && n.status == crate::model::NodeStatus::ReadyForTraffic) {
             if view.cohort_primary(&n.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == n.node_id) {
                 continue;
             }
@@ -533,6 +534,13 @@ mod tests {
             }
         }
         assert_eq!(driver.changed_addressees(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
+
+        let mut pending = second.clone();
+        pending.status = NodeStatus::Pending;
+        let mut driver = RoundDriver::new(me.name.clone());
+        assert!(driver.changed_addressees(&view(vec![me.clone(), pending.clone()]), true).is_empty(), "an admin not yet ready owes no declaration yet");
+        pending.status = NodeStatus::ReadyForTraffic;
+        assert_eq!(driver.changed_addressees(&view(vec![me.clone(), pending]), true).len(), 1, "it is addressed once it is");
 
         let not_fp = view(vec![member("mesh1.admin.1", true, false), second]);
         assert!(driver.changed_addressees(&not_fp, false).is_empty(), "a view where this admin is not the fabric-primary addresses nobody");
