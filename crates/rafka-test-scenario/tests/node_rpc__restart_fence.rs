@@ -10,10 +10,13 @@
 //!    naming the old incarnation) and dialed the new one; the value written before the restart is
 //!    read back from the broker's own data dir. Every call was the gateway's one inner invocation
 //!    of exactly the broker (`rdm.node_rpc.request.serve.via-carried-inner`).
+//! The gateway learns a birth by membership, not from the admin's view: the cell calls through the
+//! gateway only once the gateway's own resolver holds the birth it is about to call (the probe's
+//! `resolve` asks the gateway what it holds).
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as
 //! `RejectedStale`, never dispatched — is `crates/rafka-node-rpc/tests/pool.rs`.
 
-use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -44,6 +47,17 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     let (broker_id, old_birth, addr) = (s(&broker["node_id"]), s(&broker["incarnation_id"]), s(&broker["transport_addr"]));
     let exact = format!("exact:{broker_id}");
     let via = "path:mesh1.gateway.1";
+    let gateway_holds = |incarnation: &str| {
+        let (estate, exact, incarnation) = (&estate, exact.clone(), incarnation.to_string());
+        async move {
+            wait_for(&format!("the gateway holds incarnation {incarnation} of the broker"), Duration::from_secs(30), || async {
+                let r = estate.probe(&["resolve", "--target", via, "--query", &exact]);
+                (r["reply"]["resolution"] == "found" && r["reply"]["incarnation_id"] == incarnation.as_str()).then_some(r)
+            })
+            .await
+        }
+    };
+    gateway_holds(&old_birth).await;
 
     // 1. ExactNode and CurrentPath, through the gateway: the broker served.
     let put = estate.probe(&["put", "--target", &exact, "--via", via, "--key", "f1", "--value", "before-restart"]);
@@ -62,6 +76,8 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!(s(&reborn["node_id"]), broker_id, "a restart keeps the NodeId: {reborn}");
     assert_ne!(s(&reborn["incarnation_id"]), old_birth, "a restart is a new birth: {reborn}");
     assert_ne!(s(&reborn["transport_addr"]), addr, "a restart binds a fresh port: {reborn}");
+
+    gateway_holds(&s(&reborn["incarnation_id"])).await;
 
     // 3. Through the gateway again: the new birth serves, and the value survived in its data dir.
     let after = estate.probe(&["get", "--target", &exact, "--via", via, "--key", "f1"]);
