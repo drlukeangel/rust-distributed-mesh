@@ -541,3 +541,11 @@ async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_
     let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/replace", None).await;
     assert_eq!(s, StatusCode::ACCEPTED, "the mesh is heard again: the replace is accepted: {v}");
 }
+
+#[tokio::test]
+async fn connections_route_answers_the_facts_this_admin_holds_and_none_before_it_holds_any() {
+    let h = harness(Router::new()).await;
+    let (status, v) = call(&h.app, "GET", "/api/connections", None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["connections"], json!([]), "an admin that holds no connection fact lists none: {v}");
+}
