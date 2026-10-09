@@ -179,6 +179,7 @@ impl FabricBuildStateAdapter {
         accepted: Arc<AcceptedStore>,
         shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
+        catch_up_seam: Option<Arc<dyn crate::wiring::CatchUpSeam>>,
     ) -> Result<Self, BuildStateError> {
         let io = |e: String| BuildStateError::Io(format!("fabric Build topic {fabric}: {e}"));
         let lookup = MemoryLookup::new();
@@ -230,6 +231,11 @@ impl FabricBuildStateAdapter {
                         Some(Ok(Event::NeighborUp(peer))) => {
                             known_peers.lock().unwrap().push(peer);
                             neighbors.lock().unwrap().insert(peer);
+                            if catch_up_seam.as_ref().is_some_and(|s| s.withholds(&node, &peer.to_string())) {
+                                tracing::info_span!("rdm.node_admin.build.reject.via-catch-up-withheld", node = %node, fabric = %fabric_name, peer = %peer)
+                                    .in_scope(|| tracing::info!("the executable withholds this neighbour's catch-up: nothing is sent to it"));
+                                continue;
+                            }
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
                             let (record, pointer) = (store.record().await.ok().flatten(), store.build_id().await);

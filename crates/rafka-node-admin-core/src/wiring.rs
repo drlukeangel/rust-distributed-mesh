@@ -26,8 +26,19 @@ pub trait LeaveSeam: Send + Sync {
     fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool;
 }
 
+/// Whether an executable that IS a node-admin withholds the catch-up it sends a neighbour that came
+/// up on the Build topic (the shutdown in force, the Fabric record and the active Builds' facts).
+/// The NeighborUp task asks it once per neighbour, before it sends anything; a `true` answer skips
+/// that whole catch-up and nothing else: the frames, the topic and the delivery path are untouched.
+/// The product passes none, so every neighbour is caught up.
+pub trait CatchUpSeam: Send + Sync {
+    fn withholds(&self, node: &str, neighbour: &str) -> bool;
+}
+
 #[derive(Default)]
 pub struct Wiring {
+    /// Asked by the Build topic's NeighborUp catch-up before it sends.
+    pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,
     /// Asked by the leave before each announcement publish.
     pub leave_seam: Option<Arc<dyn LeaveSeam>>,
     /// Wraps `fabric.storage` before the accepted-Build pointer and the shutdown control take it.
