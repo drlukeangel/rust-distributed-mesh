@@ -6,6 +6,7 @@
 //! `rafka-node-rpc` executes this contract over Iroh.
 
 pub mod build_claim;
+pub mod build_facts;
 pub mod join;
 pub mod catalog;
 pub mod codes;

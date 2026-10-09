@@ -61,4 +61,14 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
     let spans = estate.spans();
     let withheld = named(&spans, "rdm.node_admin.build.reject.via-catch-up-withheld");
     assert!(!withheld.is_empty(), "the catch-up seam ran: no neighbour's catch-up was offered to the topic");
+    // No joiner was caught up by a neighbour: each of the Build's two joining admins names the
+    // blocker it fetched for (a parked pointer) and absorbed a complete stream from a node-admin.
+    let fetched = named(&spans, "rdm.node_admin.build.update.via-fetch-facts");
+    for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
+        let mine: Vec<&&Value> = fetched.iter().filter(|sp| sp["attributes"]["node"] == joiner && sp["attributes"]["outcome"] == "absorbed").collect();
+        assert!(!mine.is_empty(), "{joiner} absorbed the Build's facts from a FetchBuildFacts read: {fetched:#?}");
+        assert!(mine.iter().all(|sp| sp["attributes"]["blocker"] == "no-pointer-wanted"), "{joiner} fetched for the parked pointer: {mine:#?}");
+        let served: Vec<Value> = named(&spans, "rdm.node_admin.build.serve.via-fetch-facts").into_iter().filter(|sp| sp["attributes"]["node"] == mine[0]["attributes"]["target"]).cloned().collect();
+        assert!(served.iter().any(|sp| sp["attributes"]["complete"] == "true" && sp["attributes"]["outcome"] == "served"), "{joiner}'s responder served a complete snapshot: {served:#?}");
+    }
 }
