@@ -569,7 +569,7 @@ pub async fn reconcile_drift(
     // liveness), so the ladder's decision, not a status, names its node-admins.
     let mut candidates = crate::drift::unheard(t);
     for n in &t.nodes {
-        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && false && decided(&n.mesh) && !candidates.iter().any(|c| c.name == n.name) {
+        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && decided(&n.mesh) && !candidates.iter().any(|c| c.name == n.name) {
             candidates.push(n);
         }
     }

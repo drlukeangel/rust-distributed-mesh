@@ -249,6 +249,14 @@ pub async fn run(w: Watch) {
     }
 }
 
+/// The peer meshes the view holds nodes of that the backbone has never carried to this admin: it
+/// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
+/// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
+pub fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
+    let _ = (view, me_mesh, heard);
+    BTreeSet::new()
+}
+
 /// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
 fn forget_unheard_meshes(ladder: &Mutex<Ladder>, heard: &BTreeSet<String>) {
     let gone: Vec<String> = ladder.lock().unwrap().meshes().difference(heard).cloned().collect();
@@ -444,6 +452,19 @@ mod tests {
 
     /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a rebirth at 30 rounds, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
+    #[test]
+    fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_seat() {
+        use crate::model::*;
+        let node = |n: &str| Node::allocated(n.parse().unwrap());
+        let t = Topology {
+            fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![node("mesh1.admin.1"), node("mesh2.admin.1"), node("mesh2.rpc.1"), node("mesh3.admin.1")],
+        };
+        let heard: BTreeSet<String> = ["mesh3".to_string()].into();
+        assert_eq!(never_heard(&t, "mesh1", &heard), BTreeSet::from(["mesh2".to_string()]), "mesh2 only: mesh1 is this admin's own, mesh3 was heard on the backbone");
+    }
+
     #[test]
     fn two_carrier_edge_lost_probes_decide_a_rebirth_at_thirty_rounds() {
         let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
