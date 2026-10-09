@@ -37,7 +37,7 @@ pub struct BuildFactsDoor {
 pub type BuildFactsSlot = Arc<OnceLock<Arc<BuildFactsDoor>>>;
 
 impl BuildFactsDoor {
-    async fn serve(&self, req: BuildFactsRequest, sink: ReplySink<BuildFacts, NotStarted>) -> BuildFactsReply {
+    pub async fn serve(&self, req: BuildFactsRequest, sink: ReplySink<BuildFacts, NotStarted>) -> BuildFactsReply {
         let BuildFactsRequest::FetchBuildFacts { build_id } = req;
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-fetch-facts",
