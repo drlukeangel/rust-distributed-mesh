@@ -694,7 +694,8 @@ impl Estate {
     /// A topology request: what an operator does. Topology is accepted only by the current
     /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
     /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
-    /// waits out a Build still reconciling (`build-in-progress`), for up to two minutes. Every
+    /// waits out a Build still reconciling (`build-in-progress`, or `attempt-taken`: the number the
+    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. Every
     /// other answer is returned as is.
     async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
         let deadline = Instant::now() + Duration::from_secs(120);
@@ -727,7 +728,7 @@ impl Estate {
             if let Ok(r) = r {
                 let status = r.status().as_u16();
                 let v = r.json().await.unwrap_or(Value::Null);
-                let waits = status == 409 && matches!(v["error"].as_str(), Some("rejected-not-authority") | Some("build-in-progress"));
+                let waits = status == 409 && matches!(v["error"].as_str(), Some("rejected-not-authority") | Some("build-in-progress") | Some("attempt-taken"));
                 if !waits {
                     return (status, v);
                 }
