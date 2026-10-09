@@ -48,12 +48,19 @@ opentelemetry-semantic-conventions = "0.27"
 # a `test-knobs` Cargo feature, enabled from [dev-dependencies] only and audited by `dep-rules`, adds
 # QuicTransportConfigBuilder::disable_nat_traversal_for_tests (R-I3: a test that owns every path through its
 # own network seam sees no NAT-traversal path open; nothing in production changes);
+# and Builder::network_monitor(bool), default true (R-B2): with false, Endpoint::bind constructs no
+# netmon::Monitor and starts no interface enumeration, so a bind no longer queues behind the host's
+# interface list (a NetworkManager and sysfs walk that takes seconds when many processes bind at once).
+# The socket's monitor is an Option every consumer handles; an unspecified IP bind is refused by name in
+# this mode, and the address facts a net report needs come from the bound transports. The netwatch
+# commit iroh pins carries interfaces::interface_enumerations(), the count the fork's test asserts.
+# Removal condition: upstream iroh accepts an endpoint option that binds without a network monitor.
 # netwatch enumerates interfaces on the blocking pool; iroh-gossip's net actor never awaits a full
 # per-peer send queue (try_send drops that one enqueue and Plumtree repairs it). Vendor divergence
 # and its removal condition: rafka-v2 docs/eng/vendor-divergence.md (i143.e4.s12).
-iroh = { git = "https://github.com/drlukeangel/iroh", rev = "8bc873b796aed3ae6ec4fdf277ab71ef813162d2" }
-iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "8bc873b796aed3ae6ec4fdf277ab71ef813162d2" }
-iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "989f3d7a6e6463e75e8346b0183649aaa7365e4c" }
+iroh = { git = "https://github.com/drlukeangel/iroh", rev = "921afe53685c0a28536062fff0ac15c8a8bf9190" }
+iroh-base = { git = "https://github.com/drlukeangel/iroh", rev = "921afe53685c0a28536062fff0ac15c8a8bf9190" }
+iroh-gossip = { git = "https://github.com/drlukeangel/iroh-gossip", rev = "c8fd82477b6da7c6ca19d2ba7669dcd1dbd0e9d1" }
 
 # identity persistence
 serde = { version = "1", features = ["derive"] }

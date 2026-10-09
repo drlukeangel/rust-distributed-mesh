@@ -31,6 +31,9 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        // One explicit address, no relay, no portmapper: there is no default route to learn and no
+        // interface list to expand, so the bind starts no interface enumeration (R-B2).
+        .network_monitor(false)
         .transport_config(transport_config())
         .clear_ip_transports()
         .bind_addr(addr)?;
@@ -48,6 +51,9 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
         .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
+        // One explicit address, no relay, no portmapper: there is no default route to learn and no
+        // interface list to expand, so the bind starts no interface enumeration (R-B2).
+        .network_monitor(false)
         .transport_config(transport)
         .clear_ip_transports()
         .bind_addr(addr)?;
@@ -57,6 +63,18 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CONTRACT (R-B2): both binds set the endpoint's network monitor off, so no bind enumerates
+    /// the host's interfaces. A disabled monitor has no interface list to expand an unspecified
+    /// address with, and iroh refuses that bind by name: the refusal is the proof the option is set.
+    #[tokio::test]
+    async fn both_binds_run_with_the_network_monitor_off() {
+        let unspecified: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let refused = bind(SecretKey::generate(), unspecified).await.unwrap_err();
+        assert!(format!("{refused:#}").contains("network monitor is disabled"), "{refused:#}");
+        let refused = bind_exact(SecretKey::generate(), unspecified, vec![crate::ALPN.to_vec()], transport_config()).await.unwrap_err();
+        assert!(format!("{refused:#}").contains("network monitor is disabled"), "{refused:#}");
+    }
 
     #[tokio::test]
     async fn a_bound_endpoint_publishes_to_no_address_lookup_service() {
