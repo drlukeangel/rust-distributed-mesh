@@ -92,7 +92,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     // nothing however long the clock runs; every send is the same fact at the same instant.
     let mut mesh = StatusPublisher::new(me, StatusScope::Mesh("mesh1".into()));
     mesh.set_role(true);
-    let first = mesh.observe("pending", None, base, 1_000).expect("a change is sent at once");
+    let first = mesh.observe("pending", None, true, base, 1_000).expect("a change is sent at once");
     let repeats = sweep(&mut mesh, base, ms(0), Duration::from_secs(120), ms(100));
     let offsets: Vec<u64> = repeats.iter().map(|(o, _)| *o).collect();
     assert_eq!(STATUS_SENDS, 5);
@@ -111,7 +111,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     // The same status observed again, however often, sends nothing.
     let mut unchanged_sends = 0;
     for k in 0..600u64 {
-        if mesh.observe("pending", None, base + ms(130_000 + k * 100), 99_999).is_some() {
+        if mesh.observe("pending", None, true, base + ms(130_000 + k * 100), 99_999).is_some() {
             unchanged_sends += 1;
         }
         if mesh.due(base + ms(130_000 + k * 100)).is_some() {
@@ -123,9 +123,9 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     // A new change mid-reinforcement replaces the old one: its own five sends, the old one's rest dropped.
     let mut fabric_pub = StatusPublisher::new(me, StatusScope::Fabric(fabric.clone()));
     fabric_pub.set_role(true);
-    let a = fabric_pub.observe("pending", None, base, 10).unwrap();
+    let a = fabric_pub.observe("pending", None, true, base, 10).unwrap();
     let a2 = fabric_pub.due(base + ms(1000)).unwrap();
-    let b = fabric_pub.observe("ready-for-traffic", None, base + ms(1500), 20).unwrap();
+    let b = fabric_pub.observe("ready-for-traffic", None, true, base + ms(1500), 20).unwrap();
     let rest = sweep(&mut fabric_pub, base, ms(1500), Duration::from_secs(30), ms(100));
     assert_eq!((ts(&a), ts(&a2), ts(&b)), (10, 10, 20));
     assert_eq!(rest.len(), 4, "the new change is repeated four times after its first send");
@@ -133,17 +133,33 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
 
     // Only the role holder authors: without the role nothing is sent; losing the role ends the sends still to come.
     let mut not_primary = StatusPublisher::new(peer, StatusScope::Mesh("mesh2".into()));
-    assert!(not_primary.observe("ready-for-traffic", None, base, 1).is_none(), "a node that is not the primary authors nothing");
+    assert!(not_primary.observe("ready-for-traffic", None, true, base, 1).is_none(), "a node that is not the primary authors nothing");
     not_primary.set_role(true);
-    assert!(not_primary.observe("ready-for-traffic", None, base, 2).is_some());
+    assert!(not_primary.observe("ready-for-traffic", None, true, base, 2).is_some());
     not_primary.set_role(false);
     assert!(sweep(&mut not_primary, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "a primary that lost the role sends no more");
-    // A successor that hears the status it observes adopts it and authors nothing.
+    // A successor that hears the status it observes adopts it: no transition is invented, so nothing
+    // is sent until its round completes; then the adopted fact is sent, the old instant, five sends.
     let mut successor = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
     successor.set_role(true);
     let heard = rafka_mesh_transport::membership::StatusFact { status: "ready-for-traffic".into(), changed_at_rafka_ms: 2 };
-    assert!(successor.observe("ready-for-traffic", Some(heard), base, 77).is_none(), "the status the previous publisher published is not published again");
-    assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty());
+    assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base, 77).is_none(), "an adopted status is not sent before the round completes");
+    assert!(successor.awaiting_round(), "the adopted status waits for its round");
+    assert!(sweep(&mut successor, base, ms(0), Duration::from_secs(10), ms(100)).is_empty(), "no timer republishes an adopted status");
+    assert!(successor.observe("ready-for-traffic", Some(heard.clone()), false, base + ms(11_000), 78).is_none(), "an incomplete round still sends nothing");
+    let again = successor.observe("ready-for-traffic", Some(heard.clone()), true, base + ms(12_000), 79).expect("the completed round republishes the adopted status");
+    assert_eq!((ts(&again), status_of(&again), publisher_of(&again)), (2, "ready-for-traffic", me), "the old instant, the same status, under the new publisher");
+    assert!(!successor.awaiting_round());
+    let rest = sweep(&mut successor, base, ms(12_000), Duration::from_secs(10), ms(100));
+    assert_eq!(rest.len(), 4, "the republished fact is five identical sends: {rest:?}");
+    assert!(rest.iter().all(|(_, f)| ts(f) == 2));
+    // A status that differs from the adopted one while the round is open is a change like any other.
+    let mut moved_on = StatusPublisher::new(me, StatusScope::Mesh("mesh2".into()));
+    moved_on.set_role(true);
+    assert!(moved_on.observe("ready-for-traffic", Some(heard.clone()), false, base, 80).is_none());
+    let changed = moved_on.observe("leaving", Some(heard), false, base, 81).expect("a different status is a change");
+    assert_eq!((ts(&changed), status_of(&changed)), (81, "leaving"));
+    assert!(!moved_on.awaiting_round());
 
     // Forwarding: a peer mesh's primary keeps the original publisher and instant, names itself
     // only in forwarded_by, never forwards its own mesh's status, and forwards only what an author sent.
@@ -151,7 +167,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     assert!(matches!(&fwd, Frame::MeshStatus { mesh, publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, status } if mesh == "mesh1" && publisher == me && by == peer && status == "pending"));
     assert!(forward_of(first.clone(), me, "mesh1").is_none(), "a primary does not forward its own mesh's status");
     assert!(forward_of(fwd.clone(), "mesh3.admin.1", "mesh3").is_none(), "a forwarded copy is not forwarded again");
-    let fab = fabric_pub.observe("draining", None, base + ms(200_000), 30).unwrap();
+    let fab = fabric_pub.observe("draining", None, true, base + ms(200_000), 30).unwrap();
     let fab_fwd = forward_of(fab.clone(), peer, "mesh2").unwrap();
     assert!(matches!(&fab_fwd, Frame::FabricStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 30, .. } if publisher == me && by == peer));
     assert!(forward_of(fab, me, "mesh1").is_none(), "the fabric primary does not forward its own status");
@@ -169,6 +185,13 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     assert!(matches!(&replay[0], Frame::MeshStatus { publisher, forwarded_by: Some(by), changed_at_rafka_ms: 1_000, .. } if publisher == me && by == peer));
     let own = book.held_frames(&fabric, me);
     assert!(matches!(&own[0], Frame::MeshStatus { forwarded_by: None, .. }), "the author's own replay names no forwarder");
+    // A republish keeps the old instant: under a NEW publisher it is a different frame from the one
+    // held and is taken (the book holds the later publisher's authorship); the very same publisher
+    // with the same instant is a repeat and is not.
+    let republish = |publisher: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: "pending".into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms: 1_000 };
+    assert!(book.take(&republish(peer), &fabric), "a new publisher with the old changed_at is taken");
+    assert_eq!(book.mesh("mesh1").unwrap().publisher, peer);
+    assert!(!book.take(&republish(peer), &fabric), "the same publisher with the same changed_at is a repeat");
 
     // Nothing rides inside Members: its fields are digests and overlays only.
     let members = Frame::Members {
@@ -200,17 +223,17 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
     };
     let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", me, IncarnationId::mint(), vec![]).await.unwrap();
-    backbone.announce_statuses("pending", "pending").await;
+    backbone.announce_statuses("pending", "pending", true, true).await;
     assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");
     backbone.set_mesh_primary(true);
     backbone.set_fabric_primary(true);
-    backbone.announce_statuses("ready-for-traffic", "ready-for-traffic").await;
+    backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
     let (m, f) = (membership.mesh_status("mesh1").expect("the mesh status is held"), membership.fabric_status().expect("the fabric status is held"));
     assert_eq!((m.publisher.as_str(), m.status.as_str()), (me, "ready-for-traffic"));
     assert_eq!((f.publisher.as_str(), f.status.as_str()), (me, "ready-for-traffic"));
     // The real status sender runs on the real clock: its five sends are the spans below.
     tokio::time::sleep(Duration::from_millis(5_500)).await;
-    backbone.announce_statuses("ready-for-traffic", "ready-for-traffic").await;
+    backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
     assert_eq!(membership.mesh_status("mesh1").unwrap().changed_at_rafka_ms, m.changed_at_rafka_ms, "an unchanged status is not published again");
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     backbone.set_mesh_primary(false);

@@ -177,6 +177,16 @@ fn mesh_sends_after(spans: &[Value], mesh: &str, from_ms: u64) -> BTreeMap<(Stri
     out
 }
 
+/// When the fabric left `degraded` on a completed round, in unix ms: the holder that decided the
+/// rebirth records the recovery of the mesh on its report; a successor holder that adopted
+/// `degraded` clears it when every mesh primary has reported.
+fn degraded_cleared_at(spans: &[Value], mesh: &str) -> Vec<u64> {
+    let mut at: Vec<u64> = named(spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).collect();
+    at.extend(named(spans, "rdm.node_admin.fabric.update.via-round-complete").into_iter().filter(|sp| attr(sp, "degraded_cleared") == "true").map(|sp| at_ns(sp) / 1_000_000));
+    at.sort();
+    at
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
 }
@@ -323,16 +333,16 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert!(authored_for_peer.is_empty(), "the fabric primary never authors {}'s MeshStatus: {authored_for_peer:#?}", f.lost);
     // Degraded is the fabric primary's alone. The return to ready is the seat holder's: the fabric
     // primary's while it holds the seat, else the admin that took it (the election is the lowest ready NodeId).
-    let sent_by = |status: &str, only_fp: bool| -> BTreeMap<(String, String), usize> {
+    let sent_by = |status: &str, from_ms: u64, only_fp: bool| -> BTreeMap<(String, String), usize> {
         let mut by_change: BTreeMap<(String, String), usize> = BTreeMap::new();
-        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= last_heard_ms && (!only_fp || attr(sp, "node") == fp)) {
+        for sp in sends.iter().filter(|sp| attr(sp, "scope").starts_with("fabric:") && attr(sp, "status") == status && at_ns(sp) / 1_000_000 >= from_ms && (!only_fp || attr(sp, "node") == fp)) {
             *by_change.entry((attr(sp, "node"), attr(sp, "changed_at_rafka_ms"))).or_default() += 1;
         }
         by_change
     };
-    let degraded_sent = sent_by("degraded", true);
+    let degraded_sent = sent_by("degraded", last_heard_ms, true);
     assert!(!degraded_sent.is_empty() && degraded_sent.values().all(|n| *n == 5), "degraded is one change sent five identical times: {degraded_sent:?}");
-    let ready_sent = sent_by("ready-for-traffic", !seat_moved);
+    let ready_sent = sent_by("ready-for-traffic", degraded_ms, !seat_moved);
     assert!(!ready_sent.is_empty(), "the return to ready was sent: {ready_sent:?}");
     if seat_moved {
         assert!(ready_sent.values().all(|n| (1..=5).contains(n)), "one change, sent while its author held the seat: {ready_sent:?}");
@@ -352,7 +362,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     }
     assert!(republished.values().any(|(n, _)| *n == 5), "the republished fact is five identical sends (R-S1): {republished:?}");
     let first_republish_ms = republished.values().map(|(_, first)| *first).min().unwrap();
-    let recovered: Vec<u64> = named(&spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost).map(|sp| at_ns(sp) / 1_000_000).collect();
+    let recovered = degraded_cleared_at(&spans, &f.lost);
     assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= first_republish_ms), "degraded clears only after the reborn primary's round-complete report, never on a ready primary of a newer birth alone: recovered at {recovered:?}, first republish at {first_republish_ms}");
     result(
         &dir,
@@ -623,14 +633,17 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)
 /// while its other node-admin and its rpc nodes live. The survivor is ELECTED primary, not reborn. It
-/// adopts the mesh's existing status without inventing a transition, re-sends the round's down op to its
-/// planned births, and only when every planned birth has checked in does it republish the adopted fact:
-/// the same status, the OLD changed_at, under its own name. Its Mesh declaration to the fabric primary
-/// (the fresh round-complete report) follows the completed round, never precedes it. What must NOT
-/// happen: silence after the election, a republish before the round completes, a new changed_at.
+/// adopts the mesh's existing status without inventing a transition and re-sends the round's down op to
+/// its planned births. The killed primary is still a planned birth of the accepted Build, so the
+/// elected primary's checklist names it as missing (a named hold, no timer) and republishes nothing.
+/// The Build restarts the killed birth; when every planned birth has checked in the round completes
+/// and the adopted fact is republished: the same status, the OLD changed_at, five identical sends,
+/// and the mesh primary's Mesh declaration to the fabric primary (the fresh round-complete report)
+/// follows the completed round. What must NOT happen: silence after the election with no named
+/// hold, a republish before the round completes, a new changed_at.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes() {
-    let cell = "elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes";
+async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status() {
+    let cell = "elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -642,40 +655,47 @@ async fn elected_primary_republishes_the_adopted_mesh_status_only_after_its_roun
     if primary == "mesh1.admin.1" {
         f.estate.kill_bootstrap();
     }
-    let (lost, sv) = (f.lost.clone(), survivor.clone());
-    wait_for("the elected primary completes its round", Duration::from_secs(120), || {
+    let (lost, sv, killed) = (f.lost.clone(), survivor.clone(), primary.clone());
+    wait_for("the elected primary names the killed primary as missing from its round", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let found = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().any(|sp| attr(sp, "node") == sv && attr(sp, "mesh") == lost);
-        async move { found.then_some(()) }
+        let held = named(&spans, "rdm.node_admin.mesh.update.via-round-held").into_iter().any(|sp| attr(sp, "node") == sv && attr(sp, "mesh") == lost && attr(sp, "missing").contains(&killed) && at_ns(sp) / 1_000_000 >= fault_ms);
+        async move { held.then_some(()) }
     })
     .await;
-    wait_for("the elected primary has sent the adopted status", Duration::from_secs(60), || {
+    wait_for("a round of the mesh completes after the fault and its adopted status is republished", Duration::from_secs(120), || {
         let spans = f.estate.spans();
-        let sent = mesh_sends_after(&spans, &lost, fault_ms).into_iter().any(|((sender, _), _)| sender == sv);
-        async move { sent.then_some(()) }
+        let done = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().any(|sp| attr(sp, "mesh") == lost && at_ns(sp) / 1_000_000 >= fault_ms);
+        let sent = !mesh_sends_after(&spans, &lost, fault_ms).is_empty();
+        async move { (done && sent).then_some(()) }
     })
     .await;
     let fp = f.fabric_primary.clone();
     f.estate.stop().await;
     let spans = f.estate.spans();
     let before = mesh_status_change_before(&spans, &f.lost, fault_ms).expect("the mesh published its status before the fault");
-    let sends: Vec<_> = mesh_sends_after(&spans, &f.lost, fault_ms).into_iter().filter(|((sender, _), _)| *sender == survivor).collect();
-    assert!(!sends.is_empty(), "the elected primary {survivor} sends the adopted MeshStatus once its round completes");
-    for ((_, changed_at), _) in &sends {
-        assert_eq!(*changed_at, before, "the republish keeps the old changed_at: the lifecycle state did not change");
+    let sends = mesh_sends_after(&spans, &f.lost, fault_ms);
+    for ((sender, changed_at), _) in &sends {
+        assert!(sender.starts_with(&format!("{}.admin.", f.lost)), "the mesh's status is authored by its own primary, not {sender}");
+        assert_eq!(*changed_at, before, "the republish keeps the old changed_at: the lifecycle state did not change ({sender})");
     }
-    let first_send_ms = sends.iter().map(|(_, (_, first))| *first).min().unwrap();
-    let span_ms = |name: &str| named(&spans, name).into_iter().filter(|sp| attr(sp, "node") == survivor && attr(sp, "mesh") == f.lost).map(|sp| at_ns(sp) / 1_000_000).min();
-    let down = span_ms("rdm.node_admin.mesh.update.via-round-down").expect("the elected primary re-sent the round's down op");
-    let complete = span_ms("rdm.node_admin.mesh.update.via-round-complete").expect("the round completed");
-    assert!(down <= complete && complete <= first_send_ms, "down op ({down}) -> checklist complete ({complete}) -> republish ({first_send_ms}), in that order");
+    let first_send_ms = sends.values().map(|(_, first)| *first).min().expect("the adopted status was republished");
+    let after_fault = |name: &str, node: Option<&str>| -> Vec<u64> {
+        named(&spans, name).into_iter().filter(|sp| attr(sp, "mesh") == f.lost && node.is_none_or(|n| attr(sp, "node") == n) && at_ns(sp) / 1_000_000 >= fault_ms).map(|sp| at_ns(sp) / 1_000_000).collect()
+    };
+    let held = after_fault("rdm.node_admin.mesh.update.via-round-held", Some(&survivor));
+    let down = after_fault("rdm.node_admin.mesh.update.via-round-down", Some(&survivor));
+    let complete = after_fault("rdm.node_admin.mesh.update.via-round-complete", None);
+    let (held_ms, complete_ms) = (*held.iter().min().expect("the elected primary held its round"), *complete.iter().min().expect("a round completed"));
+    assert!(!down.is_empty(), "the elected primary re-sent the round's down op to its planned births");
+    assert!(held_ms <= complete_ms && complete_ms <= first_send_ms, "hold ({held_ms}) -> checklist complete ({complete_ms}) -> republish ({first_send_ms}), in that order: nothing is republished while a planned birth is missing");
+    let republisher = sends.keys().map(|(sender, _)| sender.clone()).next().unwrap();
     let reports: Vec<u64> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == fp && attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender") == survivor && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
+        .filter(|sp| attr(sp, "node") == fp && attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender").starts_with(&format!("{}.admin.", f.lost)) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
         .map(|sp| at_ns(sp) / 1_000_000)
         .collect();
-    assert!(reports.iter().any(|at| *at >= complete), "the fabric primary received the round-complete report from {survivor} after the round completed: {reports:?} vs {complete}");
-    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "changed_at": before, "down_ms": down, "complete_ms": complete, "first_send_ms": first_send_ms}));
+    assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary received a round-complete report from the mesh's primary after the round completed: {reports:?} vs {complete_ms}");
+    result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "republisher": republisher, "changed_at": before, "held_ms": held_ms, "complete_ms": complete_ms, "first_send_ms": first_send_ms}));
 }
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses both node-admins (exact SIGKILL) while
@@ -695,7 +715,6 @@ async fn reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degrade
     let frozen = format!("{}.rpc.1", f.lost);
     let lost_births: BTreeMap<String, String> = births(&f.before).into_iter().filter(|(n, _)| n.starts_with(&format!("{}.admin.", f.lost))).collect();
     let (_, frozen_pid) = f.lost_members().into_iter().find(|(n, _)| *n == frozen).unwrap_or_else(|| panic!("{frozen} is running"));
-    signal(frozen_pid, "-STOP");
     let admins = f.lost_admins();
     assert_eq!(admins.len(), 2, "both admins of {} are running: {admins:?}", f.lost);
     for (_, pid) in &admins {
@@ -704,6 +723,9 @@ async fn reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degrade
     if f.lost == "mesh1" {
         f.estate.kill_bootstrap();
     }
+    // Frozen after the admins are gone: a member frozen while its parent dies is killed by the
+    // kernel (SIGHUP to a stopped, newly orphaned process group) and would exit, not stay silent.
+    signal(frozen_pid, "-STOP");
     let lost = f.lost.clone();
     wait_for("the reborn primary names the frozen planned birth as missing", Duration::from_secs(240), || {
         let spans = f.estate.spans();
@@ -736,9 +758,10 @@ async fn reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degrade
     assert!(sent_while_held.is_empty(), "nothing is republished while a planned birth is missing: {sent_while_held:?}");
     let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, rebirth_start(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
     assert!(!republished.is_empty() && republished.iter().all(|at| *at >= cont_ms), "the adopted status is republished only after {frozen} checks in: {republished:?} vs continued at {cont_ms}");
-    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost).map(|sp| at_ns(sp) / 1_000_000).min().expect("the round completed");
+    let reborn_ms = rebirth_start(&spans, &f.lost);
+    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= reborn_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the reborn primary's round completed");
     assert!(complete >= cont_ms, "the checklist completes only after the frozen member checks in: {complete} vs {cont_ms}");
-    let recovered: Vec<u64> = named(&spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost).map(|sp| at_ns(sp) / 1_000_000).collect();
+    let recovered = degraded_cleared_at(&spans, &f.lost);
     assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= complete), "degraded clears only on the round-complete report: {recovered:?} vs {complete}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "continued_ms": cont_ms, "complete_ms": complete}));
 }

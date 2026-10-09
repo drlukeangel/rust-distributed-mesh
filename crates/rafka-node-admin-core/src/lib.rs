@@ -29,6 +29,7 @@ pub mod node_rpc;
 pub mod offline;
 pub mod readiness;
 pub mod reenter;
+pub mod round;
 pub mod record_store;
 pub mod shutdown;
 pub mod status_declare;
