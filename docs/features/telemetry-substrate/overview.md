@@ -28,7 +28,7 @@ infer parentage from timestamps.
 The `rdm_spans_are_rdm_prefixed` lock ratchet parses runtime Rust span macros and named
 `#[instrument]` attributes throughout crates, tools and binaries. Tests, comments, assertion
 literals and historical documentation are excluded. Its planted customer-prefix span fails
-that rule alone; `cargo test -p rafka-mesh-audit --test lock_ratchets` also checks the clean
+that rule alone; `cargo test -p rafka-mesh-audit --test main lock_ratchets::` also checks the clean
 workspace and the explicitly retained chaos exception. `cargo run -p rafka-mesh-audit
 --bin span_census` emits the runtime source census as JSON.
 

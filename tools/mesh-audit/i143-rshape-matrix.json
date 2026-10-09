@@ -236,7 +236,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-composition-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_estate_forms_twenty_distinct_nodes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-process/mock_estate_forms_twenty_distinct_nodes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -246,7 +246,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-composition-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-process/mock_roles_route_opaque_calls_to_exact_nodes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -256,7 +256,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-composition-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-process/mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -266,7 +266,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-composition-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_estate_forms_twenty_distinct_nodes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_estate_forms_twenty_distinct_nodes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-container/mock_estate_forms_twenty_distinct_nodes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -276,7 +276,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-composition-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_roles_route_opaque_calls_to_exact_nodes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-container/mock_roles_route_opaque_calls_to_exact_nodes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -286,7 +286,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-composition-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_traffic_accounts_for_every_outcome_without_uncertain_replay -- --exact",
       "dir": "target/i143-rshape/i143-rshape-composition-container/mock_traffic_accounts_for_every_outcome_without_uncertain_replay",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -296,7 +296,7 @@
       "provider": "process",
       "tier": "fast",
       "job": "i143-rshape-fast-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
       "dir": "target/i143-rshape/i143-rshape-fast-process/mock_fast_estate_forms_and_routes_opaque_calls",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -306,7 +306,7 @@
       "provider": "container",
       "tier": "fast",
       "job": "i143-rshape-fast-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_fast_estate_forms_and_routes_opaque_calls -- --exact",
       "dir": "target/i143-rshape/i143-rshape-fast-container/mock_fast_estate_forms_and_routes_opaque_calls",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -326,7 +326,7 @@
       "provider": "none",
       "tier": "static",
       "job": "i143-rshape-consumer-import-static",
-      "command": "cargo test -p rafka-mesh-audit --test rshape_definition rshape_consumer_imports_exact_candidate_without_private_paths -- --exact",
+      "command": "cargo test -p rafka-mesh-audit --test main rshape_definition::rshape_consumer_imports_exact_candidate_without_private_paths -- --exact",
       "dir": "target/i143-rshape/i143-rshape-consumer-import-static/rshape_consumer_imports_exact_candidate_without_private_paths",
       "source": "tools/mesh-audit/tests/rshape_definition.rs"
     },
@@ -336,7 +336,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
       "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_authority_handoffs_preserve_one_effective_writer",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -346,7 +346,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
       "dir": "target/i143-rshape/i143-rshape-authority-chaos-process/mock_recovery_retains_build_and_advances_attempt",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -356,7 +356,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_authority_handoffs_preserve_one_effective_writer -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_authority_handoffs_preserve_one_effective_writer -- --exact",
       "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_authority_handoffs_preserve_one_effective_writer",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -366,7 +366,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-authority-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_recovery_retains_build_and_advances_attempt -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_recovery_retains_build_and_advances_attempt -- --exact",
       "dir": "target/i143-rshape/i143-rshape-authority-chaos-container/mock_recovery_retains_build_and_advances_attempt",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -376,7 +376,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_routes_survive_connection_and_birth_supersession -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_routes_survive_connection_and_birth_supersession -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_routes_survive_connection_and_birth_supersession",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -386,7 +386,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_proxy_cutback_requires_durable_retirement -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_proxy_cutback_requires_durable_retirement",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -396,7 +396,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_connection_churn_releases_superseded_resources -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-process/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_connection_churn_releases_superseded_resources -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-process/mock_connection_churn_releases_superseded_resources",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -406,7 +406,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_routes_survive_connection_and_birth_supersession -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_routes_survive_connection_and_birth_supersession -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_routes_survive_connection_and_birth_supersession",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -416,7 +416,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_proxy_cutback_requires_durable_retirement -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_proxy_cutback_requires_durable_retirement -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_proxy_cutback_requires_durable_retirement",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -426,7 +426,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-routing-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_connection_churn_releases_superseded_resources -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_connection_churn_releases_superseded_resources -- --exact",
       "dir": "target/i143-rshape/i143-rshape-routing-chaos-container/mock_connection_churn_releases_superseded_resources",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -436,7 +436,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -446,7 +446,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_node_replacement_creates_distinct_logical_identity -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_node_replacement_creates_distinct_logical_identity",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -456,7 +456,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -466,7 +466,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -476,7 +476,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_node_replacement_creates_distinct_logical_identity -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_node_replacement_creates_distinct_logical_identity -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_node_replacement_creates_distinct_logical_identity",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -486,7 +486,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
       "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -496,7 +496,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-partition-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_partition_heal_recovers_coverage_and_routes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_partition_heal_recovers_coverage_and_routes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-partition-chaos-process/mock_partition_heal_recovers_coverage_and_routes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -506,7 +506,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-partition-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_recovers_without_status_heartbeat -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-process/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_control_loss_recovers_without_status_heartbeat -- --exact",
       "dir": "target/i143-rshape/i143-rshape-partition-chaos-process/mock_control_loss_recovers_without_status_heartbeat",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -516,7 +516,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-partition-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_partition_heal_recovers_coverage_and_routes -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_partition_heal_recovers_coverage_and_routes/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_partition_heal_recovers_coverage_and_routes -- --exact",
       "dir": "target/i143-rshape/i143-rshape-partition-chaos-container/mock_partition_heal_recovers_coverage_and_routes",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -526,7 +526,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-partition-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_recovers_without_status_heartbeat -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_control_loss_recovers_without_status_heartbeat -- --exact",
       "dir": "target/i143-rshape/i143-rshape-partition-chaos-container/mock_control_loss_recovers_without_status_heartbeat",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -536,7 +536,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-routing-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-process/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_routing_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-process/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_routing_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-routing-process/mock_soak_routing_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -547,7 +547,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-authority-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_authority_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-authority-process/mock_soak_authority_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -558,7 +558,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-partition-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-process/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_partition_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-process/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_partition_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-partition-process/mock_soak_partition_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -569,7 +569,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-lifecycle-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-process/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-process/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-lifecycle-process/mock_soak_lifecycle_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -580,7 +580,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-soak-randomized-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-process/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_randomized_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-process/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_randomized_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-randomized-process/mock_soak_randomized_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -591,7 +591,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-routing-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-container/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_routing_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-routing-container/mock_soak_routing_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_routing_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-routing-container/mock_soak_routing_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -602,7 +602,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-authority-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_authority_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_authority_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-authority-container/mock_soak_authority_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -613,7 +613,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-partition-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_partition_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_partition_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -624,7 +624,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-lifecycle-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-container/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-lifecycle-container/mock_soak_lifecycle_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_lifecycle_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-lifecycle-container/mock_soak_lifecycle_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -635,7 +635,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-soak-randomized-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-container/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_randomized_preserves_continuous_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-randomized-container/mock_soak_randomized_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_randomized_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-randomized-container/mock_soak_randomized_preserves_continuous_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -646,7 +646,7 @@
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-replay-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-process/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_replay_reproduces_qualified_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-process/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_replay_reproduces_qualified_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-replay-process/mock_soak_replay_reproduces_qualified_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -657,7 +657,7 @@
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-replay-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-container/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test rshape_burn_in mock_soak_replay_reproduces_qualified_invariants -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-container/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_replay_reproduces_qualified_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-replay-container/mock_soak_replay_reproduces_qualified_invariants",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
       "pending": 2949
@@ -679,7 +679,7 @@
       "provider": "none",
       "tier": "static",
       "job": "i143-rshape-definition-static",
-      "command": "cargo test -p rafka-mesh-audit --test rshape_definition rshape_definition_covers_every_scenario_without_business_dependencies -- --exact",
+      "command": "cargo test -p rafka-mesh-audit --test main rshape_definition::rshape_definition_covers_every_scenario_without_business_dependencies -- --exact",
       "dir": "target/i143-rshape/i143-rshape-definition-static/rshape_definition_covers_every_scenario_without_business_dependencies",
       "source": "tools/mesh-audit/tests/rshape_definition.rs"
     },
@@ -693,7 +693,7 @@
         "C8"
       ],
       "canon": "fabric-mesh-ops.md section 6 and proof 10 (unplanned loss produces one NodeDeleted for the old identity, from the replacement attempt's executor); fabric-mesh-lifecycle.md FML-19 (a same-path replace against an unchanged accepted topology opens a new attempt of the Build Fabric.build_id names)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_replace_racing_proven_drift_births_the_path_once -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_replace_racing_proven_drift_births_the_path_once -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -708,7 +708,7 @@
         "C10"
       ],
       "canon": "fabric-node-lifecycle-elections.md section 1 (a partition may produce different local candidate sets); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cut-ops-process/mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -723,7 +723,7 @@
         "C10"
       ],
       "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_restart_of_a_near_node_is_held_by_the_far_side -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_cut_restart_of_a_near_node_is_held_by_the_far_side -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cut-restart-process/mock_cut_restart_of_a_near_node_is_held_by_the_far_side",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -738,7 +738,7 @@
         "C10"
       ],
       "canon": "R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation for every node of that mesh); node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cut-spawn-process/mock_cut_serves_a_topology_build_on_the_near_side_while_the_far_side_stays_unheard",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -753,7 +753,7 @@
         "C10"
       ],
       "canon": "R-D1; node-admin-lifecycle.md rule 4 (silence is not departure; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cut-kill-process/mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_the_far_side",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -767,7 +767,7 @@
         "C14"
       ],
       "canon": "gossip.md section 6 (held-member stale coverage; a forwarded frame refreshes no node's coverage) and R-G2 (forwarded topology carries topology, never liveness)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-primary-victim-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-primary-victim-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-primary-victim-process/mock_control_loss_of_a_mesh_primary_is_marked_silent_and_refed_by_every_peer_mesh_admin",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -781,7 +781,7 @@
         "C14"
       ],
       "canon": "gossip.md section 6 and R-G2; node-admin-lifecycle.md rule 2 (the node-admins are never all down: the victims are in different meshes)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-two-victims-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-two-victims-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-two-victims-process/mock_control_loss_of_two_node_admins_at_once_is_marked_silent_and_refed_by_every_observer",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -795,7 +795,7 @@
         "C11"
       ],
       "canon": "node-admin-lifecycle.md rule 4 (a failed connection is not death; only exact provider evidence proves a runtime gone)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_direct_edge_loss_to_a_mesh_primary_declares_no_death -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-direct-edge-process/mock_direct_edge_loss_to_a_mesh_primary_declares_no_death",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -810,7 +810,7 @@
         "C13"
       ],
       "canon": "connections.md section 8 (a carrier incarnation change invalidates a Proxy that names the old carrier) and section 9 H, I, K",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-cutback-restart-process/mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
@@ -824,7 +824,7 @@
         "C12"
       ],
       "canon": "connections.md section 8 (the carrier refuses carrier-edge-lost; that refusal is how the source learns the edge is gone) and section 9 J",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test rshape_burn_in mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget -- --exact",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget -- --exact",
       "dir": "target/i143-rshape/i143-rshape-adv-carrier-edge-process/mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_budget",
       "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     }
