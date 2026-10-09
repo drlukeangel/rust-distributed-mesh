@@ -368,8 +368,15 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     }
     assert!(republished.values().any(|(n, _)| *n == 5), "the republished fact is five identical sends (R-S1): {republished:?}");
     let first_republish_ms = republished.values().map(|(_, first)| *first).min().unwrap();
+    let round_complete_ms = named(&spans, "rdm.node_admin.mesh.update.via-round-complete")
+        .into_iter()
+        .filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= reborn_at)
+        .map(|sp| at_ns(sp) / 1_000_000)
+        .min()
+        .expect("the reborn primary's round completed");
+    assert!(first_republish_ms >= round_complete_ms, "the adopted status is republished only after the round completed: {first_republish_ms} vs {round_complete_ms}");
     let recovered = degraded_cleared_at(&spans, &f.lost);
-    assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= first_republish_ms), "degraded clears only after the reborn primary's round-complete report, never on a ready primary of a newer birth alone: recovered at {recovered:?}, first republish at {first_republish_ms}");
+    assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= round_complete_ms), "degraded clears only after the reborn primary's round completed, never on a ready primary of a newer birth alone: recovered at {recovered:?}, round complete at {round_complete_ms}");
     result(
         &dir,
         json!({
