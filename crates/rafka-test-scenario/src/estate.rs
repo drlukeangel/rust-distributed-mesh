@@ -1414,6 +1414,41 @@ mod spawn_tests {
 
     use super::*;
 
+    /// CONTRACT: the reaper that outlives a SIGKILLed test binary kills every node of the estate, the
+    /// ones an admin launched included. The process provider strips every `RDM_*` of the launcher from
+    /// the child, so such a node carries no `RDM_ESTATE_ROOT`; its launch contract names its data dir
+    /// under the estate's root (`RDM_DATA_DIR`). What must NOT happen: a node left running, adopted by
+    /// init, after the test binary that owned it was killed.
+    #[test]
+    fn the_reaper_of_a_killed_test_binary_kills_a_node_whose_only_mark_is_its_data_dir() {
+        let root = estate_root("reaper-data-dir");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut owner = Command::new("sleep").arg("120").spawn().unwrap();
+        let mut node = Command::new("sleep").arg("120").env_clear().env("RDM_DATA_DIR", root.join("mesh1.rpc.1-test")).spawn().unwrap();
+        let reaper = Command::new("sh")
+            .args(["-c", REAPER, "estate-reaper", &owner.id().to_string(), &root.display().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .env_remove("RDM_ESTATE_ROOT")
+            .spawn()
+            .unwrap();
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until && node.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let left = node.try_wait().unwrap().is_none();
+        let _ = node.kill();
+        let _ = node.wait();
+        let mut reaper = reaper;
+        let _ = reaper.kill();
+        let _ = reaper.wait();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!left, "the reaper left the node running 30 s after its owner was killed");
+    }
+
     /// CONTRACT: a node-admin that never advertises its control API is refused by name, and the
     /// refusal leaves nothing running: no Estate exists yet to stop it. What must NOT happen: a
     /// panic that leaves the process alive.
