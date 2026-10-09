@@ -115,9 +115,11 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
         transport_addr: a0,
         incarnation: IncarnationId::mint(),
     };
-    // The same birth republished while the dial is in flight: the dial runs on to its deadline.
+    // The same birth republished while the dial is in flight: the dial runs on to its deadline. The deadline is
+    // below the transport's idle timeout (the staleness floor, 3 s at gate cadence), which would otherwise end an
+    // unanswered dial as `Connection("timed out")` at the same instant.
     let r = rig(record.clone()).await;
-    let budget = CallOptions { budget: Budget::Overall(Duration::from_secs(3)), ..Default::default() };
+    let budget = CallOptions { budget: Budget::Overall(Duration::from_secs(2)), ..Default::default() };
     let started = Instant::now();
     let rr = &r;
     let (out, ()) = tokio::join!(async { rr.client.call::<Ping>(&rr.target, &echo(b"x"), &budget).await.0 }, async {
@@ -126,7 +128,7 @@ async fn a_new_incarnation_cancels_an_inflight_dial_and_an_address_change_elsewh
         rr.resolver.insert(rec);
     });
     assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::Deadline), "the same birth republished is not this dial's business: {out:?}");
-    assert!(started.elapsed() >= Duration::from_secs(3), "the dial was not cancelled");
+    assert!(started.elapsed() >= Duration::from_secs(2), "the dial was not cancelled");
     assert!(r.client.pooled().is_empty());
 
     // The birth moving while the dial is in flight: released at once, as a stale target.
