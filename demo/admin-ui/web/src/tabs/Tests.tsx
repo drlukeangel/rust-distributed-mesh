@@ -422,6 +422,148 @@ export function Tests() {
   );
 }
 
+interface TraceRow {
+  trace_id: string;
+  spans: number;
+  duration_ms: number;
+  errors: number;
+  warns: number;
+  services: string[];
+  root: string | null;
+  url: string;
+}
+interface FlameSpan {
+  span_id: string;
+  parent: string;
+  name: string;
+  service: string;
+  node: string | null;
+  start_ms: number;
+  dur_ms: number;
+  severity: "ok" | "warn" | "error";
+  attrs: Record<string, unknown>;
+  events: string[];
+}
+interface FlameData {
+  trace_id: string;
+  url: string;
+  total_spans: number;
+  shown: number;
+  duration_ms: number;
+  spans: FlameSpan[];
+}
+
+const SERVICE_HUES: Record<string, number> = {};
+const hue = (svc: string) => {
+  if (!(svc in SERVICE_HUES)) SERVICE_HUES[svc] = (Object.keys(SERVICE_HUES).length * 67 + 200) % 360;
+  return SERVICE_HUES[svc];
+};
+const fmtMs = (v: number) => (v < 1 ? `${(v * 1000).toFixed(0)} µs` : v < 1000 ? `${v.toFixed(1)} ms` : `${(v / 1000).toFixed(2)} s`);
+
+/** Depth-first order of the spans by parent; a span whose parent is not in the trace is a root. */
+function nest(spans: FlameSpan[]): { s: FlameSpan; depth: number }[] {
+  const ids = new Set(spans.map((x) => x.span_id));
+  const kids = new Map<string, FlameSpan[]>();
+  const roots: FlameSpan[] = [];
+  for (const x of spans) {
+    if (x.parent && ids.has(x.parent)) kids.set(x.parent, [...(kids.get(x.parent) ?? []), x]);
+    else roots.push(x);
+  }
+  const out: { s: FlameSpan; depth: number }[] = [];
+  const stack: { s: FlameSpan; depth: number }[] = roots.slice().reverse().map((s) => ({ s, depth: 0 }));
+  while (stack.length) {
+    const n = stack.pop()!;
+    out.push(n);
+    const ch = kids.get(n.s.span_id) ?? [];
+    for (let i = ch.length - 1; i >= 0; i--) stack.push({ s: ch[i], depth: n.depth + 1 });
+  }
+  return out;
+}
+
+function FlamePanel({ runId, idx, test }: { runId: string; idx: number; test: string }) {
+  const [traces, setTraces] = useState<{ traces: TraceRow[]; total_traces: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [sel, setSel] = useState<string | null>(null);
+  const [flame, setFlame] = useState<FlameData | null>(null);
+  const [pin, setPin] = useState<FlameSpan | null>(null);
+  const q = `?test=${encodeURIComponent(test)}`;
+  useEffect(() => {
+    call<{ traces: TraceRow[]; total_traces: number }>(`/api/tests/runs/${runId}/jobs/${idx}/traces${q}`)
+      .then((t) => { setTraces(t); if (t.traces[0]) setSel(t.traces[0].trace_id); })
+      .catch((e) => setErr(String(e.message ?? e)));
+  }, [runId, idx, q]);
+  useEffect(() => {
+    if (!sel) return;
+    setFlame(null);
+    setPin(null);
+    call<FlameData>(`/api/tests/runs/${runId}/jobs/${idx}/trace/${sel}${q}`).then(setFlame).catch((e) => setErr(String(e.message ?? e)));
+  }, [runId, idx, sel, q]);
+  const rows = useMemo(() => (flame ? nest(flame.spans) : []), [flame]);
+  const total = Math.max(flame?.duration_ms ?? 1, 0.001);
+  if (err) return <div style={{ color: "var(--err)" }}>{err}</div>;
+  if (!traces) return <div className="muted">reading the run's spans…</div>;
+  if (traces.traces.length === 0) return <div className="muted" data-testid="flame-empty">this run left no spans for {test}</div>;
+  return (
+    <div style={{ border: "1px solid var(--border, #333)", padding: 6, margin: "4px 0" }} data-testid="flame">
+      <div className="muted">{traces.total_traces} traces (failing first, then slowest){traces.total_traces > traces.traces.length ? `, first ${traces.traces.length} listed` : ""}</div>
+      <div style={{ maxHeight: 130, overflow: "auto", marginBottom: 6 }} data-testid="flame-traces">
+        {traces.traces.map((t) => (
+          <div key={t.trace_id} className="row" style={{ background: sel === t.trace_id ? "rgba(255,255,255,0.08)" : undefined, cursor: "pointer" }} onClick={() => setSel(t.trace_id)}>
+            {t.errors > 0 ? <Badge text={`${t.errors} failed`} color="var(--err)" /> : t.warns > 0 ? <Badge text={`${t.warns} warn`} color="var(--warn)" /> : <Badge text="ok" color="var(--ok)" />}
+            <span>{t.trace_id.slice(0, 12)}…</span>
+            <span className="muted">{fmtMs(t.duration_ms)} · {t.spans} spans · {t.services.join(", ")} · {t.root ?? "no root span here"}</span>
+            <a href={t.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>Jaeger</a>
+          </div>
+        ))}
+      </div>
+      {!flame && sel && <div className="muted">drawing…</div>}
+      {flame && (
+        <div>
+          <div className="muted" data-testid="flame-head">trace {flame.trace_id} · {fmtMs(flame.duration_ms)} · {flame.shown}/{flame.total_spans} spans · <a href={flame.url} target="_blank" rel="noreferrer">open in Jaeger</a></div>
+          <div style={{ maxHeight: 420, overflow: "auto", border: "1px solid #222" }} data-testid="flame-rows">
+            {rows.map(({ s, depth }) => {
+              const color = s.severity === "error" ? "var(--err)" : s.severity === "warn" ? "var(--warn)" : `hsl(${hue(s.service)} 55% 45%)`;
+              const left = (s.start_ms / total) * 100;
+              const width = Math.max((s.dur_ms / total) * 100, 0.25);
+              return (
+                <div key={s.span_id} style={{ display: "flex", height: 16, alignItems: "center", fontSize: 11 }} data-severity={s.severity}
+                  title={`${s.name}\n${s.service}${s.node ? " · " + s.node : ""}\n${fmtMs(s.dur_ms)} @ +${fmtMs(s.start_ms)}\n${Object.entries(s.attrs).slice(0, 12).map(([k, v]) => `${k}=${String(v)}`).join("\n")}${s.events.length ? "\nevents: " + s.events.join(" | ") : ""}`}
+                  onClick={() => setPin(s)}>
+                  <div style={{ width: 380, flex: "none", paddingLeft: depth * 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: s.severity === "error" ? "var(--err)" : undefined }}>
+                    {s.name} <span className="muted">{s.node ?? s.service}</span>
+                  </div>
+                  <div style={{ position: "relative", flex: 1, height: 10 }}>
+                    <div style={{ position: "absolute", left: `${left}%`, width: `${Math.min(width, 100 - left)}%`, height: 10, background: color, opacity: 0.9 }} />
+                  </div>
+                  <div style={{ width: 64, flex: "none", textAlign: "right" }} className="muted">{fmtMs(s.dur_ms)}</div>
+                </div>
+              );
+            })}
+          </div>
+          {pin && (
+            <pre style={{ fontSize: 11, whiteSpace: "pre-wrap" }} data-testid="flame-pin">
+              {pin.name} [{pin.severity}] {pin.service}{pin.node ? " · " + pin.node : ""} {fmtMs(pin.dur_ms)} @ +{fmtMs(pin.start_ms)}{"\n"}
+              {Object.entries(pin.attrs).map(([k, v]) => `${k}=${String(v)}`).join("\n")}
+              {pin.events.length ? "\nevents:\n  " + pin.events.join("\n  ") : ""}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FlameToggle({ runId, idx, id }: { runId: string; idx: number; id: string }) {
+  const [open, setOpen] = useState(false);
+  const short = id.includes("::") ? id.slice(id.lastIndexOf("::") + 2) : id;
+  return (
+    <>
+      <button style={{ marginLeft: 6 }} data-testid={`flame-${runId}-${idx}-${short}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>{open ? "hide flame" : "flame"}</button>
+      {open && <FlamePanel runId={runId} idx={idx} test={short} />}
+    </>
+  );
+}
+
 function JobRows({ j, files, onFiles, onView, runId }: { j: Job; files?: { path: string; bytes: number }[]; onFiles: () => void; onView: (p: string) => void; runId: string }) {
   const [open, setOpen] = useState(false);
   const failed = j.results.filter((r) => r.status === "failed");
@@ -440,7 +582,7 @@ function JobRows({ j, files, onFiles, onView, runId }: { j: Job; files?: { path:
           <div className="muted" style={{ wordBreak: "break-all" }}>{j.command.length > 360 ? `${j.command.slice(0, 360)}…` : j.command}</div>
           <div className="muted">exit {j.exit_code ?? "—"} · artifacts {j.artifacts_dir}</div>
           {j.results.map((r) => (
-            <div key={r.id}><Badge text={r.status} color={COLORS[r.status]} />{r.id}
+            <div key={r.id}><Badge text={r.status} color={COLORS[r.status]} />{r.id}<FlameToggle runId={runId} idx={j.idx} id={r.id} />
               {r.message && <pre style={{ color: "var(--err)", whiteSpace: "pre-wrap", fontSize: 11 }} data-testid="failure-message">{r.message}</pre>}</div>
           ))}
           {failed.length === 0 && j.state !== "passed" && j.output_tail && <pre style={{ fontSize: 11, maxHeight: 200, overflow: "auto" }}>{j.output_tail}</pre>}

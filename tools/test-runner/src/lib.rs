@@ -530,6 +530,164 @@ pub fn scan_traces(dir: &Path, jaeger: &str) -> Traces {
     Traces { distinct, span_files: spans_files.len(), spans: total, top }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Flames: the run's own evidence spans, per trace
+
+#[derive(Deserialize)]
+struct FullSpan {
+    #[serde(default)]
+    trace_id: String,
+    #[serde(default)]
+    span_id: String,
+    #[serde(default)]
+    parent_span_id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    service: String,
+    #[serde(default)]
+    start_unix_nano: u64,
+    #[serde(default)]
+    end_unix_nano: u64,
+    #[serde(default)]
+    attributes: serde_json::Map<String, Value>,
+    #[serde(default)]
+    events: Vec<Value>,
+}
+
+/// `error` when a span's own events log at ERROR or its name says it failed or was refused,
+/// `warn` for WARN events, else `ok`.
+pub fn severity(name: &str, events: &[Value]) -> &'static str {
+    let level = |l: &str| events.iter().any(|e| e["attributes"]["level"] == l);
+    let n = name.to_lowercase();
+    if level("ERROR") || ["fail", "refus", "reject", "error", "timed-out", "timeout", "unavailable"].iter().any(|w| n.contains(w)) {
+        "error"
+    } else if level("WARN") {
+        "warn"
+    } else {
+        "ok"
+    }
+}
+
+fn span_files(dir: &Path, test: Option<&str>) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    walk(dir, &mut files, 0);
+    files.retain(|p| p.to_string_lossy().ends_with(".spans.jsonl"));
+    if let Some(t) = test {
+        let mine: Vec<PathBuf> = files.iter().filter(|p| p.to_string_lossy().contains(&format!("/{t}/"))).cloned().collect();
+        if !mine.is_empty() {
+            return mine;
+        }
+    }
+    files
+}
+
+fn read_spans(files: &[PathBuf], only: Option<&str>) -> Vec<FullSpan> {
+    let mut out = Vec::new();
+    for f in files {
+        let Ok(fh) = std::fs::File::open(f) else { continue };
+        for line in BufReader::new(fh).lines().map_while(Result::ok) {
+            if let Some(t) = only {
+                if !line.contains(t) {
+                    continue;
+                }
+            }
+            if let Ok(s) = serde_json::from_str::<FullSpan>(&line) {
+                if only.is_none_or(|t| s.trace_id == t) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn trace_list(dir: &Path, test: Option<&str>, jaeger: &str) -> Value {
+    let files = span_files(dir, test);
+    let mut agg: HashMap<String, (u64, u64, usize, usize, usize, BTreeSet<String>, Option<(u64, String)>)> = HashMap::new();
+    for s in read_spans(&files, None) {
+        let sev = severity(&s.name, &s.events);
+        let e = agg.entry(s.trace_id.clone()).or_insert((u64::MAX, 0, 0, 0, 0, BTreeSet::new(), None));
+        e.0 = e.0.min(s.start_unix_nano);
+        e.1 = e.1.max(s.end_unix_nano);
+        e.2 += 1;
+        e.3 += (sev == "error") as usize;
+        e.4 += (sev == "warn") as usize;
+        e.5.insert(s.service.clone());
+        if s.parent_span_id.is_empty() && e.6.as_ref().is_none_or(|(st, _)| s.start_unix_nano < *st) {
+            e.6 = Some((s.start_unix_nano, s.name.clone()));
+        }
+    }
+    let mut rows: Vec<Value> = agg
+        .into_iter()
+        .map(|(id, (st, en, n, errs, warns, svcs, root))| {
+            json!({"trace_id": id, "spans": n, "duration_ms": en.saturating_sub(st) as f64 / 1e6, "errors": errs, "warns": warns, "services": svcs, "root": root.map(|r| r.1), "url": format!("{jaeger}/trace/{id}")})
+        })
+        .collect();
+    // Failing first, then the slowest.
+    rows.sort_by(|a, b| {
+        let key = |v: &Value| (v["errors"].as_u64().unwrap_or(0) > 0, (v["duration_ms"].as_f64().unwrap_or(0.0) * 1000.0) as u64);
+        key(b).cmp(&key(a))
+    });
+    let total = rows.len();
+    rows.truncate(200);
+    json!({"traces": rows, "total_traces": total, "span_files": files.len()})
+}
+
+pub fn flame(dir: &Path, test: Option<&str>, trace_id: &str, jaeger: &str) -> Value {
+    let files = span_files(dir, test);
+    let mut spans = read_spans(&files, Some(trace_id));
+    spans.sort_by_key(|s| (s.start_unix_nano, std::cmp::Reverse(s.end_unix_nano)));
+    let t0 = spans.first().map(|s| s.start_unix_nano).unwrap_or(0);
+    let t1 = spans.iter().map(|s| s.end_unix_nano).max().unwrap_or(t0);
+    let total = spans.len();
+    spans.truncate(3000);
+    let rows: Vec<Value> = spans
+        .iter()
+        .map(|s| {
+            let node = s.attributes.get("node").and_then(|v| v.as_str()).map(str::to_string);
+            let attrs: serde_json::Map<String, Value> = s.attributes.iter().filter(|(k, _)| !k.starts_with("code.") && !k.starts_with("thread.") && !k.ends_with("_ns")).take(40).map(|(k, v)| (k.clone(), v.clone())).collect();
+            let events: Vec<String> = s.events.iter().take(6).filter_map(|e| e["name"].as_str().map(|n| n.chars().take(160).collect())).collect();
+            json!({"span_id": s.span_id, "parent": s.parent_span_id, "name": s.name, "service": s.service, "node": node,
+                   "start_ms": s.start_unix_nano.saturating_sub(t0) as f64 / 1e6, "dur_ms": s.end_unix_nano.saturating_sub(s.start_unix_nano) as f64 / 1e6,
+                   "severity": severity(&s.name, &s.events), "attrs": attrs, "events": events})
+        })
+        .collect();
+    json!({"trace_id": trace_id, "url": format!("{jaeger}/trace/{trace_id}"), "total_spans": total, "shown": rows.len(), "duration_ms": t1.saturating_sub(t0) as f64 / 1e6, "spans": rows})
+}
+
+#[derive(Deserialize)]
+struct TestQuery {
+    test: Option<String>,
+}
+
+fn job_artifacts(s: &S, id: &str, idx: usize) -> Option<PathBuf> {
+    let runs = s.runs.lock().unwrap();
+    runs.iter().find(|r| r.id == id).and_then(|r| r.jobs.get(idx)).map(|j| PathBuf::from(&j.artifacts_dir))
+}
+
+async fn job_traces(State(s): State<S>, AxPath((id, idx)): AxPath<(String, usize)>, Query(q): Query<TestQuery>) -> Response {
+    let Some(dir) = job_artifacts(&s, &id, idx) else { return err(StatusCode::NOT_FOUND, "no-such-job", format!("run {id} job {idx}")) };
+    let jaeger = s.jaeger.clone();
+    match tokio::task::spawn_blocking(move || trace_list(&dir, q.test.as_deref(), &jaeger)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "trace-scan", e),
+    }
+}
+
+async fn job_flame(State(s): State<S>, AxPath((id, idx, tid)): AxPath<(String, usize, String)>, Query(q): Query<TestQuery>) -> Response {
+    let Some(dir) = job_artifacts(&s, &id, idx) else { return err(StatusCode::NOT_FOUND, "no-such-job", format!("run {id} job {idx}")) };
+    if !tid.chars().all(|c| c.is_ascii_hexdigit()) {
+        return err(StatusCode::BAD_REQUEST, "bad-trace-id", format!("`{tid}` is not a hex trace id"));
+    }
+    let jaeger = s.jaeger.clone();
+    match tokio::task::spawn_blocking(move || flame(&dir, q.test.as_deref(), &tid, &jaeger)).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, "flame-scan", e),
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Runs
 
@@ -995,8 +1153,22 @@ fn update(s: &S, rid: &str, idx: usize, f: impl FnOnce(&mut Job)) {
     }
 }
 
-fn kill_group(pid: u32) {
-    let _ = std::process::Command::new("kill").args(["-9", "--", &format!("-{pid}")]).status();
+fn signal_group(sig: &str, pid: u32) {
+    let _ = std::process::Command::new("kill").args([sig, "--", &format!("-{pid}")]).status();
+}
+
+/// A cancelled or timed-out job's group gets SIGTERM first so the test's own teardown (containers,
+/// estates) runs, and SIGKILL when the child is still there after 15 s.
+async fn stop_group(child: &mut tokio::process::Child, pid: Option<u32>) -> std::io::Result<std::process::ExitStatus> {
+    let Some(p) = pid else { return child.wait().await };
+    signal_group("-TERM", p);
+    match tokio::time::timeout(Duration::from_secs(15), child.wait()).await {
+        Ok(st) => st,
+        Err(_) => {
+            signal_group("-KILL", p);
+            child.wait().await
+        }
+    }
 }
 
 async fn run_job(s: S, rid: &str, idx: usize, spec: JobSpec, cancel: Arc<AtomicBool>) {
@@ -1062,15 +1234,15 @@ async fn run_job_inner(s: &S, rid: &str, idx: usize, spec: &JobSpec, cancel: &At
     let status = loop {
         tokio::select! {
             st = child.wait() => break st,
-            _ = &mut deadline => { timed_out = true; if let Some(p) = pid { kill_group(p); } break child.wait().await; }
+            _ = &mut deadline => { timed_out = true; break stop_group(&mut child, pid).await; }
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
-                if cancel.load(Ordering::SeqCst) { was_cancelled = true; if let Some(p) = pid { kill_group(p); } break child.wait().await; }
+                if cancel.load(Ordering::SeqCst) { was_cancelled = true; break stop_group(&mut child, pid).await; }
             }
         }
     };
     // Whatever the test left in its group is gone with it.
     if let Some(p) = pid {
-        kill_group(p);
+        signal_group("-KILL", p);
     }
     let wall = started.elapsed().as_millis() as u64;
     let code = status.as_ref().ok().and_then(|s| s.code());
@@ -1257,6 +1429,8 @@ pub fn router() -> Router {
         .route("/api/tests/runs/{id}", get(get_run))
         .route("/api/tests/runs/{id}/cancel", post(cancel_run))
         .route("/api/tests/runs/{id}/jobs/{idx}/files", get(job_files))
+        .route("/api/tests/runs/{id}/jobs/{idx}/traces", get(job_traces))
+        .route("/api/tests/runs/{id}/jobs/{idx}/trace/{tid}", get(job_flame))
         .route("/api/tests/status", get(test_status))
         .route("/api/tests/file", get(get_file))
         .with_state(state)
@@ -1278,6 +1452,32 @@ mod tests {
     fn registry_command_on_a_file_per_exe_target_qualifies_the_id_with_the_target() {
         let (_, krate, id) = parse_command("cargo test -p rafka-node-rpc --test pool some_test -- --exact").unwrap();
         assert_eq!((krate.as_str(), id.as_str()), ("rafka-node-rpc", "pool::some_test"));
+    }
+
+    #[test]
+    fn a_span_that_logs_an_error_or_names_a_refusal_is_flagged() {
+        let err_event = json!({"name": "x", "attributes": {"level": "ERROR"}});
+        assert_eq!(severity("rdm.node.update.via-drain", &[err_event]), "error");
+        assert_eq!(severity("rdm.node_rpc.request.reject.via-stale", &[]), "error");
+        assert_eq!(severity("rdm.node_rpc.request.serve", &[json!({"attributes": {"level": "WARN"}})]), "warn");
+        assert_eq!(severity("rdm.node_rpc.request.serve", &[]), "ok");
+    }
+
+    #[test]
+    fn a_trace_lists_failing_before_slow_and_the_flame_nests_by_parent() {
+        let dir = std::env::temp_dir().join(format!("rdm-flame-{}", std::process::id()));
+        let sp = dir.join("feat/t1/spans");
+        std::fs::create_dir_all(&sp).unwrap();
+        let line = |t: &str, id: &str, p: &str, name: &str, a: u64, b: u64| json!({"trace_id": t, "span_id": id, "parent_span_id": p, "name": name, "service": "svc", "start_unix_nano": a, "end_unix_nano": b, "attributes": {"node": "mesh1.admin.1"}, "events": []}).to_string();
+        let body = [line("aa", "1", "", "root", 0, 9_000_000), line("aa", "2", "1", "child", 1_000_000, 2_000_000), line("bb", "3", "", "x.reject.via-y", 0, 1_000_000)].join("\n");
+        std::fs::write(sp.join("svc.1.spans.jsonl"), body).unwrap();
+        let l = trace_list(&dir, Some("t1"), "http://j");
+        assert_eq!(l["traces"][0]["trace_id"], "bb", "failing first: {l}");
+        let f = flame(&dir, Some("t1"), "aa", "http://j");
+        assert_eq!(f["spans"][1]["parent"], "1");
+        assert_eq!(f["spans"][0]["dur_ms"], 9.0);
+        assert_eq!(f["spans"][1]["node"], "mesh1.admin.1");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
