@@ -1,210 +1,23 @@
 //! i143.e6.s4: generic one-hop carried execution — the carrier makes exactly one direct inner
 //! call, a non-forwardable family is refused by type, and certainty composes across the hop.
 
-use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, NodeId};
-use rafka_node_rpc::{CarrierEdges, ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use opentelemetry::trace::TraceContextExt;
-use opentelemetry_sdk::testing::trace::InMemorySpanExporter;
-use opentelemetry_sdk::trace::{SimpleSpanProcessor, TracerProvider};
-use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, NotSentReason, ReplyKind, RpcOutcome};
+use rafka_node_rpc::{CallOptions, CarrierEdges, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder};
+use rafka_node_rpc_contract::catalog::OpOwner;
+use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
+use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
-/// A forwardable test family on a ledgered test op.
-struct Probe;
+#[allow(dead_code)]
+#[path = "common/forward_rig.rs"]
+mod rig;
+use rig::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ProbeRequest {
-    Probe { payload: Vec<u8> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-enum ProbeReply {
-    /// The payload, and the transport id the target saw as its caller.
-    Probed { payload: Vec<u8>, caller: String },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
-}
-
-impl NodeProtocol for Probe {
-    const OP: u8 = 0x5E;
-    const NAME: &'static str = "probe";
-    const MAX_REQUEST_FRAME_BYTES: usize = 4096;
-    const MAX_REPLY_FRAME_BYTES: usize = 4096;
-    const FORWARDABLE: bool = true;
-    const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 7;
-    type Request = ProbeRequest;
-    type Reply = ProbeReply;
-    fn classify_reply(r: &ProbeReply) -> ReplyKind {
-        match r {
-            ProbeReply::Probed { .. } => ReplyKind::Success,
-            ProbeReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            ProbeReply::NotReady { .. } => ReplyKind::NotReady,
-            ProbeReply::Busy { .. } => ReplyKind::Busy,
-            ProbeReply::Draining { .. } => ReplyKind::Draining,
-            ProbeReply::Malformed { kind } => ReplyKind::Malformed(*kind),
-            ProbeReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-        }
-    }
-    fn peer_unresolved(reason: String) -> ProbeReply {
-        ProbeReply::PeerUnresolved { reason }
-    }
-    fn not_ready(reason: String) -> ProbeReply {
-        ProbeReply::NotReady { reason }
-    }
-    fn busy(reason: String) -> ProbeReply {
-        ProbeReply::Busy { reason }
-    }
-    fn draining(reason: String) -> ProbeReply {
-        ProbeReply::Draining { reason }
-    }
-    fn malformed(kind: MalformedKind) -> ProbeReply {
-        ProbeReply::Malformed { kind }
-    }
-    fn unauthorized(reason: String) -> ProbeReply {
-        ProbeReply::Unauthorized { reason }
-    }
-}
-
-/// The builder starts from the core ledger; the test family adds its own row.
-fn test_ledger() -> Vec<LedgerEntry> {
-    vec![LedgerEntry { op: Probe::OP, family: "probe".into(), owner: OpOwner::Product("test".into()), state: OpState::Live }]
-}
-
-struct Node {
-    router: Router,
-    key: SecretKey,
-    resolved: ResolvedNode,
-}
-
-/// A birth's identity, minted before its server seals.
-fn birth() -> (NodeId, IncarnationId) {
-    (NodeId::mint(), IncarnationId::mint())
-}
-
-fn served(b: &(NodeId, IncarnationId)) -> ServedBirth {
-    ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .0.clone() }
-}
-
-async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId)) -> Node {
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
-    let resolved = ResolvedNode { node_id: b.0, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.1 };
-    Node { router, key, resolved }
-}
-
-async fn client_with(nodes: &[&ResolvedNode]) -> NodeRpcClient {
-    let resolver = Arc::new(StaticResolver::new());
-    for n in nodes {
-        resolver.insert((*n).clone());
-    }
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    NodeRpcClient::new(ep, resolver)
-}
-
-struct Rig {
-    origin: NodeRpcClient,
-    carrier: Node,
-    target: Node,
-    handled: Arc<AtomicU64>,
-    applied: Arc<tokio::sync::Notify>,
-    carrier_server: rafka_node_rpc::NodeRpcServer,
-}
-
-/// target serves Probe and Ping; the carrier serves forward and carries Probe (and Ping, which is
-/// not forwardable and so is never carried); the origin knows only the carrier and the target.
-async fn rig() -> Rig {
-    rig_with(None, false).await
-}
-
-/// `edges`: the carrier's account of its Direct edges. `carrier_misdials`: the carrier's own view
-/// of the target names another transport identity, so its dial fails at the handshake.
-async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bool) -> Rig {
-    let handled = Arc::new(AtomicU64::new(0));
-    let applied = Arc::new(tokio::sync::Notify::new());
-    let (h, a) = (handled.clone(), applied.clone());
-    let target_birth = birth();
-    let target_server = ServerBuilder::new()
-        .ledger(test_ledger())
-        .serve::<Probe, _, _>(OpOwner::Product("test".into()), move |peer, req: ProbeRequest| {
-            let (h, a) = (h.clone(), a.clone());
-            async move {
-                h.fetch_add(1, Ordering::SeqCst);
-                a.notify_one();
-                let ProbeRequest::Probe { payload } = req;
-                if payload == b"hold" {
-                    std::future::pending::<()>().await;
-                }
-                Ok::<_, HandlerFault>(ProbeReply::Probed { payload, caller: peer.endpoint_id.to_string() })
-            }
-        })
-        .serve::<Ping, _, _>(OpOwner::Core, |_p, req: PingRequest| async move {
-            let PingRequest::Ping { payload, .. } = req;
-            Ok(PingReply::Pong { payload })
-        })
-        .seal(served(&target_birth))
-        .unwrap();
-    let target = start(target_server, SecretKey::generate(), "mesh1.rpc.3", target_birth).await;
-
-    // The carrier calls out on the endpoint it serves on, as a node does: the target sees the
-    // carrier's own transport identity.
-    let carrier_key = SecretKey::generate();
-    let carrier_ep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let carrier_addr = carrier_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let carrier_resolver = Arc::new(StaticResolver::new());
-    let mut seen = target.resolved.clone();
-    if carrier_misdials {
-        seen.endpoint_id = SecretKey::generate().public();
-    }
-    carrier_resolver.insert(seen);
-    let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver));
-    let carrier_birth = birth();
-    let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
-    let carrier_server = match edges {
-        Some(e) => carrier_builder.serve_forward_with_edges(carrier_client, e),
-        None => carrier_builder.serve_forward(carrier_client),
-    }
-    .seal(served(&carrier_birth))
-    .unwrap();
-    let carrier = Node {
-        router: Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server.clone()).spawn(),
-        key: carrier_key.clone(),
-        resolved: ResolvedNode {
-            node_id: carrier_birth.0,
-            name: "mesh1.rpc.2".parse().unwrap(),
-            endpoint_id: carrier_key.public(),
-            transport_addr: carrier_addr,
-            incarnation: carrier_birth.1,
-        },
-    };
-    let origin = client_with(&[&carrier.resolved, &target.resolved]).await;
-    Rig { origin, carrier, target, handled, applied, carrier_server }
-}
-
-fn probe(p: &[u8]) -> ProbeRequest {
-    ProbeRequest::Probe { payload: p.to_vec() }
-}
-
-fn carrier_of(r: &Rig) -> NodeTarget {
-    NodeTarget::ExactNode(r.carrier.resolved.node_id.clone())
-}
 
 #[tokio::test]
 async fn a_carried_call_reaches_the_target_once_and_the_target_sees_the_carrier() {
@@ -381,27 +194,6 @@ async fn an_unreachable_target_under_the_origins_default_budget_is_carrier_edge_
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
-fn spans() -> InMemorySpanExporter {
-    static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();
-    EXPORTER
-        .get_or_init(|| {
-            let exporter = InMemorySpanExporter::default();
-            let provider = TracerProvider::builder().with_span_processor(SimpleSpanProcessor::new(Box::new(exporter.clone()))).build();
-            let tracer = opentelemetry::trace::TracerProvider::tracer(&provider, "forward-test");
-            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer)).init();
-            exporter
-        })
-        .clone()
-}
-
-/// The names of the spans a cell's own trace finished.
-fn trace_span_names(trace: &str) -> Vec<String> {
-    spans().get_finished_spans().unwrap().into_iter().filter(|s| s.span_context.trace_id().to_string() == trace).map(|s| s.name.to_string()).collect()
-}
-
-fn overall(d: Duration) -> CallOptions {
-    CallOptions { budget: rafka_node_rpc::Budget::Overall(d), ..CallOptions::default() }
-}
 
 /// A caller budget far under the carrier's default still gets the named reason.
 ///
@@ -445,33 +237,6 @@ async fn a_slow_direct_fact_write_is_not_on_the_carriers_reply_path() {
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &overall(Duration::from_millis(1000))).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierEdgeLost(e) if e.starts_with("Direct failed (") && !e.contains("read back"))), "{out:?}");
     assert!(started.elapsed() < Duration::from_millis(1000), "the named answer arrived inside the budget: {:?}", started.elapsed());
-}
-
-/// A budget already spent down to the carrier's reserve when the frame is written.
-///
-/// CONTRACT: the carrier makes no inner call and refuses by name before dispatch: the origin
-/// sees `NotSent(CarrierNoBudget)`, the target handled nothing, and the trace holds the
-/// carrier's `reject.via-forward-budget-spent` span and no `serve.via-carried-inner` span.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_budget_spent_to_the_reply_reserve_is_refused_by_name_with_no_inner_call() {
-    spans();
-    let r = rig().await;
-    let (target, carrier) = (r.target.resolved.node_id.clone(), carrier_of(&r));
-    // Warm the carrier connection so the budgeted call's dial is instant.
-    let (warm, _) = r.origin.call_via::<Probe>(&carrier, &target, &probe(b"warm"), &CallOptions::default()).await;
-    assert!(warm.reply().is_some(), "{warm:?}");
-    let handled_before = r.handled.load(Ordering::SeqCst);
-    let caller = tracing::info_span!("test.caller");
-    let trace = caller.context().span().span_context().trace_id().to_string();
-    let (out, _) = tracing::Instrument::instrument(r.origin.call_via::<Probe>(&carrier, &target, &probe(b"late"), &overall(FORWARD_REPLY_RESERVE)), caller).await;
-    assert!(
-        matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierNoBudget { reserve_ms, .. } if *reserve_ms == FORWARD_REPLY_RESERVE.as_millis() as u64)),
-        "{out:?}"
-    );
-    assert_eq!(r.handled.load(Ordering::SeqCst), handled_before, "no inner call reached the target");
-    let names = trace_span_names(&trace);
-    assert!(names.iter().any(|n| n == "rdm.node_rpc.request.reject.via-forward-budget-spent"), "the refusal is spanned in the origin's trace: {names:?}");
-    assert!(!names.iter().any(|n| n == "rdm.node_rpc.request.serve.via-carried-inner"), "no inner call span: {names:?}");
 }
 
 /// A carrier that records the budget each forward carries and answers without an inner call.
