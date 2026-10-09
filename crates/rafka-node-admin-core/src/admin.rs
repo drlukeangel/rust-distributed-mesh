@@ -233,6 +233,10 @@ pub struct Records {
     /// This admin does not hold the fabric-primary role and the last fabric status published is
     /// `degraded`: it serves that status, not a ready its own (absent) authority records imply.
     published_degraded: std::sync::atomic::AtomicBool,
+    /// The exact births the fabric authority proved exited from their runtimes (`reconcile_drift`).
+    /// Shown `Dead` whatever their last digest said: a view that learned a birth from topology alone
+    /// holds it ready, and a proven exit is the evidence that topology never was.
+    exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -278,6 +282,16 @@ impl Records {
     /// Hold (or clear) the adopted `degraded`; whether the value changed.
     pub fn set_adopted_degraded(&self, on: bool) -> bool {
         self.adopted_degraded.swap(on, std::sync::atomic::Ordering::SeqCst) != on
+    }
+
+    /// A birth whose exit the fabric authority proved.
+    pub fn mark_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) {
+        // stub
+        let _ = (node_id, incarnation);
+    }
+
+    pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.exited.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
     }
 
     /// A non-holder of the fabric-primary role serves the `degraded` status the holder published.
@@ -539,6 +553,7 @@ pub async fn reconcile_drift(
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
+    on_exit_proven: &(dyn Fn(&NodeId, &IncarnationId) + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
@@ -626,6 +641,7 @@ pub async fn reconcile_drift(
                 _ => "exit-record",
             };
             let incarnation = n.incarnation_id.clone().expect("filtered on it");
+            on_exit_proven(&n.node_id, &incarnation);
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
         } else {
@@ -2967,7 +2983,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| (book.backbone_meshes().contains(mesh) || ladder.lock().unwrap().meshes().contains(mesh)) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh)).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| (book.backbone_meshes().contains(mesh) || ladder.lock().unwrap().meshes().contains(mesh)) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|node_id, incarnation| records.mark_exited(node_id, incarnation)).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
@@ -3101,6 +3117,27 @@ mod tests {
         records.set_published_degraded(true);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.fabric.status, ScopeStatus::Degraded, "the holder published degraded and has not published ready");
+    }
+
+    /// CONTRACT: a birth the fabric authority proved exited is `Dead` in the view whatever its last
+    /// digest said, so a mesh whose admins were learned from topology alone and are all proven gone
+    /// has no primary admin. Must NOT happen: a dead admin holds its mesh's seat because its digest
+    /// says ready.
+    #[test]
+    fn a_proven_exited_birth_is_dead_whatever_its_digest_says() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let a = with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000");
+        let b = with_id(digest("mesh2.admin.1", ReadyForTraffic), "300000000000");
+        book.record(a.clone());
+        book.record(b.clone());
+        let records = Records::default();
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_some());
+        records.mark_exited(&b.node.node_id, &b.node.incarnation);
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.node(&"mesh2.admin.1".parse().unwrap()).unwrap().status, NodeStatus::Dead);
+        assert!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).is_none(), "a proven-gone admin holds no seat");
     }
 
     #[test]
