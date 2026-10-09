@@ -409,6 +409,7 @@ fn overall(d: Duration) -> CallOptions {
 /// reserve, so an unreachable target under a 500 ms budget answers `CarrierEdgeLost` inside it.
 #[tokio::test]
 async fn an_unreachable_target_under_a_500ms_budget_is_carrier_edge_lost_inside_it() {
+    let _trace = std::env::var("FWD_TRACE").ok().map(|_| tracing::subscriber::set_default(tracing_subscriber::fmt().with_test_writer().with_env_filter(tracing_subscriber::EnvFilter::new(std::env::var("FWD_TRACE").unwrap())).with_target(true).with_ansi(false).finish()));
     let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
     r.target.router.shutdown().await.unwrap();
     let started = std::time::Instant::now();
@@ -437,6 +438,7 @@ impl CarrierEdges for SlowFactWrite {
 /// named answer still reaches the origin inside a 1 s budget, and it names the dial's own reason.
 #[tokio::test]
 async fn a_slow_direct_fact_write_is_not_on_the_carriers_reply_path() {
+    let _trace = std::env::var("FWD_TRACE").ok().map(|_| tracing::subscriber::set_default(tracing_subscriber::fmt().with_test_writer().with_env_filter(tracing_subscriber::EnvFilter::new(std::env::var("FWD_TRACE").unwrap())).with_target(true).with_ansi(false).finish()));
     let r = rig_with(Some(Arc::new(SlowFactWrite)), false).await;
     r.target.router.shutdown().await.unwrap();
     let started = std::time::Instant::now();

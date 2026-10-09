@@ -36,7 +36,10 @@ const SEED: u64 = 0x2781;
 /// lost reply never crossed the tap). This selector keeps the first path a connection has, the one
 /// the caller dialled (the tap's address, the node's side of it being the tap's back socket), so a
 /// direct path stays a backup that the dialling side closes, and every datagram of the invocation
-/// crosses the tap.
+/// crosses the tap. The tap adds no latency: a tap path whose RTT is over iroh's 10 ms
+/// good-enough bound (`remote_state.rs` `GOOD_ENOUGH_LATENCY`) makes iroh start NAT-traversal rounds
+/// every ~17 ms for as long as the connection lives, and a path a round has just opened carries
+/// data until the selector demotes it, so a cut reply can leave on it.
 #[derive(Debug)]
 struct FirstPathOnly;
 
@@ -99,7 +102,14 @@ fn capture(cell: &str) -> Capture {
     let layer = tracing_opentelemetry::layer()
         .with_tracer(provider.tracer("i143-2781"))
         .with_filter(tracing_subscriber::filter::filter_fn(|m| m.name().starts_with("rdm.")));
-    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
+    let dbg = std::env::var("I2781_TRACE").ok().map(|_| {
+        tracing_subscriber::fmt::layer()
+            .with_test_writer()
+            .with_target(true)
+            .with_ansi(false)
+            .with_filter(tracing_subscriber::EnvFilter::new(std::env::var("I2781_FILTER").unwrap_or_else(|_| "iroh::_events=debug,noq=info,iroh::socket::remote_map=debug".into())))
+    });
+    Capture { exporter, provider, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(dbg)), service }
 }
 
 impl Capture {
@@ -401,8 +411,6 @@ async fn reply_cut(seed: u64) -> Report {
         r.s.record("cut", cut.name());
         let n = node().await;
         let tap = Tap::start(n.record.transport_addr).await.unwrap();
-        // A tap path slower than a direct loopback path by more than iroh's switching margin.
-        tap.set_latency(Duration::from_millis(15));
         let mut behind = n.record.clone();
         behind.transport_addr = tap.addr();
         let c = caller(behind).await;
