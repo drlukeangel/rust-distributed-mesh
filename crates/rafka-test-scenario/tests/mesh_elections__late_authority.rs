@@ -1,6 +1,6 @@
 //! i143.e4.s14 process E2E: a lower-NodeId admin born after a Build
-//! completed hydrates, wins, and manages that Build's births (rafka-v2#2840
-//! acceptance 3–4; the RED of trace `eb8f18449f2d1479`).
+//! completed hydrates, leaves the seats with their holder, and manages that Build's births once
+//! the holder is lost (rafka-v2#2840 acceptance 3–4; ruling R-A2).
 //!
 //! Build A grows mesh1 and completes; its history is forgotten. Admins are
 //! then born one at a time until one draws a NodeId lower than the incumbent
@@ -11,9 +11,10 @@
 //! admin:
 //! - holds the current desired topology and every held birth's runtime
 //!   before it commits Ready;
-//! - is elected (lowest ready NodeId: node-admin cohort, mesh, fabric);
-//! - restarts and retires births A launched, through its own control API,
-//!   from their published runtimes, with A's receipts nowhere.
+//! - does not displace the living holder, which keeps every seat it held;
+//! - fills the seats when the holder is lost (the mesh's lowest ready NodeId), and restarts and
+//!   retires births A launched, through its own control API, from their published runtimes, with
+//!   A's receipts nowhere.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -107,19 +108,29 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let late_name = s(&late["name"]);
     let late_base = s(&late["admin_api_base"]);
 
-    // It holds every seat: the lowest ready NodeId of the cohort, the mesh
-    // and the fabric (one mesh).
+    // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
+    // both admins, for several gossip rounds.
+    for _ in 0..12 {
+        for api in [&base, &late_base] {
+            let view = estate.nodes_at(api).await;
+            let held = |name: &str| view.iter().find(|n| n["name"] == name).map(|n| (n["is_primary"] == true, n["is_fabric_primary"] == true));
+            assert_eq!(held("mesh1.admin.1"), Some((true, true)), "the incumbent keeps both seats ({api}): {view:#?}");
+            assert_eq!(held(&late_name), Some((false, false)), "the lower NodeId holds none ({api}): {view:#?}");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // A is history on the admin that ran it, and leaves; the late admin never held it.
+    let (status, v) = estate.delete_at(&base, &format!("/api/builds?id={a}")).await;
+    assert_eq!(status, 204, "{v}");
+    // The holder is lost (R-P1 permits killing the fabric primary): the mesh's lowest ready NodeId
+    // fills both seats, and the late admin is it.
+    estate.kill_bootstrap();
     estate.admin = late_base.clone();
-    wait_for("the late admin holds the cohort, the mesh and the fabric", Duration::from_secs(30), || async {
+    wait_for("the late admin fills the mesh and the fabric seats", Duration::from_secs(60), || async {
         let n = estate.node_opt(&late_name).await?;
         (n["is_primary"] == true && n["is_fabric_primary"] == true).then_some(())
     })
     .await;
-    assert_eq!(estate.node("mesh1.admin.1").await["is_primary"], false, "the incumbent does not keep the seat");
-    // A later Build holds the pointer now: A is history on the admin that ran it, and leaves; the
-    // late admin never held it.
-    let (status, v) = estate.delete_at(&base, &format!("/api/builds?id={a}")).await;
-    assert_eq!(status, 204, "{v}");
     assert_eq!(estate.get(&format!("/api/builds?id={a}")).await.0, 404, "A's history is nowhere");
 
     // It restarts and retires A's births.
@@ -155,7 +166,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     );
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");
-    // Elected by the lowest NodeId, at every level.
+    // The vacancy was filled by the mesh's lowest ready NodeId, at every level.
     assert!(named(&spans, "rdm.mesh.election.resolve.via-recompute")
         .iter()
         .any(|sp| sp["attributes"]["kind"] == "node_admin" && sp["attributes"]["winner_node_id"] == late["node_id"] && sp["attributes"]["election_key"] == "node_id_crockford"));

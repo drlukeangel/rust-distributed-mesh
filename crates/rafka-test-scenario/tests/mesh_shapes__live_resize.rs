@@ -18,7 +18,7 @@
 //! `rdm.node_admin.node.delete.via-build` span that descends from the
 //! request that accepted its Build, with a retire pipeline under it.
 
-use rafka_test_scenario::elections::seats_as_expected;
+use rafka_test_scenario::elections::{seats_as_expected, seats_kept};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,8 +53,8 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
     estate.await_build(&build_id, Duration::from_secs(120)).await;
     // Exactly the desired nodes, all ready.
     let nodes = estate.settled_shape(meshes, Duration::from_secs(15)).await;
-    // Every seat is the computed one.
-    if let Err(e) = seats_as_expected(&nodes) {
+    // Every seat is a held one, and a holder that survived the step still holds it.
+    if let Err(e) = seats_as_expected(&nodes).and_then(|()| seats_kept(before, &nodes)) {
         panic!("{label}: {e}: {nodes:#?}");
     }
     // No port collision: every advertised transport address is unique.
