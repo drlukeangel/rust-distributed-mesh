@@ -50,6 +50,23 @@ impl Rungs {
     pub const RULED: Rungs = Rungs { track: 2, probe1: 10, mark: 15, probe2: 20, decide: 30 };
 }
 
+/// Every node's pooled connection idles out after the staleness floor; that closes a connection
+/// to a dead peer before the second probe only if the floor is shorter than the probe's wait
+/// (`probe2` unheard backbone rounds). A floor at or past it refuses the start by name.
+pub fn check_idle_below_probe2(staleness_floor: std::time::Duration, backbone_round: std::time::Duration) -> Result<(), String> {
+    let probe2 = backbone_round * Rungs::RULED.probe2 as u32;
+    if staleness_floor >= probe2 {
+        return Err(format!(
+            "the staleness floor RDM_STALENESS_MS ({} ms) is not below the second probe ({} unheard backbone rounds of RDM_BACKBONE_INTERVAL_MS = {} ms, {} ms): a pooled connection to a dead peer would still be open when the second probe dials",
+            staleness_floor.as_millis(),
+            Rungs::RULED.probe2,
+            backbone_round.as_millis(),
+            probe2.as_millis()
+        ));
+    }
+    Ok(())
+}
+
 /// What a probe found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -493,6 +510,23 @@ impl Watch {
 mod tests {
     use super::*;
     use ProbeOutcome::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_staleness_floor_below_the_second_probe_starts() {
+        // production: 30 s floor, 2 s round, probe 2 at 40 s; gate: 3 s floor, 0.5 s round, probe 2 at 10 s.
+        assert!(check_idle_below_probe2(Duration::from_secs(30), Duration::from_secs(2)).is_ok());
+        assert!(check_idle_below_probe2(Duration::from_secs(3), Duration::from_millis(500)).is_ok());
+        assert!(check_idle_below_probe2(Duration::from_millis(39_999), Duration::from_secs(2)).is_ok());
+    }
+
+    #[test]
+    fn a_staleness_floor_at_or_past_the_second_probe_refuses_by_name() {
+        for floor_ms in [40_000, 40_001, 90_000] {
+            let e = check_idle_below_probe2(Duration::from_millis(floor_ms), Duration::from_secs(2)).unwrap_err();
+            assert!(e.contains("RDM_STALENESS_MS") && e.contains("RDM_BACKBONE_INTERVAL_MS") && e.contains("40000 ms"), "{e}");
+        }
+    }
 
     fn ladder() -> Ladder {
         Ladder::new(Rungs::RULED)
