@@ -10,7 +10,7 @@
 //! from the `rdm.mesh.connection.update.via-refeed` spans (`reason = stale-held-member`) and from
 //! the views of every admin.
 
-use rafka_test_scenario::elections::{advertised_fabric_primaries, advertised_primaries, expected_fabric_primary, seats_as_expected};
+use rafka_test_scenario::elections::{advertised_fabric_primaries, advertised_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};
@@ -293,7 +293,7 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         assert_eq!(advertised_primaries(v), advertised_primaries(&views[0].1), "{name} and {} advertise the same seats", views[0].0);
         assert_eq!(advertised_fabric_primaries(v), advertised_fabric_primaries(&views[0].1), "{name} and {} name the same fabric primary", views[0].0);
     }
-    assert_eq!(advertised_fabric_primaries(&views[0].1), vec![expected_fabric_primary(&views[0].1).unwrap()], "the fabric primary is the computed one");
+    assert_eq!(advertised_fabric_primaries(&views[0].1), fabric_primary_before, "the fabric primary that lived through the cut keeps the seat (R-A2: a lower NodeId never displaces a living holder)");
     // Every node-admin hears the peer mesh again on the backbone: its membership watcher reports
     // the mesh learned. An ordinary node held it as topology through the cut and reports nothing.
     let learned: BTreeSet<(String, String)> = wait_for("every node-admin reports the peer mesh learned again", Duration::from_secs(30), || async {
