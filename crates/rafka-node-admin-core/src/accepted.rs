@@ -294,7 +294,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, false)
+    plan_with(topology, observed, action, false, false)
 }
 
 /// [`plan`] for an attempt of the Build's `reason`: a requested replacement (`Replace`) of a birth
@@ -303,10 +303,29 @@ pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&Atte
 /// after it. Proven drift (`ProvenDrift`) names a runtime already proven exited, which needs no
 /// retirement.
 pub fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
-    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace)
+    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, false)
 }
 
-fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool) -> BuildPlan {
+/// [`plan_for`] for `build`'s current attempt, given what its receipts say already ran. A retire of
+/// a birth the view never held again leaves the view as it was, so the receipt, not the view, says
+/// the retire is done: the create that follows it is what is left.
+pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
+    let retired = match &build.action {
+        Some(AttemptAction::Replace { path, from_incarnation }) => {
+            // The departure published on the provider's proof names the exact birth: that receipt
+            // (this attempt or one that handed it on) is the retire done.
+            let operation = format!("retire-node:{path}");
+            let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
+            build.steps.iter().any(|s| {
+                s.operation == operation && s.step == "NodeDeleted" && s.outcome == crate::build_state::StepOutcome::Complete && s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth)
+            })
+        }
+        _ => false,
+    };
+    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, retired)
+}
+
+fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, retired: bool) -> BuildPlan {
     let mut ops = Vec::new();
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // The birth the attempt's action is fenced to, when the view still holds exactly it and it is
@@ -345,7 +364,9 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         }
     }
     if let Some(path) = absent {
-        ops.push(BuildOperation::RetireNode { node: path.clone() });
+        if !retired {
+            ops.push(BuildOperation::RetireNode { node: path.clone() });
+        }
         ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
     }
     if let (Some(a), Some((path, _))) = (action, acted) {
@@ -698,6 +719,46 @@ mod tests {
         assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
         // Proven drift names a runtime already proven exited: no retire.
         assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
+    }
+
+    /// CONTRACT: once the departure of the exact birth a replace names is published on the
+    /// provider's proof (the `NodeDeleted` receipt of that birth), a re-plan of the same attempt, or
+    /// of the one that continues it on another admin, plans only the create; a receipt of another
+    /// birth of the path is not that proof.
+    #[test]
+    fn a_published_departure_of_the_named_birth_leaves_only_the_create() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.3".parse().unwrap();
+        let mut o = mn();
+        o.nodes.retain(|x| x.name != path);
+        let from = IncarnationId::mint();
+        let receipt = |birth: &IncarnationId| BuildStepReceipt {
+            build_id: crate::build::BuildId("b1".into()),
+            attempt: 6,
+            operation: format!("retire-node:{path}"),
+            step: "NodeDeleted".into(),
+            outcome: StepOutcome::Complete,
+            output: Some(serde_json::json!({ "incarnation": birth })),
+            executor: None,
+        };
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId("b1".into()),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 7,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Replace,
+            action: Some(AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }),
+        };
+        let create = vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }];
+        assert_eq!(plan_for_build(&build(vec![receipt(&from)]), &o).operations, create);
+        assert_eq!(plan_for_build(&build(vec![receipt(&IncarnationId::mint())]), &o).operations.len(), 2, "another birth's departure is not this retire");
+        assert_eq!(plan_for_build(&build(vec![]), &o).operations.len(), 2);
     }
 
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's
