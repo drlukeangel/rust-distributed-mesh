@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Provider-neutral scenario/evidence/replay contracts and the i143 Mesh product canaries"
 publish = false
+autotests = false
 
 [dependencies]
 tokio = { workspace = true }
@@ -35,3 +36,7 @@ bytes = "1"
 [[bin]]
 name = "rafka-scenario"
 path = "src/bin/rafka_scenario.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

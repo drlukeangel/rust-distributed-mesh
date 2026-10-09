@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "rafka-node-base"
 version = "0.1.0"
 edition = "2021"
@@ -26,3 +27,7 @@ iroh = { workspace = true }
 
 [dev-dependencies]
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

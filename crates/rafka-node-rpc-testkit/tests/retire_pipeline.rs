@@ -6,7 +6,7 @@
 //!
 //! Its own test binary: it asserts spans (see `process_pipeline_failure.rs`).
 
-mod common;
+use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published, Spans};
 use rafka_mesh_entity::{FabricId, MemberStatus};

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "i143 opening-audit gates: legacy-binary disposition, parity ledger scanner, dependency rules"
 publish = false
+autotests = false
 
 [dependencies]
 anyhow = { workspace = true }
@@ -24,3 +25,7 @@ path = "src/bin/dep_rules.rs"
 [[bin]]
 name = "address-lookup"
 path = "src/bin/address_lookup.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

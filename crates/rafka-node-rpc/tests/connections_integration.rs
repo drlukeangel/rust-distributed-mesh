@@ -7,7 +7,7 @@
 //! a Direct Connected creates the retirement obligation, and new calls cut back only after the
 //! retirement is durable (here: applied to the projection, as a landed row would be).
 
-mod common;
+use crate::common;
 use common::*;
 use rafka_mesh_entity::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
 use rafka_mesh_entity::reconnect::owed_retirements;

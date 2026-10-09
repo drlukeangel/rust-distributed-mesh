@@ -13,10 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
-#[allow(dead_code)]
-#[path = "common/forward_rig.rs"]
-mod rig;
-use rig::*;
+use crate::rig::*;
 
 
 #[tokio::test]

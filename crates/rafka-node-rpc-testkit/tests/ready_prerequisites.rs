@@ -6,7 +6,7 @@
 //! The pipeline refuses Ready naming that step and never asks the node
 //! whether it is ready; with every receipt kept, the same pipeline completes.
 
-mod common;
+use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};

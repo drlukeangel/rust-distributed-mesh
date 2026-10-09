@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Generic Mesh EF: exact-node identity, process incarnation, membership and endpoint-slot freshness (i143)"
 publish = false
+autotests = false
 
 [dependencies]
 serde = { workspace = true }
@@ -23,3 +24,7 @@ rafka-node-rpc = { path = "../rafka-node-rpc" }
 tokio = { workspace = true }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

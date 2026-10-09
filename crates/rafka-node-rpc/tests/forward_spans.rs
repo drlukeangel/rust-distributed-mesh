@@ -17,10 +17,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-#[allow(dead_code)]
-#[path = "common/forward_rig.rs"]
-mod rig;
-use rig::*;
+use crate::rig::*;
 
 fn spans() -> InMemorySpanExporter {
     static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();

@@ -2,6 +2,7 @@
 name = "rafka-mesh-transport"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [lib]
 doctest = false
@@ -23,3 +24,7 @@ bytes = "1"
 
 [dev-dependencies]
 rafka-node-rpc = { path = "../rafka-node-rpc" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

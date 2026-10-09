@@ -3,7 +3,7 @@
 //! the current count on a repeat; a stale incarnation is refused with the one held; an upward
 //! declaration sent downward is refused by direction.
 
-mod common;
+use crate::common;
 
 use rafka_mesh_entity::{FabricId, IncarnationId};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;

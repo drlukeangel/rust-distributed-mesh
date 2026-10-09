@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Generic Fabric/Mesh/Node control: model, topology, Build, deployment and lifecycle (i143)"
 publish = false
+autotests = false
 
 [lib]
 doctest = false
@@ -45,3 +46,7 @@ tracing-opentelemetry = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true }
 http-body-util = "0.1"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

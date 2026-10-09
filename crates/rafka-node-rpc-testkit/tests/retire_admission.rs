@@ -7,7 +7,7 @@
 //! completes. A successor birth at the same path that still runs is never
 //! closed by its predecessor's exit.
 
-mod common;
+use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
