@@ -536,6 +536,7 @@ pub fn scan_traces(dir: &Path, jaeger: &str) -> Traces {
 #[derive(Debug, Clone, Serialize)]
 pub struct Job {
     pub idx: usize,
+    pub cadence: String,
     pub krate: String,
     pub stem: String,
     pub label: String,
@@ -750,7 +751,7 @@ async fn get_build(State(s): State<S>) -> Response {
 // -- config -----------------------------------------------------------------------------------
 
 async fn get_config(State(s): State<S>) -> Json<Value> {
-    Json(json!({"parallel": s.gate.limit.load(Ordering::SeqCst), "tree": s.tree, "jaeger": s.jaeger, "otlp": OTLP, "cadence": CADENCE}))
+    Json(json!({"parallel": s.gate.limit.load(Ordering::SeqCst), "tree": s.tree, "jaeger": s.jaeger, "otlp": OTLP, "fast_cadence": CADENCE, "production_cadence": "no cadence env: staleness 30 s, gossip and backbone 2 s"}))
 }
 
 #[derive(Deserialize)]
@@ -778,6 +779,19 @@ struct RunBody {
     stem: Option<String>,
     test: Option<String>,
     tier: Option<String>,
+    /// gate (default: the gate's own rule per test) | fast | production
+    cadence: Option<String>,
+}
+
+/// The cadence a test runs at: the release gate runs its release-only stems at the documented
+/// production windows, every other stem at the fast test cadence.
+fn cadence_for(mode: &str, t: &TestEntry) -> &'static str {
+    match mode {
+        "fast" => "fast",
+        "production" => "production",
+        _ if t.tiers.iter().any(|x| x == "release") && !t.tiers.iter().any(|x| x == "fast") => "production",
+        _ => "fast",
+    }
 }
 
 fn timeout_for(tiers: &[String], container: bool) -> Duration {
@@ -881,19 +895,23 @@ async fn post_run(State(s): State<S>, Json(b): Json<RunBody>) -> Response {
     let mut specs = Vec::new();
     // Tests of a stem that ask for different env run in separate processes of the same stem.
     for p in planned {
-        let mut groups: BTreeMap<Vec<(String, String)>, Vec<TestEntry>> = BTreeMap::new();
+        let mut groups: BTreeMap<(&'static str, Vec<(String, String)>), Vec<TestEntry>> = BTreeMap::new();
+        let mode = b.cadence.clone().unwrap_or_else(|| "gate".into());
+        if !["gate", "fast", "production"].contains(&mode.as_str()) {
+            return err(StatusCode::BAD_REQUEST, "bad-cadence", format!("cadence `{mode}`: gate, fast or production"));
+        }
         for t in p.tests {
-            groups.entry(cell_env(&s.tree, &t)).or_default().push(t);
+            groups.entry((cadence_for(&mode, &t), cell_env(&s.tree, &t))).or_default().push(t);
         }
         let single_group = groups.len() == 1;
-        for (env, tests) in groups {
+        for ((cadence, env), tests) in groups {
             let idx = jobs.len();
             let exe = inv.exes[p.exe_idx].clone();
             let tiers: Vec<String> = tests.iter().flat_map(|t| t.tiers.clone()).collect::<BTreeSet<_>>().into_iter().collect();
             let container = tests.iter().any(|t| t.container);
             let dir = run_dir.join(format!("{idx:03}-{}-{}", slug(&p.krate), slug(&p.stem)));
             let art = dir.join("artifacts");
-            let mut full_env: Vec<(String, String)> = CADENCE.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let mut full_env: Vec<(String, String)> = CADENCE.iter().filter(|(k, _)| cadence == "fast" || *k == "I143_ACCEPTANCE_SKIP_BUILD").map(|(k, v)| (k.to_string(), v.to_string())).collect();
             full_env.push(("OTEL_EXPORTER_OTLP_ENDPOINT".into(), OTLP.into()));
             full_env.extend(env.clone());
             full_env.push(("RDM_ARTIFACTS_DIR".into(), art.display().to_string()));
@@ -903,10 +921,11 @@ async fn post_run(State(s): State<S>, Json(b): Json<RunBody>) -> Response {
                 full_env.push(("I143_ACCEPTANCE_CELL".into(), c.cell.clone()));
             }
             let names: Vec<(String, String)> = tests.iter().map(|t| (t.exe_name.clone(), t.id.clone())).collect();
-            let label = if tests.len() == 1 { tests[0].id.clone() } else { format!("{}::*{}", p.stem, if single_group { String::new() } else { format!(" [{}]", env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) }) };
+            let label = if tests.len() == 1 { tests[0].id.clone() } else { format!("{}::*{}", p.stem, if single_group { String::new() } else { format!(" [{cadence} {}]", env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ")) }) };
             let command = format!("cd {} && {} {} --exact", exe.manifest_dir.display(), exe.path.display(), names.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(" "));
             jobs.push(Job {
                 idx,
+                cadence: cadence.to_string(),
                 krate: p.krate.clone(),
                 stem: p.stem.clone(),
                 label,

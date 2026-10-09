@@ -51,6 +51,7 @@ interface TraceRef {
 }
 interface Job {
   idx: number;
+  cadence: string;
   krate: string;
   stem: string;
   label: string;
@@ -180,6 +181,7 @@ export function Tests() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [build, setBuild] = useState<BuildInfo | null>(null);
   const [parallel, setParallel] = useState(8);
+  const [cadence, setCadence] = useState("gate");
   const [filter, setFilter] = useState("");
   const [tier, setTier] = useState("all");
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -220,7 +222,7 @@ export function Tests() {
 
   const run = async (body: Record<string, unknown>, what: string) => {
     try {
-      const r = await post<{ run_id: string; jobs: number }>("/api/tests/run", body);
+      const r = await post<{ run_id: string; jobs: number }>("/api/tests/run", { ...body, cadence });
       setMsg(`started ${what}: ${r.jobs} process${r.jobs === 1 ? "" : "es"} (${r.run_id})`);
       setSel(r.run_id);
     } catch (e) {
@@ -276,6 +278,10 @@ export function Tests() {
             {build?.build.state === "running" ? "building…" : "build (cargo build --tests --bins)"}
           </button>
           <button data-testid="refresh-inventory" onClick={loadInv}>refresh inventory</button>
+          <span className="muted">cadence</span>
+          <select data-testid="cadence" value={cadence} onChange={(e) => setCadence(e.target.value)} title="gate: release-only stems run at production windows, the rest at the fast test cadence">
+            <option value="gate">per gate rule</option><option value="fast">fast (3 s / 500 ms)</option><option value="production">production (30 s / 2 s)</option>
+          </select>
           <span className="muted">parallel</span>
           <input data-testid="parallel" type="number" min={1} max={64} value={parallel} style={{ width: 56 }} onChange={(e) => setParallel(Number(e.target.value))} />
           <button data-testid="set-parallel" onClick={() => post("/api/tests/config", { parallel }).then(() => setMsg(`parallel ${parallel}`)).catch((e) => setMsg(String(e.message)))}>set</button>
@@ -423,7 +429,7 @@ function JobRows({ j, files, onFiles, onView, runId }: { j: Job; files?: { path:
     <>
       <tr style={{ cursor: "pointer", verticalAlign: "top" }} onClick={() => setOpen(!open)} data-testid={`job-${runId}-${j.idx}`}>
         <td><Badge text={j.state} color={COLORS[j.state]} /></td>
-        <td>{j.krate} · {j.label}{j.container && <Badge text="container" color="var(--warn)" />}</td>
+        <td>{j.krate} · {j.label} <Badge text={j.cadence} />{j.container && <Badge text="container" color="var(--warn)" />}</td>
         <td>{j.counts ? `${j.counts[0]} pass ${j.counts[1]} fail ${j.counts[2]} ign` : `${j.test_ids.length}`}</td>
         <td>{ms(j.wall_ms)}</td>
         <td>{j.traces ? j.traces.distinct : "—"}</td>
