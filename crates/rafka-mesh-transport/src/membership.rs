@@ -1164,17 +1164,15 @@ impl Channel {
                 // neighbours; a failed attempt decides nothing about the member.
                 let held = targets();
                 // A birth under an open restart or removal: this channel keeps no address for
-                // its key and no path to it, so nothing it does re-pins the retired socket.
+                // its key and never hands it out again. The birth's iroh paths stay open: its
+                // typed drain is in flight over them, and they are retired at the proven exit.
                 for key in &held.retired {
                     if retired.insert(*key) {
                         me.lookup.remove_endpoint_info(*key);
                         me.peers.lock().unwrap().remove(key);
                         me.joined.lock().unwrap().remove(key);
-                        let endpoint = me.endpoint.clone();
-                        let key = *key;
-                        tokio::spawn(async move { endpoint.replace_direct_addrs(key, []).await });
                         tracing::info_span!("rdm.mesh.connection.update.via-restart-address-retired", node = %node, channel = %channel, peer = %key.fmt_short())
-                            .in_scope(|| tracing::info!("a birth under an open restart or removal: its address and paths are dropped from this channel"));
+                            .in_scope(|| tracing::info!("a birth under an open restart or removal: its address is dropped from this channel; its paths stay until the exit is proven"));
                     }
                 }
                 retired.retain(|k| held.retired.contains(k));

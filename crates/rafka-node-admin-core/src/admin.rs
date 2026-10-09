@@ -1540,15 +1540,16 @@ impl AdminRunner {
             // successor is applied, so no dial, probe or install aims at the dead birth's socket.
             rpc.resolver.retire_birth(&record.node_id, incarnation);
         }
-        if kind == RetireKind::Restart {
-            if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
-                // Not awaited: the endpoint's actor for this key answers when it is free, and the
-                // retire does not wait for a dead peer's actor (the same call membership spawns).
-                let ep = ep.clone();
-                tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-                tracing::info_span!("rdm.node_admin.node.update.via-restart-paths-retired", node = %node, endpoint = %key.fmt_short())
-                    .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
-            }
+        // The exit is proven: the exited birth's direct paths are retired, for a restart and a
+        // removal alike. Until now they stayed open for the typed drain.
+        if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
+            // Not awaited: the endpoint's actor for this key answers when it is free, and the
+            // retire does not wait for a dead peer's actor (the same call membership spawns).
+            let ep = ep.clone();
+            tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
+            let reason = if kind == RetireKind::Restart { "restart" } else { "removal" };
+            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %node, node_id = %record.node_id, endpoint = %key.fmt_short(), kind = reason, reason = "proven-exit")
+                .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
         }
         self.handles.lock().unwrap().remove(node);
         Ok(Some(record))
