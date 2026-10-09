@@ -2205,6 +2205,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
             mesh_id: cfg.mesh_id.clone(),
             in_flight: None,
             extra: BTreeMap::new(),
+            load: None,
             data_dir: Some(cfg.data_dir.display().to_string()),
         };
         node_rpc_resolver.apply(
@@ -2446,6 +2447,10 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         let _ = control.view_now.set(Arc::new(move || project(&fabric, &fabric_id, provider, &book, &records)));
     }
     let _ = control.connections.set(connections.held());
+    {
+        let book = book.clone();
+        let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter_map(|d| d.load.map(|l| (d.node.node_id.to_string(), l))).collect()));
+    }
     // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
     // digest exists, below.
     let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
@@ -2573,6 +2578,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
         extra: BTreeMap::new(),
+        load: None,
         data_dir: adoption.is_none().then(|| cfg.data_dir.display().to_string()),
     }));
     // nodes.storage and mesh.storage: this birth and its Mesh, so a restart on this data dir is
@@ -3427,6 +3433,7 @@ mod tests {
             mesh_id: Some(mesh_id(&name.mesh)),
             in_flight: None,
             extra: BTreeMap::new(),
+            load: None,
             data_dir: None,
         }
     }

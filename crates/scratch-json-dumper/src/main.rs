@@ -98,6 +98,7 @@ fn main() {
         mesh_id: Some(mesh_id.clone()),
         in_flight: None,
         extra: std::collections::BTreeMap::new(),
+        load: None,
     };
     let frame_digest = Frame::Digest { digest: digest.clone() };
     println!("=== Frame::Digest ===");

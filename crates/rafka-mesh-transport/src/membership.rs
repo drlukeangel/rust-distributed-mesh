@@ -1598,6 +1598,8 @@ pub struct Membership {
     clock: SharedClock,
     /// The last `digest_seq` this birth published: sender-local, from 1 for this process's birth.
     digest_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// This process's CPU and RAM, sampled into every digest it publishes.
+    load: Arc<crate::load::LoadSampler>,
 }
 
 impl Membership {
@@ -1644,7 +1646,7 @@ impl Membership {
             Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
         *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default() };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()) };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -1771,6 +1773,7 @@ impl Membership {
         let mut d = d.clone();
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
+        d.load = Some(self.load.sample());
         self.book.record(d.clone());
         self.mesh.broadcast(&Frame::Digest { digest: d }).await
     }
@@ -2858,6 +2861,7 @@ mod tests {
             mesh_id: None,
             in_flight: None,
             extra: Default::default(),
+            load: None,
             data_dir: None,
         }
     }

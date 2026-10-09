@@ -159,6 +159,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
     }
 }
 

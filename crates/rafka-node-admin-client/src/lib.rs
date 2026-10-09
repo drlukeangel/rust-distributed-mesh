@@ -114,6 +114,9 @@ pub struct NodeView {
     /// The lifecycle state the birth declared to its authority, once applied.
     #[serde(default)]
     pub declared: Option<String>,
+    /// The node's CPU and RAM from its latest digest, as the answering admin holds it.
+    #[serde(default)]
+    pub load: Option<rafka_mesh_entity::NodeLoad>,
 }
 
 /// `MeshView`.

@@ -27,8 +27,8 @@ type OpKey = (String, u32, String);
 /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"): the view KEEPS the birth (identity,
 /// incarnation and lineage, the one transport address, the runtime fact and its metadata), the
 /// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
-/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp) and `in_flight`,
-/// the draining work count, which is the digest's load.
+/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `in_flight` (the
+/// draining work count) and `load` (the process's CPU and RAM): the digest's load.
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
@@ -40,6 +40,7 @@ pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
 pub(crate) fn without_load(d: &MeshDigest) -> MeshDigest {
     let mut v = d.clone();
     v.in_flight = None;
+    v.load = None;
     v
 }
 

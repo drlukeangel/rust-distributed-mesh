@@ -111,6 +111,7 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
     }
 }
 

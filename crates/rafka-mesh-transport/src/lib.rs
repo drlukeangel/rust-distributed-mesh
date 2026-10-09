@@ -13,6 +13,7 @@
 pub mod chunking;
 pub mod clock;
 pub mod iroh_obs;
+pub mod load;
 pub mod membership;
 pub mod snapshot;
 pub mod wire;

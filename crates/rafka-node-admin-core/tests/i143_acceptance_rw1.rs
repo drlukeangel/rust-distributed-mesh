@@ -60,6 +60,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
         mesh_id: full.then(MeshId::mint),
         in_flight: full.then_some(4),
         extra: if full { [("role".to_string(), "proof".to_string())].into() } else { Default::default() },
+        load: None,
     }
 }
 

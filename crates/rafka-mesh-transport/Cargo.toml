@@ -20,6 +20,7 @@ postcard = { version = "1", features = ["alloc"] }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 blake3 = "1"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 bytes = "1"
 
 [dev-dependencies]

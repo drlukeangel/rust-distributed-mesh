@@ -6,7 +6,7 @@
 //! facts with every field present and the locator externally tagged.
 
 use crate::runtime::{RuntimeFact, RuntimeLocator, RuntimeProvider};
-use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PathName};
+use crate::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeLoad, PathName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -48,6 +48,7 @@ pub struct WireDigest {
     mesh_id: Option<MeshId>,
     in_flight: Option<u64>,
     extra: BTreeMap<String, String>,
+    load: Option<NodeLoad>,
 }
 
 impl From<&MeshDigest> for WireDigest {
@@ -81,6 +82,7 @@ impl From<&MeshDigest> for WireDigest {
             mesh_id: d.mesh_id.clone(),
             in_flight: d.in_flight,
             extra: d.extra.clone(),
+            load: d.load,
         }
     }
 }
@@ -116,6 +118,7 @@ impl From<WireDigest> for MeshDigest {
             mesh_id: w.mesh_id,
             in_flight: w.in_flight,
             extra: w.extra,
+            load: w.load,
         }
     }
 }

@@ -70,6 +70,25 @@ pub struct MeshDigest {
     /// Descriptive labels only (tags): nothing reads them to decide.
     #[serde(default)]
     pub extra: BTreeMap<String, String>,
+    /// The process's CPU and RAM at the moment the digest was published (the publishing node
+    /// samples its own process); `None` when the publisher sampled nothing. Load, like
+    /// `in_flight`: it never moves the topology version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<NodeLoad>,
+}
+
+/// One process's CPU and RAM, as its digest carries them: what is used and the ceiling it runs
+/// under (the host's cores and memory unless the process was given a budget).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NodeLoad {
+    /// CPU in use, in thousandths of one core (2400 = 2.4 cores' worth of work).
+    pub cpu_used_millicores: u32,
+    /// The CPU ceiling, in thousandths of one core.
+    pub cpu_budget_millicores: u32,
+    /// Resident memory in use, in bytes.
+    pub ram_used_bytes: u64,
+    /// The memory ceiling, in bytes.
+    pub ram_budget_bytes: u64,
 }
 
 impl MeshDigest {

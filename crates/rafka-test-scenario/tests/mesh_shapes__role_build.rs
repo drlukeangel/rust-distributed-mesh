@@ -75,6 +75,16 @@ async fn roles_are_born_by_build_under_their_kind() {
     assert_eq!(fabric_primaries.len(), 1, "{fabric_primaries:?}");
     assert_eq!(fabric_primaries[0]["kind"], "node_admin");
 
+    // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
+    // node-admin's view serves it.
+    for n in &nodes {
+        let l = &n["load"];
+        assert!(l["ram_used_bytes"].as_u64().is_some_and(|b| b > 0), "{} carries its resident memory: {n}", n["name"]);
+        assert!(l["ram_budget_bytes"].as_u64() >= l["ram_used_bytes"].as_u64(), "{} memory ceiling: {n}", n["name"]);
+        assert!(l["cpu_budget_millicores"].as_u64().is_some_and(|c| c >= 1000), "{} cpu ceiling: {n}", n["name"]);
+        assert!(l["cpu_used_millicores"].as_u64().is_some(), "{} cpu in use: {n}", n["name"]);
+    }
+
     // The second Build drops the compute: its path is retired, the others keep their birth.
     let births = |ns: &[Value]| -> BTreeMap<String, String> {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()

@@ -336,6 +336,7 @@ mod tests {
             mesh_id: None,
             in_flight: None,
             extra: Default::default(),
+            load: None,
         }
     }
 

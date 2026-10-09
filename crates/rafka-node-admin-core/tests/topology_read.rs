@@ -34,6 +34,7 @@ fn member_of(fabric: &FabricId, mesh: &str, kind: &str, ordinal: u32) -> MeshDig
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
     }
 }
 

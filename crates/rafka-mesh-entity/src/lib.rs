@@ -25,7 +25,7 @@ pub use connections::{
     CarrierChoice, CarrierPolicy, ConnectionEnd, ConnectionIndex, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery,
     EffectiveRoute, NodeConnection, RouteResolution,
 };
-pub use digest::{MemberStatus, MeshDigest, MeshNode};
+pub use digest::{MemberStatus, MeshDigest, MeshNode, NodeLoad};
 pub use lifecycle::{LifecycleOp, DEPARTED_RETENTION};
 pub use ids::{EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, ID_FORMAT};
 pub use publisher::PublisherId;

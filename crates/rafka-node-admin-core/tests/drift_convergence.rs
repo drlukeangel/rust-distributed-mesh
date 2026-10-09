@@ -199,6 +199,7 @@ fn birth_as(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, 
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
     });
     n
 }

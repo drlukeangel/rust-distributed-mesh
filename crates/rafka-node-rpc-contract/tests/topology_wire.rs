@@ -39,6 +39,7 @@ fn digest() -> rafka_mesh_entity::MeshDigest {
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
     }
 }
 

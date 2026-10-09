@@ -276,6 +276,7 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
         mesh_id: None,
         in_flight: None,
         extra: Default::default(),
+        load: None,
         data_dir: Some(launch.data_dir.display().to_string()),
     };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
