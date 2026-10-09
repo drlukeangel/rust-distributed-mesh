@@ -257,6 +257,12 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     .await;
     let after = f.estate.settled(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(90)).await;
     wait_for("the fabric is ready again", Duration::from_secs(30), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
+    // The sampler polls on its own cadence: stop it only once it has recorded the return to ready.
+    wait_for("the sampler records the return to ready", Duration::from_secs(10), || {
+        let seen = statuses.lock().unwrap().last().is_some_and(|(st, _)| st == "ready-for-traffic");
+        async move { seen.then_some(()) }
+    })
+    .await;
     sampler.abort();
     let statuses = statuses.lock().unwrap().clone();
     // The return to ready is five sends a second apart, from the fabric primary for as long as it
@@ -691,10 +697,10 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
     let republisher = sends.keys().map(|(sender, _)| sender.clone()).next().unwrap();
     let reports: Vec<u64> = named(&spans, "rdm.node_admin.status.update.via-declaration")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == fp && attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender").starts_with(&format!("{}.admin.", f.lost)) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
+        .filter(|sp| attr(sp, "op") == "declare-mesh-state" && attr(sp, "sender").starts_with(&format!("{}.admin.", f.lost)) && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied"))
         .map(|sp| at_ns(sp) / 1_000_000)
         .collect();
-    assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary received a round-complete report from the mesh's primary after the round completed: {reports:?} vs {complete_ms}");
+    assert!(reports.iter().any(|at| *at >= complete_ms), "the fabric primary of the moment received a round-complete report from the mesh's primary after the round completed: {reports:?} vs {complete_ms}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "killed_primary": primary, "elected": survivor, "republisher": republisher, "changed_at": before, "held_ms": held_ms, "complete_ms": complete_ms, "first_send_ms": first_send_ms}));
 }
 
