@@ -354,3 +354,21 @@ async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_for_ret
         assert_eq!(call.retire, retired.then_some((proxy, INVALID_CARRIER_EDGE_LOST)));
     }
 }
+
+/// The origin's whole budget equals the carrier's default call budget (10 s) and the final target
+/// is unreachable: the carrier's inner dial runs to its own deadline.
+///
+/// CONTRACT: the carrier's inner call is bounded by what the origin has left, so the carrier's
+/// `CarrierEdgeLost` arrives inside the origin's budget and the origin records the named
+/// `NotSent(CarrierEdgeLost)`, never `Indeterminate(ReplyDeadline)`. Wall: the 10 s is the
+/// carrier's inner dial running to its bound (rdm.node_rpc.request.update.via-call, outcome and
+/// reason); it is the cell's subject, not setup.
+#[tokio::test]
+async fn an_unreachable_target_under_the_origins_default_budget_is_carrier_edge_lost_never_indeterminate() {
+    let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
+    r.target.router.shutdown().await.unwrap();
+    let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(10)), ..CallOptions::default() };
+    let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &opts).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::CarrierEdgeLost("Direct Failed (dial failed)".into())), "{out:?}");
+    assert_eq!(r.handled.load(Ordering::SeqCst), 0);
+}
