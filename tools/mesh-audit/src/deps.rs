@@ -10,6 +10,11 @@
 //!    public control/probe interfaces (direct normal/build deps on workspace
 //!    members are limited to an allow-list).
 //!
+//! 5. no package with a binary target is built with a dependency's `test-knobs`
+//!    Cargo feature (R-I3: a test-only setting never reaches a shipped binary
+//!    through feature unification). Read from `cargo tree -p <package>
+//!    -e normal,build`, the feature set `cargo build -p <package>` resolves.
+//!
 //! A rule over a package that does not exist yet is vacuous; it starts biting
 //! the commit that adds the package.
 
@@ -58,6 +63,8 @@ pub enum Violation {
     MeshEntityApplicationEf { crate_name: String, path: Vec<String> },
     /// Rule 4: a scenario/chaos crate depends directly on a non-public RDM package.
     PrivateInterface { package: String, dependency: String },
+    /// Rule 5: a binary package's shipped build enables a dependency's `test-knobs` feature.
+    TestKnobsShipped { package: String, dependency: String },
     /// `cargo metadata` could not run.
     Metadata(String),
 }
@@ -82,6 +89,10 @@ impl fmt::Display for Violation {
                 f,
                 "rule 4: `{package}` depends on `{dependency}`, which is not a public control/probe interface ({})",
                 PUBLIC_INTERFACES.join(", ")
+            ),
+            Self::TestKnobsShipped { package, dependency } => write!(
+                f,
+                "rule 5: `{package}` builds `{dependency}` with the `test-knobs` feature; it may be enabled from [dev-dependencies] only"
             ),
             Self::Metadata(e) => write!(f, "cargo metadata failed: {e}"),
         }
@@ -231,10 +242,73 @@ pub fn check_graph(g: &Graph) -> Vec<Violation> {
     out
 }
 
+/// The feature every shipped build must resolve without.
+pub const TEST_KNOBS: &str = "test-knobs";
+
+/// Workspace packages with a binary target.
+fn bin_packages(root: &Path) -> Result<Vec<String>, String> {
+    let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["metadata", "--format-version", "1", "--no-deps", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+    let mut bins = Vec::new();
+    for p in v["packages"].as_array().ok_or("metadata has no packages")? {
+        let has_bin = p["targets"].as_array().into_iter().flatten().any(|t| t["kind"].as_array().into_iter().flatten().any(|k| k == "bin"));
+        if has_bin {
+            bins.push(p["name"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    Ok(bins)
+}
+
+/// The packages `cargo tree -p <package>` lists with `test-knobs` among their enabled features, for
+/// the given edge kinds.
+pub fn packages_with_test_knobs(root: &Path, package: &str, edges: &str) -> Result<Vec<String>, String> {
+    let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+        .args(["tree", "-p", package, "-e", edges, "--prefix", "none", "-f", "{p}|{f}", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("cargo tree -p {package}: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let mut hits = BTreeSet::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let Some((pkg, features)) = line.split_once('|') else { continue };
+        if features.split(',').any(|f| f.trim() == TEST_KNOBS) {
+            hits.insert(pkg.split_whitespace().next().unwrap_or(pkg).to_string());
+        }
+    }
+    Ok(hits.into_iter().collect())
+}
+
+/// Rule 5 over every package with a binary target.
+pub fn check_test_knobs(root: &Path) -> Vec<Violation> {
+    let bins = match bin_packages(root) {
+        Ok(b) => b,
+        Err(e) => return vec![Violation::Metadata(e)],
+    };
+    let mut out = Vec::new();
+    for package in bins {
+        match packages_with_test_knobs(root, &package, "normal,build") {
+            Ok(hits) => out.extend(hits.into_iter().map(|dependency| Violation::TestKnobsShipped { package: package.clone(), dependency })),
+            Err(e) => out.push(Violation::Metadata(e)),
+        }
+    }
+    out
+}
+
 /// Run every rule against the workspace at `root`.
 pub fn check(root: &Path) -> Vec<Violation> {
-    match Graph::load(root) {
+    let mut out = match Graph::load(root) {
         Ok(g) => check_graph(&g),
-        Err(e) => vec![Violation::Metadata(e)],
-    }
+        Err(e) => return vec![Violation::Metadata(e)],
+    };
+    out.extend(check_test_knobs(root));
+    out
 }
