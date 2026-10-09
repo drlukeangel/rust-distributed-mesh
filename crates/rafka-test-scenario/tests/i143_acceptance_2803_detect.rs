@@ -632,10 +632,16 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
-        let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
+        let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
+        probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
-        for p in &probes {
-            assert_eq!(attr(p, "outcome"), "carrier-edge-lost", "{m}: {p:#?}");
+        for (i, p) in probes.iter().enumerate() {
+            // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
+            // commits and loses its reply (`Indeterminate`, unreachable). The rebirth is decided only
+            // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
+            let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail") == "Indeterminate";
+            assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
+            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the rebirth: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
         }
         let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == *m).collect();
