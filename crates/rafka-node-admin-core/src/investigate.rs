@@ -226,21 +226,31 @@ fn now_ms() -> u64 {
 /// fabric primary and its view authorizes, every peer mesh it has heard on the backbone is stepped
 /// down its ladder.
 pub async fn run(w: Watch) {
+    // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
+    let mut seat_since: Option<Instant> = None;
     loop {
         tokio::time::sleep(w.round).await;
         let view = w.topology.read().await.clone();
         let fabric_primary = view.fabric_primary().is_some_and(|n| n.name == w.me);
         if !(fabric_primary && w.membership.authorizes()) {
             w.ladder.lock().unwrap().clear();
+            seat_since = None;
             continue;
         }
+        let since = *seat_since.get_or_insert_with(Instant::now);
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        forget_unheard_meshes(&w.ladder, &heard);
+        let never = never_heard(&view, &w.me.mesh, &heard);
+        forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let round_ms = w.round.as_millis().max(1) as u64;
         let mut tasks = Vec::new();
         for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
             let Some(unheard) = book.mesh_unheard(&mesh, Instant::now()) else { continue };
+            let rounds = unheard.as_millis() as u64 / round_ms;
+            tasks.push(investigate(&w, &view, mesh, rounds, unheard));
+        }
+        for mesh in never {
+            let unheard = since.elapsed();
             let rounds = unheard.as_millis() as u64 / round_ms;
             tasks.push(investigate(&w, &view, mesh, rounds, unheard));
         }
@@ -253,8 +263,7 @@ pub async fn run(w: Watch) {
 /// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
 /// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
 pub fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
-    let _ = (view, me_mesh, heard);
-    BTreeSet::new()
+    view.nodes.iter().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
 
 /// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
