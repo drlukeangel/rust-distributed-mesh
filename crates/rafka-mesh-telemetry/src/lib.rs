@@ -240,17 +240,7 @@ fn install_subscriber(tracer: opentelemetry_sdk::trace::Tracer) {
     // admin-ui edge-builder that once queried them is dead code behind an
     // unconditional return; edges derive from gossip mesh_id labels. The =off
     // directives below stay as belt-and-suspenders for any RUST_LOG=debug opt-in.
-    let otel_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive("h2=off".parse().expect("static directive"))
-        .add_directive("hyper=off".parse().expect("static directive"))
-        .add_directive("hyper_util=off".parse().expect("static directive"))
-        .add_directive("tonic=off".parse().expect("static directive"))
-        .add_directive("tower=off".parse().expect("static directive"))
-        .add_directive("opentelemetry=off".parse().expect("static directive"))
-        .add_directive("opentelemetry_sdk=off".parse().expect("static directive"))
-        .add_directive("opentelemetry_otlp=off".parse().expect("static directive"))
-        .and(filter_fn(export::admits_source));
+    let otel_filter = span_export_filter().and(filter_fn(export::admits_source));
 
     let otel_layer = OpenTelemetryLayer::new(tracer)
         .with_filter(otel_filter);
@@ -469,14 +459,8 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     }
     let provider = builder.build();
     let tracer = provider.tracer(service.clone());
-    let otel_filter = EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive("iroh=warn".parse().expect("static directive"))
-        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
-        .add_directive("noq=warn".parse().expect("static directive"))
-        .add_directive("noq_proto=warn".parse().expect("static directive"))
-        .and(filter_fn(export::admits_source));
-    let log_filter = log_env_filter().and(filter_fn(export::admits_source));
+    let otel_filter = span_export_filter().and(filter_fn(export::admits_source));
+    let log_filter = tracing_subscriber::filter::LevelFilter::from_level(otlp_log_export_level()).and(filter_fn(export::admits_source));
     use opentelemetry::logs::LoggerProvider as _;
     let log_layer = logs.as_ref().map(|p| logs::LogAdapter::new(p.logger("rafka-mesh")).with_filter(log_filter));
     let _ = tracing_subscriber::registry()
@@ -488,16 +472,27 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     Some(guard(provider, logs, evidence))
 }
 
-/// What the OTLP log bridge exports: INFO and above from RDM, WARN and above from iroh, iroh-gossip
-/// and noq. A crate's DEBUG firehose (iroh-gossip's HyParView `rg3` diagnostics among them: one
-/// event per neighbour message per node) never reaches the collector by default; RUST_LOG can
-/// still admit it for one run.
-pub(crate) fn log_env_filter() -> EnvFilter {
-    EnvFilter::from_default_env()
-        .add_directive(tracing::Level::INFO.into())
-        .add_directive("iroh=warn".parse().expect("static directive"))
-        .add_directive("iroh_gossip=warn".parse().expect("static directive"))
-        .add_directive("noq=warn".parse().expect("static directive"))
-        .add_directive("noq_proto=warn".parse().expect("static directive"))
+/// What span export (OTLP and the evidence files) carries, as rafka-v2's telemetry
+/// (`rafka-telemetry` `make_otel_filter`): nothing by default, then INFO from RDM's own crates
+/// (`rafka_*`), the R-shape consumer (`rshape_*`), RDM tools (`rdm_*`) and the one test executable
+/// per crate (`main`); DEBUG with `RDM_OTEL_DEBUG=1`. Every third-party crate (iroh, iroh-gossip
+/// and its HyParView `rg3` diagnostics, noq, the HTTP and OTLP stacks) is off, whatever RUST_LOG
+/// says; RUST_LOG drives stdout only.
+pub(crate) fn span_export_filter() -> EnvFilter {
+    let level = if std::env::var("RDM_OTEL_DEBUG").as_deref() == Ok("1") { "debug" } else { "info" };
+    let mut f = EnvFilter::new("off");
+    for own in ["rafka", "rshape", "rdm", "main"] {
+        f = f.add_directive(format!("{own}={level}").parse().expect("static directive"));
+    }
+    for third in ["iroh", "iroh_gossip", "rg3", "noq", "noq_proto", "netwatch", "quinn", "h2", "hyper", "hyper_util", "rustls", "reqwest", "tonic", "tower", "tower_http", "opentelemetry", "opentelemetry_sdk", "opentelemetry_otlp"] {
+        f = f.add_directive(format!("{third}=off").parse().expect("static directive"));
+    }
+    f
+}
+
+/// The level the OTLP log bridge exports from, as rafka-v2's (`otlp_log_export_level`): WARN by
+/// default, `RDM_OTLP_LOG_LEVEL` sets it; independent of RUST_LOG (stdout) and of span export.
+pub(crate) fn otlp_log_export_level() -> tracing::Level {
+    std::env::var("RDM_OTLP_LOG_LEVEL").ok().and_then(|v| v.parse::<tracing::Level>().ok()).unwrap_or(tracing::Level::WARN)
 }
 

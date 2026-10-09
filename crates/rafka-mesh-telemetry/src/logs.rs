@@ -158,23 +158,40 @@ mod tests {
         assert_eq!(outside.record.severity_number, Some(Severity::Warn));
     }
 
-    /// CONTRACT: the OTLP log bridge's default filter drops the debug firehose of the gossip stack
-    /// (iroh-gossip's HyParView `rg3` diagnostics: 8.8M rows per service in 40 min took the
-    /// collector's ClickHouse down) and iroh/noq below WARN, and keeps RDM's INFO and every WARN.
+    /// CONTRACT: the OTLP log bridge exports WARN and above by default, from every crate, as
+    /// rafka-v2's does: the gossip stack's DEBUG firehose (iroh-gossip's HyParView `rg3`
+    /// diagnostics took the collector's ClickHouse down) and every INFO stay out.
     #[test]
-    fn the_log_bridge_drops_the_gossip_debug_firehose_and_keeps_info_and_warn() {
+    fn the_log_bridge_exports_warn_and_above_only() {
         use tracing_subscriber::Layer as _;
         let logs = InMemoryLogExporter::default();
         let log_provider = opentelemetry_sdk::logs::LoggerProvider::builder().with_simple_exporter(logs.clone()).build();
-        let subscriber = tracing_subscriber::registry().with(LogAdapter::new(log_provider.logger("t")).with_filter(crate::log_env_filter()));
+        let level = tracing_subscriber::filter::LevelFilter::from_level(crate::otlp_log_export_level());
+        let subscriber = tracing_subscriber::registry().with(LogAdapter::new(log_provider.logger("t")).with_filter(level));
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!(target: "rg3", "rg3 send_neighbor");
-            tracing::debug!(target: "iroh_gossip::proto", "gossip debug");
-            tracing::info!(target: "iroh", "iroh info");
             tracing::info!(target: "rafka_node_admin_core::admin", "rdm info");
             tracing::warn!(target: "iroh_gossip::net", "gossip warn");
+            tracing::error!(target: "rafka_node_admin_core::admin", "rdm error");
         });
         let bodies: Vec<String> = logs.get_emitted_logs().unwrap().iter().filter_map(|r| match &r.record.body { Some(AnyValue::String(s)) => Some(s.as_str().to_string()), _ => None }).collect();
-        assert_eq!(bodies, ["rdm info", "gossip warn"], "{bodies:?}");
+        assert_eq!(bodies, ["gossip warn", "rdm error"], "{bodies:?}");
+    }
+
+    /// CONTRACT: span export carries RDM's own INFO spans and nothing from a third-party crate.
+    #[test]
+    fn span_export_carries_rdm_spans_and_no_third_party() {
+        use tracing_subscriber::Layer as _;
+        let spans = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+        let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder().with_simple_exporter(spans.clone()).build();
+        let subscriber = tracing_subscriber::registry().with(tracing_opentelemetry::OpenTelemetryLayer::new(tracer_provider.tracer("t")).with_filter(crate::span_export_filter()));
+        tracing::subscriber::with_default(subscriber, || {
+            drop(tracing::info_span!(target: "rafka_node_rpc::client", "rdm.node_rpc.request.update.via-call").entered());
+            drop(tracing::info_span!(target: "iroh::socket", "iroh_actor").entered());
+            drop(tracing::info_span!(target: "rg3", "rg3_span").entered());
+        });
+        let _ = tracer_provider.force_flush();
+        let names: Vec<String> = spans.get_finished_spans().unwrap().iter().map(|s| s.name.to_string()).collect();
+        assert_eq!(names, ["rdm.node_rpc.request.update.via-call"], "{names:?}");
     }
 }
