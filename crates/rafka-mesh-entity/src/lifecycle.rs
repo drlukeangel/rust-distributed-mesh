@@ -14,12 +14,17 @@ use serde::{Deserialize, Serialize};
 /// One lifecycle operation on one exact birth, as its events name it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LifecycleOp {
+    /// The Build the operation belongs to.
     pub build_id: String,
+    /// The attempt of the Build.
     pub attempt: u32,
     /// The operation's idempotency key (`retire-node:mesh2.rpc.2`), never a pipeline step.
     pub operation: String,
+    /// The logical node.
     pub node_id: NodeId,
+    /// The incarnation of the birth.
     pub incarnation: IncarnationId,
+    /// The node's `path.name`.
     pub name: PathName,
     /// When the event happened, in Rafka-time; evidence only, never liveness, order or expiry.
     pub event_at_rafka_ms: u64,

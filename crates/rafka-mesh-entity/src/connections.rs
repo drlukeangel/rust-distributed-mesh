@@ -40,6 +40,7 @@ pub enum Birth {
 
 /// The births membership holds now, as the holder's membership knows them. Facts, never policy.
 pub trait CurrentIncarnations: Send + Sync + std::fmt::Debug {
+    /// The process birth membership holds for `node_id` at `path`.
     fn birth(&self, node_id: &NodeId, path: &PathName) -> Birth;
 }
 
@@ -72,7 +73,9 @@ impl CurrentIncarnations for StaticIncarnations {
 /// An entry's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionState {
+    /// The connection stands.
     Connected,
+    /// The connection ended.
     Disconnected,
     /// This source failed to establish the Direct connection. Never proof the destination is dead.
     Failed,
@@ -90,7 +93,9 @@ pub enum ConnectionKind {
 /// One end of an entry, or a Proxy's carrier: its path, logical node and process birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionEnd {
+    /// The end's `path.name`.
     pub name: PathName,
+    /// The end's logical node id.
     pub node_id: NodeId,
     /// `None` when the writer could not learn the process birth; such an end is never fencing
     /// evidence.
@@ -101,24 +106,33 @@ pub struct ConnectionEnd {
 /// incident and is compared for equality only; `attempt_ordinal` counts its attempts from 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectRecovery {
+    /// The incident the recovery series belongs to, compared for equality only.
     pub recovery_epoch: u64,
+    /// This attempt's ordinal within the series, from 1.
     pub attempt_ordinal: u32,
 }
 
 /// What the projection keys an entry by: one pair has at most its Direct and its Proxy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConnectionIndex {
+    /// The source node's `path.name`.
     pub source: PathName,
+    /// The destination node's `path.name`.
     pub destination: PathName,
+    /// Whether the entry is the pair's Direct or its Proxy.
     pub kind: ConnectionKind,
 }
 
 /// One connection fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeConnection {
+    /// The node that holds the connection.
     pub source: ConnectionEnd,
+    /// The node it reaches.
     pub destination: ConnectionEnd,
+    /// Whether the entry is a Direct or a Proxy.
     pub kind: ConnectionKind,
+    /// The state of the entry.
     pub state: ConnectionState,
     /// `Some` on a Proxy entry, `None` on a Direct one.
     pub carrier: Option<ConnectionEnd>,
@@ -131,12 +145,13 @@ pub struct NodeConnection {
 }
 
 impl NodeConnection {
+    /// The index the entry is keyed by.
     pub fn index(&self) -> ConnectionIndex {
         ConnectionIndex { source: self.source.name.clone(), destination: self.destination.name.clone(), kind: self.kind }
     }
 
     /// The only kind of entry the fleet-wide projection holds.
-    pub fn is_active_direct(&self) -> bool {
+    pub(crate) fn is_active_direct(&self) -> bool {
         self.kind == ConnectionKind::Direct && self.state == ConnectionState::Connected
     }
 
@@ -148,7 +163,7 @@ impl NodeConnection {
     }
 
     /// Why this entry's shape is not one the model admits, or `None` when it is.
-    pub fn shape_refusal(&self) -> Option<String> {
+    pub(crate) fn shape_refusal(&self) -> Option<String> {
         let at = || format!("connection {}->{} ({:?}, {:?})", self.source.name, self.destination.name, self.kind, self.state);
         match (self.kind, self.state, self.carrier.is_some(), self.recovery.is_some()) {
             (ConnectionKind::Proxy, ConnectionState::Failed, _, _) => Some(format!("{}: Failed is a Direct state only", at())),
@@ -194,10 +209,16 @@ pub enum ApplyRefusal {
     /// Its shape is not one the model admits.
     Shape(String),
     /// Its key already stands at this stamp or a later one.
-    Stale { held: u64, offered: u64 },
+    Stale {
+        /// The stamp held.
+        held: u64,
+        /// The stamp offered.
+        offered: u64,
+    },
 }
 
 impl ConnectionsHeld {
+    /// An empty holder: not complete, no entries.
     pub fn new() -> Self {
         Self::default()
     }
@@ -258,7 +279,7 @@ impl ConnectionsHeld {
 
     /// Whether `edge` names a destination process membership no longer holds: such a fact is
     /// evidence about a birth that is gone, never about the current one.
-    pub fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
+    pub(crate) fn names_superseded_destination(&self, edge: &NodeConnection) -> bool {
         self.end_superseded(&edge.destination).unwrap_or(false)
     }
 
@@ -267,22 +288,18 @@ impl ConnectionsHeld {
         self.complete = true;
     }
 
+    /// Whether the holder has every route.
     pub fn is_complete(&self) -> bool {
         self.complete
     }
 
     /// This node's active Proxy to `destination`: `Some(None)` when it holds none, `None` when it
     /// cannot answer (not complete, or no own source named).
-    pub fn own_proxy(&self, destination: &PathName) -> Option<Option<&NodeConnection>> {
+    pub(crate) fn own_proxy(&self, destination: &PathName) -> Option<Option<&NodeConnection>> {
         if !self.complete || self.own_source.is_none() {
             return None;
         }
         Some(self.own_proxies.get(destination))
-    }
-
-    /// This node's own source path, once named.
-    pub fn own_source(&self) -> Option<&PathName> {
-        self.own_source.as_ref()
     }
 
     /// This node's latest Direct entry per destination, whatever its state, sorted by destination.
@@ -350,7 +367,10 @@ pub enum CarrierPolicy {
     /// The protocol never travels over a Proxy, even when one exists.
     NotForwardable,
     /// The protocol may travel over a Proxy whose carrier is a node of this kind.
-    Forwardable { carrier_kind: NodeKind },
+    Forwardable {
+        /// The kind a carrier must be.
+        carrier_kind: NodeKind,
+    },
 }
 
 /// The carrier's own Direct edge to the destination is not Active: the carried call answered it.
@@ -367,9 +387,17 @@ pub enum EffectiveRoute {
     /// holder is not complete, no Direct fact toward the destination was ever observed, or the
     /// Direct fact it holds names a destination process that is gone. The direct dial is the only
     /// thing to try.
-    Direct { known: bool },
+    Direct {
+        /// Whether a current Direct fact is held.
+        known: bool,
+    },
     /// Forward through `carrier`: the valid own Proxy `proxy` names it.
-    ViaPeer { carrier: PathName, proxy: NodeConnection },
+    ViaPeer {
+        /// The carrier's `path.name`.
+        carrier: PathName,
+        /// The own Proxy that names the carrier.
+        proxy: NodeConnection,
+    },
     /// No active Direct and no valid Proxy.
     NoActiveRoute,
 }
@@ -389,7 +417,9 @@ impl EffectiveRoute {
 /// One resolution: the route, beside the own Proxy found invalid on the way and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteResolution {
+    /// The route.
     pub route: EffectiveRoute,
+    /// The own Proxy found invalid and the reason, for the caller to retire.
     pub retire: Option<(NodeConnection, &'static str)>,
 }
 
@@ -448,7 +478,9 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
 /// A chosen carrier and the active Direct edge `carrier -> destination` it was chosen by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarrierChoice {
+    /// The carrier's `path.name`.
     pub carrier: PathName,
+    /// The active Direct edge from the carrier to the destination.
     pub edge: NodeConnection,
 }
 

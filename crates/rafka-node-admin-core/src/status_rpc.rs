@@ -45,6 +45,7 @@ pub struct MeshReport {
 }
 
 impl Declared {
+    /// The incarnation and state declared for `node_id`, when one was.
     pub fn node(&self, node_id: &NodeId) -> Option<(IncarnationId, NodeState)> {
         self.nodes.get(node_id).cloned()
     }
@@ -71,10 +72,15 @@ impl Declared {
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
+    /// This admin's `path.name`.
     pub me: crate::model::PathName,
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// This admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
+    /// What this admin applied.
     pub declared: Arc<Mutex<Declared>>,
+    /// The nodes store.
     pub nodes_storage: Arc<dyn crate::storage::NodesStorage>,
     /// Where an applied Mesh status or Fabric event is a keyed row, put before it is answered.
     pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
@@ -98,8 +104,11 @@ pub struct StatusAuthority {
 /// `Declared`: the effect is committed only after the put returned `Ok`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
+    /// A node record and the state applied to it.
     Node(NodeRecord, NodeState),
+    /// A mesh and the state applied to it.
     Mesh(MeshId, MeshState),
+    /// A fabric event applied.
     Fabric(FabricId, String),
 }
 
@@ -326,7 +335,7 @@ impl StatusAuthority {
     /// Pending, so it applies it to itself (e4.s11 "single-admin recovery root"). Only Pending, only
     /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
     /// as every decision, with the sender named as itself.
-    pub async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
+    pub(crate) async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
         let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
         let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
         let reply = match effect {
@@ -350,10 +359,10 @@ impl StatusAuthority {
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
 /// A node's re-publish of its presence, filled once it has joined its mesh.
-pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+pub(crate) type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// A node row's stored `declared` text (the state's `Debug` name), read back as the state.
-pub fn parse_node_state(s: &str) -> Option<NodeState> {
+pub(crate) fn parse_node_state(s: &str) -> Option<NodeState> {
     [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().find(|n| format!("{n:?}") == s)
 }
 

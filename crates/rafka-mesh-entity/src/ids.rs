@@ -17,7 +17,7 @@ use std::fmt;
 pub const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
 /// Width of a canonical product id.
-pub const CROCKFORD60_LEN: usize = 12;
+pub(crate) const CROCKFORD60_LEN: usize = 12;
 
 /// The `id_format` evidence names for a canonical product id.
 pub const ID_FORMAT: &str = "crockford60";
@@ -38,7 +38,7 @@ pub fn decode_crockford60(s: &str) -> Option<u64> {
 }
 
 /// Mint a canonical id: 60 bits from the OS CSPRNG, nothing else feeds it.
-pub fn mint_crockford60() -> String {
+pub(crate) fn mint_crockford60() -> String {
     encode_crockford60(rand::random::<u64>())
 }
 
@@ -46,9 +46,25 @@ pub fn mint_crockford60() -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdError {
     /// Not 12 characters.
-    WrongWidth { kind: &'static str, value: String, len: usize },
+    WrongWidth {
+        /// The kind of id that was parsed.
+        kind: &'static str,
+        /// The value that was refused.
+        value: String,
+        /// The length it has.
+        len: usize,
+    },
     /// A character outside the lowercase Crockford alphabet.
-    NonCanonical { kind: &'static str, value: String, at: usize, found: char },
+    NonCanonical {
+        /// The kind of id that was parsed.
+        kind: &'static str,
+        /// The value that was refused.
+        value: String,
+        /// The byte offset of the character.
+        at: usize,
+        /// The character outside the alphabet.
+        found: char,
+    },
 }
 
 impl fmt::Display for IdError {
@@ -69,7 +85,7 @@ impl fmt::Display for IdError {
 impl std::error::Error for IdError {}
 
 /// Validate `value` as a canonical product id of `kind`, refusing by name.
-pub fn parse_crockford60(kind: &'static str, value: &str) -> Result<(), IdError> {
+pub(crate) fn parse_crockford60(kind: &'static str, value: &str) -> Result<(), IdError> {
     if let Some((at, found)) = value.char_indices().find(|(_, c)| !c.is_ascii() || !CROCKFORD.contains(&(*c as u8))) {
         return Err(IdError::NonCanonical { kind, value: value.into(), at, found });
     }
@@ -97,6 +113,7 @@ macro_rules! product_id {
                 parse_crockford60($kind, value).map(|()| Self(value.to_string()))
             }
 
+            /// The id as its bare string.
             pub fn as_str(&self) -> &str {
                 &self.0
             }

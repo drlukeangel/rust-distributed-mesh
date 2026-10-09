@@ -6,6 +6,8 @@
 //! only after the complete request was written and its direction finished,
 //! resetting an unfinished request with `499 FRAME_NOT_SENT`. Node RPC never
 //! chooses a target, never retries and never reroutes.
+#![deny(missing_docs)]
+
 
 pub mod admission;
 pub mod client;

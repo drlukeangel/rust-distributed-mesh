@@ -6,6 +6,8 @@
 //! lifecycle transitions. It is the only lifecycle authority: the Admin UI
 //! and every other front end are clients of its control API
 //! (`rafka-node-admin-client`). Nothing here knows a Rafka role.
+#![deny(missing_docs)]
+
 
 pub mod entry;
 pub mod join;
@@ -30,11 +32,11 @@ pub mod model;
 pub mod node_rpc;
 pub mod offline;
 pub mod readiness;
-pub mod reenter;
+pub(crate) mod reenter;
 pub mod round;
 pub mod record_store;
 pub mod shutdown;
-pub mod status_declare;
+pub(crate) mod status_declare;
 pub mod status_rpc;
 pub mod connections_writer;
 pub mod storage;

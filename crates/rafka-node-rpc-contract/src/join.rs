@@ -25,15 +25,21 @@ use crate::protocol::NodeProtocol;
 use rafka_mesh_entity::wire::WireDigest;
 use serde::{Deserialize, Serialize};
 
+/// The Join protocol: a launched node reports its digest to the node-admin that deployed it.
 pub struct Join;
 
+/// A Join call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinRequest {
     /// The node reports its full digest, with the address it really bound.
-    JoinNode { digest: WireDigest },
+    JoinNode {
+        /// The node's full digest.
+        digest: WireDigest,
+    },
 }
 
 impl JoinRequest {
+    /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
         match self {
             Self::JoinNode { .. } => "join-node",
@@ -41,24 +47,63 @@ impl JoinRequest {
     }
 }
 
+/// The deploying node-admin's answer to a join.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JoinReply {
     /// The join is taken. `answer` is what the admin holds now.
     /// `answer` is one postcard frame of the admin's `WireEntryAnswer`.
-    Joined { answer: Vec<u8> },
+    Joined {
+        /// One postcard frame of the admin's entry answer.
+        answer: Vec<u8>,
+    },
     /// The reported digest disagrees with what the admin deployed.
-    JoinMismatch { field: String, deployed: String, reported: String },
+    JoinMismatch {
+        /// The field that differs.
+        field: String,
+        /// The value the admin deployed.
+        deployed: String,
+        /// The value the node reported.
+        reported: String,
+    },
     /// The receiver did not deploy this birth; `primary` is the mesh primary it sees, if any.
-    NotAuthority { primary: Option<String> },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    NotAuthority {
+        /// The mesh primary the receiver sees, when it sees one.
+        primary: Option<String>,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The receiver is not ready to serve.
+    NotReady {
+        /// Why the receiver is not ready.
+        reason: String,
+    },
+    /// The receiver is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The receiver is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl JoinReply {
+    /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Joined { .. } => "joined",

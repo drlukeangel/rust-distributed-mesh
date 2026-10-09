@@ -30,10 +30,14 @@ use std::sync::Mutex;
 /// produced it (history only; planning reads `topology`, never `submitted_change`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildAccepted {
+    /// The Build's id.
     pub build_id: BuildId,
+    /// The complete topology the Build realizes.
     pub topology: FabricTopology,
+    /// The change that produced the topology: history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_change: Option<TopologyChange>,
+    /// When the Build was accepted, in milliseconds since the Unix epoch.
     pub submitted_at_ms: u64,
 }
 
@@ -45,13 +49,16 @@ pub enum AttemptReason {
     Requested,
     /// A birth the topology names was proven exited; the same Build repairs it.
     ProvenDrift,
+    /// A restart of an exact birth was requested.
     Restart,
+    /// A replacement of a birth that does not answer was requested.
     Replace,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
 }
 
 impl AttemptReason {
+    /// The reason's name as it appears in views and spans.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Requested => "requested",
@@ -68,30 +75,44 @@ impl AttemptReason {
 /// authorities proving the same drift open one attempt, never two.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptOpened {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt number.
     pub attempt: u32,
+    /// Why the attempt was opened.
     pub reason: AttemptReason,
+    /// The fenced action the attempt carries, when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
+    /// The opener's `path.name`.
     pub opened_by: String,
+    /// When the attempt was opened, in milliseconds since the Unix epoch.
     pub opened_at_ms: u64,
 }
 
+/// A claim of one attempt by an executor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildAttemptClaim {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt claimed.
     pub attempt: u32,
     /// The claiming executor (a node-admin's path.name).
     pub executor: String,
 }
 
+/// The receipt of one step of an attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildStepReceipt {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
     /// The operation's idempotency key (`create-node:mesh1.rpc.2`, ...).
     pub operation: String,
+    /// The step.
     pub step: String,
+    /// How the step ended.
     pub outcome: StepOutcome,
     /// What a completed step decided (ids, endpoints, the runtime handle), so
     /// a re-run reuses it instead of deciding again. Absent on older lines.
@@ -104,48 +125,74 @@ pub struct BuildStepReceipt {
     pub executor: Option<String>,
 }
 
+/// How a step ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepOutcome {
+    /// The step completed.
     Complete,
-    Failed { reason: String },
+    /// The step failed.
+    Failed {
+        /// Why it failed.
+        reason: String,
+    },
 }
 
+/// The receipt of an attempt's end.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildAttemptReceipt {
+    /// The Build.
     pub build_id: BuildId,
+    /// The attempt.
     pub attempt: u32,
+    /// How the attempt ended.
     pub outcome: AttemptOutcome,
 }
 
+/// How an attempt ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptOutcome {
     /// Desired state reached: the Build is complete.
     Converged,
     /// This attempt stopped; a later attempt may continue the same Build.
-    Failed { reason: String },
+    Failed {
+        /// Why the attempt stopped.
+        reason: String,
+    },
     /// This attempt ran what its executor was eligible for and stopped at an
     /// operation another admin executes (`to`); that admin claims the next
     /// attempt of the same Build.
-    HandedOff { to: String },
+    HandedOff {
+        /// The admin that executes the operation the attempt stopped at.
+        to: String,
+    },
 }
 
 /// One appended fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "fact", rename_all = "snake_case")]
 pub enum BuildFact {
+    /// The Build was accepted.
     Accepted(BuildAccepted),
+    /// An attempt was opened.
     Opened(AttemptOpened),
+    /// An attempt was claimed.
     Claim(BuildAttemptClaim),
+    /// A step receipt was appended.
     Step(BuildStepReceipt),
+    /// An attempt receipt was appended.
     Attempt(BuildAttemptReceipt),
     /// Build-history administration (`DELETE /api/builds?id=`): a finished
     /// Build leaves the views. Never a topology mutation.
-    Forget { build_id: BuildId },
+    Forget {
+        /// The Build forgotten.
+        build_id: BuildId,
+    },
 }
 
 impl BuildFact {
+    /// The Build the fact belongs to.
     pub fn build_id(&self) -> &BuildId {
         match self {
             Self::Accepted(f) => &f.build_id,
@@ -158,59 +205,98 @@ impl BuildFact {
     }
 }
 
+/// Where a Build is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildState {
+    /// No executor is running an attempt: the Build is accepted, or its next attempt is open.
     Pending,
+    /// An executor holds and runs an attempt.
     Running,
+    /// Every step is complete.
     Complete,
+    /// The last attempt failed.
     Failed,
 }
 
 /// The folded Build view (`GET /api/builds?id=`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildProjection {
+    /// The Build.
     pub build_id: BuildId,
+    /// The complete topology the Build realizes.
     pub topology: FabricTopology,
+    /// The change that produced the topology: history only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submitted_change: Option<TopologyChange>,
+    /// When the Build was accepted, in milliseconds since the Unix epoch.
     pub submitted_at_ms: u64,
+    /// Where the Build is in its life.
     pub state: BuildState,
     /// The current attempt: the highest attempt claimed. An opened attempt is `attempt + 1`.
     pub attempt: u32,
+    /// The executor of the current attempt, when one is.
     pub executor: Option<String>,
+    /// The step receipts of the Build.
     pub steps: Vec<BuildStepReceipt>,
+    /// The reason the last attempt failed, when one did.
     pub last_failure: Option<String>,
     /// Why the current attempt exists, and what it carries.
     pub reason: AttemptReason,
+    /// The fenced action the current attempt carries, when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
 }
 
+/// The result of claiming an attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimOutcome {
+    /// The attempt is the claimant's.
     Won,
     /// The attempt is already claimed by `holder`.
-    Lost { holder: String },
+    Lost {
+        /// The executor holding the attempt.
+        holder: String,
+    },
     /// Not the Build's next attempt, or the Build is complete and no attempt was opened on it:
     /// nothing to run, nothing recorded.
-    NotOpen { next: Option<u32> },
+    NotOpen {
+        /// The attempt that is open, when one is.
+        next: Option<u32>,
+    },
 }
 
+/// Why a Build state operation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildStateError {
+    /// No fact of the Build is held.
     UnknownBuild(BuildId),
     /// An intent was published twice for one id with different content.
     ConflictingIntent(BuildId),
+    /// The journal could not be read or written.
     Io(String),
     /// A fact that has no wire shape (a step output of a step that commits none, or of another
     /// type than its step's): named with the Build, attempt and step.
     Unencodable(String),
     /// A journal line that does not decode, named with its line number.
-    CorruptJournal { line: usize, reason: String },
+    CorruptJournal {
+        /// The journal line number.
+        line: usize,
+        /// Why it does not decode.
+        reason: String,
+    },
     /// The attempt number is held by another opener's action: `held` is what the number carries,
     /// `wanted` what this open asked for. The number is never shared by two actions.
-    AttemptTaken { build_id: BuildId, attempt: u32, held: String, wanted: String },
+    AttemptTaken {
+        /// The Build.
+        build_id: BuildId,
+        /// The attempt number.
+        attempt: u32,
+        /// What the number carries.
+        held: String,
+        /// What this open asked for.
+        wanted: String,
+    },
 }
 
 impl std::fmt::Display for BuildStateError {
@@ -343,7 +429,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 /// `NodeRestarting` step whose restart (`restart-node:<path>`, the op it carries) has no
 /// `Complete` step yet. Derived from the Build facts on every round, never stored: a successor
 /// primary publishes the same overlays from the same facts.
-pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
+pub(crate) fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
     for p in builds.values() {
         for s in &p.steps {
@@ -383,20 +469,29 @@ pub fn in_flight_ops(builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
 /// operation this build does not recognise.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InFlight {
+    /// The operations in flight.
     pub ops: Vec<rafka_mesh_entity::LifecycleOp>,
+    /// Completed steps whose recorded operation cannot be read.
     pub unrecognised: Vec<UnrecognisedStep>,
 }
 
 /// A completed `NodeDeleting`/`NodeRestarting` step whose recorded operation cannot be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecognisedStep {
+    /// The Build of the step.
     pub build_id: BuildId,
+    /// The attempt of the step.
     pub attempt: u32,
+    /// The recorded operation.
     pub operation: String,
+    /// The step.
     pub step: String,
+    /// Why the operation cannot be read.
     pub reason: String,
 }
 
+/// The durable record of Builds, attempts, claims and step receipts: appended facts and their
+/// folded views.
 #[async_trait]
 pub trait BuildStateAdapter: Send + Sync {
     /// Record an accepted Build. Insert-and-fail on its id.
@@ -411,6 +506,7 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
         Ok(())
     }
+    /// The folded view of `build_id`.
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
@@ -421,7 +517,9 @@ pub trait BuildStateAdapter: Send + Sync {
     /// the primary broadcast, taken now so this admin's view of the Build moves with its own
     /// attempt. Idempotent; decides nothing and broadcasts nothing.
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError>;
+    /// Append a step receipt.
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError>;
+    /// Append an attempt receipt.
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
     /// Every fact, in append order (what the fabric projection carries).
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
@@ -527,6 +625,7 @@ pub struct MemoryBuildStateAdapter {
 }
 
 impl MemoryBuildStateAdapter {
+    /// An empty store.
     pub fn new() -> Self {
         Self::default()
     }
@@ -646,13 +745,13 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 }
 
 /// The journal file name inside an admin's own data dir.
-pub const JOURNAL_FILE: &str = "build-journal.jsonl";
+pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 
 /// `builds.storage`: the same facts, one JSON line each, appended and fsynced in the admin's own
 /// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
 /// before an all-admin restart is still held after it.
 #[derive(Debug)]
-pub struct FileJournal {
+pub(crate) struct FileJournal {
     path: PathBuf,
     /// The replayed facts. Held only for in-memory reads and pushes, never across the disk.
     log: Mutex<FactLog>,
@@ -680,10 +779,6 @@ impl FileJournal {
             }
         }
         Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(()) })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 
     /// Append `fact` as one fsynced line, then count it. The caller holds `writer`.

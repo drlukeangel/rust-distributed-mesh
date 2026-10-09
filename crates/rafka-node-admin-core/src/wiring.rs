@@ -16,13 +16,14 @@ use crate::lifecycle::{LifecycleHook, LifecycleHookSpec};
 use std::sync::Arc;
 
 /// One decorator: takes the part the admin built and returns the part it will use.
-pub type Wrap<T> = Box<dyn FnOnce(Arc<T>) -> Arc<T> + Send>;
+pub(crate) type Wrap<T> = Box<dyn FnOnce(Arc<T>) -> Arc<T> + Send>;
 
 /// Whether an executable that IS a node-admin withholds one of its own leave announcements. The
 /// leave asks it before each publish on each channel (`"mesh"` or `"backbone"`); a `true` answer
 /// skips that one publish call and nothing else: the frame, the topic and the delivery path are
 /// untouched. The product passes none, so every announcement is published.
 pub trait LeaveSeam: Send + Sync {
+    /// Whether the leave withholds announcement `announcement` of `node` on `channel`.
     fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool;
 }
 
@@ -32,9 +33,11 @@ pub trait LeaveSeam: Send + Sync {
 /// that whole catch-up and nothing else: the frames, the topic and the delivery path are untouched.
 /// The product passes none, so every neighbour is caught up.
 pub trait CatchUpSeam: Send + Sync {
+    /// Whether the catch-up of `node` to `neighbour` is withheld.
     fn withholds(&self, node: &str, neighbour: &str) -> bool;
 }
 
+/// The seams a node-admin executable passes to the admin.
 #[derive(Default)]
 pub struct Wiring {
     /// Asked by the Build topic's NeighborUp catch-up before it sends.

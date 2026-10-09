@@ -37,19 +37,22 @@ use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
 
 /// Consecutive reply-deadline expiries on one pooled entry that evict it.
-pub const TIMEOUT_STRIKES_BEFORE_EVICT: u32 = 2;
+pub(crate) const TIMEOUT_STRIKES_BEFORE_EVICT: u32 = 2;
 
 /// One pooled connection's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PoolKey {
+    /// The caller's execution scope.
     pub scope: Option<String>,
+    /// The peer's Iroh public key.
     pub peer: iroh::PublicKey,
+    /// The incarnation of the peer's birth the connection reached.
     pub incarnation: IncarnationId,
 }
 
 impl PoolKey {
     /// Does `node` (the resolver's answer now) still name this exact birth?
-    pub fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
+    pub(crate) fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
         node.is_some_and(|n| n.endpoint_id == self.peer && n.incarnation == self.incarnation)
     }
 
@@ -62,7 +65,9 @@ impl PoolKey {
 /// against the resolver and pooled, until released.
 #[derive(Default)]
 pub struct Failpoint {
+    /// Notified when the dial has connected and stopped at the failpoint.
     pub reached: Notify,
+    /// Notified to let the stopped dial continue.
     pub release: Notify,
 }
 
@@ -74,7 +79,7 @@ impl std::fmt::Debug for Failpoint {
 
 /// How a dial ended, for every caller waiting on it.
 #[derive(Debug, Clone)]
-pub enum DialError {
+pub(crate) enum DialError {
     /// The birth moved while the dial ran, or before it pooled.
     Superseded,
     /// This caller's own deadline passed first (the dial may run on for others).
@@ -103,7 +108,7 @@ pub struct Pool {
 }
 
 /// What a dial needs to run on its own.
-pub struct DialSpec {
+pub(crate) struct DialSpec {
     pub endpoint: Endpoint,
     pub resolver: Arc<dyn NodeResolver>,
     pub target: NodeTarget,
@@ -134,7 +139,7 @@ impl Pool {
 
     /// Evict every pooled connection and cancel every dial of `node`'s peer
     /// whose target `node` no longer names.
-    pub fn purge_stale(&self, node: &ResolvedNode) {
+    pub(crate) fn purge_stale(&self, node: &ResolvedNode) {
         let stale = |k: &PoolKey| k.peer == node.endpoint_id && !k.is_current(Some(node));
         let gone: Vec<PoolKey> = {
             let mut conns = self.inner.conns.lock().unwrap();
@@ -168,7 +173,7 @@ impl Pool {
 
     /// The pooled connection for `key`, or the outcome of the one dial for
     /// it (started here or already in flight). `true` when reused.
-    pub async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec, deadline: Instant) -> Result<(Connection, bool), DialError> {
+    pub(crate) async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec, deadline: Instant) -> Result<(Connection, bool), DialError> {
         if let Some(c) = self.pooled(key) {
             return Ok((c, true));
         }
@@ -269,7 +274,7 @@ impl Pool {
     }
 
     /// A reply deadline expired on `conn`. The second in a row evicts it; `true` when it did.
-    pub fn timed_out(&self, key: &PoolKey, conn: &Connection) -> bool {
+    pub(crate) fn timed_out(&self, key: &PoolKey, conn: &Connection) -> bool {
         let strikes = {
             let mut s = self.inner.strikes.lock().unwrap();
             let n = s.entry(key.clone()).or_insert(0);

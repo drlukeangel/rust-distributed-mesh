@@ -112,9 +112,11 @@ impl AttemptContexts {
 pub struct ClaimDoor {
     /// This admin's path.name.
     pub me: PathName,
+    /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// This admin's Build log: the fabric-primary's own, when it holds the seat.
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// The observability contexts of the attempts it decided.
     pub contexts: Arc<AttemptContexts>,
 }
 
@@ -195,6 +197,7 @@ impl ClaimDoor {
     }
 }
 
+/// The door a running admin fills once it holds a view.
 pub type ClaimSlot = Arc<OnceLock<Arc<ClaimDoor>>>;
 
 /// Serve `BuildClaim` on this admin. `slot` is filled once the admin holds a view; until then a
@@ -215,17 +218,32 @@ pub fn serve(b: ServerBuilder, slot: ClaimSlot) -> ServerBuilder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claimed {
     /// The attempt is the executor's; `context` is the attempt's.
-    Won { context: CallContext },
-    Lost { holder: String },
-    NotOpen { next: Option<u32> },
+    Won {
+        /// The attempt's observability context.
+        context: CallContext,
+    },
+    /// The attempt is held by another executor.
+    Lost {
+        /// The executor holding the attempt.
+        holder: String,
+    },
+    /// The attempt is not the Build's next, or the Build is complete.
+    NotOpen {
+        /// The open attempt, when there is one.
+        next: Option<u32>,
+    },
     /// The claim could not be put to the fabric-primary, or it answered something that is not a
     /// decision. The attempt does not run.
-    Undecided { reason: String },
+    Undecided {
+        /// Why the claim was not decided.
+        reason: String,
+    },
 }
 
 /// Puts an executor's claim to the fabric-primary.
 #[async_trait::async_trait]
 pub trait AttemptClaimer: Send + Sync {
+    /// Put the claim of `attempt` of `build_id` by `executor` to the fabric primary.
     async fn claim(&self, executor: &str, build_id: &BuildId, attempt: u32) -> Claimed;
 }
 
@@ -255,11 +273,17 @@ impl AttemptClaimer for DoorClaimer {
 /// The claimer of a running node-admin: the fabric-primary of its view decides, in process when
 /// that is this admin and over Node RPC otherwise.
 pub struct FabricPrimaryClaimer {
+    /// This admin's `path.name`.
     pub me: PathName,
+    /// This admin's node id.
     pub node_id: NodeId,
+    /// This admin's incarnation.
     pub incarnation: IncarnationId,
+    /// This admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
+    /// The door that decides a claim in process when this admin is the fabric primary.
     pub door: Arc<ClaimDoor>,
+    /// The client a claim to another fabric primary is made through.
     pub client: Arc<NodeRpcClient>,
 }
 

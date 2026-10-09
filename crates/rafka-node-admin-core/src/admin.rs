@@ -1,4 +1,4 @@
-//! The node-admin runtime (`rafka-node-admin`; `docs/i143/design.md` §3–§4).
+//! The node-admin runtime (`rafka-node-admin`).
 //!
 //! A node-admin is a fabric member that serves the control API. The first
 //! one bootstraps the fabric (its `MESH_SPAWN_TYPE` becomes fabric policy);
@@ -54,8 +54,11 @@ use tokio::sync::RwLock;
 pub struct AdminConfig {
     /// The Fabric's name (its label) and its identity.
     pub fabric: String,
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// The name of the mesh this admin belongs to.
     pub mesh: String,
+    /// The mesh's minted id, when it is known.
     pub mesh_id: Option<MeshId>,
     /// `RDM_MESH_PRIMARY`: this admin must recover its mesh (node-admin-lifecycle.md §2).
     pub mesh_primary: bool,
@@ -66,7 +69,9 @@ pub struct AdminConfig {
     pub seeds: Vec<(String, SocketAddr)>,
     /// `RDM_FABRIC_ID` was given: the Fabric is named, not new.
     pub fabric_id_named: bool,
+    /// The admin's data directory.
     pub data_dir: PathBuf,
+    /// The directory the node executables are looked up in.
     pub bin_dir: PathBuf,
     /// `MESH_SPAWN_TYPE` as given (normalised by the fabric policy).
     pub spawn_type: Option<String>,
@@ -85,6 +90,8 @@ pub struct AdminConfig {
 }
 
 impl AdminConfig {
+    /// The admin's configuration from the environment `get` reads, refused by name when a variable
+    /// is malformed.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RDM_FABRIC")).unwrap_or_else(|| "fabric1".into());
@@ -245,6 +252,7 @@ pub struct Records {
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRecovery {
+    /// The mesh's name.
     pub mesh: String,
     /// The Rafka-time of the decision.
     pub verdict_rafka_ms: u64,
@@ -273,6 +281,7 @@ impl Records {
         self.peer_recovery.lock().unwrap().clone()
     }
 
+    /// Hold (or clear) the peer mesh being reborn.
     pub fn set_peer_recovery(&self, recovery: Option<PeerRecovery>) {
         *self.peer_recovery.lock().unwrap() = recovery;
     }
@@ -292,6 +301,7 @@ impl Records {
         self.exited.lock().unwrap().insert((node_id.clone(), incarnation.clone()));
     }
 
+    /// Whether the birth's exit was proven by the fabric authority.
     pub fn is_exited(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         self.exited.lock().unwrap().contains(&(node_id.clone(), incarnation.clone()))
     }
@@ -301,6 +311,7 @@ impl Records {
         self.published_degraded.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Hold (or clear) the published `degraded`.
     pub fn set_published_degraded(&self, on: bool) {
         self.published_degraded.store(on, std::sync::atomic::Ordering::SeqCst);
     }
@@ -310,6 +321,7 @@ impl Records {
         self.declare_gate.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Open or close the gate on declaring this admin's Mesh ready.
     pub fn set_declare_gate(&self, open: bool) {
         if self.declare_gate.swap(open, std::sync::atomic::Ordering::SeqCst) != open {
             self.wake.poke();
@@ -335,6 +347,7 @@ impl Records {
         }
     }
 
+    /// The seats held, by node, as `(mesh primary, fabric primary)`, when held.
     pub fn held_seats(&self) -> Option<BTreeMap<NodeId, (bool, bool)>> {
         self.seats.lock().unwrap().held.clone()
     }
@@ -926,6 +939,7 @@ pub fn authority_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
 /// a node publishes `ReadyForTraffic` once it serves, and `Draining` right
 /// after it starts refusing new work with a typed `Draining` (node-rpc §35).
 pub struct MembershipObserver {
+    /// The digest book the observer reads.
     pub book: DigestBook,
     /// The process's one Node RPC client (ruling X), over which the typed drain reaches the
     /// exact birth; `None` only in a cell that observes without a transport.
@@ -1025,24 +1039,38 @@ use crate::fence::FenceOutcome;
 
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
+    /// The provider that realises runtimes.
     pub provider: Arc<dyn DeploymentProvider>,
+    /// The births this admin deployed and awaits a `JoinNode` from.
     pub joins: Arc<crate::join::Joins>,
+    /// The observer of births' membership.
     pub observer: Arc<MembershipObserver>,
+    /// The records this admin holds.
     pub records: Arc<Records>,
+    /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// The facts every launch carries.
     pub template: LaunchTemplate,
+    /// The environment passed to every node-admin launch.
     pub admin_env: BTreeMap<String, String>,
+    /// The directory the node executables are looked up in.
     pub bin_dir: PathBuf,
     /// Explicit executable bindings: when set, every launch runs its bound executable and
     /// `bin_dir` is never consulted.
     pub bindings: Option<rafka_mesh_entity::binding::Validated>,
+    /// The lifecycle transitions of the births this admin executes.
     pub lifecycle: LifecycleTransitionPipeline,
+    /// The runtimes this admin started, by node.
     pub handles: Mutex<HashMap<PathName, (Node, DeploymentHandle)>>,
+    /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
     /// What the views are projected from.
     pub fabric: String,
+    /// The fabric's minted id.
     pub fabric_id: FabricId,
+    /// The provider that runs the fabric's nodes.
     pub fabric_provider: ProviderKind,
+    /// The digest book.
     pub book: DigestBook,
     /// This admin's own path.
     pub me: PathName,
@@ -1059,7 +1087,9 @@ pub struct AdminRunner {
 /// The lifecycle events of a retirement this admin executes, on its own mesh channel and the
 /// backbone; peer primaries forward them onto their meshes.
 pub struct GossipLifecycle {
+    /// This admin's mesh channel.
     pub membership: Membership,
+    /// The backbone.
     pub backbone: Backbone,
 }
 
@@ -1722,10 +1752,15 @@ impl crate::shutdown::Stopper for AdminStopper {
 
 /// A running node-admin: what `run` needs to keep alive and shut down.
 pub struct Running {
+    /// The base of this admin's control API.
     pub api_base: String,
+    /// The control plane the API serves.
     pub control: Arc<ControlPlane>,
+    /// The runner that realises Build operations.
     pub runner: Arc<AdminRunner>,
+    /// The admin's membership.
     pub membership: Membership,
+    /// The admin's own digest.
     pub digest: Arc<Mutex<MeshDigest>>,
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
@@ -1745,12 +1780,6 @@ pub struct Running {
 }
 
 impl Running {
-    /// Leave the fabric the way every node does (node-rpc §35): stop taking
-    /// Build work and say `Draining`, then keep saying `Leaving` for the
-    /// leave linger (`RDM_LEAVE_LINGER_MS`), then close. iroh-gossip
-    /// acknowledges nothing and closing drops what is unsent, so one
-    /// announcement can be lost; an attempt the executor was running is
-    /// continued by the Build's next attempt.
     /// Stop executing and reconciling: no Build attempt and no drift
     /// recovery starts after this. A fabric shutdown does this first, so the
     /// runtimes it stops are not recovered as proven drift.
@@ -1758,6 +1787,12 @@ impl Running {
         self.executor.abort();
     }
 
+    /// Leave the fabric the way every node does (node-rpc §35): stop taking
+    /// Build work and say `Draining`, then keep saying `Leaving` for the
+    /// leave linger (`RDM_LEAVE_LINGER_MS`), then close. iroh-gossip
+    /// acknowledges nothing and closing drops what is unsent, so one
+    /// announcement can be lost; an attempt the executor was running is
+    /// continued by the Build's next attempt.
     pub async fn leave(self) {
         self.executor.abort();
         self.hierarchy.abort();

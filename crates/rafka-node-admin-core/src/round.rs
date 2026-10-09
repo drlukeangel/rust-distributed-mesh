@@ -29,7 +29,9 @@ use std::time::Instant;
 /// A planned birth that has not checked in this round, and why.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Missing {
+    /// Who has not checked in.
     pub who: String,
+    /// Why.
     pub why: &'static str,
 }
 
@@ -51,7 +53,7 @@ pub fn planned(topology: &FabricTopology, mesh: &str) -> Vec<PathName> {
 /// The planned births that have not checked in. `me` is the primary running the round, ready or not
 /// by its own status. `heard` are the digests received from their members since the round began;
 /// `known` every digest held (to tell a birth never heard from one heard before the round).
-pub fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], departed: &dyn Fn(&str) -> bool) -> Vec<Missing> {
+pub(crate) fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, heard: &[MeshDigest], known: &[MeshDigest], departed: &dyn Fn(&str) -> bool) -> Vec<Missing> {
     let mut out = Vec::new();
     for path in planned {
         let who = path.to_string();
@@ -85,7 +87,7 @@ pub fn missing_members(planned: &[PathName], me: &PathName, me_ready: bool, hear
 /// each mesh with its current primary node-admin's birth (`None`: no primary), and whether that
 /// primary is `me`; `my_mesh_done` says whether `me`'s own mesh round is finished. A report counts
 /// only from the exact birth that is the mesh's primary now.
-pub fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], my_mesh_done: bool, reports: &BTreeMap<String, MeshReport>) -> Vec<Missing> {
+pub(crate) fn fabric_missing(meshes: &[(String, Option<IncarnationId>, bool)], my_mesh_done: bool, reports: &BTreeMap<String, MeshReport>) -> Vec<Missing> {
     let mut out = Vec::new();
     for (mesh, primary, is_me) in meshes {
         let who = mesh.clone();
@@ -118,18 +120,24 @@ pub fn recovered(recovery: &PeerRecovery, primary: Option<&IncarnationId>, repor
 
 /// What the driver needs of its admin each hierarchy round.
 pub struct Inputs<'a> {
+    /// The admin's observed topology.
     pub view: &'a Topology,
     /// The accepted Build's planned births of this admin's mesh; `None`: the Build was unreadable.
     pub planned: Option<Vec<PathName>>,
+    /// The digest book.
     pub book: &'a DigestBook,
+    /// The Node RPC client, when there is one.
     pub client: Option<&'a Arc<NodeRpcClient>>,
+    /// The records this admin holds.
     pub records: &'a Records,
 }
 
 /// Which rounds are complete now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Complete {
+    /// Whether the mesh's round is complete.
     pub mesh: bool,
+    /// Whether the fabric's round is complete.
     pub fabric: bool,
 }
 
@@ -157,7 +165,7 @@ struct Round {
 
 /// The rounds of one node-admin: its mesh's while it adopted its mesh's status, the fabric's while
 /// it adopted the fabric's. A round exists exactly while its status is adopted and unpublished.
-pub struct RoundDriver {
+pub(crate) struct RoundDriver {
     me: PathName,
     mesh: Option<Round>,
     fabric: Option<Round>,
@@ -175,7 +183,7 @@ impl RoundDriver {
     /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
     /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
     /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
-    pub fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
+    pub(crate) fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
         let targets = self.changed_mesh_primaries(view, is_fabric_primary);
         if !targets.is_empty() {
             send_down(&self.me, "fabric", &view.fabric.name, targets, client);
@@ -183,7 +191,7 @@ impl RoundDriver {
     }
 
     /// The mesh primaries to send the down op now, recorded as addressed.
-    pub fn changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
+    pub(crate) fn changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
         if !is_fabric_primary {
             self.addressed.clear();
             return Vec::new();
@@ -467,8 +475,6 @@ mod tests {
         }
         assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
     }
-
-    const NONE: Announced = Announced { mesh_awaiting_round: false, fabric_awaiting_round: false };
 
     // @feature: node-lifecycle
     #[tokio::test]

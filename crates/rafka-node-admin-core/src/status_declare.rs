@@ -57,19 +57,19 @@ impl DeclareWake {
 
     /// The authority `from` sent this admin its down op: every declaration owed to it is sent
     /// again, whatever its last outcome.
-    pub fn addressed_by(&self, from: &NodeId) {
+    pub(crate) fn addressed_by(&self, from: &NodeId) {
         self.addressed.lock().unwrap().insert(from.clone());
         self.poke();
     }
 
     /// Wait for a poke.
-    pub async fn woken(&self) {
+    pub(crate) async fn woken(&self) {
         self.notify.notified().await;
     }
 
     /// The authorities that addressed this admin since the last call; a down op arriving after
     /// the take is kept for the next round.
-    pub fn take_addressed(&self) -> BTreeSet<NodeId> {
+    pub(crate) fn take_addressed(&self) -> BTreeSet<NodeId> {
         std::mem::take(&mut *self.addressed.lock().unwrap())
     }
 }
@@ -91,7 +91,7 @@ impl Destination {
 
 /// The last send of one declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sent {
+pub(crate) struct Sent {
     pub to: Destination,
     /// A typed reply came back: terminal until an eligible event.
     pub typed: bool,
@@ -117,7 +117,7 @@ pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addre
 
 /// One declaration this admin owes, by natural key.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Key {
+pub(crate) enum Key {
     /// This admin's own birth: `(incarnation, state)`.
     OwnState(String, NodeState),
     /// This admin's Mesh: `(mesh_id, state)`.
@@ -149,7 +149,7 @@ pub struct Pending {
 /// key answered by one authority is owed again when the view names another: the seat moved, and
 /// the new authority answers `AlreadyApplied` or applies it, never assumes it.
 #[derive(Debug, Default)]
-pub struct Declarer {
+pub(crate) struct Declarer {
     pending: Mutex<BTreeMap<Key, Pending>>,
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
@@ -162,7 +162,7 @@ impl Declarer {
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
-    pub fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
+    pub(crate) fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
         self.requests.lock().unwrap().entry(key.clone()).or_insert((to.clone(), request.clone()));
         if self.done.lock().unwrap().contains_key(&key) {
             return;
@@ -170,10 +170,12 @@ impl Declarer {
         self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None });
     }
 
+    #[cfg(test)]
     pub fn answered(&self, key: &Key) -> Option<String> {
         self.done.lock().unwrap().get(key).map(|(o, _, _)| o.clone())
     }
 
+    #[cfg(test)]
     pub fn owed(&self) -> usize {
         self.pending.lock().unwrap().len()
     }
@@ -182,7 +184,7 @@ impl Declarer {
     /// node holds the seat, or the same node holds it in a new birth. What an authority applied for
     /// a Mesh report is memory of its birth, so a restart (same NodeId, new incarnation) must be
     /// told again; an authority whose birth the view does not yet name changes nothing.
-    pub fn reowe_moved(&self, me: &PathName, view: &Topology) {
+    pub(crate) fn reowe_moved(&self, me: &PathName, view: &Topology) {
         let mut done = self.done.lock().unwrap();
         let mut pending = self.pending.lock().unwrap();
         let moved: Vec<Key> = done
@@ -309,7 +311,7 @@ impl Declarer {
     /// it is not its Mesh's admin primary, a fabric event once it is not the fabric-primary. A
     /// key withdrawn is forgotten whole, so holding the seat again owes it afresh. A view that
     /// names no holder of the seat withdraws nothing: the seat is unknown, not moved.
-    pub fn withdraw_unowned(&self, me: &PathName, view: &Topology) {
+    pub(crate) fn withdraw_unowned(&self, me: &PathName, view: &Topology) {
         let holder = |key: &Key| match key {
             Key::OwnState(..) => None,
             Key::Mesh(..) => Some(view.cohort_primary(&me.mesh, NodeKind::NodeAdmin)),
@@ -335,7 +337,7 @@ impl Declarer {
     }
 
     /// The send of `key` to `target` ended without finishing it; `typed` says a typed reply came back.
-    pub fn record_sent(&self, key: &Key, target: &crate::model::Node, typed: bool) {
+    pub(crate) fn record_sent(&self, key: &Key, target: &crate::model::Node, typed: bool) {
         if let Some(held) = self.pending.lock().unwrap().get_mut(key) {
             held.sent = Some(Sent { to: Destination::of(target), typed, route_lost: false });
         }
@@ -351,7 +353,7 @@ impl Declarer {
 
 /// The declarations an admin owes from its view and its own state, derived each round so a
 /// successor or a restarted admin owes the same ones from the same facts.
-pub fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
+pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, once it is ready: to the fabric-primary.
     if own_ready {
         if let Some(my) = view.nodes.iter().find(|n| &n.name == me) {

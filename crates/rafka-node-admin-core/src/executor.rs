@@ -28,6 +28,7 @@ use tokio::sync::RwLock;
 /// Realises one planned operation (the deployment and lifecycle pipelines).
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
+    /// Realise `op` of `attempt` of `build_id`; `Err` names why it failed.
     async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String>;
 }
 
@@ -93,7 +94,7 @@ fn retire_mesh_executor_outside(mesh: &str, t: &Topology) -> Option<PathName> {
 
 /// The admin that executes what is left of a plan: the first operation's
 /// executor, or the fabric primary when nothing is left (it closes the Build).
-pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
+pub(crate) fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
     match ops.first() {
         Some(op) => executor_for(op, t),
         None => t.fabric_primary().map(|n| n.name.clone()),
@@ -104,19 +105,45 @@ pub fn lead_for(ops: &[BuildOperation], t: &Topology) -> Option<PathName> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
     /// Every remaining operation ran: the Build is complete.
-    Converged { attempt: u32, operations: Vec<BuildOperation> },
+    Converged {
+        /// The attempt that completed.
+        attempt: u32,
+        /// The operations it ran.
+        operations: Vec<BuildOperation>,
+    },
     /// The attempt stopped at an operation; a later attempt continues.
-    Failed { attempt: u32, reason: String },
+    Failed {
+        /// The attempt that stopped.
+        attempt: u32,
+        /// Why it stopped.
+        reason: String,
+    },
     /// Another executor holds the attempt this one tried to claim.
-    Lost { attempt: u32, holder: String },
+    Lost {
+        /// The attempt claimed.
+        attempt: u32,
+        /// The executor holding it.
+        holder: String,
+    },
     /// The attempt is not open on this Build (complete, or not its next): nothing ran.
-    NotOpen { attempt: u32 },
+    NotOpen {
+        /// The attempt tried.
+        attempt: u32,
+    },
     /// The attempt ran `operations` and stopped where admin `to` executes.
-    HandedOff { attempt: u32, operations: Vec<BuildOperation>, to: String },
+    HandedOff {
+        /// The attempt that ran.
+        attempt: u32,
+        /// The operations it ran.
+        operations: Vec<BuildOperation>,
+        /// The admin that executes the operation it stopped at.
+        to: String,
+    },
     /// The Build is already complete: nothing to do.
     Finished,
 }
 
+/// Runs the operations of the accepted Build, claiming each attempt before it runs.
 pub struct BuildExecutor {
     /// This node-admin's path.name: the claimant on every attempt it takes.
     pub executor: String,
@@ -124,8 +151,11 @@ pub struct BuildExecutor {
     /// Build persisted before the pointer moved, or never named by it (the accepting admin was lost
     /// in between), is an orphan this admin does not execute.
     pub accepted: Arc<AcceptedStore>,
+    /// The Build state.
     pub builds: Arc<dyn BuildStateAdapter>,
+    /// The observed topology.
     pub topology: Arc<RwLock<Topology>>,
+    /// The runner that realises each operation.
     pub runner: Arc<dyn OperationRunner>,
     /// Puts this admin's claim of an attempt to the fabric-primary. The attempt runs only on a
     /// `Won` it returns; there is no claim from this admin's own log.

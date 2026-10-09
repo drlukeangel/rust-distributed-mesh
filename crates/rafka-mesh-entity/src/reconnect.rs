@@ -16,9 +16,9 @@ use crate::ids::IncarnationId;
 use crate::path::PathName;
 
 /// The backoff of a series' first attempt, ms.
-pub const RECONNECT_BACKOFF_BASE_MS: u64 = 4_000;
+pub(crate) const RECONNECT_BACKOFF_BASE_MS: u64 = 4_000;
 /// The backoff a series is held at once doubling reaches it, ms.
-pub const RECONNECT_BACKOFF_MAX_MS: u64 = 120_000;
+pub(crate) const RECONNECT_BACKOFF_MAX_MS: u64 = 120_000;
 /// The reason a Proxy retired because its Direct came back carries.
 pub const DIRECT_RESTORED: &str = "direct-restored";
 
@@ -59,9 +59,13 @@ pub fn next_due(row: &NodeConnection) -> Option<u64> {
 /// One pending reconnect: this source's series to one destination process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconnectItem {
+    /// The destination end the series reconnects to.
     pub destination: ConnectionEnd,
+    /// The incarnation of the destination process.
     pub destination_incarnation: IncarnationId,
+    /// The recovery series and attempt.
     pub recovery: DirectRecovery,
+    /// When the attempt is due, in milliseconds.
     pub due_ms: u64,
     /// The latest Failed entry the item was reconstructed from.
     pub failed: NodeConnection,

@@ -1,5 +1,4 @@
-//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2;
-//! `docs/i143/design.md` §2.1).
+//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2).
 //!
 //! An election is a projection of converged topology facts, not a voting
 //! protocol: no ballot, term, quorum or election message exists. Every
@@ -44,7 +43,9 @@ pub const ELECTION_KEY: &str = "node_id_crockford";
 /// eligible (committed `ReadyForTraffic`).
 #[derive(Debug, Clone, Copy)]
 pub struct Candidate<'a> {
+    /// The candidate's node id.
     pub node_id: &'a NodeId,
+    /// Whether the candidate is eligible.
     pub ready: bool,
 }
 
@@ -120,6 +121,7 @@ pub struct ElectionLog {
 }
 
 impl ElectionLog {
+    /// A log for the admin `observer`.
     pub fn new(observer: PathName) -> Self {
         Self { observer, last: Mutex::new(BTreeMap::new()), last_mesh: Mutex::new(None), last_fabric: Mutex::new(None), owned_fabric: Mutex::new(false) }
     }

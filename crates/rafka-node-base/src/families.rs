@@ -14,25 +14,75 @@ use std::sync::Arc;
 /// Forwardable: a gateway that cannot reach the broker directly carries it through a peer.
 pub struct BrokerData;
 
+/// The requests of the `broker_data` family.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BrokerDataRequest {
     /// Append `value` under `key`; the broker answers the offset it took.
-    Append { key: String, value: Vec<u8> },
+    Append {
+        /// The key to append under.
+        key: String,
+        /// The bytes to append.
+        value: Vec<u8>,
+    },
     /// Read what `key` holds.
-    Read { key: String },
+    Read {
+        /// The key to read.
+        key: String,
+    },
 }
 
+/// The replies of the `broker_data` family: the two successes and the typed Node RPC refusals.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum BrokerDataReply {
-    Appended { key: String, offset: u64, served_by: String },
-    Value { key: String, value: Option<Vec<u8>>, served_by: String },
+    /// The append succeeded.
+    Appended {
+        /// The key appended under.
+        key: String,
+        /// The offset the append took.
+        offset: u64,
+        /// The node that served the append.
+        served_by: String,
+    },
+    /// The read's answer.
+    Value {
+        /// The key read.
+        key: String,
+        /// What the key holds, `None` when nothing was appended under it.
+        value: Option<Vec<u8>>,
+        /// The node that served the read.
+        served_by: String,
+    },
     // The typed Node RPC refusals (node-rpc.md §34), one variant each.
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound the node is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why the node refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl NodeProtocol for BrokerData {
@@ -83,13 +133,13 @@ pub const PROOF_HANG: &str = "proof:hang";
 pub const PROOF_FAULT: &str = "proof:fault";
 
 /// The product's ledger rows: its own allocations, beside the core ledger.
-pub fn product_ledger() -> Vec<LedgerEntry> {
+pub(crate) fn product_ledger() -> Vec<LedgerEntry> {
     vec![LedgerEntry { op: BrokerData::OP, family: BrokerData::NAME.into(), owner: OpOwner::Product(crate::PRODUCT.into()), state: OpState::Live }]
 }
 
 /// The families `kind` serves, composed into `b`; `served_by` is this node's id, named in every reply. Every kind carries the forwardable families
 /// for others (a gateway is the carrier of `broker_data`); only a broker serves it.
-pub fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
+pub(crate) fn for_kind(kind: NodeKind, served_by: &str, b: ServerBuilder, _client: Arc<NodeRpcClient>) -> ServerBuilder {
     let b = b.ledger(product_ledger()).carry::<BrokerData>();
     match kind {
         NodeKind::Broker => {

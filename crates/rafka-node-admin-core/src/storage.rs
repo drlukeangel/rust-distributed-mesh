@@ -30,17 +30,24 @@ use std::sync::Mutex;
 /// A Mesh's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshRecord {
+    /// The mesh's minted id.
     pub mesh_id: MeshId,
+    /// The mesh's name.
     pub name: String,
 }
 
+/// The durable record of the meshes this admin knows.
 #[async_trait]
 pub trait MeshStorage: Send + Sync {
+    /// The record of the mesh named `name`.
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError>;
+    /// Keep `record`, keyed by its mesh name.
     async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
+    /// Every mesh record held.
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
 }
 
+/// A mesh store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryMeshStorage(Mutex<BTreeMap<String, MeshRecord>>);
 
@@ -65,6 +72,7 @@ const MESH_FORMAT: &str = "mesh-record/1";
 pub struct FileMeshStorage(FileRecords);
 
 impl FileMeshStorage {
+    /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         Ok(Self(FileRecords::open(own_data_dir, "meshes")?))
     }
@@ -88,10 +96,13 @@ impl MeshStorage for FileMeshStorage {
 /// One birth as last known: the admin's own row, or a contact it heard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's `path.name`.
     pub name: PathName,
     /// The incarnation this birth last ran (a restart supersedes it).
     pub incarnation_id: IncarnationId,
+    /// The node's fabric endpoint id.
     pub endpoint_id: EndpointId,
     /// The one address of the birth's Iroh endpoint.
     pub transport_addr: std::net::SocketAddr,
@@ -122,9 +133,13 @@ impl NodeRecord {
 /// (NodeId + IncarnationId), written once by a blind put, never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRow {
+    /// The node's minted id.
     pub node_id: NodeId,
+    /// The node's `path.name`.
     pub name: PathName,
+    /// The incarnation of the birth.
     pub incarnation_id: IncarnationId,
+    /// The runtime the birth ran in.
     pub runtime: rafka_mesh_entity::RuntimeFact,
     /// The data dir the birth reported: where its process runtime records an exit code.
     pub data_dir: Option<String>,
@@ -137,6 +152,8 @@ impl RuntimeRow {
     }
 }
 
+/// The durable record of the births this admin knows: its own row, its contacts and the runtimes it
+/// started.
 #[async_trait]
 pub trait NodesStorage: Send + Sync {
     /// Keep the runtime of one birth (a blind put of its own row).
@@ -145,13 +162,17 @@ pub trait NodesStorage: Send + Sync {
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
     /// This admin's own row; `None` before its first start completed.
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError>;
+    /// Keep `record` as this admin's own row.
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError>;
     /// The births this admin last heard, by NodeId (bootstrap contacts).
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError>;
+    /// Keep `record` as a contact, keyed by its node id.
     async fn put_contact(&self, record: &NodeRecord) -> Result<(), StorageError>;
+    /// Forget the contact `node_id`.
     async fn remove_contact(&self, node_id: &NodeId) -> Result<(), StorageError>;
 }
 
+/// A nodes store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
     runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
@@ -200,6 +221,7 @@ pub struct FileNodesStorage {
 }
 
 impl FileNodesStorage {
+    /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         Ok(Self { own: FileRecords::open(own_data_dir, "nodes")?, contacts: FileRecords::open(own_data_dir, "nodes/contacts")?, runtimes: FileRecords::open(own_data_dir, "nodes/runtimes")? })
     }
@@ -232,11 +254,15 @@ impl NodesStorage for FileNodesStorage {
 
 // ---------------------------------------------------------------- connections.storage
 
+/// The durable record of the connection facts a node holds as a source: one resident entry per
+/// index and a raw history.
 #[async_trait]
 pub trait ConnectionsStorage: Send + Sync {
     /// Keep `fact` as the latest for its (source, destination, kind).
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError>;
+    /// Every resident connection fact.
     async fn connections(&self) -> Result<Vec<NodeConnection>, StorageError>;
+    /// Forget the resident entry at `index`.
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError>;
     /// Append `fact` to the raw connection log (connections.md section 3): the history every
     /// fact joins, while the index above holds one entry per (source, destination, kind).
@@ -245,6 +271,7 @@ pub trait ConnectionsStorage: Send + Sync {
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError>;
 }
 
+/// A connections store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryConnectionsStorage(Mutex<BTreeMap<ConnectionIndex, NodeConnection>>, Mutex<Vec<NodeConnection>>);
 
@@ -285,6 +312,7 @@ fn connection_key(i: &ConnectionIndex) -> String {
 pub struct FileConnectionsStorage(FileRecords, std::path::PathBuf, tokio::sync::Mutex<()>);
 
 impl FileConnectionsStorage {
+    /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         let records = FileRecords::open(own_data_dir, "connections")?;
         Ok(Self(records, own_data_dir.join("connections").join("history.jsonl"), tokio::sync::Mutex::new(())))

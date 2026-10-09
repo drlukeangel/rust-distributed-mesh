@@ -11,6 +11,8 @@
 //!
 //! The base carries no application knowledge. A role (`broker`, `gateway`, `compute`,
 //! `registry`) is a `NodeKind` the product names, the families it serves, and nothing else.
+#![deny(missing_docs)]
+
 
 pub use rafka_mesh_entity::launch::Launch;
 pub use rafka_mesh_entity::NodeKind;
@@ -21,21 +23,24 @@ pub mod families;
 pub mod leadership;
 
 use anyhow::{anyhow, Result};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, OpOwner};
+use rafka_node_rpc_contract::catalog::CatalogEntry;
 use std::sync::Arc;
 
 /// The product family every role's own tags are ledgered under.
-pub const PRODUCT: &str = "rdm-roles";
+pub(crate) const PRODUCT: &str = "rdm-roles";
 
 /// One live legacy op a product serves through a transitional adapter until its named cut. The
 /// proof product keeps one (the data-frame op), so the adapter seam is exercised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LegacyAdapter {
+    /// The legacy op's tag byte.
     pub op: u8,
+    /// The op's catalog name.
     pub name: &'static str,
     /// The product the core ledger reserves the op for: a transitional entry seals under the
     /// ledger's owner, never under the composing product's name.
     pub owner: &'static str,
+    /// The migration unit that retires the adapter.
     pub migration_unit: &'static str,
 }
 
@@ -46,16 +51,20 @@ pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter { op: 0x12, name: 
 /// it serves (`families::for_kind`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Role {
+    /// The node kind this process runs as.
     pub kind: NodeKind,
 }
 
 impl Role {
+    /// The broker role: kind `Broker`.
     pub fn broker() -> Self {
         Self { kind: NodeKind::Broker }
     }
+    /// The gateway role: kind `Gateway`.
     pub fn gateway() -> Self {
         Self { kind: NodeKind::Gateway }
     }
+    /// The compute role: kind `Compute`.
     pub fn compute() -> Self {
         Self { kind: NodeKind::Compute }
     }
@@ -64,6 +73,7 @@ impl Role {
         Self { kind: NodeKind::RpcNode }
     }
 
+    /// The role's name, the kind's name.
     pub fn name(self) -> &'static str {
         self.kind.name()
     }
@@ -90,17 +100,21 @@ pub fn compose(role: Role, served_by: &str, b: ServerBuilder, client: Arc<rafka_
 /// generic rpc node serves them: the proof store (the data-dir KV oracle), the resolve probe and
 /// the declare probe. Proof families, nothing of a product's domain.
 pub struct Oracles {
+    /// The data-dir key-value store the proof store protocol serves.
     pub store: Arc<rafka_node_rpc_testkit::proof_store::FileProofStore>,
     /// The declare oracle calls out through the process's one client, set once the node runs.
     pub declare_client: Arc<std::sync::OnceLock<rafka_node_rpc_testkit::node_rpc::ProcessNodeRpc>>,
 }
 
 impl Oracles {
+    /// Open the oracles under `launch`'s data directory; refused by name when the proof store
+    /// cannot be opened.
     pub fn open(launch: &Launch) -> Result<Self> {
         let store = rafka_node_rpc_testkit::proof_store::FileProofStore::open(&launch.data_dir).map_err(|e| anyhow!("the proof store refused to open: {e}"))?;
         Ok(Self { store: Arc::new(store), declare_client: Arc::new(std::sync::OnceLock::new()) })
     }
 
+    /// Add the proof store, resolve probe and declare probe protocols to `b`.
     pub fn serve(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder {
         use rafka_node_rpc_testkit::{declare_probe, proof_store, resolve_probe};
         declare_probe::serve(resolve_probe::serve(proof_store::serve(b, self.store.clone(), launch), resolver, launch), self.declare_client.clone(), launch)
@@ -150,19 +164,4 @@ pub async fn run(role: Role) -> Result<()> {
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
     running.stop(leave_linger_from_env()).await;
     Ok(())
-}
-
-/// What the sealed catalog of a `role` process holds, by op: core, the role's families, the
-/// adapters. Pure: the composition sealed without a process (a throwaway client on a loopback
-/// endpoint, used by nothing).
-pub async fn catalog_of(role: Role) -> Result<Vec<(u8, String, OpOwner, EntryKind)>> {
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await?;
-    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep.clone(), Arc::new(rafka_node_rpc::StaticResolver::new())));
-    let sealed = compose(role, "catalog", rafka_node_rpc_testkit::node::core_protocols(ServerBuilder::new(), client.clone(), None), client)
-        .seal(rafka_node_rpc::ServedBirth { node_id: "catalog".into(), incarnation: "catalog".into() })
-        .map_err(|e| anyhow!("the role's catalog does not seal: {e:?}"))?;
-    let mut out: Vec<_> = sealed.catalog().entries().map(|e| (e.op, e.name.clone(), e.owner.clone(), e.kind.clone())).collect();
-    out.sort_by_key(|e| e.0);
-    ep.close().await;
-    Ok(out)
 }

@@ -12,9 +12,20 @@ use std::path::{Path, PathBuf};
 /// Why a storage read or write failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageError {
-    Io { file: String, reason: String },
+    /// The file could not be read or written.
+    Io {
+        /// The file.
+        file: String,
+        /// Why it failed.
+        reason: String,
+    },
     /// A file this build does not recognise: refused, never read as a value.
-    Unrecognised { file: String, reason: String },
+    Unrecognised {
+        /// The file.
+        file: String,
+        /// Why it is not recognised.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for StorageError {
@@ -42,6 +53,7 @@ pub struct FileRecords {
 }
 
 impl FileRecords {
+    /// Open (creating) the directory `dir` under the admin's data directory.
     pub fn open(own_data_dir: &Path, dir: &str) -> Result<Self, StorageError> {
         let dir = own_data_dir.join(dir);
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;

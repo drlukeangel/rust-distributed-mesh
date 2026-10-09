@@ -16,7 +16,10 @@ pub enum FenceOutcome {
     /// birth when the provider inspected its exact runtime as exited: that inspection is the
     /// proof its departure is published from. `None` when there was no birth, or this admin
     /// holds no runtime for it (no proof, so no departure is published).
-    Clear { gone: Option<Node> },
+    Clear {
+        /// The previous birth, when its exact runtime was inspected as exited.
+        gone: Option<Node>,
+    },
     /// The previous birth answers directly: it is alive and keeps the path.
     Alive,
     /// The previous birth does not answer, but a runtime at the path still runs: silence is

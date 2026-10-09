@@ -15,7 +15,7 @@ use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
 /// Hands each event to an OTLP logger (see the module doc).
-pub struct LogAdapter {
+pub(crate) struct LogAdapter {
     logger: opentelemetry_sdk::logs::Logger,
 }
 

@@ -24,15 +24,28 @@ use crate::protocol::NodeProtocol;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
 
+/// The BuildClaim protocol: an executor asks the fabric primary for the right to run one attempt of
+/// a Build.
 pub struct BuildClaim;
 
+/// A BuildClaim call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildClaimRequest {
     /// The executor asks to take attempt `attempt` of Build `build_id`.
-    ClaimAttempt { build_id: String, attempt: u32, executor_node_id: NodeId, executor_incarnation: IncarnationId },
+    ClaimAttempt {
+        /// The Build.
+        build_id: String,
+        /// The attempt claimed.
+        attempt: u32,
+        /// The claiming executor's node id.
+        executor_node_id: NodeId,
+        /// The claiming executor's incarnation.
+        executor_incarnation: IncarnationId,
+    },
 }
 
 impl BuildClaimRequest {
+    /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
         match self {
             Self::ClaimAttempt { .. } => "claim-attempt",
@@ -40,26 +53,64 @@ impl BuildClaimRequest {
     }
 }
 
+/// The fabric primary's answer to a claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildClaimReply {
     /// The attempt is the executor's. `context` is the attempt's observability context.
-    Won { context: CallContext },
+    Won {
+        /// The attempt's observability context.
+        context: CallContext,
+    },
     /// The attempt is held by `holder` (a node-admin's path.name).
-    Lost { holder: String },
+    Lost {
+        /// The node-admin holding the attempt.
+        holder: String,
+    },
     /// The attempt is not the Build's next, or the Build is complete; `next` is the attempt that
     /// is open, when one is.
-    NotOpen { next: Option<u32> },
+    NotOpen {
+        /// The open attempt, when there is one.
+        next: Option<u32>,
+    },
     /// The receiver is not the fabric-primary; `fabric_primary` is the one it sees, if any.
-    NotFabricPrimary { fabric_primary: Option<String> },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    NotFabricPrimary {
+        /// The fabric primary the receiver sees, when it sees one.
+        fabric_primary: Option<String>,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The receiver is not ready to serve.
+    NotReady {
+        /// Why the receiver is not ready.
+        reason: String,
+    },
+    /// The receiver is at its admission bound.
+    Busy {
+        /// Which bound it is at.
+        reason: String,
+    },
+    /// The receiver is draining and takes no new work.
+    Draining {
+        /// Why it refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl BuildClaimReply {
+    /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Won { .. } => "won",

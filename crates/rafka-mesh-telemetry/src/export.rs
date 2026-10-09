@@ -20,10 +20,10 @@ use std::time::Duration;
 /// [`crate::flush_before_exit`]. Past it the wait is abandoned and the process goes on; it is not
 /// configurable (the SDK reads its own bound from `OTEL_BSP_EXPORT_TIMEOUT`, which is why the
 /// bound is held here and not there).
-pub const DRAIN_BOUND: Duration = Duration::from_secs(2);
+pub(crate) const DRAIN_BOUND: Duration = Duration::from_secs(2);
 
 /// The longest one export request to the collector may take before it counts as failed.
-pub const EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
+pub(crate) const EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Spans and log records an unreachable collector made the exporters drop, since process start.
 static DROPPED_BY_OUTAGE: AtomicU64 = AtomicU64::new(0);
@@ -33,19 +33,19 @@ static SIGNALS_DOWN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 
 /// Whether the last export of any signal failed and none has succeeded since: what is queued for
 /// the collector is going to be dropped, so no exit waits for it.
-pub fn collector_is_down() -> bool {
+pub(crate) fn collector_is_down() -> bool {
     SIGNALS_DOWN.load(Ordering::SeqCst) > 0
 }
 
 /// Spans and log records dropped because an export to the collector failed (an outage). Records
 /// dropped because a queue was full are named by the SDK's own one-time warning.
-pub fn dropped_by_outage() -> u64 {
+pub(crate) fn dropped_by_outage() -> u64 {
     DROPPED_BY_OUTAGE.load(Ordering::Relaxed)
 }
 
 /// The dedicated export runtime: a current-thread tokio runtime parked on its own OS thread.
 #[derive(Debug, Clone)]
-pub struct ExportRuntime {
+pub(crate) struct ExportRuntime {
     handle: tokio::runtime::Handle,
 }
 
@@ -140,7 +140,7 @@ impl Outage {
 
 /// A span exporter that reports an outage once per transition and counts what it drops.
 #[derive(Debug)]
-pub struct WatchedSpans<E> {
+pub(crate) struct WatchedSpans<E> {
     inner: E,
     outage: Arc<Outage>,
 }
@@ -178,7 +178,7 @@ impl<E: SpanExporter> SpanExporter for WatchedSpans<E> {
 
 /// A log exporter that reports an outage once per transition and counts what it drops.
 #[derive(Debug)]
-pub struct WatchedLogs<E> {
+pub(crate) struct WatchedLogs<E> {
     inner: E,
     outage: Arc<Outage>,
 }
@@ -240,7 +240,7 @@ pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
 /// none of the SDK's, tonic's or the HTTP stack's, bar the SDK's one-time WARN that names a full
 /// queue. An export failure reaches stderr as the single line [`WatchedSpans`]/[`WatchedLogs`]
 /// print per outage transition, and never re-enters the pipeline that failed.
-pub fn admits_source(meta: &tracing::Metadata<'_>) -> bool {
+pub(crate) fn admits_source(meta: &tracing::Metadata<'_>) -> bool {
     let t = meta.target();
     let internal = t.starts_with("opentelemetry") || t.starts_with("tonic") || t.starts_with("h2") || t.starts_with("hyper") || t.starts_with("tower") || t.starts_with("reqwest");
     !(internal && !(t.starts_with("opentelemetry") && *meta.level() == tracing::Level::WARN))

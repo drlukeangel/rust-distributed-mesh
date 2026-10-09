@@ -26,6 +26,7 @@ use std::fmt;
 pub struct BuildId(pub String);
 
 impl BuildId {
+    /// A fresh Build id.
     pub fn mint() -> Self {
         Self(format!("bld-{}", hex::encode(rand::random::<[u8; 12]>())))
     }
@@ -37,17 +38,24 @@ impl fmt::Display for BuildId {
     }
 }
 
+/// The desired counts of one mesh's nodes by kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeshDesired {
+    /// The mesh's name.
     pub name: String,
+    /// The number of node-admins.
     pub node_admin: u32,
+    /// The number of rpc nodes.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rpc_node: u32,
+    /// The number of brokers.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub broker: u32,
+    /// The number of gateways.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub gateway: u32,
+    /// The number of compute nodes.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub compute: u32,
 }
@@ -68,6 +76,7 @@ impl MeshDesired {
         ]
     }
 
+    /// The desired count of `kind`.
     pub fn count(&self, kind: NodeKind) -> u32 {
         self.counts().into_iter().find(|(k, _)| *k == kind).map(|(_, n)| n).unwrap_or(0)
     }
@@ -81,6 +90,7 @@ impl MeshDesired {
         d
     }
 
+    /// The desired count of `kind`, mutably.
     pub fn count_mut(&mut self, kind: NodeKind) -> &mut u32 {
         match kind {
             NodeKind::NodeAdmin => &mut self.node_admin,
@@ -92,10 +102,13 @@ impl MeshDesired {
     }
 }
 
+/// The desired shape of the whole fabric.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FabricDesired {
+    /// The fabric's name.
     pub fabric: String,
+    /// The desired meshes.
     pub meshes: Vec<MeshDesired>,
 }
 
@@ -105,56 +118,96 @@ pub struct FabricDesired {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuildIntent {
     /// The whole fabric's desired meshes and counts (`POST /api/build`).
-    ReconcileFabric { desired: FabricDesired },
+    ReconcileFabric {
+        /// The fabric's desired meshes.
+        desired: FabricDesired,
+    },
     /// One mesh's desired counts (grow/shrink).
-    ReconcileMesh { desired: MeshDesired },
+    ReconcileMesh {
+        /// The mesh's desired counts.
+        desired: MeshDesired,
+    },
     /// `POST /api/nodes/spawn`. Pinned: `target` is the node it adds.
     AddNode {
+        /// The mesh to add the node to.
         mesh: String,
+        /// The kind of node to add.
         node_kind: NodeKind,
+        /// The node to add, when pinned.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<PathName>,
     },
     /// `DELETE /api/nodes/{name}`. Pinned: `incarnation` is the birth it removes.
     RemoveNode {
+        /// The node to remove.
         node: PathName,
+        /// The birth to remove, when pinned.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         incarnation: Option<IncarnationId>,
     },
     /// `POST /api/nodes/{name}/restart`. Pinned: `from_incarnation` is the
     /// birth it replaces.
     RestartNode {
+        /// The node to restart.
         node: PathName,
+        /// The birth to replace, when pinned.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_incarnation: Option<IncarnationId>,
     },
     /// Retire the node and create a new logical node at the same path.
-    ReplaceNode { node: PathName },
+    ReplaceNode {
+        /// The node to replace.
+        node: PathName,
+    },
     /// `POST /api/meshes`.
-    CreateMesh { desired: MeshDesired },
+    CreateMesh {
+        /// The mesh's desired counts.
+        desired: MeshDesired,
+    },
     /// `DELETE /api/meshes/{id|name}`.
-    RemoveMesh { mesh: String },
+    RemoveMesh {
+        /// The mesh to remove.
+        mesh: String,
+    },
 }
 
 /// One idempotent operation. Its key is a stable logical identity, so a
 /// re-plan never duplicates an operation that observed state already satisfies.
+/// One idempotent operation of a Build plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BuildOperation {
-    CreateMesh { mesh: String },
+    /// Create a mesh.
+    CreateMesh {
+        /// The mesh to create.
+        mesh: String,
+    },
     /// Create a node at `node`. `replaces` names the birth at the path an accepted Replace
     /// attempt proved exited: its departure (NodeDeleted) is published from the provider's proof
     /// of that exact birth before the new one is born.
     CreateNode {
+        /// The node to create.
         node: PathName,
+        /// The birth at the path an accepted Replace attempt proved exited.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         replaces: Option<IncarnationId>,
     },
-    RestartNode { node: PathName },
+    /// Restart a node's exact birth.
+    RestartNode {
+        /// The node to restart.
+        node: PathName,
+    },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
-    RetireNode { node: PathName },
-    RetireMesh { mesh: String },
+    RetireNode {
+        /// The node to retire.
+        node: PathName,
+    },
+    /// Retire a whole mesh.
+    RetireMesh {
+        /// The mesh to retire.
+        mesh: String,
+    },
 }
 
 impl BuildOperation {
@@ -170,8 +223,10 @@ impl BuildOperation {
     }
 }
 
+/// The ordered operations that realize a Build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildPlan {
+    /// The operations, in execution order.
     pub operations: Vec<BuildOperation>,
 }
 
@@ -179,24 +234,80 @@ pub struct BuildPlan {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "kebab-case")]
 pub enum BuildReject {
-    InvalidMeshName { mesh: String },
-    DuplicateMesh { mesh: String },
-    MeshWithoutAdmin { mesh: String },
-    UnknownMesh { mesh: String },
-    UnknownNode { node: String },
-    NodeNotLive { node: String },
-    WouldLeaveMeshWithoutAdmin { mesh: String },
-    MeshAlreadyExists { mesh: String },
-    FabricMismatch { requested: String, fabric: String },
+    /// The mesh name is not a valid mesh name.
+    InvalidMeshName {
+        /// The name.
+        mesh: String,
+    },
+    /// The Build names the mesh twice.
+    DuplicateMesh {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The mesh is desired with no node-admin.
+    MeshWithoutAdmin {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The mesh is not one the fabric holds.
+    UnknownMesh {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The node is not one the fabric holds.
+    UnknownNode {
+        /// The node.
+        node: String,
+    },
+    /// The node is not live.
+    NodeNotLive {
+        /// The node.
+        node: String,
+    },
+    /// The change would leave the mesh without a node-admin.
+    WouldLeaveMeshWithoutAdmin {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The mesh already exists.
+    MeshAlreadyExists {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The request names another fabric than this one.
+    FabricMismatch {
+        /// The fabric the request names.
+        requested: String,
+        /// This fabric.
+        fabric: String,
+    },
+    /// The desired fabric holds no mesh.
     EmptyFabric,
     /// A Build tried to choose a provider; provider is fabric policy (PRD §1.7).
-    ProviderInBuild { fabric_provider: crate::model::ProviderKind },
+    ProviderInBuild {
+        /// The fabric's provider.
+        fabric_provider: crate::model::ProviderKind,
+    },
     /// A mesh's paths and its per-path meta disagree: a materialized path with no meta, or meta
     /// for a path the mesh does not hold.
-    NodeMetaMismatch { mesh: String, missing: Vec<String>, extra: Vec<String> },
+    NodeMetaMismatch {
+        /// The mesh.
+        mesh: String,
+        /// The paths with no meta.
+        missing: Vec<String>,
+        /// The meta for paths the mesh does not hold.
+        extra: Vec<String>,
+    },
     /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
     /// control-plane visibility fences lifecycle mutation for every node of it (R-D1).
-    UnheardMesh { node: String, mesh: String, unheard_ms: u64 },
+    UnheardMesh {
+        /// The node.
+        node: String,
+        /// The mesh the node belongs to.
+        mesh: String,
+        /// How long the mesh has gone unheard, in milliseconds.
+        unheard_ms: u64,
+    },
 }
 
 impl BuildReject {

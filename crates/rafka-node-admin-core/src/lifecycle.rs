@@ -25,30 +25,44 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+/// What a transition changes the status of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleScope {
+    /// A node.
     Node,
+    /// A mesh.
     Mesh,
+    /// The fabric.
     Fabric,
 }
 
+/// A node, mesh or fabric status a transition moves between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LifecycleState {
+    /// Created and not yet ready for traffic.
     Pending,
+    /// Ready: it takes traffic.
     ReadyForTraffic,
+    /// Draining: it takes no new work.
     Draining,
+    /// Leaving: it has announced its departure.
     Leaving,
+    /// Dead: it is gone.
     Dead,
+    /// Retired: it has been taken out of service.
     Retired,
 }
 
 /// Which transition a hook attaches to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TransitionKey {
+    /// The scope of the status.
     pub scope: LifecycleScope,
+    /// The state the status moves from.
     pub from: LifecycleState,
+    /// The state the status moves to.
     pub to: LifecycleState,
 }
 
@@ -56,14 +70,20 @@ pub struct TransitionKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookPhase {
+    /// Before the transition's eligibility is evaluated.
     BeforeEligibility,
+    /// Before eligibility, when the transition enters `Draining`.
     BeforeDrain,
+    /// After eligibility holds and before the commit.
     AfterEligibilityBeforeCommit,
+    /// After the commit.
     AfterTransition,
+    /// After the commit, when the transition entered `Draining`.
     AfterDrain,
 }
 
 impl HookPhase {
+    /// The phase's name as it appears in receipts and spans.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BeforeEligibility => "before_eligibility",
@@ -78,6 +98,7 @@ impl HookPhase {
 /// The fabric's desired shape, as hook predicates see it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShapeFacts {
+    /// The number of meshes the fabric's desired state names.
     pub desired_meshes: u32,
 }
 
@@ -85,13 +106,18 @@ pub struct ShapeFacts {
 /// explicit predicates exist for genuinely shape-specific hooks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapePredicate {
+    /// Every shape.
     Always,
+    /// A fabric of exactly one mesh.
     SingleMesh,
+    /// A fabric of more than one mesh.
     MultiMesh,
+    /// A fabric of at least this many meshes.
     MinMeshes(u32),
 }
 
 impl ShapePredicate {
+    /// Whether the predicate holds for `shape`.
     pub fn holds(&self, shape: &ShapeFacts) -> bool {
         match self {
             Self::Always => true,
@@ -102,11 +128,16 @@ impl ShapePredicate {
     }
 }
 
+/// A registered hook: where it runs and how it behaves.
 #[derive(Debug, Clone)]
 pub struct LifecycleHookSpec {
+    /// The hook's id, unique in the registry.
     pub hook_id: String,
+    /// The transition the hook attaches to.
     pub transition: TransitionKey,
+    /// The phase the hook runs at.
     pub phase: HookPhase,
+    /// When the hook applies.
     pub applies_when: ShapePredicate,
     /// A failed blocking hook prevents the commit.
     pub blocking: bool,
@@ -117,41 +148,62 @@ pub struct LifecycleHookSpec {
 /// What a hook sees.
 #[derive(Debug, Clone)]
 pub struct HookContext {
+    /// The transition's stable id.
     pub transition_id: String,
+    /// The node, mesh or fabric the transition is for.
     pub target: String,
+    /// The transition.
     pub key: TransitionKey,
+    /// The phase the hook runs at.
     pub phase: HookPhase,
+    /// Which attempt of the hook this is.
     pub attempt: u32,
 }
 
+/// Work a hook does for one transition.
 #[async_trait]
 pub trait LifecycleHook: Send + Sync {
     /// Idempotent work for one transition; `Err` names what failed.
     async fn run(&self, ctx: &HookContext) -> Result<(), String>;
 }
 
+/// How a hook run ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookOutcome {
+    /// The hook completed.
     Complete,
-    Failed { reason: String },
+    /// The hook failed.
+    Failed {
+        /// Why it failed.
+        reason: String,
+    },
 }
 
+/// The receipt of one hook run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookReceipt {
+    /// The transition the run belongs to.
     pub transition_id: String,
+    /// The hook.
     pub hook_id: String,
+    /// The phase.
     pub phase: HookPhase,
+    /// The attempt.
     pub attempt: u32,
+    /// How the run ended.
     pub outcome: HookOutcome,
 }
 
 /// Where hook receipts are appended.
 pub trait ReceiptLog: Send + Sync {
+    /// Append a receipt.
     fn append(&self, r: HookReceipt);
+    /// The receipts of `transition_id`.
     fn receipts(&self, transition_id: &str) -> Vec<HookReceipt>;
 }
 
+/// A receipt log held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryReceiptLog(Mutex<Vec<HookReceipt>>);
 
@@ -164,12 +216,18 @@ impl ReceiptLog for MemoryReceiptLog {
     }
 }
 
+/// Why a hook registry does not seal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegistryError {
+    /// Two hooks share an id.
     DuplicateHook(String),
+    /// A hook allows zero attempts.
     ZeroAttempts(String),
     /// A drain cut on a transition that does not enter `Draining`.
-    DrainPhaseOffDrain { hook_id: String },
+    DrainPhaseOffDrain {
+        /// The hook.
+        hook_id: String,
+    },
 }
 
 impl fmt::Display for RegistryError {
@@ -182,16 +240,19 @@ impl fmt::Display for RegistryError {
     }
 }
 
+/// The hooks registered before the registry seals.
 #[derive(Default)]
 pub struct HookRegistry {
     hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
 }
 
 impl HookRegistry {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Register `hook` under `spec`.
     pub fn register(mut self, spec: LifecycleHookSpec, hook: Arc<dyn LifecycleHook>) -> Self {
         self.hooks.push((spec, hook));
         self
@@ -241,16 +302,30 @@ pub enum TransitionResult {
     /// The new state was committed.
     Committed,
     /// Eligibility does not hold yet; nothing committed.
-    NotEligible { reason: String },
+    NotEligible {
+        /// Why the transition is not eligible.
+        reason: String,
+    },
     /// A blocking hook failed; the target stays in `from`.
-    HookFailed { hook_id: String, phase: HookPhase, reason: String },
+    HookFailed {
+        /// The failed hook.
+        hook_id: String,
+        /// The phase it failed at.
+        phase: HookPhase,
+        /// Why it failed.
+        reason: String,
+    },
 }
 
 /// One transition request.
 pub struct Transition<'a> {
+    /// The transition's stable id.
     pub transition_id: String,
+    /// The node, mesh or fabric the transition is for.
     pub target: String,
+    /// The transition.
     pub key: TransitionKey,
+    /// The desired shape the hooks' predicates see.
     pub shape: &'a ShapeFacts,
 }
 
@@ -263,17 +338,19 @@ impl Transition<'_> {
     /// The id of a node's transition for ONE birth: its path (the target) and the exact incarnation.
     /// A transition id keys once-only hook receipts, and a re-birth at the same path is a new
     /// execution of the transition: its hooks run again. A retry of the same birth reuses its receipts.
-    pub fn id_for_birth(key: TransitionKey, path: &str, incarnation: &str) -> String {
+    pub(crate) fn id_for_birth(key: TransitionKey, path: &str, incarnation: &str) -> String {
         format!("{}@{incarnation}", Self::id_for(key, path))
     }
 }
 
+/// Runs a transition through its hooks, its eligibility check and its commit.
 pub struct LifecycleTransitionPipeline {
     hooks: SealedHooks,
     receipts: Arc<dyn ReceiptLog>,
 }
 
 impl LifecycleTransitionPipeline {
+    /// A pipeline over the sealed `hooks` that appends its receipts to `receipts`.
     pub fn new(hooks: SealedHooks, receipts: Arc<dyn ReceiptLog>) -> Self {
         Self { hooks, receipts }
     }

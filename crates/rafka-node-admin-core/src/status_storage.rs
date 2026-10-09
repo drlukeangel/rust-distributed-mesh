@@ -19,7 +19,9 @@ use std::sync::Mutex;
 /// One Mesh status fact: the Mesh entered `state`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshStatusRow {
+    /// The mesh.
     pub mesh_id: MeshId,
+    /// The state it entered.
     pub state: MeshState,
 }
 
@@ -33,23 +35,28 @@ impl MeshStatusRow {
 /// One Fabric event fact: the Fabric event named `event` (its natural key) was applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FabricEventRow {
+    /// The fabric.
     pub fabric_id: FabricId,
+    /// The event applied.
     pub event: String,
 }
 
 impl FabricEventRow {
+    /// The row's key: the fabric id and the hex of the event name.
     pub fn key(&self) -> String {
         let hex: String = self.event.bytes().map(|b| format!("{b:02x}")).collect();
         format!("{}-{hex}", self.fabric_id)
     }
 }
 
+/// The durable record of the status facts this admin applied.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
     /// A blind put of the fact's own key.
     async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError>;
     /// The greatest state held per Mesh.
     async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError>;
+    /// Keep `row` under its own key.
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError>;
     /// The events held, per Fabric, each once.
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError>;
@@ -66,6 +73,7 @@ fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId,
     out
 }
 
+/// A status store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryStatusStorage {
     meshes: Mutex<Vec<MeshStatusRow>>,
@@ -108,6 +116,7 @@ pub struct FileStatusStorage {
 }
 
 impl FileStatusStorage {
+    /// Open the store under the admin's own data directory.
     pub fn open(own_data_dir: &Path) -> Result<Self, StorageError> {
         Ok(Self { meshes: FileRecords::open(own_data_dir, "status/meshes")?, fabric: FileRecords::open(own_data_dir, "status/fabric")? })
     }

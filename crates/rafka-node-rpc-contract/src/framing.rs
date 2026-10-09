@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 /// resolver's and the pool's knowledge, never the wire's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fence {
+    /// The node id the request is for.
     pub target_node_id: String,
+    /// The op the request is for.
     pub op: u8,
 }
 
@@ -35,26 +37,30 @@ pub struct Fence {
 /// semantics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestHeader {
+    /// The fence naming the node and op.
     pub fence: Fence,
+    /// The observability context the request carries.
     pub context: CallContext,
 }
 
 impl RequestHeader {
+    /// A header with the fence and an empty context.
     pub fn fence(fence: Fence) -> Self {
         Self { fence, context: CallContext::default() }
     }
 }
 
 /// The largest encoded [`Fence`] a receiver reads before deciding.
-pub const MAX_FENCE_BYTES: usize = 256;
+pub(crate) const MAX_FENCE_BYTES: usize = 256;
 
 /// The largest encoded [`CallContext`] a receiver reads: a context at its bounds
 /// (`MAX_TRACESTATE_BYTES` + `MAX_BAGGAGE_BYTES` + the short parts) fits.
-pub const MAX_CONTEXT_BYTES: usize = 12 * 1024;
+pub(crate) const MAX_CONTEXT_BYTES: usize = 12 * 1024;
 
 /// An unsigned LEB128 varint is at most 10 bytes for a `u64`.
 pub const MAX_VARINT_LEN: usize = 10;
 
+/// Append `v` to `out` as an unsigned LEB128 varint.
 pub fn encode_varint(mut v: u64, out: &mut Vec<u8>) {
     loop {
         let byte = (v & 0x7f) as u8;
@@ -67,16 +73,23 @@ pub fn encode_varint(mut v: u64, out: &mut Vec<u8>) {
     }
 }
 
+/// The result of reading a varint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Varint {
     /// `value` read in `len` bytes.
-    Complete { value: u64, len: usize },
+    Complete {
+        /// The value read.
+        value: u64,
+        /// The bytes it took.
+        len: usize,
+    },
     /// The buffer ends inside the varint.
     NeedMore,
     /// More than 10 bytes, or bits past 64.
     Overflow,
 }
 
+/// Read a varint from the start of `b`.
 pub fn decode_varint(b: &[u8]) -> Varint {
     let mut value: u64 = 0;
     for (i, &byte) in b.iter().enumerate().take(MAX_VARINT_LEN) {
@@ -125,27 +138,62 @@ pub enum RequestHead {
     NeedMore,
     /// The fence's op has no catalog entry: reset `421 UNSERVED_OP`, no dispatch.
     /// Decided on the fence alone, before the context or the length is read.
-    Unserved { op: u8 },
+    Unserved {
+        /// The op that is not served.
+        op: u8,
+    },
     /// A served op declaring more than its protocol ceiling: typed
     /// `Malformed(TooLarge)`, body never read.
-    TooLarge { op: u8, declared: u64, max: usize },
+    TooLarge {
+        /// The op.
+        op: u8,
+        /// The length the request declared.
+        declared: u64,
+        /// The protocol's request ceiling.
+        max: usize,
+    },
     /// The length prefix is not a valid varint: `424 PROTOCOL_VIOLATION`.
-    BadLength { op: u8 },
+    BadLength {
+        /// The op.
+        op: u8,
+    },
     /// The fence names a node this process is not: reset `425 STALE_TARGET`, no dispatch.
     /// Decided on the fence alone, before the context or the length is read.
-    Stale { op: u8, fence: Fence },
+    Stale {
+        /// The op.
+        op: u8,
+        /// The fence that names another node.
+        fence: Fence,
+    },
     /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
     /// `op` is `None` when the fence itself could not be read.
-    BadTarget { op: Option<u8> },
+    BadTarget {
+        /// The op, when the fence could be read.
+        op: Option<u8>,
+    },
     /// The fence and context are read and the length is not yet.
-    Targeted { op: u8, header: RequestHeader },
+    Targeted {
+        /// The op.
+        op: u8,
+        /// The fence and context read.
+        header: RequestHeader,
+    },
     /// A served op within its ceiling; the body is `payload_len` bytes after `head_len`.
-    Ready { op: u8, header: RequestHeader, payload_len: usize, head_len: usize },
+    Ready {
+        /// The op.
+        op: u8,
+        /// The fence and context.
+        header: RequestHeader,
+        /// The body length in bytes.
+        payload_len: usize,
+        /// The bytes the head took.
+        head_len: usize,
+    },
 }
 
 /// Read the request head. `ceiling(op)` is the protocol's
 /// `MAX_REQUEST_FRAME_BYTES`, or `None` when the op is not served.
-pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> RequestHead {
+pub(crate) fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> RequestHead {
     match parse_request_target(buf, ceiling, |_| true) {
         Ok(t) => parse_request_length(buf, t),
         Err(head) => head,
@@ -154,7 +202,7 @@ pub fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> 
 
 /// The fence and context of a request, read; the length is next.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetRead {
+pub(crate) struct TargetRead {
     pub op: u8,
     pub header: RequestHeader,
     /// Where the length prefix starts.
@@ -167,7 +215,7 @@ pub struct TargetRead {
 /// `Unserved`, `Stale` or `BadTarget`. The fence is decoded, its op looked up and its
 /// target checked against `current` before a byte of the context is read: a `425` owes
 /// nothing to section 1, so it can carry nothing from it.
-pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>, current: impl Fn(&Fence) -> bool) -> Result<TargetRead, RequestHead> {
+pub(crate) fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>, current: impl Fn(&Fence) -> bool) -> Result<TargetRead, RequestHead> {
     let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
         Section::NeedMore => return Err(RequestHead::NeedMore),
         Section::Bad => return Err(RequestHead::BadTarget { op: None }),
@@ -193,7 +241,8 @@ pub fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>, c
 
 /// The fence alone, when that is all a reader needs (a carrier naming the inner
 /// target, a test): `None` until the fence is complete or when it does not decode.
-pub fn peek_fence(buf: &[u8]) -> Option<Fence> {
+#[cfg(test)]
+pub(crate) fn peek_fence(buf: &[u8]) -> Option<Fence> {
     match decode_section(buf, 0, MAX_FENCE_BYTES) {
         Section::Read(bytes, _) => postcard::from_bytes(bytes).ok(),
         _ => None,
@@ -228,7 +277,7 @@ fn decode_section(buf: &[u8], from: usize, max: usize) -> Section<'_> {
 }
 
 /// Stage two of the head: the declared length after the header.
-pub fn parse_request_length(buf: &[u8], t: TargetRead) -> RequestHead {
+pub(crate) fn parse_request_length(buf: &[u8], t: TargetRead) -> RequestHead {
     let TargetRead { op, header, at, max } = t;
     match decode_varint(&buf[at..]) {
         Varint::NeedMore => RequestHead::Targeted { op, header },
@@ -238,12 +287,18 @@ pub fn parse_request_length(buf: &[u8], t: TargetRead) -> RequestHead {
     }
 }
 
+/// Why a frame was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameError {
     /// The buffer ends before the frame does (EOF inside a frame).
     Truncated,
     /// Declared length above the ceiling.
-    TooLarge { declared: u64, max: usize },
+    TooLarge {
+        /// The length the frame declared.
+        declared: u64,
+        /// The ceiling.
+        max: usize,
+    },
     /// The length prefix is not a valid varint.
     BadLength,
     /// Bytes after the one frame a unary direction may carry.

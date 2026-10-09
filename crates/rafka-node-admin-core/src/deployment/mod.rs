@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 /// The deployment hand of one fabric, as its policy selects it.
 pub struct Prepared {
+    /// The provider that realises runtimes.
     pub provider: Arc<dyn provider::DeploymentProvider>,
     /// The address node-admin advertises to its runtimes (membership seed):
     /// loopback for processes, the fabric network's gateway for containers.

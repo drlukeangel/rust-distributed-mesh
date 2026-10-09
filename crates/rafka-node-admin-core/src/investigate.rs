@@ -35,9 +35,13 @@ use std::time::{Duration, Instant};
 pub struct Rungs {
     /// Unheard this long, the mesh is tracked (a round missed beyond the publication jitter).
     pub track: u64,
+    /// Unheard this long, the first probe is made.
     pub probe1: u64,
+    /// Unheard this long, the mesh is marked silent and nothing is sent.
     pub mark: u64,
+    /// Unheard this long, the second probe is made.
     pub probe2: u64,
+    /// Unheard this long, the ladder decides.
     pub decide: u64,
 }
 
@@ -58,6 +62,7 @@ pub enum ProbeOutcome {
 }
 
 impl ProbeOutcome {
+    /// The outcome's name as it appears in spans and evidence.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AdminAlive => "admin-alive",
@@ -71,17 +76,43 @@ impl ProbeOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     /// The mesh went unheard: tracking begins.
-    Track { rounds: u64 },
+    Track {
+        /// The backbone rounds the mesh has gone unheard.
+        rounds: u64,
+    },
     /// The shared silent mark: nothing is sent.
-    Mark { rounds: u64 },
+    Mark {
+        /// The backbone rounds the mesh has gone unheard.
+        rounds: u64,
+    },
     /// Make probe `n` (1 or 2).
-    Probe { n: u8, rounds: u64 },
+    Probe {
+        /// The probe's number.
+        n: u8,
+        /// The backbone rounds the mesh has gone unheard.
+        rounds: u64,
+    },
     /// The node-admin answered: the investigation stops.
-    Stop { rounds: u64 },
+    Stop {
+        /// The backbone rounds the mesh has gone unheard.
+        rounds: u64,
+    },
     /// The decision: `rebirth` only when the latest probe answered `carrier-edge-lost`.
-    Decide { rebirth: bool, latest: ProbeOutcome, rounds: u64 },
+    Decide {
+        /// Whether the mesh's node-admins are reborn.
+        rebirth: bool,
+        /// What the latest probe found.
+        latest: ProbeOutcome,
+        /// The backbone rounds the mesh has gone unheard.
+        rounds: u64,
+    },
     /// The mesh was heard on the backbone again: the investigation is cancelled.
-    Cancel { rounds: u64, probes: u8 },
+    Cancel {
+        /// The backbone rounds the mesh had gone unheard.
+        rounds: u64,
+        /// The probes made.
+        probes: u8,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -120,6 +151,7 @@ pub struct Ladder {
 }
 
 impl Ladder {
+    /// A ladder over `rungs` with no mesh tracked.
     pub fn new(rungs: Rungs) -> Self {
         Self { rungs, meshes: BTreeMap::new() }
     }
@@ -143,7 +175,7 @@ impl Ladder {
     /// rebirth back for every peer mesh it hears on the backbone until this is true: a node-admin
     /// whose runtime was proven exited is replaced when the ladder decides, not before, and a
     /// fabric primary that took the seat a moment ago has decided nothing yet.
-    pub fn rebirth_decided(&self, mesh: &str) -> bool {
+    pub(crate) fn rebirth_decided(&self, mesh: &str) -> bool {
         self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
 
@@ -207,14 +239,14 @@ impl Ladder {
 }
 
 /// A Ping is answered within two rounds or the member did not answer.
-pub fn ping_budget(round: Duration) -> Duration {
+pub(crate) fn ping_budget(round: Duration) -> Duration {
     round * 2
 }
 
 /// The carried probe outlasts the carrier's one inner call (made with `CallOptions::default`) by two
 /// rounds, so the carrier's answer, carrier-edge-lost included, reaches the origin before it gives
 /// up: an inner dial to a dead node-admin runs to the inner call's whole budget.
-pub fn carried_budget(round: Duration) -> Budget {
+pub(crate) fn carried_budget(round: Duration) -> Budget {
     match CallOptions::default().budget {
         Budget::Overall(inner) => Budget::Overall(inner + round * 2),
         Budget::Split { send, reply } => Budget::Split { send: send + round * 2, reply },
@@ -222,21 +254,28 @@ pub fn carried_budget(round: Duration) -> Budget {
 }
 
 /// How many members are asked in parallel.
-pub const PROBE_FANOUT: usize = 3;
+pub(crate) const PROBE_FANOUT: usize = 3;
 
 /// What the driver needs of its admin.
 pub struct Watch {
+    /// This admin's `path.name`.
     pub me: PathName,
+    /// The length of a backbone round.
     pub round: Duration,
+    /// The admin's membership.
     pub membership: Membership,
+    /// The admin's observed topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
+    /// The records this admin holds.
     pub records: Arc<Records>,
     /// Is the accepted Build settled (not pending, not running)? A mesh the Build is still birthing
     /// is not unheard.
     pub settled: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>,
+    /// The client probes are made through.
     pub client: Arc<NodeRpcClient>,
     /// Does this node hold an Active Direct connection to the exact node?
     pub connected: Arc<dyn Fn(&NodeId) -> bool + Send + Sync>,
+    /// The ladder.
     pub ladder: Arc<Mutex<Ladder>>,
     /// The carrier each mesh's latest probe went through.
     pub carriers: Mutex<BTreeMap<String, PathName>>,
@@ -292,7 +331,7 @@ pub async fn run(w: Watch) {
 /// The peer meshes the view holds nodes of that the backbone has never carried to this admin: it
 /// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
 /// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
-pub fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
+pub(crate) fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
     view.nodes.iter().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
 

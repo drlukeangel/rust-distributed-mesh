@@ -1,3 +1,13 @@
+//! Process telemetry for every mesh binary: OTLP span and log export, the JSONL evidence sink, and the
+//! bounded drain a process runs before it exits.
+//!
+//! A process calls one `init_*` function ([`init_telemetry`], [`init_telemetry_for_cli`],
+//! [`init_evidence_telemetry`]) and holds the returned [`TelemetryGuard`] for its lifetime. The
+//! exporters run on their own thread ([`export`]), the stall watchdog is in [`watchdog`] and the log
+//! adapter that turns `tracing` events into OTLP log records is in [`logs`].
+#![deny(missing_docs)]
+
+
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
@@ -59,6 +69,8 @@ impl Exporters {
     }
 }
 
+/// The handle of the exporters one `init_*` call built. Dropping it drains the queued spans and
+/// logs, bounded by [`export::DRAIN_BOUND`], and shuts the exporters down.
 pub struct TelemetryGuard {
     exporters: Exporters,
 }
@@ -291,12 +303,12 @@ pub fn current_tracestate() -> Option<String> {
 }
 
 /// Writes every finished span as one JSON line to
-/// `<RDM_EVIDENCE_DIR>/<service>.<pid>-<pid namespace inode>.spans.jsonl` (`docs/i143/design.md`
-/// §6): a pid names one process only within its pid namespace, and every container has its own.
+/// `<RDM_EVIDENCE_DIR>/<service>.<pid>-<pid namespace inode>.spans.jsonl`:
+/// a pid names one process only within its pid namespace, and every container has its own.
 /// Causality is carried by `parent_span_id`; a consumer never infers it from
 /// timestamps.
 /// An evidence write at or beyond this length is named on stderr.
-pub const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
+pub(crate) const EVIDENCE_WRITE_STALL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Writes evidence lines on its own OS thread: the thread that closes a span (a runtime worker)
 /// only hands the lines over, so a write the kernel holds stalls this thread, never the runtime.
@@ -340,7 +352,7 @@ impl EvidenceWriter {
 }
 
 #[derive(Debug)]
-pub struct JsonlSpanExporter {
+pub(crate) struct JsonlSpanExporter {
     service: String,
     writer: std::sync::Arc<std::sync::Mutex<EvidenceWriter>>,
 }

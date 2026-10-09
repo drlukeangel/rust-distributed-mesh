@@ -34,11 +34,32 @@ use std::time::{Duration, Instant};
 pub enum HydrationBlocker {
     /// No installed `Fabric.build_id`. `wanted` is the Build the entry reply (or the Build topic)
     /// named, parked until its facts arrive.
-    NoPointer { me: PathName, wanted: Option<BuildId> },
+    NoPointer {
+        /// This admin.
+        me: PathName,
+        /// The Build named by the entry reply or the Build topic, when one was.
+        wanted: Option<BuildId>,
+    },
     /// `Fabric.build_id` names `build_id` and this admin's Build log cannot read it.
-    UnreadableBuild { me: PathName, build_id: BuildId, error: String },
+    UnreadableBuild {
+        /// This admin.
+        me: PathName,
+        /// The Build the pointer names.
+        build_id: BuildId,
+        /// Why the Build log cannot read it.
+        error: String,
+    },
     /// The local Build holds attempt `held`; the admin that served the entry held `floor`.
-    BehindFloor { me: PathName, build_id: BuildId, held: u32, floor: u32 },
+    BehindFloor {
+        /// This admin.
+        me: PathName,
+        /// The Build.
+        build_id: BuildId,
+        /// The attempt the local Build holds.
+        held: u32,
+        /// The attempt the admin that served the entry held.
+        floor: u32,
+    },
 }
 
 impl std::fmt::Display for HydrationBlocker {
@@ -64,6 +85,7 @@ pub enum Need {
 }
 
 impl HydrationBlocker {
+    /// What would clear the blocker.
     pub fn need(&self) -> Need {
         match self {
             Self::NoPointer { wanted: Some(id), .. } => Need::BuildFacts(id.clone()),
@@ -72,6 +94,7 @@ impl HydrationBlocker {
         }
     }
 
+    /// The blocker's name as it appears in spans and evidence.
     pub fn kind(&self) -> &'static str {
         match self {
             Self::NoPointer { wanted: Some(_), .. } => "no-pointer-wanted",
@@ -85,7 +108,9 @@ impl HydrationBlocker {
 /// A node-admin that may hold the facts, in the order it is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Responder {
+    /// The responder's `path.name`.
     pub name: PathName,
+    /// The responder's node id.
     pub node_id: NodeId,
 }
 
@@ -100,6 +125,7 @@ pub type EntryRepeat = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), St
 /// to `BACKOFF_CAP`. Luke explicitly authorized this backoff (R-G6) as READ-ONLY recovery: it spaces
 /// repeated reads of a peer and gates nothing else; it retries no write and no decision.
 pub const BACKOFF_BASE: Duration = Duration::from_millis(250);
+/// The longest wait after repeated failures.
 pub const BACKOFF_CAP: Duration = Duration::from_secs(4);
 
 fn backoff_for(failures: u32) -> Duration {
@@ -148,6 +174,8 @@ pub struct Hydrator {
 }
 
 impl Hydrator {
+    /// A hydrator for the admin `me` over its client, its local Build log, its Build state, its
+    /// accepted-Build store, the `responders` it asks and the entry repeat.
     pub fn new(
         me: PathName,
         client: Arc<NodeRpcClient>,

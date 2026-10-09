@@ -15,6 +15,7 @@ use std::sync::Arc;
 /// CONTRACT: `now_rafka_ms` is milliseconds of Rafka-time; successive reads may repeat or step
 /// back, and nothing in the mesh depends on them not doing so.
 pub trait Clock: Send + Sync + std::fmt::Debug {
+    /// Milliseconds of Rafka-time now.
     fn now_rafka_ms(&self) -> u64;
 }
 

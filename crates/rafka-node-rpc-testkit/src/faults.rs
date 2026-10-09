@@ -22,6 +22,8 @@ pub struct StorageFault {
 }
 
 impl StorageFault {
+    /// Refuse the next `refuse_index` index writes and `refuse_history` history appends, after
+    /// letting `pass_history` history appends through.
     pub fn arm(&self, refuse_index: u32, refuse_history: u32, pass_history: u32) {
         self.pass_history.store(pass_history, Ordering::SeqCst);
         self.refuse_index.store(refuse_index, Ordering::SeqCst);
@@ -37,10 +39,12 @@ impl StorageFault {
         self.refused.load(Ordering::SeqCst)
     }
 
+    /// How many writes the fault has refused since it was armed.
     pub fn refused(&self) -> u32 {
         self.refused.load(Ordering::SeqCst)
     }
 
+    /// The index writes and history appends still to be refused.
     pub fn armed(&self) -> (u32, u32) {
         (self.refuse_index.load(Ordering::SeqCst), self.refuse_history.load(Ordering::SeqCst))
     }
@@ -57,7 +61,7 @@ impl StorageFault {
 
 /// `ConnectionsStorage` that refuses the writes its fault names, by name, and passes the rest
 /// through.
-pub struct FaultedConnectionsStorage {
+pub(crate) struct FaultedConnectionsStorage {
     inner: Arc<dyn ConnectionsStorage>,
     fault: Arc<StorageFault>,
 }

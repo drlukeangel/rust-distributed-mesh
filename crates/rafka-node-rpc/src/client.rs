@@ -29,11 +29,19 @@ pub enum Budget {
     /// One deadline over resolve, dial, send and reply; never reset between phases.
     Overall(Duration),
     /// A connect + complete-send bound, then a reply budget that starts at the commit cut.
-    Split { send: Duration, reply: Duration },
+    /// A connect and complete-send bound, then a reply budget that starts at the commit cut.
+    Split {
+        /// The bound on connecting and sending the complete request.
+        send: Duration,
+        /// The bound on the reply, counted from the commit cut.
+        reply: Duration,
+    },
 }
 
+/// How one call is made: its budget, its scope, its observability context and its failpoints.
 #[derive(Debug, Clone)]
 pub struct CallOptions {
+    /// The time bound of the call.
     pub budget: Budget,
     /// Failpoint: write part of the request, then reset it with 499.
     pub cut_before_finish: bool,
@@ -70,8 +78,11 @@ pub(crate) enum Payload {
 /// Which exact leg a call used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEvidence {
+    /// The node the call reached.
     pub node_id: NodeId,
+    /// The address of the node's Iroh endpoint the call used.
     pub addr: SocketAddr,
+    /// Whether the request reached the commit cut.
     pub committed: bool,
     /// The connection the call rode (`stable_id`), once it had one.
     pub connection: Option<usize>,
@@ -101,6 +112,8 @@ pub trait ConnectionObserver: Send + Sync {
     }
 }
 
+/// A Node RPC client: dials the exact target a resolver names, pools one connection per peer, scope
+/// and incarnation, and returns a typed outcome per call.
 pub struct NodeRpcClient {
     endpoint: Endpoint,
     pub(crate) resolver: Arc<dyn NodeResolver>,
@@ -114,7 +127,9 @@ pub struct NodeRpcClient {
 /// How the reply direction is decoded: after the commit cut, or after an
 /// early refusal that stopped the request before it finished.
 pub enum Decode<'a> {
+    /// The request committed: the commit cut and the reply bytes.
     Committed(rafka_node_rpc_contract::outcome::Committed, &'a [u8]),
+    /// The request stopped before it finished: the early refusal and the reply bytes, when any.
     Early(EarlyRefusal, Option<&'a [u8]>),
 }
 
@@ -145,6 +160,7 @@ enum Committed {
 }
 
 impl NodeRpcClient {
+    /// A client on `endpoint` that resolves its targets through `resolver`.
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
         Self { endpoint, resolver, pool: Pool::default(), observer: None, caller_system: None }
     }
@@ -180,6 +196,7 @@ impl NodeRpcClient {
         ctx
     }
 
+    /// The Iroh endpoint the client dials from.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }

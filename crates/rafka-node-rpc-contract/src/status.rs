@@ -30,23 +30,32 @@ use crate::protocol::NodeProtocol;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
 use serde::{Deserialize, Serialize};
 
+/// The Status protocol: declare, apply and probe lifecycle state.
 pub struct Status;
 
 /// A node birth's lifecycle state, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NodeState {
+    /// Born and not yet ready for traffic.
     Pending,
+    /// Ready: it takes traffic.
     ReadyForTraffic,
+    /// Draining: it takes no new work.
     Draining,
+    /// Leaving: it has announced its departure.
     Leaving,
 }
 
 /// A Mesh's status, as declared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MeshState {
+    /// Created and not yet ready for traffic.
     Pending,
+    /// Ready: it takes traffic.
     ReadyForTraffic,
+    /// Leaving: it is closing.
     Leaving,
+    /// Dead: every member is gone.
     Dead,
 }
 
@@ -56,10 +65,14 @@ pub enum FabricEvent {
     /// The fabric is ready for traffic.
     ReadyForTraffic,
     /// A fabric shutdown was initiated by the named admin.
-    ShutdownInitiated { initiated_by: String },
+    ShutdownInitiated {
+        /// The admin that initiated the shutdown.
+        initiated_by: String,
+    },
 }
 
 impl FabricEvent {
+    /// The event's name as it appears in spans and replies.
     pub fn name(&self) -> &'static str {
         match self {
             Self::ReadyForTraffic => "ready-for-traffic",
@@ -68,24 +81,62 @@ impl FabricEvent {
     }
 }
 
+/// A Status call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusRequest {
     /// Upward: the sender's own birth declares the lifecycle state it committed.
-    DeclareNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    DeclareNodeState {
+        /// The declaring birth's logical node.
+        node_id: NodeId,
+        /// The declaring birth's incarnation.
+        incarnation: IncarnationId,
+        /// The state the birth committed.
+        state: NodeState,
+    },
     /// Upward: the mesh's current primary declares the Mesh's state to the fabric-primary.
-    DeclareMeshState { mesh_id: MeshId, state: MeshState },
+    DeclareMeshState {
+        /// The mesh declared.
+        mesh_id: MeshId,
+        /// The mesh's state.
+        state: MeshState,
+    },
     /// Downward: an authority tells the exact birth to enter `state`.
-    ApplyNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    ApplyNodeState {
+        /// The birth told to change state.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The state it is told to enter.
+        state: NodeState,
+    },
     /// Downward: an authority asks the exact birth to reassert its presence and answer its
     /// current state; no transition.
-    ProbeNodeState { node_id: NodeId, incarnation: IncarnationId },
+    ProbeNodeState {
+        /// The birth probed.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+    },
     /// Downward: the fabric-primary applies a Mesh state at that mesh's bootstrap admin.
-    ApplyMeshState { mesh_id: MeshId, mesh_name: String, state: MeshState },
+    ApplyMeshState {
+        /// The mesh applied to.
+        mesh_id: MeshId,
+        /// The mesh's name.
+        mesh_name: String,
+        /// The state applied.
+        state: MeshState,
+    },
     /// Downward: the fabric-primary applies a Fabric event at a mesh primary.
-    ApplyFabricEvent { fabric_id: FabricId, event: FabricEvent },
+    ApplyFabricEvent {
+        /// The fabric the event belongs to.
+        fabric_id: FabricId,
+        /// The event applied.
+        event: FabricEvent,
+    },
 }
 
 impl StatusRequest {
+    /// The request's operation name as it appears in spans and replies.
     pub fn op(&self) -> &'static str {
         match self {
             Self::DeclareNodeState { .. } => "declare-node-state",
@@ -102,14 +153,21 @@ impl StatusRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NotAuthority {
     /// The receiver does not hold the seat the declaration needs.
-    ReceiverNotPrimary { needed: String },
+    ReceiverNotPrimary {
+        /// The seat the receiver would have to hold.
+        needed: String,
+    },
     /// The sender is not the subject (or the subject's current primary).
-    SenderNotSubject { sender: String },
+    SenderNotSubject {
+        /// The sender, as the receiver resolved it.
+        sender: String,
+    },
     /// The receiver does not hold the subject at all.
     SubjectUnknown,
 }
 
 impl NotAuthority {
+    /// The reason's name as it appears in spans and replies.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ReceiverNotPrimary { .. } => "receiver-not-primary",
@@ -119,6 +177,7 @@ impl NotAuthority {
     }
 }
 
+/// The typed result of a Status call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusReply {
     /// Applied now by the authority, and durable where the ruling asks it to be.
@@ -126,29 +185,83 @@ pub enum StatusReply {
     /// The same natural key was already at that state: one logical event.
     AlreadyApplied,
     /// The exact birth entered `Draining` (or already was), with the work still in flight now.
-    NodeDrainingApplied { in_flight: u64 },
+    NodeDrainingApplied {
+        /// The work still in flight.
+        in_flight: u64,
+    },
     /// The exact birth's own answer to a probe: it reasserted its presence, and this is its state.
-    Current { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    Current {
+        /// The answering birth's logical node.
+        node_id: NodeId,
+        /// The answering birth's incarnation.
+        incarnation: IncarnationId,
+        /// The birth's current state.
+        state: NodeState,
+    },
     /// The receiver holds a newer incarnation of that NodeId, or holds it as departed.
-    RejectedStaleIncarnation { held: IncarnationId },
+    RejectedStaleIncarnation {
+        /// The incarnation held.
+        held: IncarnationId,
+    },
     /// The receiver holds another mesh id under that mesh name.
-    RejectedStaleMesh { held: MeshId },
+    RejectedStaleMesh {
+        /// The mesh id held.
+        held: MeshId,
+    },
     /// The receiver holds another fabric id.
-    RejectedStaleFabric { held: FabricId },
-    RejectedNotAuthority { why: NotAuthority },
+    RejectedStaleFabric {
+        /// The fabric id held.
+        held: FabricId,
+    },
+    /// The receiver or sender is not the authority for the call.
+    RejectedNotAuthority {
+        /// Which authority condition failed.
+        why: NotAuthority,
+    },
     /// A node move backward along the legal order.
-    RejectedInvalidNodeTransition { current: NodeState },
+    RejectedInvalidNodeTransition {
+        /// The state the node holds.
+        current: NodeState,
+    },
     /// A mesh move backward along the legal order.
-    RejectedInvalidMeshTransition { current: MeshState },
-    PeerUnresolved { reason: String },
-    NotReady { reason: String },
-    Busy { reason: String },
-    Draining { reason: String },
-    Malformed { kind: MalformedKind },
-    Unauthorized { reason: String },
+    RejectedInvalidMeshTransition {
+        /// The state the mesh holds.
+        current: MeshState,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the call is refused.
+        reason: String,
+    },
+    /// The node is not ready to serve.
+    NotReady {
+        /// Why the node is not ready.
+        reason: String,
+    },
+    /// The node is at its admission bound.
+    Busy {
+        /// Which bound the node is at.
+        reason: String,
+    },
+    /// The node is draining and takes no new work.
+    Draining {
+        /// Why the node refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
 }
 
 impl StatusReply {
+    /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Applied => "applied",
@@ -234,11 +347,18 @@ pub fn transition<S: Ord + Copy>(current: Option<S>, declared: S) -> Transition<
     }
 }
 
+/// The result of checking a declared state against the held one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transition<S> {
+    /// The declared state is a legal forward move; apply it.
     Apply,
+    /// The declared state is already held.
     AlreadyApplied,
-    Backward { current: S },
+    /// The declared state is a move backward.
+    Backward {
+        /// The state held.
+        current: S,
+    },
 }
 
 #[cfg(test)]
