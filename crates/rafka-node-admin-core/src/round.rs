@@ -478,6 +478,45 @@ mod tests {
         assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
     }
 
+    /// CONTRACT (R-S2): a node-admin that is not a mesh primary owes its own birth to the
+    /// fabric-primary, and the fabric-primary's view can lag that admin's first declaration (the
+    /// receiver cannot resolve the sender yet and refuses it by name). The refusal is terminal, so
+    /// the down op is what asks again: the fabric-primary sends it once to every node-admin its
+    /// view gains or changes (birth or endpoint), not only to mesh primaries.
+    #[test]
+    fn fabric_primary_addresses_a_non_primary_admin_when_its_view_of_it_changes() {
+        let me = member("mesh1.admin.1", true, true);
+        let second = member("mesh1.admin.2", false, false);
+        let mut driver = RoundDriver::new(me.name.clone());
+        let v0 = view(vec![me.clone()]);
+        assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "nobody else in view: nobody to address");
+
+        let v1 = view(vec![me.clone(), second.clone()]);
+        let sent: Vec<String> = driver.changed_mesh_primaries(&v1, true).into_iter().map(|(who, _)| who).collect();
+        assert_eq!(sent, vec!["mesh1.admin.2".to_string()], "a non-primary admin gained by the view is addressed");
+        assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+
+        let mut reborn = second.clone();
+        reborn.incarnation_id = Some(IncarnationId::mint());
+        let v2 = view(vec![me.clone(), reborn]);
+        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the admin is addressed");
+
+        let mut early = second.clone();
+        early.endpoint_id = None;
+        let mut v_early = view(vec![me.clone(), early.clone()]);
+        let mut driver = RoundDriver::new(me.name.clone());
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
+        for n in &mut v_early.nodes {
+            if n.name == early.name {
+                n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
+            }
+        }
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
+
+        let not_fp = view(vec![member("mesh1.admin.1", true, false), second]);
+        assert!(driver.changed_mesh_primaries(&not_fp, false).is_empty(), "a view where this admin is not the fabric-primary addresses nobody");
+    }
+
     // @feature: node-lifecycle
     #[tokio::test]
     async fn successor_fabric_holder_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
