@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tower_http::services::ServeDir;
 
+mod tests;
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -224,7 +226,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/boot-trace", get(boot_trace))
         .fallback_service(ServeDir::new(&static_dir).append_index_html_on_directories(true))
         .with_state(state.clone())
-        .merge(control::router(state.admin.clone(), Arc::new(Submitted(state))));
+        .merge(control::router(state.admin.clone(), Arc::new(Submitted(state))))
+        .merge(tests::router());
     tracing::info!(%bind, %static_dir, "admin-ui listening");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(listener, app).await?;
