@@ -78,8 +78,8 @@ fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
 }
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
-/// A ViaPeer leg is held to whether it replied: its certainty is the carrier's own edge fact, which
-/// the first forward into the cut teaches the carrier (`ReplyDeadline`, then `CarrierEdgeLost`).
+/// A ViaPeer leg is held to whether it replied: its certainty is the carrier's own edge fact,
+/// `NotSent(CarrierEdgeLost)`.
 fn leg_shape(l: &Value) -> Value {
     if l["route"] == "via-peer" {
         return json!({"replied": l["outcome"] == "Reply", "route": l["route"]});
@@ -167,9 +167,8 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 /// later released. While it is silenced: `docker inspect` shows each of those containers still
 /// running (same id, same init, no restart, no exit) and attached to the fabric network; the other
 /// mesh's view marks every one of them unheard; a Direct call to one of them ends `NotSent`
-/// (deadline), a ViaPeer call through a node of the other mesh ends without a reply (first
-/// `Indeterminate` while the carrier still holds the edge, then `NotSent` naming the carrier's lost
-/// edge, and never `Indeterminate` again once the carrier has named it), a NoActiveRoute call is
+/// (deadline), a ViaPeer call through a node of the other mesh ends `NotSent` naming the
+/// carrier's lost edge (`CarrierEdgeLost`, every time, never `Indeterminate`), a NoActiveRoute call is
 /// `NotSent`, and no serve span exists for them; the advertised seats equal what the public
 /// candidates compute, the fabric-primary stays put, and the Build gains no attempt and
 /// `Fabric.build_id` does not move; the control plane creates, retires and re-births nothing. After
@@ -413,12 +412,12 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let mut rec2 = ev.reconciliation.take().unwrap();
     rec2.check("no call reached the isolated node while it was silent: no serve span in the silent legs' traces", served_in_silence.is_empty() && !silent_traces.is_empty(), format!("{} silent traces, {} served", silent_traces.len(), served_in_silence.len()));
     rec2.check("the silent legs resolved Direct, ViaPeer and NoActiveRoute, none replying", silent_by("direct") == reads_n && silent_by("via-peer") == reads_n && silent_by("no-active-route") == reads_n && silent_resolves.iter().all(|sp| sp["attributes"]["outcome"] != "Reply"), format!("{:?}", silent_resolves.iter().map(|sp| (sp["attributes"]["route"].clone(), sp["attributes"]["outcome"].clone())).collect::<Vec<_>>()));
-    // A silent ViaPeer leg never replies and ends typed: `Indeterminate(ReplyDeadline)` when the
-    // source's deadline passes before the carrier answers, `NotSent(CarrierEdgeLost)` naming the
-    // carrier's edge to the target when the carrier answers first. The sequence is recorded.
+    // A silent ViaPeer leg never replies and ends `NotSent(CarrierEdgeLost)` naming the carrier's
+    // edge to the target: the carrier bounds its inner call by the origin's remaining budget, so
+    // its answer always arrives first. The sequence is recorded.
     let via: Vec<(String, String)> = silence.iter().map(|r| (s(&r["legs"]["via_peer"]["outcome"]), s(&r["legs"]["via_peer"]["reason"]))).collect();
-    let via_typed = via.iter().all(|v| (v.0 == "Indeterminate" && v.1 == "ReplyDeadline") || (v.0 == "NotSent" && v.1.contains(&format!("CarrierEdgeLost(\"{carrier} -> {target_name} "))));
-    rec2.check("each silent ViaPeer leg ends without a reply: Indeterminate(ReplyDeadline) or NotSent(CarrierEdgeLost) naming the carrier and the target", via_typed, format!("{via:?}"));
+    let via_typed = via.iter().all(|v| v.0 == "NotSent" && v.1.contains(&format!("CarrierEdgeLost(\"{carrier} -> {target_name} ")));
+    rec2.check("each silent ViaPeer leg ends NotSent(CarrierEdgeLost) naming the carrier and the target", via_typed, format!("{via:?}"));
     if cut == Cut::Node {
         let still: BTreeSet<(String, String)> = births(&nodes_during).into_iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).collect();
         let want_rest: BTreeSet<(String, String)> = want_births.iter().filter(|(n, _)| !isolated_set.contains(n.as_str())).cloned().collect();
