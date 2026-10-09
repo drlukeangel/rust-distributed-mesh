@@ -339,6 +339,13 @@ impl Records {
         }
     }
 
+    /// Install the projection `project` yields as the view, and return it.
+    pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
+        let t = project();
+        self.install_view(topology, t.clone()).await;
+        t
+    }
+
     /// A fabric shutdown is held: keep the seats as they were before any admin drained.
     pub fn hold_seats(&self) {
         let mut seats = self.seats.lock().unwrap();
@@ -3636,6 +3643,33 @@ mod tests {
         book.record(newer.clone());
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.node(&old.node.name).unwrap().incarnation_id.as_ref(), Some(&newer.node.incarnation));
+    }
+
+    /// CONTRACT: a view installed by a writer that had to wait for the view lock reflects the
+    /// records as they are when it holds the lock, so a removal that lands while it waits is not
+    /// undone by the older projection.
+    #[tokio::test]
+    async fn a_projection_that_waits_for_the_view_lock_installs_the_state_at_the_lock() {
+        let book = Arc::new(DigestBook::default());
+        let old = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(old.clone());
+        let records = Arc::new(Records::default());
+        let mut n = Node::allocated(old.node.name.clone());
+        n.incarnation_id = Some(old.node.incarnation.clone());
+        records.publish(n);
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
+        assert!(topology.read().await.node(&old.node.name).is_some(), "the node is in the view before its removal");
+        // Another installer holds the view while this one is asked to install.
+        let held = topology.write().await;
+        let waiting = {
+            let (records, topology, book) = (records.clone(), topology.clone(), book.clone());
+            tokio::spawn(async move { records.install_projected(&topology, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await })
+        };
+        tokio::task::yield_now().await;
+        records.remove(&old.node.name);
+        drop(held);
+        waiting.await.unwrap();
+        assert!(topology.read().await.node(&old.node.name).is_none(), "the view holds the removed node: a projection taken before the lock was installed after the removal");
     }
 
     fn cfg(env: &[(&str, &str)]) -> AdminConfig {
