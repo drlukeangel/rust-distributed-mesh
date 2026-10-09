@@ -133,6 +133,23 @@ pub struct Complete {
     pub fabric: bool,
 }
 
+/// What the fabric-primary's view held of a mesh primary when it sent that primary the down op:
+/// the facts the primary's declaration is decided against (its birth, the endpoint it is resolved
+/// by, and its mesh's id). The down op goes again when any of them changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Addressed {
+    node_id: crate::model::NodeId,
+    incarnation: Option<IncarnationId>,
+    endpoint: Option<crate::model::EndpointId>,
+    mesh_id: Option<crate::model::MeshId>,
+}
+
+impl Addressed {
+    fn of(p: &crate::model::Node, mesh: &crate::model::Mesh) -> Self {
+        Self { node_id: p.node_id.clone(), incarnation: p.incarnation_id.clone(), endpoint: p.endpoint_id.clone(), mesh_id: mesh.id.clone() }
+    }
+}
+
 struct Round {
     began: Instant,
     held: Option<String>,
@@ -144,11 +161,46 @@ pub struct RoundDriver {
     me: PathName,
     mesh: Option<Round>,
     fabric: Option<Round>,
+    /// The mesh primaries this admin, as the fabric-primary, has sent the down op to, by mesh: the
+    /// view's primary changing from this is what sends it again (R-S2).
+    addressed: BTreeMap<String, Addressed>,
 }
 
 impl RoundDriver {
     pub fn new(me: PathName) -> Self {
-        Self { me, mesh: None, fabric: None }
+        Self { me, mesh: None, fabric: None, addressed: BTreeMap::new() }
+    }
+
+    /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
+    /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
+    /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
+    /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
+    pub fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
+        let targets = self.changed_mesh_primaries(view, is_fabric_primary);
+        if !targets.is_empty() {
+            send_down(&self.me, "fabric", &view.fabric.name, targets, client);
+        }
+    }
+
+    /// The mesh primaries to send the down op now, recorded as addressed.
+    pub fn changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool) -> Vec<(String, Option<crate::model::Node>)> {
+        if !is_fabric_primary {
+            self.addressed.clear();
+            return Vec::new();
+        }
+        let mut targets = Vec::new();
+        let mut present = Vec::new();
+        for m in &view.meshes {
+            let Some(p) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| p.name != self.me) else { continue };
+            present.push(m.name.clone());
+            let now = Addressed::of(p, m);
+            if self.addressed.get(&m.name) != Some(&now) {
+                self.addressed.insert(m.name.clone(), now);
+                targets.push((m.name.clone(), Some(p.clone())));
+            }
+        }
+        self.addressed.retain(|mesh, _| present.contains(mesh));
+        targets
     }
 
     /// No status is adopted and waiting: no round is open.
@@ -209,6 +261,11 @@ impl RoundDriver {
                 .collect();
             if first {
                 let targets: Vec<(String, Option<crate::model::Node>)> = i.view.meshes.iter().filter(|m| m.name != mesh_name).map(|m| (m.name.clone(), i.view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned())).collect();
+                for (mesh, p) in &targets {
+                    if let (Some(p), Some(m)) = (p, i.view.meshes.iter().find(|m| &m.name == mesh)) {
+                        self.addressed.insert(mesh.clone(), Addressed::of(p, m));
+                    }
+                }
                 send_down(&self.me, "fabric", &i.view.fabric.name, targets, i.client);
             }
             let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
@@ -373,6 +430,42 @@ mod tests {
             meshes: ["mesh1", "mesh2"].iter().map(|m| Mesh { id: Some(MeshId::mint()), name: (*m).into(), status: ScopeStatus::ReadyForTraffic }).collect(),
             nodes,
         }
+    }
+
+    /// CONTRACT (R-S2): the fabric-primary sends the down op to a mesh's primary when its view of
+    /// that primary appears or changes, once each, and to nobody when it is not the fabric-primary.
+    #[test]
+    fn fabric_primary_addresses_a_mesh_primary_when_its_view_of_it_changes() {
+        let me = member("mesh1.admin.1", true, true);
+        let first = member("mesh2.admin.1", true, false);
+        let mut driver = RoundDriver::new(me.name.clone());
+        let v0 = view(vec![me.clone()]);
+        assert!(driver.changed_mesh_primaries(&v0, true).is_empty(), "no other mesh primary in view: nobody to address");
+
+        let v1 = view(vec![me.clone(), first.clone()]);
+        let sent: Vec<String> = driver.changed_mesh_primaries(&v1, true).into_iter().map(|(m, _)| m).collect();
+        assert_eq!(sent, vec!["mesh2".to_string()], "a mesh primary gained by the view is addressed");
+        assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
+
+        let mut reborn = first.clone();
+        reborn.incarnation_id = Some(IncarnationId::mint());
+        let v2 = view(vec![me.clone(), reborn]);
+        assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
+
+        // The primary was in view before its endpoint was: gaining the endpoint it is resolved by
+        // is a change, so the down op goes again once the receiver can resolve the sender.
+        let mut early = first.clone();
+        early.endpoint_id = None;
+        let mut v_early = view(vec![me.clone(), early.clone()]);
+        let mut driver = RoundDriver::new(me.name.clone());
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1);
+        assert!(driver.changed_mesh_primaries(&v_early, true).is_empty());
+        for n in &mut v_early.nodes {
+            if n.name == early.name {
+                n.endpoint_id = Some(crate::model::EndpointId("ep-late".into()));
+            }
+        }
+        assert_eq!(driver.changed_mesh_primaries(&v_early, true).len(), 1, "gaining the endpoint it is resolved by is a change");
     }
 
     const NONE: Announced = Announced { mesh_awaiting_round: false, fabric_awaiting_round: false };

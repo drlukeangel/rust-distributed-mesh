@@ -53,6 +53,7 @@ pub(crate) type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
 /// A typed refusal encoded with the protocol's own constructors.
 pub(crate) enum Refusal {
+    NotReady(String),
     Busy(String),
     Draining(String),
     Malformed(MalformedKind),
@@ -112,6 +113,7 @@ where
 
     fn refusal(&self, r: Refusal) -> Vec<u8> {
         let reply = match r {
+            Refusal::NotReady(s) => P::not_ready(s),
             Refusal::Busy(s) => P::busy(s),
             Refusal::Draining(s) => P::draining(s),
             Refusal::Malformed(k) => P::malformed(k),
@@ -150,6 +152,8 @@ pub struct ServerStats {
     pub too_large: AtomicU64,
     pub busy: AtomicU64,
     pub draining: AtomicU64,
+    /// Requests refused typed `NotReady` by a closed ready gate.
+    pub not_ready: AtomicU64,
     pub violations: AtomicU64,
     /// Requests refused `425 STALE_TARGET` (another node).
     pub stale: AtomicU64,
@@ -187,6 +191,9 @@ pub struct ServerBuilder {
     pub(crate) catalog: CatalogBuilder,
     pub(crate) handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
+    /// Closed (`false`) until the owner opens it: every op, ping included, is refused with the
+    /// protocol's typed `NotReady`.
+    ready: Option<Arc<AtomicBool>>,
     /// Forwardable protocols this node carries, op -> max inner reply (node-rpc.md §36.1).
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at seal for the forward handler, when this node serves it.
@@ -210,6 +217,7 @@ impl ServerBuilder {
             catalog: CatalogBuilder::new(),
             handlers: HashMap::new(),
             admission: Admission::default(),
+            ready: None,
             carried: HashMap::new(),
             carried_table: None,
             inbound: None,
@@ -252,6 +260,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Serve nothing until `ready` is true: while it is false every op, `Ping` included, is
+    /// answered with its protocol's typed `NotReady` and no handler runs. A node whose handlers
+    /// read state filled after its server is already accepting closes the gate until the state
+    /// exists, so no peer is answered from a half-built node.
+    pub fn with_ready_gate(mut self, ready: Arc<AtomicBool>) -> Self {
+        self.ready = Some(ready);
+        self
+    }
+
     pub fn limits(mut self, op: u8, limits: Limits) -> Self {
         self.admission.set(op, limits);
         self
@@ -270,6 +287,7 @@ impl ServerBuilder {
                 catalog,
                 handlers: self.handlers,
                 admission: self.admission,
+                ready: self.ready,
                 draining: AtomicBool::new(false),
                 stats: Arc::new(ServerStats::default()),
                 birth,
@@ -304,6 +322,7 @@ struct Inner {
     catalog: SealedCatalog,
     handlers: HashMap<u8, Arc<dyn Erased>>,
     admission: Admission,
+    ready: Option<Arc<AtomicBool>>,
     draining: AtomicBool,
     stats: Arc<ServerStats>,
     birth: ServedBirth,
@@ -384,6 +403,13 @@ impl NodeRpcServer {
             // Constant-cost guards once the op is known, before the body.
             if permit.is_none() {
                 if let Some(op) = asm.head_op() {
+                    // A closed gate refuses every op, ping included, before anything else.
+                    if self.inner.ready.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst)) {
+                        stats.not_ready.fetch_add(1, Ordering::SeqCst);
+                        tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer)
+                            .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
+                        return self.refuse(op, Refusal::NotReady("this node is not ready: its authority is not filled yet".into()), send, recv).await;
+                    }
                     // Draining refuses every new call except the lifecycle control the catalog
                     // marks served while draining: the authority's probe and apply still land.
                     if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_draining) {

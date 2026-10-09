@@ -205,6 +205,7 @@ where
 
     fn refusal(&self, r: Refusal) -> Vec<u8> {
         let reply = match r {
+            Refusal::NotReady(s) => P::not_ready(s),
             Refusal::Busy(s) => P::busy(s),
             Refusal::Draining(s) => P::draining(s),
             Refusal::Malformed(k) => P::malformed(k),

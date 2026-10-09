@@ -125,6 +125,8 @@ struct Rig {
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
+    /// The router's ready gate: open unless a cell closes it.
+    ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, drain_in_flight: Option<u64>) -> Rig {
@@ -158,6 +160,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         republish: Arc::new(OnceLock::new()),
         drain,
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        wake: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -165,7 +168,9 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         let PingRequest::Ping { payload } = req;
         Ok(PingReply::Pong { payload })
     });
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = rafka_node_admin_core::status_rpc::serve(core, slot)
+        .with_ready_gate(ready.clone())
         .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().0 })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(me.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -178,7 +183,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         transport_addr: addr,
         incarnation: me.node.incarnation_id.clone().unwrap(),
     };
-    Rig { me, server, _router: router, resolved, authority }
+    Rig { me, server, _router: router, resolved, authority, ready }
 }
 
 /// `b`'s client to the rig's authority.
@@ -881,8 +886,8 @@ fn status_route_loss_never_synthesizes_dead() {
 /// The create pipeline runs this as its ApplyMeshPending step and `?`s its error, so a non-Ok
 /// ends the birth before the shape proceeds. Every attempt is one pending-handoff span naming
 /// the target birth, the MeshId, the natural key and the outcome. This cell takes about half a
-/// minute: the Indeterminate arm waits the call's 10 s budget and the NotSent arm the hand-off's
-/// own 20 s bound.
+/// minute: the Indeterminate arm waits the call's 10 s budget and the unreachable arm the
+/// hand-off's own 20 s reachability bound.
 #[test]
 fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
     let cell = "pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape";
@@ -924,17 +929,21 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let e2 = handoff(&r2, mesh_id.clone(), target_of(&r2)).await.expect_err("Pending after ReadyForTraffic is backward");
         assert!(e2.contains("Pending is a backward move") && e2.contains("ReadyForTraffic"), "{e2}");
 
-        // Arm 3: applied, the reply lost; the retry of the same natural key is AlreadyApplied.
+        // Arm 3: applied, the reply lost. The hand-off makes ONE call: Indeterminate fails the step
+        // typed (the rectifier is the retry), and the next hand-off of the same key is AlreadyApplied.
         let mesh_id3 = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id3.clone())].into_iter().collect();
         let r3 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
         r3.authority.hold_next_reply.store(true, Ordering::SeqCst);
         let t3 = std::time::Instant::now();
-        handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect("the retry resolves the lost reply");
+        let e3 = handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect_err("a lost reply is not certainty: the step fails and is not retried inside");
         let lost_reply_wall = t3.elapsed();
+        assert!(e3.contains("Indeterminate") && e3.contains("Pending is not certain"), "{e3}");
         assert_eq!(r3.authority.declared.lock().unwrap().meshes.get(&mesh_id3), Some(&MeshState::Pending), "applied once");
+        handoff(&r3, mesh_id3.clone(), target_of(&r3)).await.expect("the rectifier's next hand-off of the same key is AlreadyApplied");
 
-        // Arm 4: the target cannot be reached at all.
+        // Arm 4: the target cannot be reached at all: the reachability wait ends at its bound and
+        // no Status is sent.
         let mesh_id4 = MeshId::mint();
         let r4 = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], BTreeMap::new(), None).await;
         let mut dark = target_of(&r4);
@@ -942,13 +951,13 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let t4 = std::time::Instant::now();
         let e4 = handoff(&r4, mesh_id4.clone(), dark).await.expect_err("an unreachable target is never certain");
         let dark_wall = t4.elapsed();
-        assert!(e4.contains("Pending is not certain") && e4.contains("Build(shape) does not start under an assumed state"), "{e4}");
+        assert!(e4.contains("unreachable for 20 s") && e4.contains("nothing was sent"), "{e4}");
         assert!(r4.authority.declared.lock().unwrap().meshes.is_empty(), "nothing applied at an unreached target");
 
         let spans = finish(
             &capture,
             &dir,
-            json!({"cell": cell, "stale_mesh": e1, "backward": e2, "lost_reply_wall_ms": lost_reply_wall.as_millis() as u64, "unreachable": e4, "unreachable_wall_ms": dark_wall.as_millis() as u64}),
+            json!({"cell": cell, "stale_mesh": e1, "backward": e2, "lost_reply": e3, "lost_reply_wall_ms": lost_reply_wall.as_millis() as u64, "unreachable": e4, "unreachable_wall_ms": dark_wall.as_millis() as u64}),
         );
         let hand = |outcome_prefix: &str, mesh_id: &MeshId| {
             spans
@@ -956,12 +965,56 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
                 .filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-pending-handoff" && s["attributes"]["mesh_id"] == mesh_id.to_string().as_str() && s["attributes"]["outcome"].as_str().is_some_and(|o| o.starts_with(outcome_prefix)))
                 .count()
         };
-        assert_eq!(hand("rejected-invalid-mesh-transition", &mesh_id), 1);
-        assert_eq!(hand("Indeterminate", &mesh_id3), 1, "the lost reply is spanned as Indeterminate");
-        assert_eq!(hand("applied", &mesh_id3) + hand("already-applied", &mesh_id3), 1, "and resolved once by the same key");
-        assert_eq!(hand("already-applied", &mesh_id3), 1);
-        assert!(hand("NotSent", &mesh_id4) >= 2, "an unreachable target is NotSent, attempt after attempt");
-        assert_eq!(hand("applied", &mesh_id4) + hand("already-applied", &mesh_id4), 0);
+        assert_eq!(hand("rejected-invalid-mesh-transition", &mesh_id), 1, "one call, one span");
+        assert_eq!(hand("Indeterminate", &mesh_id3), 1, "the lost reply is spanned as Indeterminate, once");
+        assert_eq!(hand("already-applied", &mesh_id3), 1, "and the next hand-off of the same key resolves it");
+        assert_eq!(hand("", &mesh_id4), 0, "an unreachable target is sent no Status at all");
+        let reach: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-pending-reachability").collect();
+        assert!(reach.iter().any(|s| s["attributes"]["reachable"].to_string().contains("false")), "the unreachable wait is spanned");
+    });
+}
+
+/// CONTRACT (R-S2): the Pending hand-off waits for the exact launched birth to be reachable with
+/// a Ping and sends no Status meanwhile. A node whose router is up but whose Status authority is
+/// not filled refuses even the Ping with a typed NotReady, so the wait does not pass early; once
+/// the authority is filled the wait ends and exactly one Status call applies Pending. What must
+/// NOT happen: a Status call, or an Applied, while the gate is closed.
+#[test]
+fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
+    let cell = "pending_handoff_waits_for_a_filled_authority_before_its_one_call";
+    let dir = cell_dir(cell);
+    let capture = capture(cell);
+    capture.run(async {
+        let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+        let mesh_id = MeshId::mint();
+        let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh_id.clone())].into_iter().collect();
+        let r = rig(birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false), &[&fp], ids, None).await;
+        r.ready.store(false, Ordering::SeqCst);
+        let mut target = r.me.node.clone();
+        target.transport_addr = Some(r.resolved.transport_addr);
+        let (topology, me) = (r.authority.topology.clone(), fp.node.name.clone());
+        let ep = rafka_node_rpc::endpoint::bind(fp.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+        let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+        let gate = r.ready.clone();
+        let opener = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            gate.store(true, Ordering::SeqCst);
+        });
+        let started = std::time::Instant::now();
+        rafka_node_admin_core::admin::apply_mesh_pending(&client, &resolver, &me, &topology, "mesh2", &mesh_id.to_string(), &target).await.expect("Pending applies once the authority is filled");
+        let waited = started.elapsed();
+        opener.await.unwrap();
+        assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");
+        assert_eq!(r.authority.declared.lock().unwrap().meshes.get(&mesh_id), Some(&MeshState::Pending));
+        let spans = finish(&capture, &dir, json!({"cell": cell, "waited_ms": waited.as_millis() as u64}));
+        let reach = spans_where(&spans, "rdm.node_admin.mesh.update.via-pending-reachability", &[]);
+        assert_eq!(reach.len(), 1);
+        assert!(reach[0]["attributes"]["pings"].to_string().trim_matches('"').parse::<u64>().unwrap() > 1, "NotReady pings were refused before the Pong: {}", reach[0]["attributes"]);
+        assert!(reach[0]["attributes"]["last"].to_string().contains("Pong"), "the wait ended on a Pong");
+        let hand = spans_where(&spans, "rdm.node_admin.mesh.update.via-pending-handoff", &[]);
+        assert_eq!(hand.len(), 1, "exactly one Status call");
+        assert!(spans.iter().all(|s| !s["attributes"]["outcome"].to_string().contains("NotReady")), "no Status call was answered NotReady");
     });
 }
 

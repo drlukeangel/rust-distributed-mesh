@@ -231,9 +231,13 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
     // to that peer (connections.md §10), reported to the same writer as its own dials.
     let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
+    // included, is a typed NotReady before then.
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
+        .with_ready_gate(ready.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
@@ -363,6 +367,7 @@ pub async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::cloc
         .in_scope(|| tracing::info!("ready for traffic"));
     *status.lock().unwrap() = MemberStatus::ReadyForTraffic;
     let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), server: server.clone() }));
+    ready.store(true, std::sync::atomic::Ordering::SeqCst);
     let (d, st, stats) = (digest.clone(), status.clone(), server.stats());
     let publisher = membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || {
         let mut d = d.clone();

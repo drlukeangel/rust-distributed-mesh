@@ -94,6 +94,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         republish: Arc::new(std::sync::OnceLock::new()),
         drain: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        wake: Default::default(),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
