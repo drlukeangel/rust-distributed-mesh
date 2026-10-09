@@ -638,8 +638,7 @@
       "job": "i143-rshape-replay-process",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-process/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_replay_reproduces_qualified_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-replay-process/mock_soak_replay_reproduces_qualified_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "mock_soak_replay_reproduces_qualified_invariants",
@@ -649,8 +648,7 @@
       "job": "i143-rshape-replay-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-replay-container/mock_soak_replay_reproduces_qualified_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_REPLAY_ROOT=target/i143-rshape cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_soak_replay_reproduces_qualified_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-replay-container/mock_soak_replay_reproduces_qualified_invariants",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-      "pending": 2949
+      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
     },
     {
       "test": "rshape_manifest_requires_all_canonical_owner_and_provider_receipts",
@@ -660,8 +658,7 @@
       "job": "i143-rshape-export-qualification",
       "command": "cargo run -p rafka-mesh-audit --bin rshape-qualification -- --matrix tools/mesh-audit/i143-rshape-matrix.json --evidence target/i143-rshape --owner-receipts target/i143-acceptance/jobs --output target/i143-rshape/export/qualification.json",
       "dir": "target/i143-rshape/i143-rshape-export-qualification/rshape_manifest_requires_all_canonical_owner_and_provider_receipts",
-      "source": "tools/mesh-audit/src/bin/rshape_qualification.rs",
-      "pending": 2949
+      "source": "tools/mesh-audit/src/bin/rshape_qualification.rs"
     },
     {
       "test": "rshape_definition_covers_every_scenario_without_business_dependencies",

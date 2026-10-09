@@ -168,6 +168,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
     # and the runner records its result.
     script=0
     case "$(jq -r --argjson i "$i" '.cells[$i].source // ""' "$JOBFILE")" in *.sh) script=1 ;; esac
+    # An export cell is an audit binary run (`cargo run`), not a test: it passes when it exits 0.
+    [ "$LAYER" = export ] && script=1
     if [ "$script" = 1 ] && [ -z "$consumer_reason" ]; then
         jq -n --arg cell "$cell" --argjson rc "$rc" --arg command "$command" '{cell:$cell, evidence:"runner", script:true, exit:$rc, command:$command}' > "$dir/result.json"
     fi

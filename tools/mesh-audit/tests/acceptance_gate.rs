@@ -147,7 +147,10 @@ fn every_registered_command_names_its_own_cell_and_its_own_directory() {
             } else {
                 assert_eq!(dir, format!("target/i143-acceptance/{issue}/{layer}/{name}"), "{job}/{name}");
             }
-            if !c["source"].as_str().unwrap().ends_with(".sh") {
+            if layer == "export" {
+                // An export cell runs an audit binary, not a test.
+                assert!(command.starts_with("cargo run -p rafka-mesh-audit --bin "), "{job}/{name}: an export cell runs an audit binary: {command}");
+            } else if !c["source"].as_str().unwrap().ends_with(".sh") {
                 assert!(command.ends_with(&format!("::{test} -- --exact")), "{job}/{name}: the command names exactly its test: {command}");
                 assert!(command.contains(" --test main "), "{job}/{name}: the command names its crate's one test executable");
                 let stem = std::path::Path::new(c["source"].as_str().unwrap()).file_stem().unwrap().to_str().unwrap();

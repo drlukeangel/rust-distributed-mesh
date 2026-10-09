@@ -304,6 +304,11 @@ struct Born {
 /// From empty provider state: the consumer's binding set validated, then the Day-0 admin started
 /// on it. Nothing else runs a bound executable.
 async fn birth(cell: &str, shape: Shape) -> Born {
+    birth_with(cell, shape, seed(), None).await
+}
+
+/// `birth` with the seed and the evidence directory given (a replay takes both from its source run).
+async fn birth_with(cell: &str, shape: Shape, seed: u64, dir: Option<PathBuf>) -> Born {
     let started_ms = now_ms();
     let root = workspace_root();
     let bin = root.join(env("RDM_RSHAPE_CONSUMER_BIN_DIR"));
@@ -315,9 +320,10 @@ async fn birth(cell: &str, shape: Shape) -> Born {
     let bound: Vec<PathBuf> = set.bindings.iter().map(|b| b.executable.clone()).collect();
     let provider_before = provider_actions(&bound);
     assert_eq!(provider_before, json!({"processes": [], "containers": []}), "empty provider state: nothing runs a bound executable before the estate is born");
-    let dir = cell_dir(cell);
+    let dir = dir.unwrap_or_else(|| cell_dir(cell));
+    std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap_external(owner(cell, shape), "fabric1", "mesh1", &set, &candidate, &["broker", "gateway", "compute"]).await.unwrap_or_else(|e| panic!("the consumer's binding set is refused: {e}"));
-    estate.set_seed(seed());
+    estate.set_seed(seed);
     Born { dir, candidate, set, bound, estate, provider_before, started_ms }
 }
 
@@ -6316,6 +6322,7 @@ async fn mock_carrier_edge_loss_retires_the_proxy_by_name_within_the_callers_bud
 /// One canonical soak story: the profile of legal actions the seeded draw picks among, and the
 /// round kinds that are its named fault/heal/recovery cycles. The driver, generator, ledger and
 /// invariants are the one `rafka_test_scenario::soak` serves every story with.
+#[derive(Clone, Copy)]
 struct Story {
     id: &'static str,
     profile: SoakProfile,
@@ -6366,9 +6373,12 @@ fn route_rows(spans: &[Value]) -> Vec<Value> {
 /// What a story's run did, judged from the driver's report and the estate's own spans. Every
 /// check that fails panics after the evidence is on disk, naming the rule.
 async fn soak_run(cell: &str, story: Story) {
+    soak_run_with(cell, story, seed(), soak_seconds(), None).await;
+}
+
+/// `soak_run` with its seed, duration and evidence directory given; returns the cell's `result.json`.
+async fn soak_run_with(cell: &str, story: Story, seed: u64, secs: u64, dir: Option<PathBuf>) -> Value {
     let shape = require_tier(CANONICAL);
-    let secs = soak_seconds();
-    let seed = seed();
     let can_cut = if provider() == "process" {
         match host_can_cut() {
             Ok(()) => true,
@@ -6382,7 +6392,7 @@ async fn soak_run(cell: &str, story: Story) {
         true
     };
     let t0 = Instant::now();
-    let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
+    let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth_with(cell, shape, seed, dir).await;
     let day0 = estate.nodes().await;
     let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
     let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
@@ -6570,6 +6580,7 @@ async fn soak_run(cell: &str, story: Story) {
     result["invariants_checked"] = json!(inv.0.len());
     write_json(&dir, "result.json", &result);
     let _ = set;
+    result
 }
 
 /// CONTRACT (S1, routing, #2949): on the canonical twenty-node estate (node-admin / compute /
@@ -6636,4 +6647,129 @@ async fn mock_soak_lifecycle_preserves_continuous_invariants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_soak_randomized_preserves_continuous_invariants() {
     soak_run("mock_soak_randomized_preserves_continuous_invariants", S5).await;
+}
+
+// ---- replay of the qualified soaks ---------------------------------------------------------------
+
+fn sha256_of(path: &Path) -> String {
+    let out = std::process::Command::new("sha256sum").arg(path).output().unwrap_or_else(|e| panic!("sha256sum {}: {e}", path.display()));
+    assert!(out.status.success(), "sha256sum {} failed", path.display());
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string()
+}
+
+fn read_value(path: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(path).unwrap_or_else(|e| panic!("REFUSED: {}: {e}", path.display()))).unwrap_or_else(|e| panic!("REFUSED: {} is not JSON: {e}", path.display()))
+}
+
+/// The typed reason kinds of a run's Indeterminate operations (the ledger's `detail`).
+fn uncertainty_kinds(result: &Value) -> BTreeSet<String> {
+    result["indeterminate_operations"].as_array().into_iter().flatten().map(|o| o["reason"].to_string()).collect()
+}
+
+/// One source run, validated before any replay estate is born.
+struct Source {
+    story: Story,
+    dir: PathBuf,
+    recorded_dir: String,
+    result: Value,
+}
+
+/// CONTRACT (replay, #2949): for the provider this cell runs on, every qualified soak story named
+/// (S1-S5 unless RDM_RSHAPE_REPLAY_STORIES narrows a proof run) is replayed at the candidate its
+/// source run imported: the source `result.json` under RDM_RSHAPE_REPLAY_ROOT must be this
+/// provider's, canonical, free of a failure record, and with every invariant holding; the replay
+/// runs the same story with the source's recorded seed and duration. The executed action
+/// identities (the model's path.name / mesh / class actions) of the replay equal the source's over
+/// their common length, the replay checks exactly the invariants the source checked and all hold,
+/// and every kind of uncertainty the replay classified was one the source classified. Runtime ids and
+/// timings differ and are recorded. The manifest lists each source by path and sha256. What must NOT
+/// happen: replaying another provider's run, a source at another candidate, a schedule that
+/// diverges, an invariant the source did not check, a new kind of uncertainty, or a greener seed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_replay_reproduces_qualified_invariants() {
+    let cell = "mock_soak_replay_reproduces_qualified_invariants";
+    let root = workspace_root();
+    let replay_root = root.join(env("RDM_RSHAPE_REPLAY_ROOT"));
+    let standard_root = replay_root.canonicalize().ok() == root.join("target/i143-rshape").canonicalize().ok();
+    let provider = provider();
+    let matrix = read_value(&root.join("tools/mesh-audit/i143-rshape-matrix.json"));
+    let candidate = s(&read_value(&root.join("target/i143-rshape/consumer-build/manifest.json"))["candidate_sha"]);
+    let wanted: Option<Vec<String>> = std::env::var("RDM_RSHAPE_REPLAY_STORIES").ok().map(|v| v.split(',').map(|x| x.trim().to_string()).collect());
+    let stories: Vec<Story> = [S1, S2, S3, S4, S5].into_iter().filter(|st| wanted.as_ref().is_none_or(|w| w.iter().any(|x| x == st.id))).collect();
+    assert!(!stories.is_empty(), "REFUSED: RDM_RSHAPE_REPLAY_STORIES names no story of S1-S5");
+
+    // Every source first: a missing or foreign one refuses before an estate is born.
+    let mut sources = Vec::new();
+    for story in stories {
+        let test = s(&matrix["soaks"][story.id]["test"]);
+        let mc = matrix["cells"].as_array().unwrap().iter().find(|c| s(&c["test"]) == test && s(&c["provider"]) == provider && s(&c["tier"]) == "canonical").unwrap_or_else(|| panic!("REFUSED: the matrix has no canonical {provider} cell for {} ({test})", story.id));
+        let dir = replay_root.join(s(&mc["job"])).join(&test);
+        let recorded_dir = if standard_root { s(&mc["dir"]) } else { dir.display().to_string() };
+        let result = read_value(&dir.join("result.json"));
+        assert!(!dir.join("failure.json").exists(), "REFUSED: {} source run {} left a failure record", story.id, dir.display());
+        assert_eq!(s(&result["provider"]), provider, "REFUSED: {} source run {} ran on provider `{}`; a replay never takes another provider's run", story.id, dir.display(), s(&result["provider"]));
+        assert_eq!(s(&result["tier"]), "canonical", "REFUSED: {} source run {} is not canonical", story.id, dir.display());
+        assert_eq!(s(&result["story"]), story.id, "REFUSED: {} source run {} is story `{}`", story.id, dir.display(), s(&result["story"]));
+        assert_eq!(s(&result["rdm_candidate_sha"]), candidate, "REFUSED: {} source run {} imported candidate `{}`, this candidate is `{candidate}`", story.id, dir.display(), s(&result["rdm_candidate_sha"]));
+        let inv = read_value(&dir.join("invariant-results.json"));
+        let broken: Vec<&Value> = inv["invariants"].as_array().into_iter().flatten().filter(|i| i["holds"] != json!(true)).collect();
+        assert!(broken.is_empty() && !inv["invariants"].as_array().map_or(true, |a| a.is_empty()), "REFUSED: {} source run {} has no passing invariants: {broken:?}", story.id, dir.display());
+        assert!(result["schedule"]["executed"].as_array().is_some_and(|a| !a.is_empty()), "REFUSED: {} source run {} recorded no executed schedule", story.id, dir.display());
+        sources.push(Source { story, dir, recorded_dir, result });
+    }
+
+    let out = cell_dir(cell);
+    let mut entries = Vec::new();
+    for src in &sources {
+        let id = src.story.id;
+        let seed = src.result["seed"].as_u64().expect("the source records its seed");
+        let secs = src.result["soak_seconds"].as_u64().expect("the source records its duration");
+        let replay_cell = format!("mock_soak_replay_{id}");
+        let replay_dir = out.join(id);
+        eprintln!("REPLAY {id} source={} seed={seed} secs={secs}", src.dir.display());
+        let replay = soak_run_with(&replay_cell, src.story, seed, secs, Some(replay_dir.clone())).await;
+
+        // Schedule identities.
+        let (a, b) = (src.result["schedule"]["executed"].as_array().unwrap(), replay["schedule"]["executed"].as_array().unwrap());
+        let common = a.len().min(b.len());
+        let diverged = (0..common).find(|i| a[*i] != b[*i]);
+        assert!(common > 0 && diverged.is_none(), "{id}: the replay's executed actions diverge from the source's at step {diverged:?} of {common} compared: source {:?} replay {:?}", diverged.map(|i| &a[i]), diverged.map(|i| &b[i]));
+        assert_eq!(replay["seed"], src.result["seed"], "{id}: the replay ran another seed");
+        assert_eq!(replay["profile"], src.result["profile"], "{id}: the replay ran another profile");
+        // Continuous invariants.
+        let names = |v: &Value| -> BTreeSet<String> { v["invariants"].as_array().into_iter().flatten().map(|i| s(&i["invariant"])).collect() };
+        let (src_inv, rep_inv) = (read_value(&src.dir.join("invariant-results.json")), read_value(&replay_dir.join("invariant-results.json")));
+        let (sn, rn) = (names(&src_inv), names(&rep_inv));
+        assert_eq!(sn, rn, "{id}: the replay checked other invariants than the source (only in source: {:?}; only in replay: {:?})", sn.difference(&rn).collect::<Vec<_>>(), rn.difference(&sn).collect::<Vec<_>>());
+        assert!(rep_inv["invariants"].as_array().unwrap().iter().all(|i| i["holds"] == json!(true)), "{id}: a replay invariant does not hold");
+        // Uncertainty classification.
+        let (sk, rk) = (uncertainty_kinds(&src.result), uncertainty_kinds(&replay));
+        let new_kinds: Vec<&String> = rk.difference(&sk).collect();
+        assert!(new_kinds.is_empty(), "{id}: the replay classified uncertainty the qualified source did not: {new_kinds:?} (source kinds {sk:?})");
+        assert!(replay["ledger"]["violations"].as_array().is_some_and(|v| v.is_empty()) && src.result["ledger"]["violations"].as_array().is_some_and(|v| v.is_empty()), "{id}: a ledger violation");
+        entries.push(json!({
+            "story": id,
+            "source_dir": src.recorded_dir,
+            "source_result_sha256": sha256_of(&src.dir.join("result.json")),
+            "source_invariants_sha256": sha256_of(&src.dir.join("invariant-results.json")),
+            "source_actions_sha256": sha256_of(&src.dir.join("actions.jsonl")),
+            "seed": seed,
+            "soak_seconds": secs,
+            "replay_dir": replay_dir,
+            "schedule": {"source_actions": a.len(), "replay_actions": b.len(), "compared": common, "identical": true},
+            "invariants": {"compared": sn.len(), "all_hold": true},
+            "uncertainty": {"source_kinds": sk, "replay_kinds": rk},
+            "source_runtime_ids_differ_from_replay": "recorded in each run's topology-final.json",
+            "reproduced": true,
+        }));
+    }
+    let all_five = entries.len() == 5;
+    let qualifies = all_five && entries.iter().all(|e| e["soak_seconds"].as_u64() >= Some(1800));
+    write_json(&out, "replay-manifest.json", &json!({"test": cell, "provider": provider, "candidate_sha": candidate, "replay_root": replay_root, "stories": entries, "stories_replayed": entries.len(), "qualifies_export": qualifies, "why_not": if qualifies { Value::Null } else { json!("export qualification needs all five stories replayed from 1800 s runs") }}));
+    write_json(&out, "invariant-results.json", &json!({"cell": cell, "provider": provider, "invariants": [
+        {"invariant": "every named source run is this provider's, canonical, at this candidate, with every invariant holding", "holds": true},
+        {"invariant": "each replay's executed actions equal the source's over their common length, with the source's seed and profile", "holds": true},
+        {"invariant": "each replay checked exactly the source's invariants and every one holds", "holds": true},
+        {"invariant": "each replay classified no kind of uncertainty the source did not, and reconciled its ledger", "holds": true}]}));
+    write_json(&out, "result.json", &json!({"cell": cell, "provider": provider, "tier": "canonical", "rdm_candidate_sha": candidate, "stories_replayed": entries.len(), "qualifies_export": qualifies, "manifest": "replay-manifest.json"}));
 }

@@ -29,3 +29,7 @@ path = "src/bin/address_lookup.rs"
 [[test]]
 name = "main"
 path = "tests/main.rs"
+
+[[bin]]
+name = "rshape-qualification"
+path = "src/bin/rshape_qualification.rs"
