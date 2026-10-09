@@ -9,6 +9,8 @@
 //! POST   /api/nodes/{name}/restart               -> RestartNode
 //! DELETE /api/nodes/{name}                       -> RemoveNode
 //! POST   /api/bootstrap                          -> reconcile to the MN shape
+//! POST   /api/meshes      {name, node_admin, rpc_node} -> CreateMesh
+//! DELETE /api/meshes/{name}                      -> RemoveMesh
 //! ```
 
 use axum::extract::{Path, State};
@@ -34,6 +36,14 @@ struct Control {
 }
 
 #[derive(Deserialize)]
+struct MeshRequest {
+    name: String,
+    node_admin: u32,
+    #[serde(default)]
+    rpc_node: u32,
+}
+
+#[derive(Deserialize)]
 struct SpawnRequest {
     mesh: String,
     kind: NodeKind,
@@ -47,6 +57,8 @@ pub fn router(admin: Option<NodeAdminClient>, events: Arc<dyn BuildEvents>) -> R
         .route("/api/nodes/{node_name}/restart", post(restart))
         .route("/api/nodes/{node_name}", delete(remove))
         .route("/api/bootstrap", post(bootstrap))
+        .route("/api/meshes", post(create_mesh))
+        .route("/api/meshes/{mesh_name}", delete(remove_mesh))
         .with_state(Control { admin, events })
 }
 
@@ -127,4 +139,26 @@ async fn bootstrap(State(c): State<Control>) -> Response {
     let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])] };
     let r = admin.build(&desired).await;
     answer(&c, "bootstrap", r, None, Some("mesh1"))
+}
+
+/// A new mesh of `node_admin` node-admins and `rpc_node` rpc nodes: one Build; node-admin births
+/// its first node-admin and the mesh fills itself.
+async fn create_mesh(State(c): State<Control>, Json(body): Json<MeshRequest>) -> Response {
+    let admin = match client(&c) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let desired = MeshDesired::of(&body.name, [(NodeKind::NodeAdmin, body.node_admin), (NodeKind::RpcNode, body.rpc_node)]);
+    let r = admin.create_mesh(&desired).await;
+    answer(&c, "create mesh", r, None, Some(&body.name))
+}
+
+/// Retire a whole mesh: one Build (members first, its node-admins last).
+async fn remove_mesh(State(c): State<Control>, Path(name): Path<String>) -> Response {
+    let admin = match client(&c) {
+        Ok(a) => a,
+        Err(r) => return r,
+    };
+    let r = admin.remove_mesh(&name).await;
+    answer(&c, "remove mesh", r, None, Some(&name))
 }

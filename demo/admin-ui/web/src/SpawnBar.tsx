@@ -36,6 +36,14 @@ export function SpawnBar() {
           + {k}
         </button>
       ))}
+      <button disabled={busy === "mesh"} onClick={() => run("mesh", `create ${mesh} (2 node-admins, 3 rpc nodes)`, () => api.createMesh(mesh, 2, 3))}
+        title="Create this mesh: 2 node-admins and 3 rpc nodes, one Build">
+        + mesh
+      </button>
+      <button className="danger" disabled={busy === "rm-mesh"} onClick={() => run("rm-mesh", `remove ${mesh}`, () => api.removeMesh(mesh))}
+        title="Retire this whole mesh: members first, its node-admins last">
+        remove mesh
+      </button>
       <span style={{ flex: 1 }} />
       <button className="primary" disabled={busy === "bootstrap"} onClick={() => run("bootstrap", "bootstrap", api.bootstrap)}
         title="Reconcile the fabric to mesh1 with 2 node-admins and 3 rpc nodes">

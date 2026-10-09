@@ -171,4 +171,8 @@ export const api = {
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/restart`, { method: "POST" }),
   remove: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  createMesh: (name: string, node_admin: number, rpc_node: number) =>
+    call<BuildAccepted>("/api/meshes", post({ name, node_admin, rpc_node })),
+  removeMesh: (name: string) =>
+    call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),
 };
