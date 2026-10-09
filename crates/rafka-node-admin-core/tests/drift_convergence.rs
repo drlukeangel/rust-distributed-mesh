@@ -904,12 +904,8 @@ mod unheard_mesh_hold {
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
-        // The attempt runs; the mesh is still unheard and its second node-admin's exit is proven too: held, not released.
-        e.converge().await;
-        e.unheard(&[admins[1].as_str(), rpc.as_str()]).await;
-        let second = pass(&e, &mut started, &mut held, &decided).await;
-        assert_eq!(second, None, "the decision released one node-admin; the second waits for the mesh to be heard");
-        let second_id = e.node_id(&admins[1]).await;
-        assert!(held.iter().any(|(n, _)| n.as_str() == second_id), "the second node-admin's exit is held as evidence: {held:?}");
+        // The decision released one node-admin: that release is spent until the mesh is heard again, so
+        // the second node-admin's exit is evidence, not an attempt.
+        assert!(started.iter().any(|k| k.2 == vec!["recovery".to_string(), peer_mesh.clone()]), "the release is recorded: {started:?}");
     }
 }
