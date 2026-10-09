@@ -747,6 +747,18 @@
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect two_peer_meshes_lost_together_are_investigated_and_reborn_independently -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently"
+        },
+        {
+          "name": "elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/elected_primary_republishes_the_adopted_mesh_status_only_after_its_round_completes"
+        },
+        {
+          "name": "reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does",
+          "source": "crates/rafka-test-scenario/tests/i143_acceptance_2803_detect.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does/estate cargo test -p rafka-test-scenario --test i143_acceptance_2803_detect reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does -- --exact",
+          "dir": "target/i143-acceptance/2803-detect/process/reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does"
         }
       ]
     },
