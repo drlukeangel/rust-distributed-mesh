@@ -538,6 +538,7 @@ pub async fn reconcile_drift(
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     defers: &(dyn Fn(&str) -> bool + Sync),
+    decided: &(dyn Fn(&str) -> bool + Sync),
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| &n.name == me)?;
     let current = accepted.current(builds).await?;
@@ -562,7 +563,17 @@ pub async fn reconcile_drift(
         }
     }
     let t = &map;
-    for n in crate::drift::unheard(t) {
+    // The births this authority may have to prove: the ones it no longer hears, and the node-admins
+    // of a peer mesh whose rebirth the ladder decided (`crate::investigate`). A mesh this authority
+    // never heard on the backbone is held `ready` in its view from topology alone (topology is not
+    // liveness), so the ladder's decision, not a status, names its node-admins.
+    let mut candidates = crate::drift::unheard(t);
+    for n in &t.nodes {
+        if n.kind == NodeKind::NodeAdmin && n.mesh != me.mesh && false && decided(&n.mesh) && !candidates.iter().any(|c| c.name == n.name) {
+            candidates.push(n);
+        }
+    }
+    for n in candidates {
         // A peer mesh with no live node-admin is reborn on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: its node-admins wait for it. Any
         // other birth, a node-admin of a mesh that still has one included, is proven here as ever.
@@ -2956,7 +2967,7 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 // starts a reconciliation Build for proven drift.
                 if cut_off_view.authorizes() {
                     let durable_rows = if now.fabric_primary().is_some_and(|n| n.name == me) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh)).await;
+                    reconcile_drift(&me, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &durable_rows, &mut started, &|mesh| (book.backbone_meshes().contains(mesh) || ladder.lock().unwrap().meshes().contains(mesh)) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh)).await;
                     exec.reconcile_active().await;
                 }
                 tokio::select! {
