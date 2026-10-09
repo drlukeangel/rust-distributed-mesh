@@ -2714,7 +2714,14 @@ pub async fn start_with(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring)
                 backbone.publish(&membership, mine.clone()).await;
                 // A status is sent when it changed, never per round (gossip.md §3.2).
                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                let fabric_status = |records: &Records| if records.adopted_degraded() { "degraded".to_string() } else { status_of(t.fabric.status) };
+                // The fabric's status as the live records state it: a round that just cleared the adopted
+                // degraded must not be answered by the older projection `t`.
+                let fabric_status = |records: &Records| match t.fabric.status {
+                    crate::model::ScopeStatus::Degraded | crate::model::ScopeStatus::ReadyForTraffic => {
+                        status_of(if records.adopted_degraded() || records.peer_recovery().is_some() { crate::model::ScopeStatus::Degraded } else { crate::model::ScopeStatus::ReadyForTraffic })
+                    }
+                    other => status_of(other),
+                };
                 let mut announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), false, false).await;
                 // A status adopted from the previous publisher is republished only when its round is
                 // complete: the planned births checked in, every mesh primary reported.
