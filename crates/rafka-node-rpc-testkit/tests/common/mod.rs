@@ -242,6 +242,7 @@ pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
                 })
             }),
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
+            known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| None),
         })
     };

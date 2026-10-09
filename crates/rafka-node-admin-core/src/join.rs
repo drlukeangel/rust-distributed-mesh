@@ -148,6 +148,10 @@ pub struct JoinDoor {
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
+    /// Project the installed birth into the view this admin's status authority resolves senders
+    /// from, so the admitted birth is known to that authority when the join is answered: its
+    /// first declaration is never `unknown peer`.
+    pub known: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
 }
@@ -187,6 +191,7 @@ impl JoinDoor {
             }
             Standing::Deployed => {
                 (self.install)(&d);
+                (self.known)().await;
                 self.joins.report(&d);
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");

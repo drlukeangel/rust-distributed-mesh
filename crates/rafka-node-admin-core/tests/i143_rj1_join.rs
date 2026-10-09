@@ -146,6 +146,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 })
             }),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
+            known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
         };
         let dep = deployed();

@@ -228,6 +228,14 @@ fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (Statu
 }
 
 impl StatusAuthority {
+    /// The node a call's authenticated endpoint is, from the view this authority decides from: a
+    /// birth the view holds, or `None` for a stranger (answered `SenderNotSubject`, "unknown
+    /// peer"). A birth this admin admitted over `JoinNode` is in the view when its join is
+    /// answered (`join::JoinDoor::known`), so it is never a stranger.
+    pub async fn sender_of(&self, peer: &EndpointId) -> Option<crate::model::Node> {
+        self.topology.read().await.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(peer)).cloned()
+    }
+
     /// The one door every declaration goes through, whoever the sender is: a peer over Node RPC,
     /// or this admin itself when its view names it as the authority. Decide over the view; an
     /// `Applied` node state is durable (the subject's row) before it is answered, and the live
@@ -452,7 +460,7 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
                 return Ok(StatusReply::NotReady { reason: "this admin holds no view yet".into() });
             };
             let peer_id = EndpointId(peer.endpoint_id.to_string());
-            let sender = auth.topology.read().await.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer_id)).cloned();
+            let sender = auth.sender_of(&peer_id).await;
             let reply = auth.apply(sender, &req).await;
             if auth.hold_next_reply.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

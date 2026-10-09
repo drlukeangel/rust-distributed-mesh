@@ -429,6 +429,17 @@ pub fn project(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, book:
     project_at(fabric, fabric_id, provider, book, records, std::time::Instant::now())
 }
 
+/// Projects the book into the view now: what the join door runs once it installed an admitted
+/// birth's address, so the view the status authority resolves senders from holds that birth.
+pub fn view_projector(topology: Arc<RwLock<Topology>>, fabric: String, fabric_id: FabricId, provider: ProviderKind, book: DigestBook, records: Arc<Records>) -> Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> {
+    Arc::new(move || {
+        let (topology, fabric, fabric_id, book, records) = (topology.clone(), fabric.clone(), fabric_id.clone(), book.clone(), records.clone());
+        Box::pin(async move {
+            records.install_projected(&topology, || project(&fabric, &fabric_id, provider, &book, &records)).await;
+        })
+    })
+}
+
 /// Why [`project`] lacks `name` right now, from the same inputs: every digest the book holds for
 /// the name (incarnation, status, unheard age, predecessor, forwarded, departed, routable), the
 /// removed set's entries for it, and the records' entry. The text of an unknown-node refusal from
@@ -2740,6 +2751,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     tracing::info!(node = %d.node.name, applied = ?applied, "the resolver holds the joined birth");
                 }
             }),
+            known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
             primary: Arc::new(move || topo.mesh_primary().map(|p| p.node.name.to_string())),
         });
         let _ = join_slot.set(door);
@@ -3256,8 +3268,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     rounds.end();
                 }
                 records.set_declare_gate(mesh_primary && !announced.mesh_awaiting_round);
-                // R-S2: a node-admin (a mesh primary or not) the fabric-primary's view gained or changed is sent the down op.
-                rounds.address_changed(&t, fabric_primary, Some(&rpc_client));
+                // R-S2: a mesh primary the fabric-primary's view gained or changed is sent the down op.
+                rounds.address_changed_mesh_primaries(&t, fabric_primary, Some(&rpc_client));
                 let addr = rafka_mesh_transport::membership::gossip_addr;
                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                 builds.join_admins(admins.clone()).await;
@@ -3788,6 +3800,87 @@ mod tests {
         assert!(quiet(&records).await, "the gate set to the value it holds wakes nothing");
         records.set_declare_gate(false);
         assert!(!quiet(&records).await, "the gate closing wakes it");
+    }
+
+    /// CONTRACT (R-J1 step 5): a node-admin the fabric-primary admitted over `JoinNode` is known to
+    /// the fabric-primary's status authority when the join is answered, before any gossip carries its
+    /// digest. Its first declaration (`ReadyForTraffic`) is `Applied`, never refused as an unknown
+    /// peer; an endpoint that never joined is still refused `SenderNotSubject` "unknown peer".
+    #[tokio::test]
+    async fn an_admitted_node_admin_declares_ready_before_its_digest_is_gossiped_and_a_stranger_is_refused() {
+        use crate::join::{Deployed, JoinDoor, Joins};
+        use crate::status_rpc::{Declared, StatusAuthority};
+        use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest};
+        use rafka_node_rpc_contract::join::{JoinReply, JoinRequest};
+        let book = DigestBook::default();
+        let records = Arc::new(Records::default());
+        book.record(with_id(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), "100000000000"));
+        let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
+        let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric seat").clone();
+        let authority = StatusAuthority {
+            me: me.name.clone(),
+            fabric_id: fabric1(),
+            topology: topology.clone(),
+            declared: records.declared.clone(),
+            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(std::sync::OnceLock::new()),
+            drain: Arc::new(std::sync::OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: records.wake.clone(),
+        };
+        let _ = Declared::default();
+
+        // The birth this admin deployed, and the digest it reports on its first call.
+        let runtime = rafka_mesh_entity::RuntimeFact::of_this_process("dep-admitted").unwrap();
+        let mut reported = with_id(digest("mesh1.admin.2", MemberStatus::Pending), "200000000000");
+        reported.node.runtime = Some(runtime.clone());
+        reported.data_dir = Some("/data/mesh1.admin.2".into());
+        let deployed = Deployed {
+            name: reported.node.name.clone(),
+            node_id: reported.node.node_id.clone(),
+            incarnation: reported.node.incarnation.clone(),
+            supersedes: None,
+            endpoint_id: reported.node.endpoint_id.clone(),
+            runtime,
+            data_dir: "/data/mesh1.admin.2".into(),
+        };
+        let joins = Arc::new(Joins::default());
+        let _wait = joins.expect(deployed);
+        let installed = book.clone();
+        let door = JoinDoor {
+            me: me.name.clone(),
+            joins,
+            answer: Arc::new(|| {
+                Box::pin(async {
+                    Ok(crate::wire::JoinAnswer {
+                        served_by: "mesh1.admin.1".into(),
+                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None },
+                        statuses: vec![],
+                    })
+                })
+            }),
+            install: Arc::new(move |d: &MeshDigest| {
+                installed.record(d.clone());
+            }),
+            known: view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
+            primary: Arc::new(|| None),
+        };
+        let endpoint = reported.node.endpoint_id.clone();
+        assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
+        let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into() }).await;
+        assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");
+
+        // Acceptance made the birth known; no projection tick ran since.
+        let sender = authority.sender_of(&endpoint).await.expect("the admitted birth is known when its join is answered");
+        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
+        assert_eq!(authority.apply(Some(sender), &declare).await, StatusReply::Applied);
+
+        // An endpoint that never joined is a stranger, named as one.
+        assert!(authority.sender_of(&EndpointId("key-never-joined".into())).await.is_none());
+        let refused = authority.apply(None, &declare).await;
+        assert_eq!(refused, StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "unknown peer".into() } });
     }
 
     #[test]
