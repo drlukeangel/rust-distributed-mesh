@@ -267,6 +267,7 @@ impl Declarer {
                     }
                     None => {
                         // Unreachable: the declarer starts after the authority is filled.
+                        tracing::error!(node = %me, key = ?p.key, "authority is self, but the Status authority is not filled: unreachable, the declarer starts after it is filled");
                         debug_assert!(false, "authority is self, but the Status authority is not filled");
                         self.note(&p.key, 0, "authority is self, but this admin holds no view yet");
                         continue;
