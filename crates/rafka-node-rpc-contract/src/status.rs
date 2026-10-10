@@ -27,7 +27,7 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact};
 use serde::{Deserialize, Serialize};
 
 /// The Status protocol: declare, apply and probe lifecycle state.
@@ -191,7 +191,47 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
+    /// Downward: the fabric-primary tells the leaving mesh's primary to run the mesh-leave
+    /// workflow (`leave-mesh`; mesh-leave.md). `Applied` / `AlreadyApplied` admit the command; the
+    /// departure is complete only when the fabric-primary records `MeshLeft`.
+    LeaveMesh {
+        /// The mesh that leaves.
+        mesh_id: MeshId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `shutdown-mesh:<mesh_id>`.
+        operation: String,
+    },
+    /// Upward: the still-running mesh-primary hands the fabric-primary the proof that every other
+    /// member exited and its own exact runtime (`mesh-leave`). The manifest is a reference to
+    /// immutable receipts in the accepted Build's records; the fabric-primary reads and validates
+    /// them before it accepts. The primary keeps running: the outside owner stops it next.
+    MeshLeave {
+        /// The mesh that leaves.
+        mesh_id: MeshId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `shutdown-mesh:<mesh_id>`.
+        operation: String,
+        /// The final mesh-primary's node.
+        final_node_id: NodeId,
+        /// The final mesh-primary's incarnation.
+        final_incarnation: IncarnationId,
+        /// The final mesh-primary's exact runtime, still running.
+        #[serde(with = "rafka_mesh_entity::wire::runtime")]
+        final_runtime: RuntimeFact,
+        /// A bounded reference (at most [`MAX_RECEIPT_MANIFEST_BYTES`]) to the other members'
+        /// terminal receipts.
+        receipt_manifest: String,
+    },
 }
+
+/// The longest `receipt_manifest` reference a `MeshLeave` carries.
+pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
 impl StatusRequest {
     /// The request's operation name as it appears in spans and replies.
@@ -207,6 +247,8 @@ impl StatusRequest {
             Self::NodeDrained { .. } => "node-drained",
             Self::StopNode { .. } => "stop-node",
             Self::NodeLeft { .. } => "node-left",
+            Self::LeaveMesh { .. } => "leave-mesh",
+            Self::MeshLeave { .. } => "mesh-leave",
         }
     }
 }
@@ -368,7 +410,7 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 10;
+    const REQUEST_VARIANTS: u32 = 12;
     const REPLY_VARIANTS: u32 = 17;
 
     type Request = StatusRequest;
@@ -479,6 +521,17 @@ mod tests {
             StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
             StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
             StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
+            StatusRequest::LeaveMesh { mesh_id: MeshId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
+            StatusRequest::MeshLeave {
+                mesh_id: MeshId::mint(),
+                build_id: "bld_1".into(),
+                attempt: 1,
+                operation: "shutdown-mesh:m".into(),
+                final_node_id: NodeId::mint(),
+                final_incarnation: IncarnationId::mint(),
+                final_runtime: RuntimeFact { deployment_id: "dep".into(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4321, start: 123456 } },
+                receipt_manifest: "bld_1/1/shutdown-mesh:m/other-members-exited".into(),
+            },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

@@ -151,3 +151,35 @@ pub mod digests {
         Vec::<WireDigest>::deserialize(d).map(|v| v.into_iter().map(Into::into).collect())
     }
 }
+
+/// `#[serde(with = "crate::wire::runtime")]`: one runtime fact in a postcard message. The fact's
+/// locator is internally tagged for JSON; this shape carries it externally tagged, positionally.
+pub mod runtime {
+    use super::*;
+    /// Serialize a runtime fact in its wire shape.
+    pub fn serialize<S: Serializer>(r: &RuntimeFact, s: S) -> Result<S::Ok, S::Error> {
+        WireRuntime {
+            deployment_id: r.deployment_id.clone(),
+            provider: r.provider,
+            control_domain: r.control_domain.clone(),
+            locator: match &r.locator {
+                RuntimeLocator::Process { pid, start } => WireLocator::Process { pid: *pid, start: *start },
+                RuntimeLocator::Container { id } => WireLocator::Container { id: id.clone() },
+            },
+        }
+        .serialize(s)
+    }
+    /// Deserialize a runtime fact from its wire shape.
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<RuntimeFact, D::Error> {
+        let r = WireRuntime::deserialize(d)?;
+        Ok(RuntimeFact {
+            deployment_id: r.deployment_id,
+            provider: r.provider,
+            control_domain: r.control_domain,
+            locator: match r.locator {
+                WireLocator::Process { pid, start } => RuntimeLocator::Process { pid, start },
+                WireLocator::Container { id } => RuntimeLocator::Container { id },
+            },
+        })
+    }
+}

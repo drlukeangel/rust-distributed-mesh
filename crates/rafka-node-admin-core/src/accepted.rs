@@ -454,7 +454,12 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     let mut gone: Vec<&String> = observed.meshes.iter().map(|m| &m.name).filter(|m| !topology.meshes.contains_key(*m)).collect();
     gone.sort();
     for m in gone {
-        ops.push(BuildOperation::RetireMesh { mesh: m.clone() });
+        // A mesh whose id no member has stated has no operation key: it is named, and the Build
+        // stays open until a member states the id (the next attempt re-plans).
+        match crate::build::shutdown_mesh(observed, m) {
+            Ok(op) => ops.push(op),
+            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
+        }
     }
     BuildPlan { operations: ops }
 }
@@ -686,8 +691,9 @@ mod tests {
         );
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
-        o2.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
-        assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::RetireMesh { mesh: "mesh2".into() }]);
+        let id2 = MeshId::mint();
+        o2.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+        assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2 }]);
     }
 
     /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
