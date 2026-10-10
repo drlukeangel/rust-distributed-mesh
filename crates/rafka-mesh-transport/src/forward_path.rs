@@ -171,4 +171,68 @@ mod tests {
         path.source_spawned("mesh2.admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
         assert_eq!(rec.seen_after(3).await, vec![(0, 10), (10, 11), (11, 12)]);
     }
+
+    /// Every span opened while the capture is the thread's subscriber: its name and its fields.
+    #[derive(Clone, Default)]
+    struct Spans(Arc<Mutex<Vec<(String, std::collections::BTreeMap<String, String>)>>>);
+
+    struct Fields<'a>(&'a mut std::collections::BTreeMap<String, String>);
+
+    impl tracing::field::Visit for Fields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Spans {
+        fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            let mut fields = Default::default();
+            attrs.record(&mut Fields(&mut fields));
+            self.0.lock().unwrap().push((attrs.metadata().name().to_string(), fields));
+        }
+    }
+
+    impl Spans {
+        async fn named(&self, name: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+            for _ in 0..200 {
+                if self.0.lock().unwrap().iter().any(|(n, _)| n == name) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            self.0.lock().unwrap().iter().filter(|(n, _)| n == name).map(|(_, f)| f.clone()).collect()
+        }
+    }
+
+    /// CONTRACT: a forward the mesh channel refuses leaves no silent gap. The forwarder forgets
+    /// what it published of that source, so the next forward of it is a full, and the refusal is
+    /// named by a span carrying the node, mesh, source publisher, version and cause.
+    #[tokio::test]
+    async fn a_refused_forward_resets_its_source_and_the_next_forward_is_a_full() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = Spans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let ids = vec![(NodeId::mint(), IncarnationId::mint())];
+        // The channel refuses the second send: the delta v10 to v11.
+        let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
+        let forwarder: Arc<Mutex<Forwarder>> = Arc::default();
+        let path = ForwardPath::new(forwarder.clone(), rec.sink());
+        let p = publisher();
+        path.source_spawned("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
+        assert_eq!(rec.seen_after(1).await, vec![(0, 10)]);
+        path.source_spawned("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
+
+        let failed = spans.named("rdm.mesh.membership.update.via-forward-failed").await;
+        assert_eq!(failed.len(), 1, "the refusal is named once");
+        let f = &failed[0];
+        assert_eq!(f["node"], "mesh2.admin.1");
+        assert_eq!(f["mesh"], "mesh1");
+        assert_eq!(f["source_publisher"], p.to_string());
+        assert_eq!(f["topology_version"], "11");
+        assert!(f["cause"].contains("the channel refused call 1"), "the cause is the channel's own: {}", f["cause"]);
+        assert_eq!(forwarder.lock().unwrap().published_version("mesh1"), None, "what was published of the source is forgotten");
+
+        path.source_spawned("mesh2.admin.1", "mesh1", &p, 12, &source_at(&ids, 12), 3);
+        assert_eq!(rec.seen_after(2).await, vec![(0, 10), (0, 12)], "the next forward of the source is a full");
+    }
 }

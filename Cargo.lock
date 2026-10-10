@@ -3344,6 +3344,7 @@ dependencies = [
  "sysinfo",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
