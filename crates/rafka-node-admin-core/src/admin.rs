@@ -662,8 +662,10 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     };
     let planned = records.planned();
     // A mesh the accepted Build names, or one that still has members: a mesh that left (the Build
-    // does not name it and it has no member) is not in the topology.
-    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).chain(planned.keys().cloned()).collect();
+    // does not name it and it has no member) is not in the topology. A planned mesh that does not
+    // exist yet is not in the view either: the view is what is observed, and the Build's plan is
+    // `topology − observed`.
+    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
     // Every seat, by the one election function (`election`); through a fabric shutdown, the
     // seats held when it was learned (`Seats`).
     if records.is_entering() {
@@ -4079,7 +4081,7 @@ mod tests {
 
     /// CONTRACT (states.md, "Resize and roll"): the nodes a mesh is counted over are the accepted
     /// Build's planned births. A planned birth the view has not heard keeps its mesh `pending`, and a
-    /// mesh planned and entirely unheard is listed `pending`. Must NOT happen: a mesh ready because
+    /// mesh planned and not yet created is not listed. Must NOT happen: a mesh ready because
     /// the births that happen to be heard are ready.
     #[test]
     fn a_mesh_with_a_planned_birth_not_yet_heard_projects_pending() {
@@ -4100,7 +4102,7 @@ mod tests {
         records.set_planned(&plan);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Pending, "mesh1.rpc.2 is planned and not heard");
-        assert_eq!(t.mesh_view("mesh2").unwrap().status, ScopeStatus::Pending, "mesh2 is planned and nothing of it is heard");
+        assert!(t.mesh_view("mesh2").is_none(), "mesh2 is planned and does not exist yet: the view lists what is observed, so the Build still plans its creation");
         let why = t.mesh_unready("mesh1", records.planned().get("mesh1")).iter().map(|m| m.to_string()).collect::<Vec<_>>();
         assert_eq!(why, ["mesh1.rpc.2(no-birth-heard)"], "the node behind a pending mesh is named");
     }
