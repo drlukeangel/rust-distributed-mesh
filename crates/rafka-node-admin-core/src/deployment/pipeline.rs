@@ -390,6 +390,12 @@ pub trait NodeObserver: Send + Sync {
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication>;
     /// Is the node serving?
     async fn ready(&self, node: &Node) -> Result<(), String>;
+    /// The named blocker the node reports for its Ready (its `hydrate_before_ready` hook's
+    /// `Blocked` outcome, with the event it retries on), or `None`. A node that is only still
+    /// Pending, with no hook blocker, has none: `ready` fails for it and nothing is framed `Blocked`.
+    async fn ready_blocker(&self, _node: &Node) -> Option<String> {
+        None
+    }
     /// Send `cmd` (`drain-node` or `stop-node`) to the exact birth over Node RPC, opening the
     /// command before the send so its completion finds it. Answers what the call established,
     /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
@@ -1365,8 +1371,10 @@ impl DeploymentPipeline<'_> {
                 match self.observer.ready(&node).await {
                     Ok(()) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e),
-                    Err(blocker) => {
-                        self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                    Err(_) => {
+                        if let Some(blocker) = self.observer.ready_blocker(&node).await {
+                            self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                        }
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }
                 }

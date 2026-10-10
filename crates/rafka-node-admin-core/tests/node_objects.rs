@@ -125,6 +125,9 @@ impl NodeObserver for Membership {
             None => Ok(()),
         }
     }
+    async fn ready_blocker(&self, _: &Node) -> Option<String> {
+        self.not_ready.lock().unwrap().clone()
+    }
 }
 
 #[derive(Default)]
