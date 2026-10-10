@@ -427,8 +427,11 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // A joining admin, held at its hydration of the Fabric record and at its Ready gate.
     // (Neither is removed afterwards: a joined admin with the lowest NodeId holds the fabric seat and
     // would execute its own retire, which is not what these cuts explore.)
-    joining_admin_cut(&run, &create_order, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "hydration", "mesh1.admin.3", 12, false, "").await;
-    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.4", 12, true, "refusing to act on its locator").await;
+    // `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held admin
+    // holds a receipt for every step before it.
+    let before_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
+    joining_admin_cut(&run, &create_order, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "hydration", "mesh1.admin.3", before_ready, false, "").await;
+    joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.4", before_ready, true, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &retire_order).await;
 }
@@ -829,7 +832,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     let op = format!("create-node:{admin}");
     let want = create_order[..receipts_before].to_vec();
     let b = if exact {
-        wait_for(&format!("`{id}`: the Build reaches {} and waits on the held admin", want.last().unwrap()), Duration::from_secs(60), || async {
+        wait_for(&format!("`{id}`: the Build holds a receipt for every step before WaitForNodeReady (through {}) and waits on the held admin", want.last().unwrap()), Duration::from_secs(60), || async {
             let b = run.build(&exec, &build_id).await;
             (done_steps(&b, &op, Some(1)) == want).then_some(b)
         })
