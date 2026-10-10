@@ -28,7 +28,7 @@ fn span_end_returns_while_the_sink_is_stalled() {
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let exporter = Stalled { entered: entered_tx, release: std::sync::Arc::new(std::sync::Mutex::new(release_rx)) };
-    let provider = TracerProvider::builder().with_span_processor(rafka_mesh_telemetry::evidence_processor(exporter)).build();
+    let provider = TracerProvider::builder().with_span_processor(rafka_mesh_telemetry::span_processor("stalled", exporter)).build();
     let tracer = provider.tracer("span-end-nonblocking");
     let (done_tx, done_rx) = mpsc::channel();
     let t = tracer.clone();
@@ -36,7 +36,7 @@ fn span_end_returns_while_the_sink_is_stalled() {
         t.start("rdm.test.span.end.first");
         let _ = done_tx.send("first");
     });
-    // The first span's export is now held inside the sink (SimpleSpanProcessor: on the ending thread).
+    // The first span's export is now held inside the sink .
     let _ = entered_rx.recv_timeout(Duration::from_secs(5));
     let (done2_tx, done2_rx) = mpsc::channel();
     let t = tracer.clone();
@@ -56,4 +56,30 @@ fn span_end_returns_while_the_sink_is_stalled() {
     assert!(second_returned, "the thread that ended the second span waited on the first span's export");
     drop(release_tx);
     let _ = provider.shutdown();
+}
+
+/// CONTRACT: when the queue in front of a stalled sink overflows, a flush answers with an error
+/// (the SDK cannot queue the flush request) rather than `Ok`, and the processor's counters show
+/// every span handed over.
+#[test]
+fn a_flush_on_an_overflowed_queue_is_an_error_never_ok() {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let exporter = Stalled { entered: entered_tx, release: std::sync::Arc::new(std::sync::Mutex::new(release_rx)) };
+    let processor = rafka_mesh_telemetry::span_processor("overflow", exporter);
+    let loss = processor.loss();
+    let provider = TracerProvider::builder().with_span_processor(processor).build();
+    let tracer = provider.tracer("overflow");
+    drop(tracer.start("first"));
+    entered_rx.recv_timeout(Duration::from_secs(10)).expect("the first export never started");
+    for _ in 0..70_000 {
+        drop(tracer.start("fill"));
+    }
+    let flushed = provider.force_flush();
+    for _ in 0..64 {
+        let _ = release_tx.send(());
+    }
+    assert_eq!(loss.handed(), 70_001);
+    assert!(flushed.iter().any(|r| r.is_err()), "a flush on a full queue answered Ok: {flushed:?}");
+    drop(release_tx);
 }
