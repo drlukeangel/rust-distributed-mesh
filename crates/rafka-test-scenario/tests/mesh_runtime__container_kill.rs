@@ -78,7 +78,10 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     .await;
     let reborn = estate.container_of(NODE).expect("the re-created node runs in a container");
     assert_ne!(reborn, killed, "a new container, never the killed one restarted");
-    assert!(docker_state(&killed).starts_with("exited 137"), "the killed container is terminal by SIGKILL: {}", docker_state(&killed));
+    // The provider's inspection of the killed container's exact id is the proof (exit 137, SIGKILL); the
+    // replace that follows stops the exited container, keeps its logs beside the node's data and removes it,
+    // so the proof is read from the drift attempt's span, never from a container the replace has removed.
+    assert_eq!(docker_state(&killed), "", "the replace removed the killed container after the provider's proof");
     assert_eq!(estate.container_of("mesh1.rpc.2").as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
@@ -92,6 +95,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     })
     .await;
     let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().find(|sp| is_drift(sp)).unwrap();
+    assert_eq!((s(&drift["attributes"]["exit_code"]).as_str(), s(&drift["attributes"]["exit_proof"]).as_str()), ("137", "provider"), "the killed container is proven terminal by SIGKILL, by the provider's inspection of its exact id: {drift}");
     let born = named(&spans, "rdm.mesh.node.create.via-deployment").into_iter().any(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"]);
     assert!(born, "the re-created container's own boot span landed beside the admin's");
     let attempt = s(&drift["attributes"]["attempt"]);
@@ -163,15 +167,16 @@ fn a_give_up_on_a_container_that_never_advertises_leaves_no_container_or_network
 
 const CHILD_ENV: &str = "RDM_ESTATE_SIGKILL_CHILD";
 
-/// The estate's processes: every process whose environment carries this estate's root.
+/// The estate's processes: every process whose environment names this estate (its root, or a data dir
+/// under it: a node an admin launched carries only its launch contract's data dir).
 fn estate_processes(root: &str) -> Vec<u32> {
-    let needle = format!("RDM_ESTATE_ROOT={root}\0");
+    let root = std::path::Path::new(root);
     std::fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())))
+        .filter(|pid| std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|b| rafka_test_scenario::estate::environ_names_estate(&b, root)))
         .collect()
 }
 
