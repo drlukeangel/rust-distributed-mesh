@@ -52,9 +52,6 @@ impl NodeObserver for Logged<'_> {
         self.log.lock().unwrap().push(format!("awaited:{}:{}", cmd.operation_prefix(), node.node_id));
         c
     }
-    async fn departed(&self, node: &Node) -> bool {
-        self.inner.departed(node).await
-    }
 }
 
 /// The lifecycle events a replace publishes, in the order they leave the executor.
