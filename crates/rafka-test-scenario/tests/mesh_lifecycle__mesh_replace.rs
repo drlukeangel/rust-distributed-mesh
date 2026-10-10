@@ -196,6 +196,10 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         let published = named(&spans, &format!("rdm.node_admin.mesh.{}.{hook}", "update"));
         assert!(!published.is_empty(), "the {hook} hook ran");
     }
+    let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
+    assert!(recorded.iter().any(|sp| attr_u(sp, "receipts") == 3 && attr_u(sp, "roster") == 4), "the mesh primary recorded the exit manifest of its three other members: {recorded:?}");
+    let left_recorded = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt");
+    assert!(left_recorded.iter().any(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4), "the owner recorded MeshLeft over all four births: {left_recorded:?}");
     let heard = |name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.")).collect() };
     let leaving = heard("via-mesh-leaving");
     assert!(leaving.iter().any(|sp| attr_u(sp, "members_marked") > 0), "a mesh2 node marked mesh1's births Leaving: {leaving:?}");
