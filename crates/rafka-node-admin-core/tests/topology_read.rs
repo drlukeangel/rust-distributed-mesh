@@ -46,6 +46,7 @@ struct Node {
     client: NodeRpcClient,
     resolver: Arc<StaticResolver>,
     slot: TopologySlot,
+    gossip: iroh_gossip::net::Gossip,
     resolved: ResolvedNode,
     /// The rafka-time this node adopted: 5 000 000 ms, nowhere near its OS clock.
     time: rafka_mesh_transport::clock::RafkaTime,
@@ -65,10 +66,10 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let server = extra(rafka_node_admin_core::topology_read::serve(ServerBuilder::new(), slot.clone()))
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
-    Node { ep, membership, client, resolver, slot, resolved, time, _router: router }
+    Node { ep, membership, client, resolver, slot, gossip, resolved, time, _router: router }
 }
 
 fn own_digest(n: &Node, fabric: &FabricId) -> MeshDigest {
@@ -155,6 +156,28 @@ async fn a_mesh_with_no_published_snapshot_is_absent_from_the_answer() {
 
     let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh1"), None).await.unwrap_err();
     assert_eq!(err, TopologyFailure::Refused("the target holds no mesh mesh1".into()));
+    server.ep.close().await;
+    caller.ep.close().await;
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a mesh primary that has published nothing yet still holds its mesh's members in its
+/// book, and a read answers with them as its own mesh at version 0 under its own publisher: the
+/// caller installs them. A read is never an empty answer for a primary that holds members.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_holds() {
+    let fabric = FabricId::mint();
+    let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
+    open(&server, &fabric);
+    let backbone = rafka_mesh_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", "mesh1.rpc.1", server.resolved.incarnation.clone(), vec![]).await.unwrap();
+    backbone.set_mesh_primary(true);
+    server.membership.book.record(member_of(&fabric, "mesh1", "rpc", 2));
+    let t = target_of(&caller, &server);
+    let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
+    assert_eq!((read.meshes, read.installed.len()), (1, 1), "the primary's own mesh is served");
+    assert_eq!((read.installed[0].mesh.as_str(), read.installed[0].topology_version), ("mesh1", 0));
+    assert_eq!(read.installed[0].members.len(), 2, "its own digest and the member its book holds");
+    assert_eq!(read.installed[0].publisher.node, "mesh1.rpc.1");
     server.ep.close().await;
     caller.ep.close().await;
 }
