@@ -5,7 +5,7 @@
 //! change, never a recovery: no proven-drift Build names mesh1, nothing recreates a mesh1 node, and
 //! the scenario carries its own manifest (subfeature `mesh-replace`).
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -126,4 +126,19 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
     for n in names(&["mesh3"]) {
         assert!(created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["node"] == n.as_str()), "B created {n}");
     }
+
+    // rafka-time: the fabric seat moved from the retired mesh1 to mesh3's admin. Mesh2's primary,
+    // a mesh primary that does not hold the seat, pulled once from the new fabric-primary and
+    // adopted its time under the mesh-primary rule.
+    let mesh3_admin = after.iter().find(|n| n["name"] == "mesh3.admin.1").map(|n| s(&n["node_id"])).expect("mesh3.admin.1 is in the settled view");
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-seat-moved").into_iter().filter(|sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "to") == mesh3_admin).collect();
+    assert_eq!(moved.len(), 1, "mesh2's primary pulled once from mesh3.admin.1 when the fabric seat moved to it: {moved:?}");
+    assert_eq!(attr(moved[0], "outcome"), "adopted", "{:?}", moved[0]);
+    let adopted = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted");
+    let child = adopted.iter().find(|a| descends_from(&spans, a, moved[0])).expect("the adoption is a child of the pull");
+    assert_eq!(
+        (attr(child, "node").as_str(), attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "seat").as_str(), attr(child, "served_by").as_str()),
+        ("mesh2.admin.1", "pull", "get-topology", "fabric-primary", "mesh3.admin.1")
+    );
 }

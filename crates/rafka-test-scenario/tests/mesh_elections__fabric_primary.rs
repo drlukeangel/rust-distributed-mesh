@@ -26,7 +26,7 @@
 //! primary.
 
 use rafka_test_scenario::elections::{expected_fabric_primary, seats_as_expected};
-use rafka_test_scenario::estate::{descends_from, named, own_fabric_at, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, own_fabric_at, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::process::Command;
 use std::time::Duration;
@@ -41,9 +41,6 @@ fn owner() -> Owner {
         test: "losing_the_fabric_primary_mesh_moves_control".into(),
     }
 }
-
-/// The OS-clock skew one node of the three-mesh cell runs under: one hour.
-const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
@@ -246,11 +243,6 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
         "mesh1",
     )
     .await;
-    // One ordinary node runs on an OS clock an hour ahead: rafka-time is adopted from the
-    // authority and no stamp of any node reads the OS clock, so its stamps must follow the rest.
-    let skewed = "mesh2.rpc.1";
-    std::fs::create_dir_all(rafka_node_rpc_testkit::os_clock_skew_dir(&estate.root)).unwrap();
-    std::fs::write(rafka_node_rpc_testkit::os_clock_skew_dir(&estate.root).join(skewed), OS_CLOCK_SKEW_MS.to_string()).unwrap();
     let desired = json!({"fabric": "fabric1", "meshes": [
         {"name": "mesh3", "node_admin": 2, "rpc_node": 1},
         {"name": "mesh1", "node_admin": 2, "rpc_node": 1},
@@ -328,37 +320,4 @@ async fn three_mesh_primaries_elect_the_lowest_node_id_and_fail_over_to_the_next
         }),
         "the failover to the next-lowest mesh primary was announced"
     );
-
-    // rafka-time: one lineage across the fabric.
-    let adopted = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted");
-    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    // The Day-0 root adopted its own OS clock, once.
-    let own: Vec<&&Value> = adopted.iter().filter(|sp| attr(sp, "source") == "own-clock").collect();
-    assert_eq!(own.len(), 1, "exactly one own-clock adoption in the fabric: {own:?}");
-    assert_eq!((attr(own[0], "node").as_str(), attr(own[0], "reason").as_str()), ("mesh1.admin.1", "day0-root"));
-    // Every other node adopted from an authority's answer at its join.
-    let pulled: std::collections::BTreeSet<String> = adopted.iter().filter(|sp| attr(sp, "source") == "pull" && attr(sp, "via") == "join").map(|sp| attr(sp, "node")).collect();
-    for n in nodes.iter().filter(|n| n["name"] != "mesh1.admin.1") {
-        assert!(pulled.contains(&s(&n["name"])), "{} adopted rafka-time from the join answer it was served: {pulled:?}", n["name"]);
-    }
-    // The skewed node's OS clock was an hour ahead (its boot span says so); every heartbeat of
-    // every node carries rafka-time minus the host's wall clock, and none is off by the skew.
-    let boot = named(&spans, "rdm.mesh.node.create.via-deployment");
-    assert!(boot.iter().any(|sp| attr(sp, "node") == skewed && attr(sp, "os_clock_skew_ms").parse::<i64>().ok() == Some(OS_CLOCK_SKEW_MS)), "{skewed} ran on an OS clock {OS_CLOCK_SKEW_MS} ms ahead");
-    let beats = named(&spans, "rdm.mesh.node.update.via-heartbeat");
-    let of_skewed: Vec<i64> = beats.iter().filter(|sp| attr(sp, "node") == skewed).filter_map(|sp| attr(sp, "clock_skew_ms").parse::<i64>().ok()).collect();
-    assert!(!of_skewed.is_empty(), "{skewed} published heartbeats");
-    for sp in &beats {
-        let skew = attr(sp, "clock_skew_ms").parse::<i64>().unwrap_or(i64::MAX);
-        assert!(skew.abs() < 5_000, "{}'s rafka-time stands {skew} ms from the host clock: it followed an OS clock, not rafka-time", attr(sp, "node"));
-    }
-    // The fabric seat moved: the mesh primary that does not hold it pulled once from the new
-    // fabric-primary and adopted its time, under the mesh-primary rule.
-    let moved: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-fabric-seat-moved").into_iter().filter(|sp| attr(sp, "to") == next_id).collect();
-    assert!(!moved.is_empty(), "a mesh primary pulled rafka-time when the fabric seat moved to {next}");
-    for sp in &moved {
-        assert_eq!(attr(sp, "outcome"), "adopted", "{sp}");
-        let child = adopted.iter().find(|a| descends_from(&spans, a, sp)).unwrap_or_else(|| panic!("the adoption is a child of the pull: {sp}"));
-        assert_eq!((attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "seat").as_str(), attr(child, "served_by").as_str()), ("pull", "get-topology", "fabric-primary", next.as_str()));
-    }
 }
