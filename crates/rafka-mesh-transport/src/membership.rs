@@ -24,7 +24,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, Seat, SeatHolder, DEPARTED_RETENTION};
+use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -472,6 +472,42 @@ pub enum Frame {
         transport_addr: std::net::SocketAddr,
         /// The holder's control API base URL with its bound HTTP port, when it runs one.
         admin_api_base: Option<String>,
+    },
+    /// The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook`
+    /// (gossip.md, "Fabric round gossip hooks"): command intent, never completion. A node-admin
+    /// author publishes it on its own mesh channel and the backbone; a peer mesh's primary forwards
+    /// it onto its own channel (`forwarded_by`), the authored fields unchanged.
+    StateCommitting {
+        /// The round, the subject birth and the author.
+        hook: RoundHook,
+        /// The primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
+    /// The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were
+    /// stored: a phase check-in, never a node or mesh lifecycle state. A node-admin publishes it on
+    /// its own mesh channel and the backbone; an ordinary node on its own mesh channel, and its
+    /// mesh-admin carries it onto the backbone naming itself in `forwarded_by`.
+    StateCommitted {
+        /// The round, the subject birth and the author.
+        hook: RoundHook,
+        /// The admin or primary that forwards the frame.
+        forwarded_by: Option<String>,
+    },
+    /// The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same
+    /// channels as [`Frame::StateCommitting`].
+    TrafficOpening {
+        /// The round, the subject birth and the author.
+        hook: RoundHook,
+        /// The primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
+    /// The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as
+    /// [`Frame::StateCommitted`].
+    TrafficOpened {
+        /// The round, the subject birth and the author.
+        hook: RoundHook,
+        /// The admin or primary that forwards the frame.
+        forwarded_by: Option<String>,
     },
 }
 
@@ -984,6 +1020,10 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: None } if publisher_mesh(&publisher) != own_mesh => {
             Some(Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: Some(me.to_string()) })
         }
+        Frame::StateCommitting { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitting { hook, forwarded_by: Some(me.to_string()) }),
+        Frame::StateCommitted { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitted { hook, forwarded_by: Some(me.to_string()) }),
+        Frame::TrafficOpening { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpening { hook, forwarded_by: Some(me.to_string()) }),
+        Frame::TrafficOpened { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::TrafficOpened { hook, forwarded_by: Some(me.to_string()) }),
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }
@@ -1633,6 +1673,37 @@ impl View {
                     via,
                 )
                 .in_scope(|| tracing::info!("the mesh left: its births departed, its source projections are removed, nothing of it is kept"));
+                Vec::new()
+            }
+            Frame::StateCommitting { hook, forwarded_by } | Frame::StateCommitted { hook, forwarded_by } | Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
+                let kind = match f {
+                    Frame::StateCommitting { .. } => "state-committing",
+                    Frame::StateCommitted { .. } => "state-committed",
+                    Frame::TrafficOpening { .. } => "traffic-opening",
+                    _ => "traffic-opened",
+                };
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-round-frame",
+                    node = %self.node,
+                    kind,
+                    subject_id = %hook.node_id,
+                    incarnation_id = %hook.incarnation.0,
+                    fabric_id = %hook.fabric_id,
+                    build_id = %hook.build_id,
+                    attempt = hook.attempt,
+                    operation = %hook.operation,
+                    publisher = %hook.publisher,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    via,
+                )
+                .in_scope(|| tracing::info!("a fabric round hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state"));
+                // An ordinary node's check-in, heard on this mesh's channel as its author sent it: the
+                // mesh-admin holding the round carries it onto the backbone (gossip.md, "Fabric round gossip hooks").
+                if let (Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
+                    if let Some(carry) = self.completion_carrier.lock().unwrap().clone() {
+                        carry(f);
+                    }
+                }
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
@@ -2676,7 +2747,7 @@ impl Backbone {
         }
     }
 
-    /// Publish a command hook (`node-draining`, `node-leaving`) this admin authored: the backbone,
+    /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
     /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
     /// coordinated publication.
     pub async fn publish_command_hook(&self, f: &Frame) {
@@ -2691,6 +2762,8 @@ impl Backbone {
         let carried = match frame {
             Frame::NodeLeft { op, .. } => Frame::NodeLeft { op, forwarded_by: Some(self.node.clone()) },
             Frame::NodeDrained { op, .. } => Frame::NodeDrained { op, forwarded_by: Some(self.node.clone()) },
+            Frame::StateCommitted { hook, .. } => Frame::StateCommitted { hook, forwarded_by: Some(self.node.clone()) },
+            Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(self.node.clone()) },
             _ => return,
         };
         let _ = self.channel.broadcast(&carried).await;

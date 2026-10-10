@@ -10,3 +10,4 @@ mod gossip_stats;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;
 mod seat_frames_wire;
+mod round_frames_wire;

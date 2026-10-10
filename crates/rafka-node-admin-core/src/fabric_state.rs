@@ -13,6 +13,8 @@
 use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
+use rafka_mesh_entity::RoundHook;
+use rafka_mesh_transport::membership::Frame;
 use crate::round::Missing;
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -108,6 +110,29 @@ impl RoundKind {
             Self::StateCommit => StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation },
             Self::OpenTraffic => StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation },
         }
+    }
+}
+
+/// The gossip hook frame of a round op (gossip.md, "Fabric round gossip hooks"): `StateCommitting`
+/// or `TrafficOpening` for a command (`up == false`), `StateCommitted` or `TrafficOpened` for a
+/// check-in. The subject is `node_id`/`incarnation`; `publisher` is the author at this hop.
+pub fn hook_frame(key: &RoundKey, up: bool, node_id: NodeId, incarnation: IncarnationId, publisher: &str, event_at_rafka_ms: u64) -> Frame {
+    let hook = RoundHook {
+        fabric_id: key.fabric_id.clone(),
+        node_id,
+        incarnation,
+        build_id: key.build_id.clone(),
+        attempt: key.attempt,
+        operation: key.kind.operation(&key.fabric_id),
+        publisher: publisher.to_string(),
+        event_at_rafka_ms,
+    };
+    let forwarded_by = None;
+    match (key.kind, up) {
+        (RoundKind::StateCommit, false) => Frame::StateCommitting { hook, forwarded_by },
+        (RoundKind::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
+        (RoundKind::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
+        (RoundKind::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
     }
 }
 

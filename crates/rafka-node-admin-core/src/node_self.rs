@@ -105,6 +105,10 @@ pub struct NodeSelf {
     /// Cancelled when `drain-node` or `stop-node` is admitted: the birth is retired, so its
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub retire: Option<rafka_node_rpc::CancelToken>,
+    /// The backbone, for a node-admin: its round hooks go out on its mesh channel and the backbone.
+    /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
+    /// them onto the backbone.
+    pub backbone: Option<rafka_mesh_transport::membership::Backbone>,
     seen: Mutex<HashSet<String>>,
     /// What this birth completes before it checks in to a commit-state or open-traffic round.
     round_actions: Mutex<Arc<dyn crate::fabric_rounds::RoundActions>>,
@@ -126,12 +130,18 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, seen: Mutex::new(HashSet::new()), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, membership, set_status, status, declare, yield_seat: None, retire: None, backbone: None, seen: Mutex::new(HashSet::new()), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// This surface, fencing its seat before it publishes `Draining` or `Leaving`.
     pub fn with_yield_seat(mut self, yield_seat: YieldSeat) -> Self {
         self.yield_seat = Some(yield_seat);
+        self
+    }
+
+    /// This surface, publishing its round hooks on `backbone` as well as its mesh channel.
+    pub fn with_backbone(mut self, backbone: rafka_mesh_transport::membership::Backbone) -> Self {
+        self.backbone = Some(backbone);
         self
     }
 
@@ -206,6 +216,17 @@ impl NodeSelf {
             }
             self.rounds_seen.lock().unwrap().insert((key.clone(), commander.clone()), RoundProgress::Acted);
             let req = key.kind.up(&key, self.node_id.clone(), self.incarnation.clone());
+            // The check-in hook runs in the path of the completion call, before it goes out.
+            let frame = crate::fabric_state::hook_frame(&key, true, self.node_id.clone(), self.incarnation.clone(), &self.name.to_string(), self.membership.clock().now_rafka_ms());
+            let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
+            tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.name, round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the check-in hook is published"));
+            match &self.backbone {
+                Some(backbone) => backbone.publish_command_hook(&frame).await,
+                None => {
+                    let _ = self.membership.publish_lifecycle(&frame).await;
+                }
+            }
             let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
             let answer = match &out {
                 rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),

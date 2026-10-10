@@ -2918,6 +2918,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         hooks: fabric_hooks,
         actions: round_actions.clone(),
     }));
+    rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
 
     // The deployment hand (used while this admin is fabric primary). A provider's host-wide
     // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
@@ -3494,14 +3495,26 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             })
         };
-        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone())));
+        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone())));
     }
     // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
     // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
     {
-        let (commands, backbone) = (commands.clone(), backbone.clone());
+        let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
         membership.set_completion_carrier(Arc::new(move |f: &rafka_mesh_transport::membership::Frame| {
             use rafka_mesh_transport::membership::Frame;
+            // A fabric round check-in by an ordinary node, carried by the mesh primary holding the round.
+            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
+                let kind = if matches!(f, Frame::StateCommitted { .. }) { crate::fabric_state::RoundKind::StateCommit } else { crate::fabric_state::RoundKind::OpenTraffic };
+                let key = crate::fabric_state::RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
+                // A node-admin author publishes on the backbone itself; only an ordinary node's check-in is carried.
+                let ordinary = hook.publisher.parse::<PathName>().is_ok_and(|p| p.kind != NodeKind::NodeAdmin);
+                if ordinary && rounds.mesh_book.is_open(&key) {
+                    let (backbone, f) = (backbone.clone(), f.clone());
+                    tokio::spawn(async move { backbone.carry_completion(f).await });
+                }
+                return;
+            }
             let (Frame::NodeLeft { op, .. } | Frame::NodeDrained { op, .. }) = f else { return };
             let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
             if commands.is_open(&key) {

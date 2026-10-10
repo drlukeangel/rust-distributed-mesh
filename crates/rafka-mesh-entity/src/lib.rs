@@ -27,7 +27,7 @@ pub use connections::{
     EffectiveRoute, NodeConnection, RouteResolution,
 };
 pub use digest::{GossipStats, MemberStatus, MeshDigest, MeshNode, NodeLoad};
-pub use lifecycle::{LifecycleOp, DEPARTED_RETENTION};
+pub use lifecycle::{LifecycleOp, RoundHook, DEPARTED_RETENTION};
 pub use ids::{EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, ID_FORMAT};
 pub use publisher::PublisherId;
 pub use path::{NodeKind, PathName, PathNameError};

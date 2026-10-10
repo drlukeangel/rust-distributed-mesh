@@ -177,6 +177,12 @@ struct Climb {
     named: Option<String>,
 }
 
+/// The gossip a round's hooks go out on: this admin's mesh channel and the backbone.
+struct RoundGossip {
+    backbone: rafka_mesh_transport::membership::Backbone,
+    membership: rafka_mesh_transport::membership::Membership,
+}
+
 /// One admin's rounds: as the fabric-primary the climb, as a mesh primary the commands to its
 /// members and its completion up, as a member the check-in.
 pub struct FabricRounds {
@@ -186,6 +192,8 @@ pub struct FabricRounds {
     /// The check-ins of the mesh primaries, as the fabric-primary.
     pub fabric_book: RoundBook,
     drivers: Mutex<HashSet<RoundKey>>,
+    /// Where the round hooks are published; set once the admin has joined the backbone.
+    gossip: std::sync::OnceLock<RoundGossip>,
     climb: tokio::sync::Mutex<Climb>,
     /// Poked when a check-in, the application's answer or this admin's own mesh round arrives.
     climb_wake: tokio::sync::Notify,
@@ -194,7 +202,32 @@ pub struct FabricRounds {
 impl FabricRounds {
     /// The rounds of the admin `env` describes.
     pub(crate) fn new(env: RoundEnv) -> Arc<Self> {
-        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
+        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
+    }
+
+    /// Where this admin's round hooks are published, once it has joined the backbone.
+    pub fn set_gossip(&self, backbone: rafka_mesh_transport::membership::Backbone, membership: rafka_mesh_transport::membership::Membership) {
+        let _ = self.gossip.set(RoundGossip { backbone, membership });
+    }
+
+    /// Publish the round hook this admin authors (gossip.md, "Fabric round gossip hooks"): on its own
+    /// mesh channel and the backbone, in the path of the call it runs with. A command hook names the
+    /// commanded birth; a completion hook names this admin's own birth.
+    async fn publish_hook(&self, key: &RoundKey, up: bool, node_id: &NodeId, incarnation: &IncarnationId) {
+        let Some(gossip) = self.gossip.get() else {
+            tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), bound = false, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("no gossip is bound to this admin's rounds: the hook is not published"));
+            return;
+        };
+        let frame = crate::fabric_state::hook_frame(key, up, node_id.clone(), incarnation.clone(), &self.env.me.to_string(), gossip.membership.clock().now_rafka_ms());
+        let kind = if up { key.kind.completion() } else { key.kind.command() };
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
+        async {
+            gossip.backbone.publish_command_hook(&frame).await;
+            tracing::info!("the round hook was published on the mesh channel and the backbone");
+        }
+        .instrument(span)
+        .await;
     }
 
     // ------------------------------------------------------------------ the fabric-primary
@@ -573,6 +606,8 @@ impl FabricRounds {
             let book = if fabric_level { &this.fabric_book } else { &this.mesh_book };
             let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-round-command", node = %this.env.me, round = key.kind.command(), to = %expected.name, outcome = tracing::field::Empty, "otel.kind" = "internal");
             let req = key.kind.down(&key, to.clone(), expected.incarnation.clone());
+            // The command hook runs in the path of the command it announces, before the call goes out.
+            this.publish_hook(&key, false, &to, &expected.incarnation).instrument(span.clone()).await;
             let (out, _) = this.env.client.call::<Status>(&NodeTarget::ExactNode(to.clone()), &req, &CallOptions::default()).instrument(span.clone()).await;
             match delivery(&out) {
                 Delivery::Answered(r) => {
@@ -665,6 +700,8 @@ impl FabricRounds {
                 // The completion is owed to the fabric-primary as the view names it now, sent on every
                 // eligible event, and owed again to a successor (R-S2).
                 let req = key.kind.up(key, self.env.node_id.clone(), self.env.incarnation.clone());
+                // The check-in hook runs when the completion becomes owed: once per round, however often it is sent.
+                self.publish_hook(key, true, &self.env.node_id, &self.env.incarnation).await;
                 self.env.declarer.owe_in(Key::Round(format!("{}/{}/{}/{}", key.kind.completion(), key.fabric_id, key.build_id, key.attempt)), Authority::FabricPrimary, req, crate::build_claim::current_context().traceparent);
                 self.env.wake.poke();
             }

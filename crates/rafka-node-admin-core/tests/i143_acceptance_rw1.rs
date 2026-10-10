@@ -77,6 +77,11 @@ fn op(operation: &str) -> LifecycleOp {
     LifecycleOp { build_id: "bld-1".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
 }
 
+fn round_hook(verb: &str) -> rafka_mesh_entity::RoundHook {
+    let fabric_id = fabric();
+    rafka_mesh_entity::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld-1".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
+}
+
 fn publisher() -> PublisherId {
     PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }
 }
@@ -138,6 +143,10 @@ fn frames() -> Vec<Frame> {
         Frame::Seated { seat: rafka_mesh_entity::Seat::MeshPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 } },
         Frame::Concern { seat: rafka_mesh_entity::Seat::FabricPrimary, node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
+        Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
+        Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
+        Frame::TrafficOpening { hook: round_hook("open-traffic"), forwarded_by: None },
+        Frame::TrafficOpened { hook: round_hook("open-traffic"), forwarded_by: Some("mesh2.admin.1".into()) },
     ]
 }
 
