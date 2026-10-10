@@ -56,6 +56,7 @@ impl AdminRunner {
     async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), String> {
         // Resumed after the departure was recorded: the receipt is the record.
         if self.builds.read_build(build_id).await.is_ok_and(|b| b.steps.iter().any(|r| r.operation == outer && r.step == STEP_MESH_LEFT && r.outcome == StepOutcome::Complete)) {
+            self.forget_mesh_id(mesh);
             return Ok(());
         }
         let view = self.topology.read().await.clone();
@@ -118,8 +119,16 @@ impl AdminRunner {
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
         self.leaves.close(&key);
         self.lifecycle_events.mesh_left(&MeshLeaveEvent { receipt_manifest: Some(reference), ..event }).await;
+        self.forget_mesh_id(mesh);
         self.refresh_view().await;
         Ok(())
+    }
+
+    /// A mesh that has left keeps no id here: the MeshLeft receipt is the end of that mesh, and a
+    /// mesh of the same name created after it is a new mesh with a new id. The id is dropped at the
+    /// receipt, never left for a later sweep to find the mesh without a member.
+    fn forget_mesh_id(&self, mesh: &str) {
+        self.records.meshes.lock().unwrap().remove(mesh);
     }
 
     /// `LeaveMesh` at the leaving mesh's primary: admit it and run the member workflows.
