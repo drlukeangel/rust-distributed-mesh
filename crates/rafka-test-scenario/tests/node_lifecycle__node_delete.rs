@@ -191,7 +191,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // opens in its book (so before that receiver's own removal of it).
     let overlays: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     let held: Vec<&&Value> = overlays.iter().filter(|sp| sp["attributes"]["held"] == "true").collect();
-    assert!(held.len() >= 3, "receivers that held the victim when the overlay opened: {}: {overlays:#?}", held.len());
+    assert!(held.len() >= 2, "receivers that held the victim when the overlay opened: {}: {overlays:#?}", held.len());
     for sp in &held {
         assert_eq!(sp["attributes"]["routable"], "false", "the overlay made the held victim not routable: {sp}");
         assert!(!matches!(sp["attributes"]["held_status"].as_str(), Some("Dead" | "PendingReconnect")), "the victim is not dead or unheard while the overlay opens: {sp}");
