@@ -43,6 +43,12 @@ impl AdminRunner {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
     }
 
+    /// The holder of the fabric-primary seat when it sits inside the leaving mesh `mesh`: the one
+    /// place the workflow asks where the seat is (mesh-leave.md step 1).
+    fn seat_inside(view: &Topology, mesh: &str) -> Option<Node> {
+        view.fabric_primary().filter(|fp| fp.mesh == mesh).cloned()
+    }
+
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.
     pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), String> {
         let outer = crate::mesh_leave::operation(mesh_id);
@@ -66,8 +72,8 @@ impl AdminRunner {
         if view.nodes.iter().any(|n| n.name == self.me && n.mesh == mesh) {
             return Err(format!("{outer} is refused: {} sits inside {mesh}, so no owner outside it holds this workflow", self.me));
         }
-        if let Some(fp) = view.fabric_primary().filter(|fp| fp.mesh == mesh) {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh", mesh = %mesh, seat_holder = %fp.name, owner = %self.me, operation = %outer)
+        if let Some(holder) = Self::seat_inside(&view, mesh) {
+            tracing::info_span!("rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh", mesh = %mesh, seat_holder = %holder.name, owner = %self.me, operation = %outer)
                 .in_scope(|| tracing::info!("the fabric-primary seat is held inside the leaving mesh: the workflow is owned from outside it and the seat moves when every admin of the mesh has exited"));
         }
         let members: Vec<Node> = view.members().filter(|n| n.mesh == mesh && n.status.is_live()).cloned().collect();
@@ -120,6 +126,8 @@ impl AdminRunner {
             })
             .await
             .map_err(|e| format!("{outer}: the MeshLeft receipt could not be recorded: {e}"))?;
+        tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
+            .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
         self.leaves.close(&key);
         self.lifecycle_events.mesh_left(&MeshLeaveEvent { receipt_manifest: Some(reference), ..event }).await;
         self.refresh_view().await;
@@ -235,6 +243,8 @@ impl AdminRunner {
             })
             .await
             .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
+        tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
+            .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
         Ok(manifest)
     }
 
