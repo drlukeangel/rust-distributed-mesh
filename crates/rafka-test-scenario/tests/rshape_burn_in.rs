@@ -2140,7 +2140,29 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         let e = start_ns(first);
         assert!(e < gone, "{}: the new fabric-primary's election ({e}) resolved before the old fabric-primary's process was gone ({gone})", ev["scenario"]);
         let inputs = s(&first["attributes"]["inputs"]);
-        assert!(!inputs.contains(&format!("{old_name}={old_id}:ReadyForTraffic")), "{}: the old fabric-primary was still a ready candidate when the seat moved: {inputs}", ev["scenario"]);
+        let old_ready = format!("{old_name}={old_id}:ReadyForTraffic");
+        // The seat moves where the new holder decides it: its own election, taken with the old
+        // fabric-primary yielding (R-A2: a holder that yields hands the seat to its mesh). Every other
+        // admin learns the move from the new holder's announcement (`seat.update.via-announcement`), and
+        // its recompute reports the seat as announced, whatever status it still holds for the old holder.
+        let new_name = s(&ev["new_fabric_primary"]);
+        let decider: Vec<&&Value> = announced.iter().copied().filter(|sp| sp["attributes"]["observer"] == new_name.as_str()).collect();
+        assert!(!decider.is_empty(), "{}: the new fabric-primary {new_name} did not report its own election of the seat", ev["scenario"]);
+        for sp in &decider {
+            let own = s(&sp["attributes"]["inputs"]);
+            assert!(!own.contains(&old_ready), "{}: the new fabric-primary decided the seat while the old fabric-primary was still a ready candidate: {own}", ev["scenario"]);
+        }
+        if inputs.contains(&old_ready) {
+            let observer = s(&first["attributes"]["observer"]);
+            let heard = named(spans, "rdm.mesh.seat.update.via-announcement").into_iter().any(|an| {
+                an["attributes"]["node"] == observer.as_str()
+                    && an["attributes"]["seat"] == "fabric-primary"
+                    && s(&an["attributes"]["holder"]).contains(&format!(":{new_id}@"))
+                    && s(&an["attributes"]["previous"]).contains(&format!(":{old_id}@"))
+                    && start_ns(an) <= start_ns(first)
+            });
+            assert!(heard, "{}: {observer} moved the seat with the old fabric-primary still a ready candidate and no announcement from the new holder: {inputs}", ev["scenario"]);
+        }
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "DrainNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         // The retiring admin executes its own retirement: its TerminateRuntime step signals its own
