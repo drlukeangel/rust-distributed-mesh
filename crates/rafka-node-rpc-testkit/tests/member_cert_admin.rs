@@ -9,7 +9,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::app_hydration::{Hydration, HydrationState};
 use rafka_node_admin_core::certs::CertChoice;
-use rafka_node_admin_core::wiring::Wiring;
+use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::test_certs::{TestCertSigner, TestMemberCert};
 use std::sync::Arc;
@@ -35,7 +35,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 #[tokio::test]
 async fn a_node_admin_started_with_no_cert_choice_is_refused_at_start_by_name() {
     let dir = std::env::temp_dir().join(format!("member-cert-unchosen-{}", NodeId::mint()));
-    let started = start_with(day0_config(&dir), Wiring::default()).await;
+    let started = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await;
     let why = started.err().expect("no cert choice must be refused");
     assert!(why.contains("no cert choice") && why.contains("CertChoice::NoCerts"), "the refusal names the missing choice and the way out: {why}");
     assert!(!dir.join("node-key").exists(), "the refusal came before the admin minted its identity");
@@ -54,7 +54,7 @@ async fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_
     let root_hydrator = TestHydrator::new(Mode::Local);
     let root_cfg = day0_config(&root_dir);
     let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-    let root = start_with(root_cfg, Wiring { hydration: Hydration::new(root_hydrator.clone()), certs: CertChoice::Signer(Arc::new(TestCertSigner)), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+    let root = start_with(root_cfg, Wiring { hydration: Hydration::new(root_hydrator.clone()), certs: CertChoice::Signer(Arc::new(TestCertSigner)), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
     root.stop_reconciling();
     tokio::time::timeout(WRONG, root.hydration().unwrap().settled()).await.expect("the root's hook returns");
     assert_eq!(root.member_cert, None, "the Day-0 root made no JoinNode");
@@ -96,7 +96,7 @@ async fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_
     let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
     let joiner_hydrator = TestHydrator::new(Mode::Local);
     let before = root.rafka_time.now_ms();
-    let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), certs: CertChoice::NoCerts, ..Wiring::default() }).await.expect("the launched admin comes up");
+    let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the launched admin comes up");
     let after = root.rafka_time.now_ms();
     assert_eq!(tokio::time::timeout(WRONG, joiner.hydration().unwrap().settled()).await.expect("the hook returns"), HydrationState::Passed);
 

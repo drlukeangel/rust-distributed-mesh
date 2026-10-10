@@ -2282,7 +2282,8 @@ pub fn rpc_server(
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
-    start_with(cfg, crate::wiring::Wiring::no_certs()).await
+    // `start` carries no hook and no wrapper, so it is an embedding with no application work in state-sync.
+    start_with(cfg, crate::wiring::Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..crate::wiring::Wiring::no_certs() }).await
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built from.

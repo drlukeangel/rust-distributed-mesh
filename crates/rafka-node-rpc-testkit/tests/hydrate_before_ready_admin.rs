@@ -7,7 +7,7 @@ use crate::common::Spans;
 use rafka_mesh_entity::MemberStatus;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState};
-use rafka_node_admin_core::wiring::Wiring;
+use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,7 +52,7 @@ async fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_lo
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rafka_mesh_entity::NodeId::mint()));
     let hydrator = TestHydrator::new(Mode::Local);
-    let wiring = Wiring { hydration: Hydration::new(hydrator.clone()), ..Wiring::no_certs() };
+    let wiring = Wiring { hydration: Hydration::new(hydrator.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
     let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
     let handle = running.hydration().expect("a registered hook has a handle");
     assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook returns"), HydrationState::Passed);
@@ -104,7 +104,7 @@ async fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_unti
     };
     let root_cfg = day0_config(&root_dir);
     let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-    let root = start_with(root_cfg, Wiring { hydration: root_hydration, serve_app: Some(serve), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+    let root = start_with(root_cfg, Wiring { hydration: root_hydration, serve_app: Some(serve), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
     // The accepted Build names only the root: the launched admin is surplus to it, and a reconciling
     // root would retire it, which for an in-process admin is signalling this test process. The cell
     // is about the hook, so the root does not reconcile.
@@ -148,7 +148,7 @@ async fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_unti
     let env = launch.to_env();
     let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
     let joiner_hydrator = TestHydrator::new(Mode::Pull);
-    let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+    let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
 
     let handle = joiner.hydration().expect("a registered hook has a handle");
     let blocked = tokio::time::timeout(WRONG, async {

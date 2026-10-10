@@ -36,18 +36,18 @@ const PUBLISHER: &str = "0d 6d657368312e61646d696e2e31  ac02";
 const NONE: &str = "00";
 const SOME: &str = "01 0d 6d657368322e61646d696e2e31";
 
-/// CONTRACT: `StateCommitting` is variant 14, `StateCommitted` 15, `TrafficOpening` 16 and `TrafficOpened`
-/// 17 of the membership frame, appended after `NodeDrained` (13); each is the fabric id, the subject node id,
+/// CONTRACT: `StateCommitting` is variant 18, `StateCommitted` 19, `TrafficOpening` 20 and `TrafficOpened`
+/// 21 of the membership frame, appended after `NewFabricPrimary` (17); each is the fabric id, the subject node id,
 /// its incarnation, the build, the attempt, the operation, the publisher, the Rafka-time instant, then the
 /// forwarding primary. What must NOT happen: a field moved, a variant inserted before the end, or a
 /// self-describing encoding.
 #[test]
 fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("0e {SUBJECT} {COMMIT} {PUBLISHER} {NONE}")),
-        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("0f {SUBJECT} {COMMIT} {PUBLISHER} {SOME}")),
-        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("10 {SUBJECT} {OPEN} {PUBLISHER} {NONE}")),
-        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("11 {SUBJECT} {OPEN} {PUBLISHER} {SOME}")),
+        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("12 {SUBJECT} {COMMIT} {PUBLISHER} {NONE}")),
+        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("13 {SUBJECT} {COMMIT} {PUBLISHER} {SOME}")),
+        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("14 {SUBJECT} {OPEN} {PUBLISHER} {NONE}")),
+        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("15 {SUBJECT} {OPEN} {PUBLISHER} {SOME}")),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -65,10 +65,10 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
 #[test]
 fn a_peer_mesh_primary_forwards_round_hooks_unchanged_and_the_authors_mesh_does_not() {
     for (original, kind) in [
-        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 14u8),
-        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 15),
-        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 16),
-        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 17),
+        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 18u8),
+        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 19),
+        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 20),
+        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 21),
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
         assert_eq!(forwarded.encode()[0], kind);
