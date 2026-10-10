@@ -1505,7 +1505,8 @@ impl View {
                 Vec::new()
             }
             Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by } => {
-                let marked = self.book.mesh_leaving(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                let (marked, ops) = self.book.mesh_leaving(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                self.overlay_sources(&ops, &[]);
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-leaving",
                     node = %self.node,
@@ -1539,7 +1540,8 @@ impl View {
                 Vec::new()
             }
             Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by } => {
-                let departed = self.book.mesh_left(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                let (departed, ops) = self.book.mesh_left(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                self.overlay_sources(&[], &ops);
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-left",
                     node = %self.node,
@@ -1570,6 +1572,30 @@ impl View {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Hold what this node learned of a mesh's lifecycle in every source projection it holds or
+    /// has published: a replay, a top-up and a later snapshot then carry the mesh Leaving or Dead
+    /// and its departed births, and no older aggregate undoes it.
+    fn overlay_sources(&self, in_flight: &[LifecycleOp], departed: &[LifecycleOp]) {
+        let meshes: BTreeSet<String> = in_flight.iter().chain(departed).map(|op| op.name.mesh.clone()).collect();
+        for mesh in meshes {
+            let delta = Delta {
+                changed: Vec::new(),
+                removed: departed.iter().filter(|op| op.name.mesh == mesh).map(|op| op.node_id.to_string()).collect(),
+                in_flight: in_flight.iter().filter(|op| op.name.mesh == mesh).cloned().collect(),
+                departed: departed.iter().filter(|op| op.name.mesh == mesh).cloned().collect(),
+            };
+            self.forwarder.lock().unwrap().overlay(&mesh, &delta);
+            self.mesh_rx.lock().unwrap().overlay(&mesh, &delta);
+            self.backbone_rx.lock().unwrap().overlay(&mesh, &delta);
+        }
+    }
+
+    /// The lifecycle this book holds of `mesh` as a delta.
+    fn lifecycle_delta(&self, mesh: &str) -> Option<Delta> {
+        let (in_flight, departed) = self.book.shutdown_overlays(mesh);
+        (!in_flight.is_empty() || !departed.is_empty()).then(|| Delta { changed: Vec::new(), removed: departed.iter().map(|op| op.node_id.to_string()).collect(), in_flight, departed })
     }
 
     /// A `Members` chunk or a `MembersDelta`, arrived on `side`. A snapshot is applied to the book
@@ -1623,7 +1649,14 @@ impl View {
                         .in_scope(|| tracing::info!("a snapshot chunk refused: the held projection stands"));
                         SnapshotTaken::default()
                     }
-                    Taken::Installed(i) => {
+                    Taken::Installed(mut i) => {
+                        // A complete snapshot never undoes what this node holds of the mesh's
+                        // lifecycle: an older aggregate of a Leaving or Dead mesh installs with its
+                        // overlays and departed births still on it.
+                        if let Some(delta) = self.lifecycle_delta(&i.mesh) {
+                            i.full.apply(&delta);
+                            rx.overlay(&i.mesh, &delta);
+                        }
                         let installed = self.installed(&i, fabric, side);
                         drop(rx);
                         installed
@@ -1641,6 +1674,9 @@ impl View {
                 let moved = rx.take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
                 match moved {
                     Moved::Applied { delta, .. } => {
+                        if let Some(held) = self.lifecycle_delta(mesh) {
+                            rx.overlay(mesh, &held);
+                        }
                         tracing::info_span!(
                             "rdm.mesh.membership.update.via-delta",
                             node = %self.node,
@@ -2952,12 +2988,13 @@ impl DigestBook {
     /// `mesh-leaving` for `mesh_id`: every held birth of the mesh is marked Leaving, held under a
     /// mesh-shutdown overlay: its address stays, application routing stops selecting it. Idempotent;
     /// a departed birth is not marked. Returns how many births were newly marked.
-    pub fn mesh_leaving(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> usize {
+    pub fn mesh_leaving(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> (usize, Vec<LifecycleOp>) {
         if self.is_mesh_dead(mesh_id) {
-            return 0;
+            return (0, Vec::new());
         }
         let members = self.births_of_mesh(mesh_id);
         let mut marked = 0;
+        let mut all = Vec::new();
         for d in members {
             let op = LifecycleOp {
                 build_id: build_id.to_string(),
@@ -2968,18 +3005,26 @@ impl DigestBook {
                 name: d.node.name.clone(),
                 event_at_rafka_ms: at_rafka_ms,
             };
+            all.push(op.clone());
             if self.deleting_quiet(op) {
                 marked += 1;
             }
         }
-        marked
+        (marked, all)
+    }
+
+    /// The mesh-shutdown overlays and departures this book holds for the mesh named `mesh`:
+    /// `(births held Leaving, births departed with a dead mesh)`.
+    pub fn shutdown_overlays(&self, mesh: &str) -> (Vec<LifecycleOp>, Vec<LifecycleOp>) {
+        let mine = |ops: Vec<LifecycleOp>| ops.into_iter().filter(|op| op.name.mesh == mesh && op.operation.starts_with(MESH_SHUTDOWN_PREFIX)).collect::<Vec<_>>();
+        (mine(self.in_flight()), mine(self.departed()))
     }
 
     /// `mesh-left` for `mesh_id`: the mesh is Dead, final. Every held birth of the mesh, and every
     /// birth held under its shutdown overlay, leaves the active topology and is held departed
     /// (resolution answers Gone) for as long as the mesh is dead. Idempotent. Returns how many
     /// births departed now.
-    pub fn mesh_left(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> usize {
+    pub fn mesh_left(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> (usize, Vec<LifecycleOp>) {
         let mut roster: BTreeMap<String, LifecycleOp> = BTreeMap::new();
         for d in self.births_of_mesh(mesh_id) {
             roster.insert(
@@ -3003,7 +3048,9 @@ impl DigestBook {
         }
         let first = self.dead_meshes.lock().unwrap().insert(mesh_id.to_string());
         let mut departed = 0;
+        let mut all = Vec::new();
         for (_, op) in roster {
+            all.push(op.clone());
             if self.depart_quiet(op) {
                 departed += 1;
             }
@@ -3011,7 +3058,7 @@ impl DigestBook {
         if first {
             self.births.send_modify(|v| *v += 1);
         }
-        departed
+        (departed, all)
     }
 
     fn deleting_quiet(&self, op: LifecycleOp) -> bool {
@@ -3885,5 +3932,105 @@ mod tests {
         let targets = held_targets(&book, |_| true);
         assert_eq!(targets.len(), 1, "the later birth closes the restart");
         assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41999), "and is a target at its own address");
+    }
+
+    fn born(mesh: &str, kind_ordinal: &str, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
+        let mut d = digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, at);
+        d.node.name = format!("{mesh}.{kind_ordinal}").parse().unwrap();
+        d.mesh_id = mesh_id.cloned();
+        d
+    }
+
+    /// CONTRACT (gossip.md, external topology when a mesh leaves): `mesh-leaving` holds every birth
+    /// of the mesh Leaving (a node-admin's digest names the mesh id, an ordinary node's does not;
+    /// both are the mesh's), not routable and still held at its address; hearing it again changes
+    /// nothing; the mesh-handoff is not Dead.
+    #[test]
+    fn mesh_leaving_holds_every_birth_of_the_mesh_not_routable_and_is_idempotent() {
+        let book = DigestBook::default();
+        let m1 = MeshId::mint();
+        let (admin, rpc, other) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh2", "rpc.1", None, 1));
+        for d in [&admin, &rpc, &other] {
+            assert!(book.record_forwarded(d.clone()));
+        }
+        let (marked, ops) = book.mesh_leaving(&m1, "bld_1", 1, &format!("shutdown-mesh:{m1}"), 7);
+        assert_eq!((marked, ops.len()), (2, 2));
+        assert!(!book.routable(admin.node.node_id.as_str()) && !book.routable(rpc.node.node_id.as_str()), "the mesh's births are not selected for new work");
+        assert!(book.routable(other.node.node_id.as_str()), "another mesh's birth is untouched");
+        assert!(book.get(rpc.node.node_id.as_str()).is_some(), "its address is kept: the digest is still held");
+        assert!(book.is_mesh_leaving(&m1) && !book.is_mesh_dead(&m1));
+        assert_eq!(book.mesh_leaving(&m1, "bld_1", 1, &format!("shutdown-mesh:{m1}"), 7).0, 0, "idempotent");
+        assert_eq!(book.leaving_meshes(), vec![m1.to_string()]);
+    }
+
+    /// CONTRACT: `mesh-left` holds the mesh Dead: every birth leaves the active topology and is held
+    /// departed beyond the departed retention; a late digest of any of them, or of a birth of the
+    /// dead mesh the book never held, is refused; hearing it again departs nothing a second time.
+    #[test]
+    fn mesh_left_holds_the_mesh_dead_and_nothing_restores_it() {
+        let book = DigestBook::with_floor(Duration::from_millis(1), Duration::from_secs(3), Duration::from_millis(500));
+        let m1 = MeshId::mint();
+        let (admin, rpc) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1));
+        for d in [&admin, &rpc] {
+            assert!(book.record_forwarded(d.clone()));
+        }
+        book.mesh_leaving(&m1, "bld_1", 1, &format!("shutdown-mesh:{m1}"), 7);
+        let (departed, ops) = book.mesh_left(&m1, "bld_1", 1, &format!("shutdown-mesh:{m1}"), 9);
+        assert_eq!((departed, ops.len()), (2, 2));
+        assert!(book.is_mesh_dead(&m1) && book.all().is_empty(), "the births left the active topology");
+        assert_eq!(book.mesh_left(&m1, "bld_1", 1, &format!("shutdown-mesh:{m1}"), 9).0, 0, "idempotent");
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(book.departed().len(), 2, "held beyond the departed retention while the mesh is dead");
+        assert!(book.is_departed(admin.node.node_id.as_str()) && book.is_departed(rpc.node.node_id.as_str()));
+        // A delayed digest, a delayed forwarded copy, and a digest of a birth never held: all refused.
+        let mut late = admin.clone();
+        late.digest_seq += 10;
+        assert!(!book.record(late.clone()) && !book.record_forwarded(late.clone()) && !book.record_topology(late));
+        let stranger = born("mesh1", "rpc.9", Some(&m1), 5);
+        assert!(!book.record(stranger.clone()) && !book.record_forwarded(stranger.clone()) && !book.record_topology(stranger), "a dead mesh's id is never taken again");
+        assert!(book.all().is_empty());
+        // The overlays and departures of the mesh, as an aggregate or a top-up carries them.
+        let (leaving, gone) = book.shutdown_overlays("mesh1");
+        assert!(leaving.is_empty() && gone.len() == 2 && gone.iter().all(|o| o.operation.starts_with(&format!("shutdown-mesh:{m1}/"))));
+    }
+
+    /// CONTRACT: a node that heard `mesh-left` is not made to forget it by an older aggregate. A
+    /// complete snapshot of the dead mesh installed afterwards (a delayed `Members` from before the
+    /// departure, or a replay) installs with the departures still on it and restores no birth.
+    #[test]
+    fn an_old_aggregate_of_a_dead_mesh_restores_nothing() {
+        let view = View::new("mesh2", "mesh2.rpc.1");
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let m1 = MeshId::mint();
+        let (admin, rpc) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1));
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let members = |version: u64, snapshot_id: u64| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: 1,
+            snapshot_id,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![admin.clone(), rpc.clone()],
+            in_flight: Vec::new(),
+            departed: Vec::new(),
+        };
+        let taken = view.take_snapshot(&members(1, 1), &fabric, Side::Backbone);
+        assert_eq!(taken.carried.len(), 2, "the mesh is held before it leaves");
+        view.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
+        assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"), "its births left the active topology");
+        // The same version again, and a newer one: neither restores anything.
+        for (v, id) in [(1, 2), (2, 3)] {
+            let again = view.take_snapshot(&members(v, id), &fabric, Side::Backbone);
+            assert!(again.carried.is_empty(), "version {v}: no birth of the dead mesh is taken");
+            let (_, gone) = view.book.shutdown_overlays("mesh1");
+            assert_eq!(gone.len(), 2);
+            let held = view.backbone_rx.lock().unwrap().held_full("mesh1").cloned().expect("the source is held");
+            assert_eq!(held.departed().len(), 2, "the held projection keeps the departures: {held:?}");
+            assert!(held.digests().is_empty(), "and none of the dead mesh's digests");
+        }
+        assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"));
     }
 }
