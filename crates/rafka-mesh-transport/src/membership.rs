@@ -3537,6 +3537,34 @@ mod tests {
         assert_eq!(addrs(&lookup), vec![std::net::SocketAddr::from(([127, 0, 0, 1], 41002))], "a late digest of the old birth never restores its socket");
     }
 
+    /// CONTRACT (ops-naming, `node.deleted`): a new node over the data dir of a deleted one keeps
+    /// the endpoint key and sets no `supersedes`, so the location book cannot tell the deleted
+    /// instance's late digest from a newer one. The departure of `(node.id, incarnation)` fences
+    /// that incarnation in the book: its digest is refused by name and the key keeps the new
+    /// instance's socket. Must NOT happen: the key pointed back at the deleted instance's old port.
+    #[test]
+    fn a_deleted_incarnations_late_digest_never_moves_its_keys_address_back() {
+        let key = iroh::SecretKey::generate().public();
+        let (old_node, new_node) = (NodeId::mint(), NodeId::mint());
+        let (old, new) = (IncarnationId::mint(), IncarnationId::mint());
+        let at = |node: &NodeId, port: u16, incarnation: &IncarnationId, seq: u64| {
+            let mut d = digest(node, incarnation, None, MemberStatus::ReadyForTraffic, seq);
+            d.node.endpoint_id = EndpointId(key.to_string());
+            d.node.transport_addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            d
+        };
+        let lookup = MemoryLookup::new();
+        let addrs = |l: &MemoryLookup| l.get_endpoint_info(key).map(|e| e.ip_addrs().cloned().collect::<Vec<_>>()).unwrap_or_default();
+        let (port_old, port_new) = (std::net::SocketAddr::from(([127, 0, 0, 1], 41011)), std::net::SocketAddr::from(([127, 0, 0, 1], 41012)));
+        register_location(&lookup, &at(&old_node, 41011, &old, 40));
+        register_location(&lookup, &at(&new_node, 41012, &new, 1));
+        assert_eq!(addrs(&lookup), vec![port_new], "the new instance's digest replaces the key's address");
+        let book = DigestBook::default();
+        assert!(book.depart(op(&old_node, &old, "retire-node:mesh1.rpc.1")));
+        assert!(register_location(&lookup, &at(&old_node, 41011, &old, 41)).is_none());
+        assert_eq!(addrs(&lookup), vec![port_new], "a digest of the deleted incarnation is refused: {port_old} is not restored");
+    }
+
     #[test]
     fn a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one() {
         use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
