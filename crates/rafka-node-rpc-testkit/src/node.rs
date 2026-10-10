@@ -587,7 +587,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {
-                    Ok(StatusReply::NotReady { reason: format!("{} does not serve apply-node-state ({state:?}): a drain is drain-node and a stop is stop-node", me.digest.node.name) })
+                    // Not a drain command and not a stop: the only drain path is drain-node.
+                    let current = node_state_of(*me.status.lock().unwrap());
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.digest.node.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
+                        .in_scope(|| tracing::info!("apply-node-state refused"));
+                    Ok(StatusReply::RejectedInvalidNodeTransition { current })
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             }

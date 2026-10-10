@@ -320,6 +320,18 @@ pub enum StatusReply {
         /// Why the call is refused.
         reason: String,
     },
+    /// A completion call (`node-drained`, `node-left`) names no open command of the receiver: the
+    /// first field that differs from the command the receiver holds for that birth is named, with
+    /// the value the receiver holds and the value the completion reported.
+    RejectedUnmatchedCompletion {
+        /// The field that differs: `build_id`, `attempt`, `operation`, or `command` when the
+        /// receiver holds no open command for the birth at all.
+        field: String,
+        /// What the receiver holds for it.
+        expected: String,
+        /// What the completion reported.
+        reported: String,
+    },
 }
 
 impl StatusReply {
@@ -342,6 +354,7 @@ impl StatusReply {
             Self::Draining { .. } => "draining",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::RejectedUnmatchedCompletion { .. } => "rejected-unmatched-completion",
         }
     }
 }
@@ -356,7 +369,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 10;
-    const REPLY_VARIANTS: u32 = 16;
+    const REPLY_VARIANTS: u32 = 17;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -369,7 +382,8 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedStaleFabric { .. }
             | StatusReply::RejectedNotAuthority { .. }
             | StatusReply::RejectedInvalidNodeTransition { .. }
-            | StatusReply::RejectedInvalidMeshTransition { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedInvalidMeshTransition { .. }
+            | StatusReply::RejectedUnmatchedCompletion { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -446,6 +460,7 @@ mod tests {
             (Status::draining("d".into()), ReplyKind::Draining),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
+            (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {

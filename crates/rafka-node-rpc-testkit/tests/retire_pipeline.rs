@@ -91,7 +91,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
                     && f.get("step").map(String::as_str) == Some(step.name())
                     && f.get("build_id") == Some(&retire_build.0)
             })
-            .unwrap_or_else(|| panic!("no span for retire step {}", step.name()));
+            .unwrap_or_else(|| panic!("no span for retire step {}; via-step spans held: {:?}", step.name(), all.values().filter(|(n, _, _)| n == "rdm.node_admin.deployment.update.via-step").map(|(_, _, f)| (f.get("step").cloned(), f.get("build_id").cloned(), f.get("outcome").cloned())).collect::<Vec<_>>()));
         assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"));
         assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
     }

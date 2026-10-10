@@ -43,7 +43,7 @@ fn requests_match_the_frozen_ten_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_sixteen_variant_wire_schema() {
+fn replies_match_the_frozen_seventeen_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -62,6 +62,7 @@ fn replies_match_the_frozen_sixteen_variant_wire_schema() {
         (Draining { reason: "d".into() }, "0d0164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
+        (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

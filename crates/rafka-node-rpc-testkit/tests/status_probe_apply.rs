@@ -1,7 +1,7 @@
 //! The downward exact-node operations at a live rpc node (the 0x1B reseal): a node-admin probes
 //! the exact birth and gets its current state; commands `drain-node` and gets `Applied` (a repeat
 //! `AlreadyApplied`), after which the birth calls `node-drained` back; `ApplyNodeState` is not a
-//! drain command and is refused by name; a stale incarnation is refused with the one held; an
+//! drain command and is refused with the held state; a stale incarnation is refused with the one held; an
 //! upward declaration sent downward is refused by direction.
 
 use crate::common;
@@ -18,7 +18,7 @@ use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusRep
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DrainNode` answers `Applied`, a repeat of the same
 /// operation `AlreadyApplied`, and the birth then calls `NodeDrained` at the commanding side;
-/// `ApplyNodeState(Draining)` is refused `NotReady` naming drain-node and moves nothing; a probe
+/// `ApplyNodeState(Draining)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
 /// `DeclareNodeState` sent downward is refused by direction. What must NOT happen: a probe moving
 /// the state, or `ApplyNodeState` standing in for the drain command.
@@ -97,9 +97,9 @@ async fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family()
     // An upward declaration sent downward: refused by direction.
     let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic };
     assert!(matches!(call(downward_declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
-    // ApplyNodeState is not a drain command: refused by name, nothing moves.
+    // ApplyNodeState is not a drain command: refused with the held state, nothing moves.
     let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
-    assert!(matches!(call(apply).await, StatusReply::NotReady { reason } if reason.contains("drain-node")));
+    assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
     assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
     // drain-node: admitted, then the birth calls node-drained back at the commanding side.
     let (operation, build_id) = ("drain-node:mesh1.rpc.1".to_string(), "bld_probe".to_string());

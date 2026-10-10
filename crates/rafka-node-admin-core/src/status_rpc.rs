@@ -465,7 +465,12 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
         StatusRequest::ApplyNodeState { state, .. } => {
-            Some(StatusReply::NotReady { reason: format!("{} does not serve apply-node-state ({state:?}): a drain is drain-node and a stop is stop-node", me.name) })
+            // Not a drain command and not a stop: the only drain path is drain-node. The reply
+            // carries the state this node holds; the span names why.
+            let current = node_state_of(me.status);
+            tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("apply-node-state refused"));
+            Some(StatusReply::RejectedInvalidNodeTransition { current })
         }
         _ => None,
     }

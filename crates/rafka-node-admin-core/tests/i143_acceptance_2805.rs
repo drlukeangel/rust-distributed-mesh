@@ -313,12 +313,12 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let probed = reply(&call(&rig, &executor, &probe, &CallOptions::default()).await);
     assert!(matches!(&probed, StatusReply::Current { node_id: n, .. } if *n == node_id), "{probed:?}");
 
-    // ApplyNodeState is not a drain command: refused by name, never admitted.
+    // ApplyNodeState is not a drain command: refused with the held state, never admitted.
     let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
     let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
-    assert!(matches!(reply(&applied), StatusReply::NotReady { reason } if reason.contains("drain-node")), "{applied:?}");
+    assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "{applied:?}");
     let apply_arm = command_admission(&applied);
-    assert!(matches!(&apply_arm, CommandAdmission::Refused { reply } if reply.contains("not-ready")), "{apply_arm:?}");
+    assert!(matches!(&apply_arm, CommandAdmission::Refused { reply } if reply.contains("rejected-invalid-node-transition")), "{apply_arm:?}");
 
     // Refused: a stale incarnation, by name, never admitted.
     let stale_out = call(&rig, &executor, &command(IncarnationId::mint()), &CallOptions::default()).await;
