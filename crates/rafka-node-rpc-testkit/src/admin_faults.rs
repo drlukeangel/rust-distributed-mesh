@@ -525,6 +525,8 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         fabric_storage: Some(Box::new(move |inner| Arc::new(FaultedFabricStorage { inner, faults: f_storage }))),
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
+        hydration: Default::default(),
+        serve_app: None,
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

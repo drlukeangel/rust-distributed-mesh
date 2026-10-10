@@ -37,6 +37,11 @@ pub trait CatchUpSeam: Send + Sync {
     fn withholds(&self, node: &str, neighbour: &str) -> bool;
 }
 
+/// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
+/// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
+/// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
+pub type ServeApp = Box<dyn FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder + Send>;
+
 /// The seams a node-admin executable passes to the admin.
 #[derive(Default)]
 pub struct Wiring {
@@ -53,6 +58,12 @@ pub struct Wiring {
     pub provider: Option<Wrap<dyn DeploymentProvider>>,
     /// Wraps the lifecycle events a retirement publishes.
     pub lifecycle_events: Option<Wrap<dyn LifecycleEvents>>,
+    /// The app's `hydrate_before_ready` hook, run after the join is accepted, the topology installed
+    /// and the mesh channel joined. The product passes none: nothing is hydrated and the admin's
+    /// Ready waits on nothing of the app's.
+    pub hydration: crate::app_hydration::Hydration,
+    /// The app's own ops, added to the server before it seals.
+    pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry seals.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
 }

@@ -72,6 +72,15 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             running.leave_after_stop().instrument(span).await;
             return;
         }
+        // A hook that failed ends the node by name, as an unaccepted join does.
+        why = running.hydration_failed() => {
+            let node = running.digest.lock().unwrap().node.name.to_string();
+            tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %node, reason = %why)
+                .in_scope(|| tracing::error!("hydrate_before_ready failed; this node-admin ends"));
+            eprintln!("{service}: {node} failed hydrate_before_ready: {why}");
+            rafka_mesh_telemetry::flush_before_exit();
+            std::process::exit(3);
+        }
         // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
         // answer: it ends, and its exit is the death proof the fabric recovers from.
         reason = rafka_mesh_transport::membership::until_transport_stopped() => {

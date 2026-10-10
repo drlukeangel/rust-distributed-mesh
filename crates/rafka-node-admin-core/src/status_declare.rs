@@ -44,6 +44,8 @@ use std::sync::{Arc, Mutex};
 pub struct DeclareWake {
     notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
+    /// The same down ops, counted for a `hydrate_before_ready` hook blocked on its authority's word.
+    pub(crate) hydration: Arc<crate::app_hydration::Addressed>,
 }
 
 impl DeclareWake {
@@ -58,6 +60,7 @@ impl DeclareWake {
     /// The authority `from` sent this admin its down op: every declaration owed to it is sent
     /// again, whatever its last outcome.
     pub(crate) fn addressed_by(&self, from: &NodeId) {
+        self.hydration.note(from);
         self.addressed.lock().unwrap().insert(from.clone());
         self.poke();
     }

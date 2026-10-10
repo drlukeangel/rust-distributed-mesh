@@ -226,7 +226,7 @@ impl Hydration {
 
 /// Which authorities addressed this node, counted: a count survives an event that happened before
 /// anything waited on it.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct Addressed {
     counts: Mutex<BTreeMap<NodeId, u64>>,
     tick: tokio::sync::watch::Sender<u64>,

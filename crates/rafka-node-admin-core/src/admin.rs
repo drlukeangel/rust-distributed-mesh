@@ -1918,9 +1918,27 @@ pub struct Running {
     leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
     /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
     builds: Arc<FabricBuildStateAdapter>,
+    /// Cancelled when this admin is retired (drain-node, stop-node, leaving): its hook and any pull
+    /// it has in flight end.
+    hydrate_cancel: rafka_node_rpc::CancelToken,
+    hydration: Option<crate::app_hydration::HydrationHandle>,
 }
 
 impl Running {
+    /// Where this admin's `hydrate_before_ready` stands; `None` when the app registered no hook.
+    pub fn hydration(&self) -> Option<crate::app_hydration::HydrationHandle> {
+        self.hydration.clone()
+    }
+
+    /// Resolves with the reason once this admin's hook failed; never resolves otherwise. The
+    /// process selects on it beside its stop signal and ends by name.
+    pub async fn hydration_failed(&self) -> String {
+        match &self.hydration {
+            Some(h) => h.failed().await,
+            None => std::future::pending().await,
+        }
+    }
+
     /// Stop executing and reconciling: no Build attempt and no drift
     /// recovery starts after this. A fabric shutdown does this first, so the
     /// runtimes it stops are not recovered as proven drift.
@@ -1935,12 +1953,14 @@ impl Running {
     /// announcement can be lost; an attempt the executor was running is
     /// continued by the Build's next attempt.
     pub async fn leave(self) {
+        self.hydrate_cancel.cancel();
         self.leave_with(true).await
     }
 
     /// Leave after a `stop-node` was admitted: `Leaving` with no `Draining` say (stop has no
     /// implicit drain), then the same linger and close.
     pub async fn leave_after_stop(self) {
+        self.hydrate_cancel.cancel();
         self.leave_with(false).await
     }
 
@@ -2260,7 +2280,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_server = crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone())
+    let rpc_builder = crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone());
+    // The app's own ops (each behind the gate of its hook), before the catalog seals.
+    let rpc_builder = match wiring.serve_app.take() {
+        Some(serve_app) => serve_app(rpc_builder),
+        None => rpc_builder,
+    };
+    let rpc_server = rpc_builder
         .with_ready_gate(rpc_ready.clone())
         .seal(rafka_node_rpc::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
@@ -3008,7 +3034,41 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // adopts in its own control domain, and the Day-0 admin holds a Complete
     // receipt for every step of its own adoption. Until then it publishes
     // Pending.
+    // `hydrate_before_ready` (the app's hook): run after the join is accepted, the topology installed
+    // and the mesh channel joined; the Ready check below names its blocker. A birth with no
+    // launcher has no authority to pull from, and says why.
+    let hydrate_cancel = rafka_node_rpc::CancelToken::new();
+    let hydration_handle = {
+        use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HydrateCtx, NoAuthority};
+        let authority_ctx = match cfg.launch.as_ref().and_then(|l| l.launcher.clone()) {
+            Some(l) => Authority::Accepted(AcceptingAuthority { name: l.name, node_id: l.node_id, incarnation: l.incarnation }),
+            None if restart.is_some() => Authority::None(NoAuthority::FabricPrimaryReborn),
+            None if cfg.mesh_primary || cfg.fabric_primary => Authority::None(NoAuthority::Recovery),
+            None => Authority::None(NoAuthority::Day0Root),
+        };
+        let ctx = HydrateCtx {
+            birth: Birth { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), fabric_id: cfg.fabric_id.clone(), mesh_id: mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            authority: authority_ctx,
+            client: node_rpc.client.clone(),
+            membership: membership.clone(),
+            cancel: hydrate_cancel.clone(),
+            rafka_time: rafka_time.clone(),
+            attempt: 0,
+        };
+        let events = Events::new(book.clone(), records.wake.hydration.clone());
+        wiring.hydration.driver(ctx, events, boot.clone()).map(|driver| {
+            let handle = driver.handle();
+            tasks.push(tokio::spawn(async move {
+                let first = driver.attempt().await;
+                if driver.run(first).await == End::Passed {
+                    driver.spawn_after_ready();
+                }
+            }));
+            handle
+        })
+    };
     {
+        let hydration_state = hydration_handle.clone();
         let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
         let (hydrated, hydrated_builds, hydrated_floor) = (accepted.clone(), builds_dyn.clone(), entry_floor.clone());
@@ -3072,6 +3132,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if entering_existing_mesh && sweep_slot_gate.get().is_none() {
                     blocked.push(format!("{me}: the own-mesh sweep on entering the mesh has not finished"));
                 }
+                // The app's hook: Ready waits on it, and its blocker is named here with the others.
+                blocked.extend(hydration_state.as_ref().and_then(|h| h.state().blocker(&me)));
                 let floor = hydrated_floor.lock().unwrap().clone();
                 let hydration = hydration_blocker(&me, &hydrated, &*hydrated_builds, floor).await;
                 hydrator.tick(hydration.as_ref()).await;
@@ -3170,7 +3232,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             })
         };
-        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat)));
+        let _ = own_commands.set(Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), membership.clone(), set_status, status, None).with_yield_seat(yield_seat).with_retire(hydrate_cancel.clone())));
     }
     // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
     // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
@@ -3635,7 +3697,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone() })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_handle })
 }
 
 #[cfg(test)]

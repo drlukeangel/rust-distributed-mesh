@@ -25,6 +25,7 @@ pub mod leadership;
 use anyhow::{anyhow, Result};
 use rafka_node_rpc_contract::catalog::CatalogEntry;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The product family every role's own tags are ledgered under.
 pub(crate) const PRODUCT: &str = "rdm-roles";
@@ -124,6 +125,14 @@ impl Oracles {
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
 /// the mesh transport stopping for good), drain, leave. Every role binary is this call.
 pub async fn run(role: Role) -> Result<()> {
+    run_with(role, rafka_node_rpc_testkit::app_hydration::Hydration::none(), |b| b).await
+}
+
+/// [`run`] for a product that hydrates before Ready: `hydration` carries its
+/// `hydrate_before_ready` hook, and `serve_app` adds the product's own ops (each behind the gate of
+/// `hydration`, `ServerBuilder::serve_gated`) to the catalog before it seals. A hook that fails
+/// after the node came up Pending ends the process by name.
+pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydration::Hydration, serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<()> {
     let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
@@ -139,7 +148,7 @@ pub async fn run(role: Role) -> Result<()> {
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        rafka_node_rpc_testkit::node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver))
+        rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver)))
             .instrument(tracing::Span::none())
             .await
             .map_err(|e| {
@@ -152,7 +161,16 @@ pub async fn run(role: Role) -> Result<()> {
     boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
-    rafka_node_rpc_testkit::node::wait_for_signal(&format!("rafka-{}", role.name())).await;
+    let binary = format!("rafka-{}", role.name());
+    let ended = tokio::select! {
+        () = rafka_node_rpc_testkit::node::wait_for_signal(&binary) => None,
+        why = running.hydration_failed() => Some(why),
+    };
+    if let Some(why) = ended {
+        tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("hydrate_before_ready failed; this node ends"));
+        running.stop(Duration::ZERO).await;
+        return Err(anyhow!("{} failed hydrate_before_ready: {why}", launch.name));
+    }
     // A `stop-node` has no drain leg; only a signal drains the node itself.
     if !rafka_node_rpc_testkit::node::stop_commanded() {
         let deadline = drain_deadline_from_env();

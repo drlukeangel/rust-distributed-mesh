@@ -130,7 +130,12 @@ pub struct PullServer {
 impl PullServer {
     /// An authority holding `rows`, gate closed, not holding pulls.
     pub fn new(rows: Vec<Row>) -> Arc<Self> {
-        Arc::new(Self { gate: HydrationGate::new(), rows: Mutex::new(rows), hold: tokio::sync::watch::Sender::new(false), entered: tokio::sync::watch::Sender::new(0), answered: AtomicU32::new(0) })
+        Self::behind(rows, HydrationGate::new())
+    }
+
+    /// An authority holding `rows` behind `gate`: the gate of the hook of the node that serves it.
+    pub fn behind(rows: Vec<Row>, gate: HydrationGate) -> Arc<Self> {
+        Arc::new(Self { gate, rows: Mutex::new(rows), hold: tokio::sync::watch::Sender::new(false), entered: tokio::sync::watch::Sender::new(0), answered: AtomicU32::new(0) })
     }
 
     /// Hold every pull that is served from now until [`PullServer::release`].
