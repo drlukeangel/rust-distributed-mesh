@@ -140,7 +140,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 Box::pin(async {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000 },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new() },
                         statuses: vec![],
                     })
                 })
@@ -148,6 +148,11 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
+            issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
+                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                t.adopt(1_000);
+                t
+            })),
         };
         let dep = deployed();
         let reported = joins.expect(dep.clone());

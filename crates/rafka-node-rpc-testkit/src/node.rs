@@ -44,6 +44,10 @@ pub struct RunningNode {
     /// stamps its records with rafka-time (the OrderKey's `writer_timestamp_ms`) reads it here and
     /// never from the OS clock.
     pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    /// The member cert the accepting authority's signer issued for exactly this birth, as the
+    /// opaque bytes the join answer carried (`fabric-certs.md`). Empty when the authority is
+    /// configured with no certs. RDM never parses it.
+    pub member_cert: Vec<u8>,
     /// The endpoint's protocol routers.
     pub routers: Vec<Router>,
     /// The node's membership.
@@ -419,6 +423,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // The authority's rafka-time is adopted as its answer carries it, before this node's first
     // gossip frame.
     rafka_node_admin_core::rafka_time::adopt_join_answer(&join_step, &rafka_time, &name, &joined);
+    let member_cert = joined.control.member_cert.clone();
     // The mesh's id names its channel; the launching admin writes it.
     let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
     drop(join_step);
@@ -562,10 +567,11 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         membership: membership.clone(),
         cancel: cancel.clone(),
         rafka_time: rafka_time.clone(),
+        member_cert: Some(member_cert.clone()),
         attempt: 0,
     };
     let driver = hydration.driver(ctx, rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed), boot.clone());
-    let mut running = RunningNode { rafka_time: rafka_time.clone(), routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: driver.as_ref().map(|d| d.handle()), hydrating: None, gossip: g, publisher, node_rpc_feed, declare_loop };
+    let mut running = RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, hydration: driver.as_ref().map(|d| d.handle()), hydrating: None, gossip: g, publisher, node_rpc_feed, declare_loop };
     use rafka_node_admin_core::app_hydration::{End, Step};
     let Some(driver) = driver else {
         becoming.go().await;

@@ -36,6 +36,7 @@ async fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason(
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: BTreeMap::new(),
         data_root: data_root.clone(),
+        mesh_issuer: None,
     };
     struct Never;
     #[async_trait::async_trait]

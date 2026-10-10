@@ -7,6 +7,7 @@ mod hydrate_before_ready;
 mod hydrate_before_ready_admin;
 mod i143_acceptance_2775;
 mod join_before_ready;
+mod member_cert;
 mod pipeline_rerun;
 mod probe_endpoint_close;
 mod probe_root_span;

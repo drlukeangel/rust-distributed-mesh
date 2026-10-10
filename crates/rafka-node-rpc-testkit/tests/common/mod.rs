@@ -110,6 +110,7 @@ pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_m
         launcher,
         env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())].into_iter().collect(),
         data_root: std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint())),
+        mesh_issuer: None,
     }
 }
 

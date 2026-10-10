@@ -1102,7 +1102,7 @@ impl EntryState {
         // answering admin holds of the Build the pointer names is the floor a joiner's own copy
         // of that Build's attempt facts must reach before it is Ready.
         let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
-        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms };
+        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new() };
         Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
     }
 }
@@ -1163,6 +1163,8 @@ pub struct AdminRunner {
     pub leave_runs: Mutex<HashMap<crate::mesh_leave::LeaveKey, LeaveRun>>,
     /// The fabric-primary handover: this admin's initiator, doors and recorded operations.
     pub handover: Arc<crate::fabric_handover::HandoverDoor>,
+    /// The signer this admin issues a new mesh's first admin's issuing material with.
+    pub issuer: Arc<crate::certs::CertIssuer>,
 }
 
 /// One mesh leave at the leaving mesh's primary.
@@ -1309,7 +1311,7 @@ impl AdminRunner {
 
 
 
-    async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
+    async fn template_for(&self, kind: NodeKind, mesh: &str, first_admin: bool) -> Result<LaunchTemplate, String> {
         let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
         let mut t = self.template.clone();
         t.executable = match &self.bindings {
@@ -1337,6 +1339,16 @@ impl AdminRunner {
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
             t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
+        }
+        // A mesh's first node-admin is launched with the mesh's issuing material, issued by the
+        // app's signer on this admin's rafka-time. A refusal fails the create by name: the admin
+        // is never launched without it.
+        if kind == NodeKind::NodeAdmin && first_admin {
+            let issuer = self.issuer.mesh_issuer(mesh).map_err(|e| match e {
+                crate::certs::IssueFailure::Refused(r) => format!("{mesh}: the cert signer refused to issue the mesh's issuing material: {r}"),
+                crate::certs::IssueFailure::NoRafkaTime(why) => format!("{mesh}: {why}"),
+            })?;
+            t.mesh_issuer = Some(issuer).filter(|b| !b.is_empty());
         }
         Ok(t)
     }
@@ -1484,7 +1496,7 @@ impl AdminRunner {
                 FenceOutcome::Clear { gone: None } => {}
             }
         }
-        let template = self.template_for(node.kind, &node.mesh).await?;
+        let template = self.template_for(node.kind, &node.mesh, before_ready.is_some()).await?;
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, held_runtimes };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
@@ -1525,7 +1537,7 @@ impl AdminRunner {
         // mesh's first admin and receives the fabric primary's Pending hand-off (e4.s11).
         let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
         let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
-        let template = self.template_for(node.kind, &node.mesh).await?;
+        let template = self.template_for(node.kind, &node.mesh, first_admin).await?;
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = crate::deployment::pipeline::ReplaceRequest { build_id: build_id.clone(), attempt, predecessor, handle, spec: spec_for(node.kind), held_runtimes };
         let created = self.pipeline(&template).replace(&req, before_ready, |ready| async move { self.bring_into_traffic(&ready).await }).await.map_err(|e| e.to_string())?;
@@ -1677,7 +1689,7 @@ impl AdminRunner {
                 }
             }
         };
-        let template = self.template_for(node.kind, &node.mesh).await?;
+        let template = self.template_for(node.kind, &node.mesh, false).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.after_exit(&record, kind);
@@ -1976,6 +1988,10 @@ pub struct Running {
     /// it has in flight end.
     hydrate_cancel: rafka_node_rpc::CancelToken,
     hydration: Option<crate::app_hydration::HydrationHandle>,
+    /// The member cert the launching admin's signer issued for this birth, as the opaque bytes the
+    /// join that admitted it carried (empty when that admin is configured with no certs). `None`
+    /// for a birth that made no JoinNode: the Day-0 root and a recovery start.
+    pub member_cert: Option<Vec<u8>>,
 }
 
 impl Running {
@@ -2139,7 +2155,7 @@ pub fn rpc_server(
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
-    start_with(cfg, crate::wiring::Wiring::default()).await
+    start_with(cfg, crate::wiring::Wiring::no_certs()).await
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built from.
@@ -2160,6 +2176,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // reads this one reader.
     let rafka_time = rafka_mesh_transport::clock::RafkaTime::unadopted();
     let clock: rafka_mesh_transport::clock::SharedClock = Arc::new(rafka_time.clone());
+    // The app's signing capability, chosen explicitly: a node-admin started with no choice is
+    // refused here, by name, before it touches anything.
+    let signer = std::mem::take(&mut wiring.certs).resolve().map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?;
+    let issuer = Arc::new(crate::certs::CertIssuer::new(signer, rafka_time.clone()));
     let step = if cfg.data_dir.join("node-key").exists() {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
     } else {
@@ -2399,6 +2419,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // the membership feed starts once the process holds a book.
     let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let mut pulled: Option<crate::wire::JoinAnswer> = None;
+    // The member cert the launching admin's signer issued for this birth, carried by the join that
+    // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
+    let mut member_cert: Option<Vec<u8>> = None;
     // What a repeat of the control entry calls: the join to the launching admin, as first made.
     let mut entry_retrieval: Option<(rafka_node_rpc::NodeTarget, String, MeshDigest)> = None;
     if let (Some(anchor), Some(launcher), Some(runtime)) = (&launched_anchor, cfg.launch.as_ref().and_then(|l| l.launcher.as_ref()), &launched_runtime) {
@@ -2443,6 +2466,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         // first gossip frame.
         crate::rafka_time::adopt_join_answer(&boot, &rafka_time, &name.to_string(), &answer);
         entry_retrieval = Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), join_digest));
+        member_cert = Some(answer.control.member_cert.clone());
         pulled = Some(answer);
     }
     // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
@@ -2764,6 +2788,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
         env: cfg.passthrough.clone(),
         data_root,
+        mesh_issuer: None,
     };
     let mut registry = HookRegistry::new();
     for (spec, hook) in wiring.hooks.drain(..) {
@@ -2813,6 +2838,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
         leave_runs: Mutex::new(HashMap::new()),
         handover: handover.clone(),
+        issuer: issuer.clone(),
     });
     let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
 
@@ -3003,6 +3029,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             }),
             known: view_projector(control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
             primary: Arc::new(move || topo.mesh_primary().map(|p| p.node.name.to_string())),
+            issuer: issuer.clone(),
         });
         let _ = join_slot.set(door);
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
@@ -3131,6 +3158,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             membership: membership.clone(),
             cancel: hydrate_cancel.clone(),
             rafka_time: rafka_time.clone(),
+            member_cert: member_cert.clone(),
             attempt: 0,
         };
         let events = Events::new(book.clone(), records.wake.hydration.clone());
@@ -3782,7 +3810,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_handle })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_handle, member_cert })
 }
 
 #[cfg(test)]
@@ -4194,7 +4222,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000 },
+                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new() },
                         statuses: vec![],
                     })
                 })
@@ -4204,6 +4232,11 @@ mod tests {
             }),
             known: view_projector(topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone()),
             primary: Arc::new(|| None),
+            issuer: Arc::new(crate::certs::CertIssuer::no_certs({
+                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                t.adopt(1_000);
+                t
+            })),
         };
         let endpoint = reported.node.endpoint_id.clone();
         assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");

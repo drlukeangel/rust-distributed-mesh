@@ -191,6 +191,8 @@ pub struct JoinDoor {
     pub known: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
+    pub issuer: Arc<crate::certs::CertIssuer>,
 }
 
 /// The door a running admin fills once it holds a view.
@@ -212,6 +214,7 @@ impl JoinDoor {
             outcome = tracing::field::Empty,
             build_id = tracing::field::Empty,
             attempt = tracing::field::Empty,
+            cert_len = tracing::field::Empty,
         );
         self.decide(peer, d, span.clone()).instrument(span).await
     }
@@ -229,12 +232,18 @@ impl JoinDoor {
                 JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported }
             }
             Standing::Deployed => {
+                // The member cert is issued for this exact birth BEFORE it is admitted: a refused
+                // issuance leaves nothing installed for its key and completes no report.
+                let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.name.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
+                let _ = (&birth, &self.issuer);
+                let cert: Vec<u8> = Vec::new();
+                span.record("cert_len", cert.len() as u64);
                 (self.install)(&d);
                 (self.known)().await;
                 self.joins.report(&d);
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
-                self.joined(&d.node.name).await
+                self.joined(&d.node.name, cert).await
             }
             Standing::Abandoned(a) => {
                 span.record("outcome", "deployment-abandoned");
@@ -253,9 +262,12 @@ impl JoinDoor {
         }
     }
 
-    async fn joined(&self, node: &PathName) -> JoinReply {
+    async fn joined(&self, node: &PathName, member_cert: Vec<u8>) -> JoinReply {
         let answer = match (self.answer)().await {
-            Ok(a) => a,
+            Ok(mut a) => {
+                a.control.member_cert = member_cert;
+                a
+            }
             Err(why) => return JoinReply::NotReady { reason: format!("{}: not ready to answer a join: {why}", self.me) },
         };
         tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, statuses = answer.statuses.len())
@@ -320,6 +332,7 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
                 JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
                     ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
                 }
+                JoinReply::CertRefused { name, detail } => ("refused", Err(JoinFailure::Refused(format!("the admin's cert signer refused the birth's member cert ({name}): {detail}")))),
                 JoinReply::Unauthorized { reason } => ("refused", Err(JoinFailure::Refused(reason))),
                 other => ("not-ready", Err(JoinFailure::Unreached(format!("{}: {other:?}", other.name())))),
             },

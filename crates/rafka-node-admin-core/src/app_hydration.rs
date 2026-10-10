@@ -116,6 +116,10 @@ pub struct HydrateCtx {
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
     pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    /// The member cert the accepting authority's signer issued for exactly this birth, as opaque
+    /// bytes (`fabric-certs.md`): empty when that authority is configured with no certs; `None`
+    /// for a birth that made no JoinNode (the Day-0 root, a recovery start).
+    pub member_cert: Option<Vec<u8>>,
     /// Which attempt this is, from 1.
     pub attempt: u32,
 }

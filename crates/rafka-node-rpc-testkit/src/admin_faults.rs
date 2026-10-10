@@ -20,6 +20,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rafka_mesh_entity::LifecycleOp;
 use rafka_node_admin_core::build::BuildId;
+use rafka_node_admin_core::certs::CertChoice;
 use rafka_node_admin_core::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome,
     StepOutcome,
@@ -526,6 +527,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
         hydration: Default::default(),
+        certs: CertChoice::NoCerts,
         serve_app: None,
         hooks: NODE_READY_PHASES
             .iter()

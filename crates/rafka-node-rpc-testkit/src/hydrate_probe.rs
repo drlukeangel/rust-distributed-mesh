@@ -211,6 +211,8 @@ pub struct TestHydrator {
     held: Mutex<Held>,
     /// What each attempt saw of its context: `(attempt, authority named, authority reason)`.
     pub contexts: Mutex<Vec<(u32, Option<String>, Option<String>)>>,
+    /// The member cert each attempt's context carried.
+    pub member_certs: Mutex<Vec<Option<Vec<u8>>>>,
     /// Attempts begun.
     pub attempts: AtomicU32,
     /// Pulls begun.
@@ -242,6 +244,7 @@ impl TestHydrator {
             mode: Mutex::new(mode),
             held: Mutex::default(),
             contexts: Mutex::default(),
+            member_certs: Mutex::default(),
             attempts: AtomicU32::new(0),
             pulls_started: AtomicU32::new(0),
             pulls_answered: AtomicU32::new(0),
@@ -290,6 +293,7 @@ impl HydrateBeforeReady for TestHydrator {
     async fn hydrate_before_ready(&self, ctx: &HydrateCtx) -> HookOutcome {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         let _ = self.book.set(ctx.membership.book.clone());
+        self.member_certs.lock().unwrap().push(ctx.member_cert.clone());
         self.contexts.lock().unwrap().push((
             ctx.attempt,
             ctx.authority.accepted().map(|a| a.name.to_string()),

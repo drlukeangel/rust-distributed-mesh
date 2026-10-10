@@ -15,6 +15,7 @@ pub mod admin;
 pub mod app_hydration;
 pub mod accepted;
 pub mod build;
+pub mod certs;
 pub mod build_claim;
 pub mod build_facts_read;
 pub mod fabric_handover;

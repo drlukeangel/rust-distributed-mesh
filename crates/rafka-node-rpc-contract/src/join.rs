@@ -13,6 +13,8 @@
 //! NotAuthority          the receiver did not deploy this birth and holds no member of that name
 //! DeploymentAbandoned   the receiver deployed this exact birth and ended its deployment before the
 //!                       join arrived
+//! CertRefused           the receiver's cert signer refused to issue the birth's member cert; the
+//!                       birth is not admitted
 //! ```
 //!
 //! The request carries the digest typed, as `WireDigest` (`rafka_mesh_entity::wire`, the same
@@ -116,6 +118,15 @@ pub enum JoinReply {
         /// The abandoned birth's incarnation.
         incarnation: IncarnationId,
     },
+    /// The receiver's cert signer refused to issue a member cert for exactly this birth, so the
+    /// birth is not admitted: nothing is installed for its key and its deployment's report is not
+    /// completed. The refusal is final for this attempt; it is never retried as `NotReady`.
+    CertRefused {
+        /// The signer's stable refusal name.
+        name: String,
+        /// What the signer says about it.
+        detail: String,
+    },
 }
 
 impl JoinReply {
@@ -126,6 +137,7 @@ impl JoinReply {
             Self::JoinMismatch { .. } => "join-mismatch",
             Self::NotAuthority { .. } => "not-authority",
             Self::DeploymentAbandoned { .. } => "deployment-abandoned",
+            Self::CertRefused { .. } => "cert-refused",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
@@ -145,7 +157,7 @@ impl NodeProtocol for Join {
     const MAX_REPLY_FRAME_BYTES: usize = 4 * 1024 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 10;
+    const REPLY_VARIANTS: u32 = 11;
 
     type Request = JoinRequest;
     type Reply = JoinReply;
@@ -153,7 +165,7 @@ impl NodeProtocol for Join {
     fn classify_reply(reply: &JoinReply) -> ReplyKind {
         match reply {
             JoinReply::Joined { .. } => ReplyKind::Success,
-            JoinReply::JoinMismatch { .. } | JoinReply::NotAuthority { .. } | JoinReply::DeploymentAbandoned { .. } => ReplyKind::ProtocolRefusal,
+            JoinReply::JoinMismatch { .. } | JoinReply::NotAuthority { .. } | JoinReply::DeploymentAbandoned { .. } | JoinReply::CertRefused { .. } => ReplyKind::ProtocolRefusal,
             JoinReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             JoinReply::NotReady { .. } => ReplyKind::NotReady,
             JoinReply::Busy { .. } => ReplyKind::Busy,
@@ -193,6 +205,7 @@ mod tests {
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::ProtocolRefusal),
             (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
             (JoinReply::DeploymentAbandoned { build_id: "bld-1".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("i".into()) }, ReplyKind::ProtocolRefusal),
+            (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::ProtocolRefusal),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),
             (Join::busy("b".into()), ReplyKind::Busy),

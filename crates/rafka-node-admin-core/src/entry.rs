@@ -10,7 +10,7 @@ use tracing::Instrument;
 /// leaving on a fabric shutdown or a signal. `service` is the telemetry service name and the
 /// prefix of its console lines.
 pub async fn run(service: &str) {
-    run_with(service, |_| Wiring::default()).await
+    run_with(service, |_| Wiring::no_certs()).await
 }
 
 /// [`run`], for an executable that decorates the parts its node-admin is built from: `wiring` is

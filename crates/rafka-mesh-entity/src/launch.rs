@@ -31,6 +31,9 @@ pub const ENV_LAUNCHER: &str = "RDM_LAUNCHER";
 pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
+/// The issuing material a new mesh's first node-admin is launched with, as hex of opaque bytes.
+/// RDM never parses it: the embedding app's signer made it and the app's own node-admin reads it.
+pub const ENV_MESH_ISSUER: &str = "RDM_MESH_ISSUER";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -77,6 +80,29 @@ pub struct Launch {
     pub data_dir: PathBuf,
     /// The id of the node's mesh: it names the mesh's membership channel.
     pub mesh_id: Option<MeshId>,
+    /// The issuing material a new mesh's first node-admin is launched with (opaque bytes, never
+    /// parsed here). `None` for every other birth and for an app configured with no certs.
+    pub mesh_issuer: Option<Vec<u8>>,
+}
+
+/// Lowercase hex of `bytes`.
+pub fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// The bytes `s` spells in hex; a malformed spelling is refused by name.
+pub fn decode_hex(name: &str, s: &str) -> Result<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return Err(format!("{name} has an odd number of hex digits ({})", s.len()));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| s.get(i..i + 2).and_then(|p| u8::from_str_radix(p, 16).ok()).ok_or_else(|| format!("{name} is not hex at digit {i}")))
+        .collect()
 }
 
 /// `1`/`true` set a primary flag; absent, empty, `0` and `false` leave it off; anything else is
@@ -154,6 +180,9 @@ impl Launch {
         if let Some(id) = &self.mesh_id {
             m.insert(ENV_MESH_ID.into(), id.to_string());
         }
+        if let Some(issuer) = self.mesh_issuer.as_ref().filter(|b| !b.is_empty()) {
+            m.insert(ENV_MESH_ISSUER.into(), encode_hex(issuer));
+        }
         m
     }
 
@@ -174,6 +203,7 @@ impl Launch {
             seeds: decode_seeds(&get(ENV_SEEDS).unwrap_or_default())?,
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
+            mesh_issuer: get(ENV_MESH_ISSUER).filter(|s| !s.trim().is_empty()).map(|s| decode_hex(ENV_MESH_ISSUER, s.trim())).transpose()?,
         })
     }
 }
@@ -197,6 +227,7 @@ mod tests {
             seeds: vec![("abc".into(), "127.0.0.1:41000".parse().unwrap())],
             data_dir: "/tmp/x".into(),
             mesh_id: Some(MeshId::mint()),
+            mesh_issuer: Some(vec![0x00, 0xab, 0xff]),
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
@@ -204,6 +235,15 @@ mod tests {
         let mut blank = env.clone();
         blank.insert(ENV_FABRIC.into(), " ".into());
         assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RDM_FABRIC is required and must not be empty"));
+        assert_eq!(env.get(ENV_MESH_ISSUER).map(String::as_str), Some("00abff"));
+        let mut odd = env.clone();
+        odd.insert(ENV_MESH_ISSUER.into(), "abc".into());
+        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_MESH_ISSUER has an odd number"));
+        odd.insert(ENV_MESH_ISSUER.into(), "zz".into());
+        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_MESH_ISSUER is not hex"));
+        // A launch that carries no issuer sets no variable.
+        let none = Launch { mesh_issuer: None, ..l.clone() }.to_env();
+        assert!(!none.contains_key(ENV_MESH_ISSUER));
         // A launched node's product ids are canonical or refused by name.
         for (k, v, says) in [(ENV_NODE_ID, "f".repeat(32), "node id"), (ENV_FABRIC_ID, "fabric1".into(), "fabric id"), (ENV_MESH_ID, "4f14".into(), "mesh id")] {
             let mut bad = env.clone();

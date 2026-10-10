@@ -441,6 +441,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
+        mesh_issuer: None,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline {

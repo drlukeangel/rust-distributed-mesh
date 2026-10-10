@@ -130,6 +130,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
+            mesh_issuer: None,
         };
         let joins = Arc::new(Joins::default());
         let pipeline = DeploymentPipeline {
@@ -187,6 +188,11 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             }),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.1".into())),
+            issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
+                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                t.adopt(1_000);
+                t
+            })),
         };
         let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into() };
 

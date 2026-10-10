@@ -267,6 +267,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
+            mesh_issuer: None,
         },
         joins,
     }

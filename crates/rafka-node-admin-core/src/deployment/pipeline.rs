@@ -722,6 +722,9 @@ pub struct LaunchTemplate {
     pub env: BTreeMap<String, String>,
     /// The root of every node's data directory.
     pub data_root: PathBuf,
+    /// The issuing material a new mesh's first node-admin is launched with: set on the template of
+    /// that launch alone, from the signer's `issue_mesh_issuer`. `None` for every other launch.
+    pub mesh_issuer: Option<Vec<u8>>,
 }
 
 impl LaunchTemplate {
@@ -1166,6 +1169,7 @@ impl DeploymentPipeline<'_> {
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
+            mesh_issuer: self.template.mesh_issuer.clone(),
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.

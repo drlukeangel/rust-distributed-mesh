@@ -47,6 +47,7 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         launcher: Some(launcher.launcher.clone()),
         data_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
+        mesh_issuer: None,
     };
     launcher.deployed(&launch, &key);
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();

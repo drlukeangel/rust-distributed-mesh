@@ -658,6 +658,10 @@ pub struct JoinControl {
     /// The answering admin's rafka-time now, in milliseconds: the joiner adopts it as it stands.
     /// An admin that holds no rafka-time answers `NotReady` naming why and builds no answer.
     pub rafka_time_ms: u64,
+    /// The member cert the accepting authority's signer issued for exactly this birth, as opaque
+    /// bytes RDM never parses (`fabric-certs.md`). Empty when the authority is configured with no
+    /// certs. Appended last: it is the control frame's final field.
+    pub member_cert: Vec<u8>,
 }
 
 /// The attempt of the pointed Build a joiner's copy must reach before Ready.
@@ -683,6 +687,7 @@ struct WireControl {
     shutdown: Option<FabricShutdown>,
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
+    member_cert: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -702,6 +707,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             shutdown: c.shutdown.clone(),
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
             rafka_time_ms: c.rafka_time_ms,
+            member_cert: c.member_cert.clone(),
         },
         statuses: answer.statuses.clone(),
     };
@@ -719,6 +725,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             shutdown: w.control.shutdown,
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
             rafka_time_ms: w.control.rafka_time_ms,
+            member_cert: w.control.member_cert,
         },
         statuses: w.statuses,
     })

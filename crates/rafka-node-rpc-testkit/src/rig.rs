@@ -133,29 +133,39 @@ impl AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
+    admin_side_taking_joins(ip, fabric, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
 /// [`admin_side`] whose rafka-time is `reference_ms` (adopted once, as a Day-0 root adopts its own
 /// clock) instead of the OS clock: a node it admits adopts that lineage, so a reading that matches
 /// it cannot have come from an OS clock.
 pub async fn admin_side_on_rafka_time(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: u64) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, Some(reference_ms), |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
+    admin_side_taking_joins(ip, fabric, true, Some(reference_ms), |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
 /// [`admin_side`] that also serves what `serve` adds (an app's ops) and publishes itself as
 /// `status` to start with.
 pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status: rafka_mesh_entity::digest::MemberStatus, serve: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, None, serve, status).await
+    admin_side_taking_joins(ip, fabric, true, None, serve, status, no_certs()).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
+    admin_side_taking_joins(ip, fabric, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus) -> AdminSide {
+fn no_certs() -> Arc<dyn rafka_node_admin_core::certs::CertSigner> {
+    Arc::new(rafka_node_admin_core::certs::NoCerts)
+}
+
+/// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with
+/// `signer`, on the admin side's rafka-time (the reference, when given).
+pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
+    admin_side_taking_joins(ip, fabric, true, reference_ms, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, signer).await
+}
+
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -193,7 +203,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
                 Box::pin(async move {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms() },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new() },
                         statuses: vec![],
                     })
                 })
@@ -201,6 +211,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| None),
+            issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::new(signer, rafka_time.clone())),
         })
     };
     if takes_joins {
