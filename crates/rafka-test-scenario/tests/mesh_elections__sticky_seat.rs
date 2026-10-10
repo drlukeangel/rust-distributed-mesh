@@ -107,10 +107,13 @@ async fn a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_
     // The seat stays with the heir: the other mesh's primary does not take it back from it.
     tokio::time::sleep(Duration::from_secs(8)).await;
     let later = estate.nodes().await;
+    // The fabric's own shutdown moves the seat again as its admins leave: only what happened before
+    // the stop is the seat's story under this cell.
+    let stopping_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     assert_eq!(fabric_primary(&later).as_deref(), Some(heir.as_str()), "the heir keeps the seat: {later:#?}");
     assert_eq!(seen.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1);
-    let spans = estate.spans();
+    let spans: Vec<Value> = estate.spans().into_iter().filter(|sp| sp["start_unix_nano"].as_u64().is_some_and(|t| t < stopping_at)).collect();
     assert!(
         named(&spans, "rdm.mesh.seat.update.via-announce").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
         "the heir announced the fabric-primary seat (the other mesh's primary id is {} the heir's: {})",

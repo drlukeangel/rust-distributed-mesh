@@ -207,16 +207,19 @@ impl BuildExecutor {
         for (i, op) in operations.iter().enumerate() {
             // The view moves as operations run (a new mesh's admins become
             // its primary): eligibility is decided on the view as it is now.
+            let named = executor_for(op, &*self.topology.read().await);
             if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
                 return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
             // The first operation left is the one the fabric-primary claimed this attempt for this
             // admin to run: its view named this admin, and this admin's own view of its mesh's seat
             // may lag it (a lost mesh primary's successor has not yet elected itself). Only the
-            // operations after it are handed off by this admin's view, so every hand-off follows a
-            // step completed, and two views that disagree never pass an attempt back and forth.
-            if i > 0 {
-                let to = executor_for(op, &*self.topology.read().await);
+            // operations after it, and a first operation whose own preparation moved its executor
+            // (the seat handover of a mesh retire), are handed off by this admin's view, so every
+            // hand-off follows a step completed or a seat moved, and two views that disagree never
+            // pass an attempt back and forth.
+            let to = executor_for(op, &*self.topology.read().await);
+            if i > 0 || to != named {
                 if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }

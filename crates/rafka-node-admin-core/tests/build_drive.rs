@@ -247,19 +247,21 @@ impl OperationRunner for SeatMover {
 /// CONTRACT: a mesh retire whose fabric-primary sits inside the leaving mesh is run by the admin
 /// the handover made the fabric-primary. The claimed executor hands the seat over when the
 /// operation is prepared, the executor of the operation is then another admin, and the attempt is
-/// passed to it before the operation runs: the leaving mesh's admin never runs its own retire.
+/// passed to it before the operation runs: the leaving mesh's admin never runs its own retire, and
+/// its drive, now showing another seat holder, ends by naming it.
 #[tokio::test]
-async fn a_mesh_retire_whose_seat_moved_at_prepare_is_run_by_the_new_fabric_primary() {
+async fn a_mesh_retire_whose_seat_moved_at_prepare_is_passed_to_the_new_fabric_primary_unrun() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
     let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, topology| Arc::new(SeatMover { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
-    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(
-        *r.dispatch.dispatched.lock().unwrap(),
-        vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.1".to_string(), 2)],
-        "attempt 1 prepared the handover and passed the attempt on; attempt 2 ran it at the new fabric-primary"
-    );
-    assert_eq!(r.ran.0.lock().unwrap().len(), 1, "the retire ran once");
+    match r.env.run(&drive).await {
+        DriveEnd::SeatLost(why) => assert!(why.contains("mesh2.admin.1"), "the drive names the seat's new holder: {why}"),
+        other => panic!("the old seat holder's drive ends SeatLost: {other:?}"),
+    }
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)]);
+    assert!(!r.ran.0.lock().unwrap().iter().any(|k| k.starts_with("shutdown-mesh")), "the retire did not run at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!(p.state, rafka_node_admin_core::build_state::BuildState::Pending, "the handed-off attempt leaves the Build waiting for the new seat's claim");
 }
