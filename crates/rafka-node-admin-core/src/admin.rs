@@ -643,6 +643,13 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     topology
 }
 
+/// Every birth of `fabric` this admin's book holds besides itself, heard a moment ago or only
+/// carried in an installed topology read. These are the contacts a restarted admin can try, and the
+/// births a maker serves a joining admin for a mesh it holds no snapshot of.
+fn held_births(book: &DigestBook, fabric: &FabricId, me: &NodeId) -> Vec<MeshDigest> {
+    book.all().into_iter().filter(|d| &d.fabric_id == fabric && &d.node.node_id != me).collect()
+}
+
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
 /// the accepted Build is settled, and a cohort the Build's topology names has fewer births than
 /// it should, at least one of them with its exact runtime inspected and found exited, it opens
@@ -2772,8 +2779,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             .await.map_err(storage_err)?;
         mesh_storage.put_mesh(&crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: cfg.mesh.clone() }).await.map_err(storage_err)?;
     }
-    // nodes.storage contacts: the births this admin hears, as bootstrap hints for a later restart.
-    // A contact whose path another logical node now holds is dropped; nothing here is topology.
+    // nodes.storage contacts: the births this admin holds, as bootstrap hints for a later restart.
+    // A birth is written the moment the book first holds it or it changes (the book's own birth
+    // watch, as the runtime rows are): a hint that waits on a timer is lost to a restart that comes
+    // first, and the staleness floor says nothing of whether a restarted admin can reach a birth.
+    // A peer mesh's ordinary members reach this admin only through an installed topology read.
+    // A contact whose birth the book no longer holds, at a path another logical node now holds, is
+    // dropped; nothing here is topology.
     let contacts_task = {
         let (book, nodes_storage, me, fabric_id, mesh_storage) = (membership.book.clone(), nodes_storage.clone(), node_id.clone(), cfg.fabric_id.clone(), mesh_storage.clone());
         tokio::spawn(async move {
@@ -2782,9 +2794,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let mut meshes_written: HashMap<String, MeshId> = mesh_storage.meshes().await.unwrap_or_default().into_iter().map(|m| (m.name, m.mesh_id)).collect();
             let mut written: HashMap<NodeId, crate::storage::NodeRecord> =
                 nodes_storage.contacts().await.unwrap_or_default().into_iter().map(|c| (c.node_id.clone(), c)).collect();
+            let mut births = book.birth_changes();
             loop {
-                let heard: Vec<MeshDigest> = book.current(book.staleness_floor()).into_iter().filter(|d| d.fabric_id == fabric_id && d.node.node_id != me).collect();
-                for d in &heard {
+                births.borrow_and_update();
+                let held = held_births(&book, &fabric_id, &me);
+                for d in &held {
                     if let Some(id) = &d.mesh_id {
                         if meshes_written.get(&d.node.name.mesh) != Some(id) {
                             let row = crate::storage::MeshRecord { mesh_id: id.clone(), name: d.node.name.mesh.clone() };
@@ -2792,7 +2806,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 Ok(()) => {
                                     meshes_written.insert(row.name, row.mesh_id);
                                 }
-                                Err(e) => tracing::info!(mesh = %d.node.name.mesh, error = %e, "a heard mesh's id could not be stored"),
+                                Err(e) => tracing::info!(mesh = %d.node.name.mesh, error = %e, "a held mesh's id could not be stored"),
                             }
                         }
                     }
@@ -2806,7 +2820,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         declared: None,
                         status: None,
                     };
-                    // The contact is what is heard; the declared state on the row is the
+                    // The contact is what is held; the declared state on the row is the
                     // authority's (`status_rpc`) and rides along, never overwritten from gossip.
                     let same = |w: &crate::storage::NodeRecord| crate::storage::NodeRecord { declared: None, ..w.clone() } == r;
                     if !written.get(&r.node_id).is_some_and(same) {
@@ -2822,7 +2836,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 }
                 let replaced: Vec<NodeId> = written
                     .values()
-                    .filter(|w| heard.iter().any(|d| d.node.name == w.name && d.node.node_id != w.node_id))
+                    .filter(|w| !held.iter().any(|d| d.node.node_id == w.node_id) && held.iter().any(|d| d.node.name == w.name))
                     .map(|w| w.node_id.clone())
                     .collect();
                 for id in replaced {
@@ -2830,7 +2844,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         written.remove(&id);
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                if births.changed().await.is_err() {
+                    return;
+                }
             }
         })
     };
@@ -2886,17 +2902,26 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         // Every node serves the topology it holds (`GetTopology`, op `0x1E`).
         let own = digest.clone();
         // For a mesh it holds no snapshot of, this admin answers from the births it stores.
-        let (contacts, meshes) = (nodes_storage.clone(), mesh_storage.clone());
+        // The births it stores and the births its book holds now: what this admin knows of a mesh
+        // does not wait on the contacts being written.
+        let (contacts, meshes, held_book, held_fabric, held_me) = (nodes_storage.clone(), mesh_storage.clone(), book.clone(), cfg.fabric_id.clone(), node_id.clone());
         let stored: crate::topology_read::StoredSource = Arc::new(move || {
-            let (contacts, meshes) = (contacts.clone(), meshes.clone());
+            let (contacts, meshes, held_book, held_fabric, held_me) = (contacts.clone(), meshes.clone(), held_book.clone(), held_fabric.clone(), held_me.clone());
             Box::pin(async move {
                 let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
                 let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
+                let mut nodes: BTreeMap<NodeId, rafka_node_rpc_contract::topology::StoredNode> = rows
+                    .into_iter()
+                    .map(|r| (r.node_id.clone(), rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
+                    .collect();
+                for d in held_births(&held_book, &held_fabric, &held_me) {
+                    nodes.insert(
+                        d.node.node_id.clone(),
+                        rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
+                    );
+                }
                 Ok(crate::topology_read::StoredMap {
-                    nodes: rows
-                        .into_iter()
-                        .map(|r| rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr })
-                        .collect(),
+                    nodes: nodes.into_values().collect(),
                     mesh_ids: ids.into_iter().map(|m| (m.name, m.mesh_id)).collect(),
                 })
             })

@@ -131,6 +131,7 @@ impl TopologyDoor {
             snapshots = tracing::field::Empty,
             unchanged = tracing::field::Empty,
             stored = tracing::field::Empty,
+            stored_nodes = tracing::field::Empty,
             seats = tracing::field::Empty,
             rafka_time_ms = tracing::field::Empty,
             seat = tracing::field::Empty,
@@ -201,6 +202,7 @@ impl TopologyDoor {
                 answered += 1;
             }
             let stored_meshes = stored.len() as u64;
+            span.record("stored_nodes", stored.values().map(|v| v.len()).sum::<usize>() as u64);
             for (m, nodes) in stored {
                 for chunk in nodes.chunks(STORED_PER_FRAME) {
                     let r = TopologyReply::Stored { mesh: m.clone(), mesh_id: stored_ids.get(&m).cloned(), nodes: chunk.to_vec() };

@@ -255,6 +255,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         source,
         local = report.local.as_ref().map(|l| l.to_string()).unwrap_or_default(),
         pinged = swept.len(),
+        swept = %swept.iter().map(|n| n.name.to_string()).collect::<Vec<_>>().join(","),
         reached = report.reached.len(),
         not_reached = report.not_reached.len(),
         elapsed_ms = report.elapsed_ms,
