@@ -60,7 +60,9 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
 /// Apply every departure and every birth `book` holds to `resolver`, naming what changed.
 pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     for op in book.departed() {
-        if resolver.depart(&op.node_id, &op.incarnation, &op.name) == Applied::Departed {
+        // A birth that departed with its dead mesh is Gone for as long as the mesh is dead.
+        let applied = if op.operation.starts_with(rafka_mesh_transport::membership::MESH_SHUTDOWN_PREFIX) { resolver.depart_for_good(&op.node_id, &op.incarnation, &op.name) } else { resolver.depart(&op.node_id, &op.incarnation, &op.name) };
+        if applied == Applied::Departed {
             tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }

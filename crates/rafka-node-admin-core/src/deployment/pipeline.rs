@@ -166,10 +166,6 @@ pub enum RetireStep {
     NodeRestarting,
     /// Only on a removal.
     ReleaseStorage,
-    /// Only in a whole-mesh retire: the executor's own membership view has heard this birth's
-    /// own `Leaving` before the local cleanup (Luke 2026-10-05). Not in [`RetireStep::ORDER`],
-    /// which is an ordinary node retire.
-    ObserveDeparture,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
     /// The node is retired.
@@ -203,7 +199,6 @@ impl RetireStep {
             Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
             Self::ReleaseStorage => "ReleaseStorage",
-            Self::ObserveDeparture => "ObserveDeparture",
             Self::RemoveTopologyMembership => "RemoveTopologyMembership",
             Self::Complete => "Complete",
         }
@@ -407,12 +402,6 @@ pub trait NodeObserver: Send + Sync {
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
     }
-    /// Has this exact birth's own `Leaving` reached this admin's membership view (its own digest,
-    /// heard through gossip; never what this admin's pipeline wrote into its own view)? A birth
-    /// this admin never heard leave, or only judged dead from silence, has not departed.
-    async fn departed(&self, _node: &Node) -> bool {
-        false
-    }
 }
 
 /// The runtime part of a birth's own membership digest.
@@ -586,6 +575,51 @@ pub enum Completion {
     },
 }
 
+/// What the TerminateRuntime step commits: the provider's exact inspection said this birth's
+/// runtime exited. It binds the node, the birth and the immutable runtime (by fingerprint, never a
+/// pid or container id), so a recycled pid or a reusable container name cannot satisfy it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalReceipt {
+    /// The node's `path.name`.
+    pub node: String,
+    /// The logical node.
+    pub node_id: String,
+    /// The exact birth.
+    pub incarnation_id: String,
+    /// The runtime that exited, by fingerprint; `None` when the handle names no exact runtime.
+    pub runtime: Option<RuntimeProof>,
+    /// The exit code, when the provider's record proves one.
+    pub exit_code: Option<i32>,
+}
+
+/// An exact runtime by fingerprint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeProof {
+    /// The deployment that ran the birth.
+    pub deployment_id: String,
+    /// The provider that ran it.
+    pub provider: String,
+    /// The control domain, by fingerprint.
+    pub control_domain_fingerprint: String,
+    /// The locator's kind.
+    pub locator_kind: String,
+    /// The locator, by fingerprint.
+    pub locator_fingerprint: String,
+}
+
+impl RuntimeProof {
+    /// The proof of `fact`.
+    pub fn of(fact: &RuntimeFact) -> Self {
+        Self {
+            deployment_id: fact.deployment_id.clone(),
+            provider: fact.provider.as_str().into(),
+            control_domain_fingerprint: fact.domain_fingerprint(),
+            locator_kind: fact.locator.kind().into(),
+            locator_fingerprint: fact.locator_fingerprint(),
+        }
+    }
+}
+
 /// The identity a directed command carries: the Build, the attempt and the command's operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandContext {
@@ -595,6 +629,25 @@ pub struct CommandContext {
     pub attempt: u32,
     /// `drain-node:<path>` or `stop-node:<path>`.
     pub operation: String,
+}
+
+/// The identity a mesh-leave gossip hook carries: the mesh, the Build, the attempt and the outer
+/// operation `shutdown-mesh:<mesh_id>`, with the receipt manifest reference and the final primary
+/// where the event has them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshLeaveEvent {
+    /// The mesh that leaves.
+    pub mesh_id: rafka_mesh_entity::MeshId,
+    /// The Build the operation belongs to.
+    pub build_id: String,
+    /// The Build attempt that holds it.
+    pub attempt: u32,
+    /// `shutdown-mesh:<mesh_id>`.
+    pub operation: String,
+    /// The reference to the terminal receipts, when the event carries one.
+    pub receipt_manifest: Option<String>,
+    /// The final mesh-primary, when the event names it.
+    pub final_primary: Option<(NodeId, IncarnationId)>,
 }
 
 /// Publishes the lifecycle events of a removal or a restart.
@@ -612,6 +665,15 @@ pub trait LifecycleEvents: Send + Sync {
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
     async fn leaving(&self, _op: &LifecycleOp) {}
+    /// The accepted `leave-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
+    /// the backbone and its own mesh channel.
+    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
+    /// The `mesh-leave` handoff call's hook: authored by the still-running mesh-primary on the
+    /// backbone and its own mesh channel.
+    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
+    /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact
+    /// exit is proven.
+    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
@@ -708,9 +770,6 @@ pub struct RetireRequest {
     /// storage goes by the Build's StorageMeta), or the retire half of a restart (the birth stops,
     /// the logical node and its storage stay).
     pub kind: RetireKind,
-    /// Part of a whole-mesh retire: hold the local cleanup until this admin's own membership view
-    /// has heard the birth's `Leaving` ([`RetireStep::ObserveDeparture`]).
-    pub observe_departure: bool,
 }
 
 /// A request to replace one birth with a new node at its path.
@@ -1360,23 +1419,7 @@ impl DeploymentPipeline<'_> {
         // drain-node and its node-drained, then stop-node, its node-left and the provider's
         // terminal proof. A caller that puts other work between them (a replace) calls the halves.
         self.drain_steps(&mut run, &mut node, handle).await?;
-        self.stop_steps(&mut run, &mut node, handle).await?;
-        // A whole-mesh retire hears the birth's own `Leaving` through the mesh before anything
-        // else: the departure below removes the birth from this admin's view and fences its
-        // digests, so the observation must come first.
-        if req.observe_departure {
-            self.step(&mut run, RetireStep::ObserveDeparture.name(), async {
-                if poll(self.timeouts.drain, || async { self.observer.departed(&node).await }).await {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{name}: this admin never heard its own Leaving within {:?}; its departure has not left its mesh",
-                        self.timeouts.drain
-                    ))
-                }
-            })
-            .await?;
-        }
+        let _terminal = self.stop_steps(&mut run, &mut node, handle).await?;
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
         // node's Leaving, its drained reply, the claim) is.
         if let Some(op) = op {
@@ -1423,6 +1466,23 @@ impl DeploymentPipeline<'_> {
         }
     }
 
+    /// One member's shutdown inside a mesh leave: its drain half and its stop half under its own
+    /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
+    /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
+    /// the provider's terminal receipt of the exact runtime.
+    pub(crate) async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let path = node.name.clone();
+        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt, false);
+        async {
+            let mut run = self.begin(build_id, attempt, &path, crate::mesh_leave::member_operation(outer_operation, &path.to_string())).await;
+            self.drain_steps(&mut run, node, handle).await?;
+            self.stop_steps(&mut run, node, handle).await
+        }
+        .instrument(span)
+        .await
+    }
+
     /// The drain half of a shutdown (node-drain.md): `drain-node` to the exact birth, then the
     /// wait for its `node-drained` completion call. The birth stays running. The completion wait
     /// ends at the lifecycle drain deadline (an arm, recorded) or at this runtime's exit.
@@ -1456,7 +1516,7 @@ impl DeploymentPipeline<'_> {
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// drain), the wait for its `node-left` completion call, then the provider's stop and
     /// inspection of the exact runtime: only its `Exited` is terminal proof.
-    pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
+    pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -1479,13 +1539,13 @@ impl DeploymentPipeline<'_> {
                 }
             })
             .await?;
-        self.terminate_step(run, node, handle).await?;
-        Ok(())
+        self.terminate_step(run, node, handle).await
     }
 
     /// `TerminateRuntime`: the provider's stop and inspection of the exact runtime; only its `Exited`
-    /// is terminal proof. A replacement of a birth the provider already proves terminal asks only this.
-    pub(crate) async fn terminate_step(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
+    /// is terminal proof, and the receipt binds the exact birth and runtime. A replacement of a birth
+    /// the provider already proves terminal asks only this.
+    pub(crate) async fn terminate_step(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step(run, RetireStep::TerminateRuntime.name(), async {
             self.provider
@@ -1493,11 +1553,11 @@ impl DeploymentPipeline<'_> {
                 .await
                 .map_err(|e| e.to_string())?;
             // Only an exact inspection that says the runtime exited is terminal proof.
-            match self.provider.inspect(handle).await {
+            let exit_code = match self.provider.inspect(handle).await {
                 DeploymentStatus::Running => return Err(format!("{name} still runs after the stop ladder")),
                 DeploymentStatus::Unknown => return Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
-                DeploymentStatus::Exited { .. } => {}
-            }
+                DeploymentStatus::Exited { code } => code,
+            };
             // Exited is not yet released: the kernel frees a dead process's sockets after the
             // process is gone, so its advertised addresses can read as held for a few tens of
             // milliseconds more. A successor at the same addresses (a restart) must not race that:
@@ -1525,10 +1585,15 @@ impl DeploymentPipeline<'_> {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             tracing::info!(node = %name, released_after_ms = started.elapsed().as_millis() as u64, "the runtime exited and the operating system released its addresses");
-            Ok(())
+            Ok(TerminalReceipt {
+                node: name.to_string(),
+                node_id: node.node_id.to_string(),
+                incarnation_id: node.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
+                runtime: handle.fact().as_ref().map(RuntimeProof::of),
+                exit_code,
+            })
         })
-        .await?;
-        Ok(())
+        .await
     }
 
     /// The storage disposition of a removal (the lock's StorageMeta): what the accepted Build's

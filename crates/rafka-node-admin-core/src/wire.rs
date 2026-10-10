@@ -17,7 +17,8 @@ use crate::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChang
 use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
-use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition};
+use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition, TerminalReceipt};
+use crate::mesh_leave::ExitManifest;
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricRecord, FabricShutdown};
@@ -264,6 +265,8 @@ pub(crate) enum WireOutput {
     CommandAdmission(WireCommandAdmission),
     Completion(WireCompletion),
     Storage(WireStorageDisposition),
+    Terminal(TerminalReceipt),
+    ExitManifest(ExitManifest),
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -383,6 +386,8 @@ enum Produces {
     CommandAdmission,
     Completion,
     Storage,
+    Terminal,
+    ExitManifest,
 }
 
 fn produces(step: &str) -> Option<Produces> {
@@ -412,6 +417,10 @@ fn produces(step: &str) -> Option<Produces> {
         Produces::Completion
     } else if ret(RetireStep::ReleaseStorage) {
         Produces::Storage
+    } else if ret(RetireStep::TerminateRuntime) {
+        Produces::Terminal
+    } else if step == crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED || step == crate::mesh_leave::STEP_MESH_LEFT {
+        Produces::ExitManifest
     } else {
         return None;
     })
@@ -471,6 +480,8 @@ fn output_to_wire(step: &str, v: &serde_json::Value) -> Result<WireOutput, Strin
         Produces::CommandAdmission => WireOutput::CommandAdmission((&typed::<CommandAdmission>(v)?).into()),
         Produces::Completion => WireOutput::Completion((&typed::<Completion>(v)?).into()),
         Produces::Storage => WireOutput::Storage((&typed::<StorageDisposition>(v)?).into()),
+        Produces::Terminal => WireOutput::Terminal(typed(v)?),
+        Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
     })
 }
 
@@ -504,6 +515,8 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::CommandAdmission(d) => json(&CommandAdmission::from(d)),
         WireOutput::Completion(a) => json(&Completion::from(a)),
         WireOutput::Storage(s) => json(&StorageDisposition::from(s)),
+        WireOutput::Terminal(t) => json(&t),
+        WireOutput::ExitManifest(m) => json(&m),
     }
 }
 

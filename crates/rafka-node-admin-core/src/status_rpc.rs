@@ -94,6 +94,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `drain-node` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
+    /// What serves `LeaveMesh` (as a leaving mesh's primary) and `MeshLeave` (as the
+    /// fabric-primary); filled once the runner exists.
+    pub leaver: crate::mesh_leave::LeaverSlot,
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
@@ -251,6 +254,15 @@ impl StatusAuthority {
         match req {
             StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } => return self.accept_completion(sender.as_ref(), req),
             StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,
+            StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
+                let Some(leaver) = self.leaver.get().cloned() else {
+                    return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
+                };
+                let reply = if matches!(req, StatusRequest::LeaveMesh { .. }) { leaver.leave_mesh(sender.as_ref(), req).await } else { leaver.mesh_leave(sender.as_ref(), req).await };
+                tracing::info_span!("rdm.node_admin.status.update.via-command", node = %self.me, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("a mesh-leave call naming this admin was decided"));
+                return reply;
+            }
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is

@@ -229,24 +229,6 @@ impl Run {
         self.door_of(primary["name"].as_str().unwrap()).await
     }
 
-    /// The admin that executes `retire-mesh:<mesh>`: the fabric primary when it sits outside `mesh`,
-    /// else the lowest-NodeId ready admin primary of another mesh (executor.rs `executor_for`).
-    async fn retire_mesh_door(&self, mesh: &str) -> Door {
-        let nodes = self.estate.nodes().await;
-        let fabric = nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
-        let name = if fabric["mesh"] != mesh {
-            fabric["name"].clone()
-        } else {
-            nodes
-                .iter()
-                .filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true && n["mesh"] != mesh && n["status"] == "ready-for-traffic")
-                .min_by_key(|n| n["node_id"].as_str().unwrap_or_default().to_string())
-                .unwrap_or_else(|| panic!("an admin primary outside {mesh} exists: {nodes:?}"))["name"]
-                .clone()
-        };
-        self.door_of(name.as_str().unwrap()).await
-    }
-
     fn push(&self, v: Value) {
         self.rows.lock().unwrap().push(v);
     }
@@ -420,9 +402,8 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     accept_cut(&run, &create_order, "pointer:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "persist-before-pointer", node).await;
     run.plain_delete(node).await;
 
-    // A mesh's first admin and the Pending gate; the whole-mesh retire's ObserveDeparture.
+    // A mesh's first admin and the Pending gate.
     mesh_pending_cut(&run, &create_order).await;
-    observe_departure_cut(&run).await;
 
     // A joining admin, held at its hydration of the Fabric record and at its Ready gate.
     // (Neither is removed afterwards: a joined admin with the lowest NodeId holds the fabric seat and
@@ -460,7 +441,6 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
     let mut documented: Vec<String> = create_order.iter().map(|s| format!("create:{s}")).collect();
     documented.extend(retire_order.iter().map(|s| format!("retire:{s}")));
     documented.push(format!("restart:{}", RetireStep::NodeRestarting.name()));
-    documented.push("retire-mesh:ObserveDeparture".into());
     for want in &documented {
         assert!(explored.contains(want), "no cut row for the documented step `{want}`; explored: {explored:?}");
     }
@@ -796,29 +776,6 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     run.span_check(json!({"kind": "ready-after", "cut": id, "node": admin, "blocked_detail": "Pending has not been applied", "handoff_mesh": "mesh2"}));
     run.push(row(h, "pending-gate", id, &spec, rel, after));
     build_id
-}
-
-/// The whole-mesh retire's own step, `ObserveDeparture`, stalled at its receipt.
-async fn observe_departure_cut(run: &Run) {
-    let admin = "mesh2.admin.1";
-    let id = "retire-mesh:ObserveDeparture";
-    let door = run.retire_mesh_door("mesh2").await;
-    let spec = json!({"kind": "receipt", "step": RetireStep::ObserveDeparture.name(), "operation": "retire-node", "node": admin});
-    let ack = door.arm(id, spec.clone()).await;
-    let (status, a) = run.estate.delete("/api/meshes/mesh2").await;
-    assert_eq!(status, 202, "retire mesh2: {a}");
-    let build_id = a["build_id"].as_str().unwrap().to_string();
-    // The whole-mesh order: an ordinary node retire with ObserveDeparture after TerminateRuntime.
-    let mut order: Vec<String> = RetireStep::ORDER.iter().map(|s| s.name().to_string()).collect();
-    order.insert(index_of(&order, RetireStep::TerminateRuntime.name()) + 1, RetireStep::ObserveDeparture.name().to_string());
-    let at = index_of(&order, RetireStep::ObserveDeparture.name());
-    let h = run.hold(&door, id, ack, &build_id, &format!("retire-node:{admin}"), Some(order[..at].to_vec()), Some((admin, 0))).await;
-    let rel = door.release(id).await;
-    run.complete(&build_id).await;
-    let after = run.after_retire(&door, &build_id, admin, &order).await;
-    run.note_build(&build_id, 1);
-    run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": admin, "pipeline": "retire", "attempt": 1, "steps": order, "held_step": RetireStep::ObserveDeparture.name()}));
-    run.push(row(h, "retire-step", id, &spec, rel, after));
 }
 
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its

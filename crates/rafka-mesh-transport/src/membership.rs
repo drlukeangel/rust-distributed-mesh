@@ -1504,6 +1504,58 @@ impl View {
                 }
                 Vec::new()
             }
+            Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by } => {
+                let marked = self.book.mesh_leaving(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-mesh-leaving",
+                    node = %self.node,
+                    mesh_id = %mesh_id,
+                    build_id = %build_id,
+                    attempt = *attempt,
+                    operation = %operation,
+                    publisher = %publisher,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    members_marked = marked,
+                    via,
+                )
+                .in_scope(|| tracing::info!("the mesh is Leaving: its births are held, not selected for new work, their addresses kept"));
+                Vec::new()
+            }
+            Frame::MeshLeave { mesh_id, build_id, attempt, operation, final_node_id, receipt_manifest, publisher, forwarded_by, .. } => {
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-mesh-leave",
+                    node = %self.node,
+                    mesh_id = %mesh_id,
+                    build_id = %build_id,
+                    attempt = *attempt,
+                    operation = %operation,
+                    final_node_id = %final_node_id,
+                    receipt_manifest = %receipt_manifest,
+                    publisher = %publisher,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    via,
+                )
+                .in_scope(|| tracing::info!("the mesh handed over its member receipts: still Leaving, its final primary still running"));
+                Vec::new()
+            }
+            Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by } => {
+                let departed = self.book.mesh_left(mesh_id, build_id, *attempt, operation, *event_at_rafka_ms);
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-mesh-left",
+                    node = %self.node,
+                    mesh_id = %mesh_id,
+                    build_id = %build_id,
+                    attempt = *attempt,
+                    operation = %operation,
+                    receipt_manifest = %receipt_manifest,
+                    publisher = %publisher,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    births_departed = departed,
+                    via,
+                )
+                .in_scope(|| tracing::info!("the mesh is Dead: its births left the active topology and are held departed, resolved Gone"));
+                Vec::new()
+            }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {
                 self.statuses.take(f, fabric);
                 Vec::new()
@@ -2607,6 +2659,9 @@ pub struct DigestBook {
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
     /// Open lifecycle overlays by operation key: the node is held, and not routable.
     in_flight: Arc<Mutex<HashMap<(String, u32, String), LifecycleOp>>>,
+    /// The meshes whose `mesh-left` this book accepted: Dead, final. No digest of a dead mesh is
+    /// taken again, whoever sends it and however late; a dead mesh id is never reissued.
+    dead_meshes: Arc<Mutex<std::collections::HashSet<String>>>,
     retention: Duration,
     /// The staleness floor.
     staleness_floor: Duration,
@@ -2620,6 +2675,23 @@ impl Default for DigestBook {
     fn default() -> Self {
         Self::with_retention(DEPARTED_RETENTION)
     }
+}
+
+/// The prefix of a mesh shutdown's operation key (`shutdown-mesh:<mesh_id>`) and of the member
+/// operations under it (`shutdown-mesh:<mesh_id>/<path>`).
+pub const MESH_SHUTDOWN_PREFIX: &str = "shutdown-mesh:";
+
+/// Why a digest of a dead mesh was not taken.
+fn reject_dead_mesh(d: &MeshDigest, via: &'static str) {
+    tracing::info_span!(
+        "rdm.mesh.membership.reject.via-dead-mesh",
+        node = %d.node.name,
+        node_id = %d.node.node_id,
+        incarnation_id = %d.node.incarnation.0,
+        mesh_id = d.mesh_id.as_ref().map(|m| m.to_string()).unwrap_or_default(),
+        via,
+    )
+    .in_scope(|| tracing::info!("a digest of a dead mesh: refused, Dead is final"));
 }
 
 /// Why a digest was not taken.
@@ -2681,6 +2753,7 @@ impl DigestBook {
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
+            dead_meshes: Arc::default(),
             retention,
             staleness_floor,
             backbone_gossip_interval,
@@ -2705,7 +2778,9 @@ impl DigestBook {
     }
 
     fn expire_departed_at(&self, now: Instant) {
-        self.departed.lock().unwrap().retain(|_, (_, at)| now.duration_since(*at) < self.retention);
+        // A birth that departed with its mesh (`shutdown-mesh:<mesh_id>`) is held as long as the
+        // dead mesh is: only a mesh that never existed again could forget it.
+        self.departed.lock().unwrap().retain(|_, (op, at)| op.operation.starts_with(MESH_SHUTDOWN_PREFIX) || now.duration_since(*at) < self.retention);
     }
 
     /// Has this node been accepted as departed, within the retention?
@@ -2826,6 +2901,144 @@ impl DigestBook {
         new
     }
 
+    /// Whether `d` belongs to a mesh this book holds Dead.
+    fn is_dead_mesh(&self, d: &MeshDigest) -> bool {
+        d.mesh_id.as_ref().is_some_and(|m| self.dead_meshes.lock().unwrap().contains(m.as_str()))
+    }
+
+    /// Whether this book holds `mesh_id` Dead.
+    pub fn is_mesh_dead(&self, mesh_id: &MeshId) -> bool {
+        self.dead_meshes.lock().unwrap().contains(mesh_id.as_str())
+    }
+
+    /// The meshes this book holds Dead.
+    pub fn dead_meshes(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.dead_meshes.lock().unwrap().iter().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Whether `mesh_id` is Leaving here: one of its births is held under a mesh-shutdown overlay.
+    pub fn is_mesh_leaving(&self, mesh_id: &MeshId) -> bool {
+        let prefix = format!("{MESH_SHUTDOWN_PREFIX}{mesh_id}");
+        self.in_flight.lock().unwrap().values().any(|op| op.operation == prefix || op.operation.starts_with(&format!("{prefix}/")))
+    }
+
+    /// The meshes whose births are held under a mesh-shutdown overlay: Leaving.
+    pub fn leaving_meshes(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .in_flight
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|op| op.operation.strip_prefix(MESH_SHUTDOWN_PREFIX).map(|rest| rest.split('/').next().unwrap_or(rest).to_string()))
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// The held digests of `mesh_id`'s births. A digest names its mesh's id only when its sender
+    /// publishes one (a node-admin does); the mesh's births are every held digest of the mesh's
+    /// name, the name being the one the id-carrying digests name.
+    fn births_of_mesh(&self, mesh_id: &MeshId) -> Vec<MeshDigest> {
+        let all = self.all();
+        let mut names: std::collections::HashSet<String> = all.iter().filter(|d| d.mesh_id.as_ref() == Some(mesh_id)).map(|d| d.node.name.mesh.clone()).collect();
+        let prefix = format!("{MESH_SHUTDOWN_PREFIX}{mesh_id}/");
+        names.extend(self.in_flight().into_iter().filter(|op| op.operation.starts_with(&prefix)).map(|op| op.name.mesh));
+        all.into_iter().filter(|d| names.contains(&d.node.name.mesh) && d.mesh_id.as_ref().is_none_or(|m| m == mesh_id)).collect()
+    }
+
+    /// `mesh-leaving` for `mesh_id`: every held birth of the mesh is marked Leaving, held under a
+    /// mesh-shutdown overlay: its address stays, application routing stops selecting it. Idempotent;
+    /// a departed birth is not marked. Returns how many births were newly marked.
+    pub fn mesh_leaving(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> usize {
+        if self.is_mesh_dead(mesh_id) {
+            return 0;
+        }
+        let members = self.births_of_mesh(mesh_id);
+        let mut marked = 0;
+        for d in members {
+            let op = LifecycleOp {
+                build_id: build_id.to_string(),
+                attempt,
+                operation: format!("{outer_operation}/{}", d.node.name),
+                node_id: d.node.node_id.clone(),
+                incarnation: d.node.incarnation.clone(),
+                name: d.node.name.clone(),
+                event_at_rafka_ms: at_rafka_ms,
+            };
+            if self.deleting_quiet(op) {
+                marked += 1;
+            }
+        }
+        marked
+    }
+
+    /// `mesh-left` for `mesh_id`: the mesh is Dead, final. Every held birth of the mesh, and every
+    /// birth held under its shutdown overlay, leaves the active topology and is held departed
+    /// (resolution answers Gone) for as long as the mesh is dead. Idempotent. Returns how many
+    /// births departed now.
+    pub fn mesh_left(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, outer_operation: &str, at_rafka_ms: u64) -> usize {
+        let mut roster: BTreeMap<String, LifecycleOp> = BTreeMap::new();
+        for d in self.births_of_mesh(mesh_id) {
+            roster.insert(
+                d.node.node_id.to_string(),
+                LifecycleOp {
+                    build_id: build_id.to_string(),
+                    attempt,
+                    operation: format!("{outer_operation}/{}", d.node.name),
+                    node_id: d.node.node_id.clone(),
+                    incarnation: d.node.incarnation.clone(),
+                    name: d.node.name.clone(),
+                    event_at_rafka_ms: at_rafka_ms,
+                },
+            );
+        }
+        let prefix = format!("{MESH_SHUTDOWN_PREFIX}{mesh_id}/");
+        for op in self.in_flight() {
+            if op.operation.starts_with(&prefix) {
+                roster.entry(op.node_id.to_string()).or_insert(op);
+            }
+        }
+        let first = self.dead_meshes.lock().unwrap().insert(mesh_id.to_string());
+        let mut departed = 0;
+        for (_, op) in roster {
+            if self.depart_quiet(op) {
+                departed += 1;
+            }
+        }
+        if first {
+            self.births.send_modify(|v| *v += 1);
+        }
+        departed
+    }
+
+    fn deleting_quiet(&self, op: LifecycleOp) -> bool {
+        if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        let new = self.in_flight.lock().unwrap().insert(op.key(), op).is_none();
+        if new {
+            self.births.send_modify(|v| *v += 1);
+        }
+        new
+    }
+
+    fn depart_quiet(&self, op: LifecycleOp) -> bool {
+        let id = op.node_id.to_string();
+        {
+            let mut departed = self.departed.lock().unwrap();
+            if departed.contains_key(&id) {
+                return false;
+            }
+            departed.insert(id.clone(), (op.clone(), Instant::now()));
+        }
+        self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
+        self.inner.lock().unwrap().remove(&id);
+        true
+    }
+
     /// The open overlays this book holds.
     pub fn in_flight(&self) -> Vec<LifecycleOp> {
         let mut v: Vec<LifecycleOp> = self.in_flight.lock().unwrap().values().cloned().collect();
@@ -2874,6 +3087,11 @@ impl DigestBook {
             reject_departed(&d, "mesh-channel");
             return false;
         }
+        if self.is_dead_mesh(&d) {
+            reject_dead_mesh(&d, "mesh-channel");
+            return false;
+        }
+
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {
@@ -2916,6 +3134,10 @@ impl DigestBook {
             reject_departed(&d, "forwarded");
             return false;
         }
+        if self.is_dead_mesh(&d) {
+            reject_dead_mesh(&d, "topology");
+            return false;
+        }
         let mut inner = self.inner.lock().unwrap();
         let mut held_entry = None;
         if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
@@ -2956,6 +3178,11 @@ impl DigestBook {
             reject_departed(&d, "forwarded");
             return false;
         }
+        if self.is_dead_mesh(&d) {
+            reject_dead_mesh(&d, "forwarded");
+            return false;
+        }
+
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
             if runtime_changed(held, &d) {

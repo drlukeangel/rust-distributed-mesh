@@ -4,9 +4,10 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2942`, test the
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate is the whole-mesh retire of `mesh_replace`: {mesh1, mesh2} -> {mesh2}, executed by
-//! a mesh2 admin. The last admin of mesh1 is the one whose retire pipeline carries
-//! `ObserveDeparture` under the Build; its own leave is read from its leg spans.
+//! The estate is the mesh leave of `mesh_replace`: {mesh1, mesh2} -> {mesh2}, owned by the
+//! fabric-primary (a mesh2 admin). The last admin of mesh1 is the final mesh-primary the
+//! fabric-primary drains and stops itself, whose exit its `TerminateRuntime` step proves; its own
+//! leave is read from its leg spans.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
@@ -66,7 +67,7 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// A mesh1 retirement through the whole-mesh retire, run to its end and read back: every span.
+/// A mesh1 shutdown through the mesh leave, run to its end and read back: every span.
 async fn retire_mesh1(test: &str) -> (String, Vec<Value>) {
     let (b, spans, _) = retire_mesh1_with(test, &[]).await;
     (b, spans)
@@ -161,12 +162,12 @@ async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (String, Vec<Value>, Vec
 }
 
 /// The last admin of mesh1 completes five `Leaving` announcements on the mesh channel and five on
-/// the backbone inside the unchanged one-second linger, and the executor's ObserveDeparture for
-/// that exact birth completes inside the unchanged 10 s.
+/// the backbone inside the unchanged one-second linger, and the fabric-primary's TerminateRuntime
+/// for that exact birth completes inside the unchanged 10 s.
 ///
 /// CONTRACT: a retiring last admin must put every one of its linger announcements out, on both
-/// channels, before the linger ends; the executor that retires it hears its Leaving from the
-/// held view, never from silence or the provider's exit.
+/// channels, before the linger ends; the fabric-primary that stops it proves its exit by the
+/// provider's exact inspection, never from silence or a gossip frame.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
     let cell = "retiring_admin_completes_five_leaving_announcements_within_linger";
@@ -174,34 +175,34 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
     std::fs::create_dir_all(&dir).unwrap();
     let (b, spans) = retire_mesh1(cell).await;
 
-    // The last admin: the mesh1 node whose retire carried ObserveDeparture under B (the latest).
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "ObserveDeparture" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")).collect();
-    assert!(!observe.is_empty(), "the whole-mesh retire observed a mesh1 departure under {b}");
+    // The last admin: the mesh1 admin whose exit the fabric-primary proved last under B.
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
+    assert!(!observe.is_empty(), "the mesh leave proved a mesh1 admin's exit under {b}");
     let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap();
     let last = s(&obs["attributes"]["node"]);
-    assert!(last.starts_with("mesh1.admin."), "the departure observed last is an admin's: {last}");
+    assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
 
     // Executor side: the step completed inside the unchanged bound, a child of the pipeline run
     // for this node and Build in the same trace.
     let obs_elapsed = attr_u64(obs, "elapsed_ms");
-    assert_eq!(obs["attributes"]["outcome"], "complete", "ObserveDeparture of {last} completed: {obs}");
-    assert!(obs_elapsed < OBSERVE_BOUND_MS, "ObserveDeparture of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
+    assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last} completed: {obs}");
+    assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
     let pipeline = named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
         .into_iter()
         .find(|sp| sp["span_id"] == obs["parent_span_id"] && sp["trace_id"] == obs["trace_id"])
-        .unwrap_or_else(|| panic!("ObserveDeparture's parent is a pipeline span of its trace: {obs}"));
+        .unwrap_or_else(|| panic!("TerminateRuntime's parent is a pipeline span of its trace: {obs}"));
     assert_eq!(pipeline["attributes"]["node"], last.as_str());
     assert_eq!(pipeline["attributes"]["build_id"], b.as_str());
 
     // The retiring admin's own leave: the signal span and every leg beneath it.
     let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
     let signals: Vec<&Value> = named(&spans, "rdm.mesh.node.delete.via-signal");
+    // A stop-node has no drain leg: the drain was the separate drain-node, so this leave says no Draining.
     let draining = mine("rdm.mesh.node.update.via-leave-draining");
-    assert_eq!(draining.len(), 1, "one Draining say by {last}: {draining:?}");
-    let signal = signals.iter().find(|sp| sp["span_id"] == draining[0]["parent_span_id"] && sp["trace_id"] == draining[0]["trace_id"]).unwrap_or_else(|| panic!("the Draining leg sits under the leave's signal span: {}", draining[0]));
+    assert!(draining.is_empty(), "{last} said no Draining in its stop-node leave: {draining:?}");
     let shutdown = mine("rdm.mesh.node.update.via-leave-shutdown");
     assert_eq!(shutdown.len(), 1, "one transport shutdown by {last}: {shutdown:?}");
-    assert_eq!(shutdown[0]["parent_span_id"], signal["span_id"], "the shutdown leg sits under the same leave");
+    let signal = signals.iter().find(|sp| sp["span_id"] == shutdown[0]["parent_span_id"] && sp["trace_id"] == shutdown[0]["trace_id"]).unwrap_or_else(|| panic!("the shutdown leg sits under the leave's signal span: {}", shutdown[0]));
     assert_eq!(shutdown[0]["attributes"]["outcome"], "closed");
 
     let all = mine("rdm.mesh.node.update.via-leave-announcement");
@@ -240,11 +241,11 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
         "retiring_admin": last,
         "linger_ms": LINGER_MS,
         "leave": { "signal_span_id": signal["span_id"], "trace_id": signal["trace_id"], "start_unix_nano": start(signal), "end_unix_nano": end(signal) },
-        "draining": { "start_unix_nano": start(draining[0]), "elapsed_ms": draining[0]["attributes"]["elapsed_ms"], "outcome": draining[0]["attributes"]["outcome"], "span_id": draining[0]["span_id"] },
+        "draining_legs": draining.len(),
         "announcements": rows,
         "topology_reads": view_ch.iter().map(|sp| json!({ "announcement": sp["attributes"]["announcement"], "elapsed_ms": sp["attributes"]["elapsed_ms"], "span_id": sp["span_id"] })).collect::<Vec<_>>(),
         "shutdown": { "start_unix_nano": start(shutdown[0]), "elapsed_ms": shutdown[0]["attributes"]["elapsed_ms"], "outcome": shutdown[0]["attributes"]["outcome"], "span_id": shutdown[0]["span_id"] },
-        "executor": { "step": "ObserveDeparture", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"], "pipeline_span_id": pipeline["span_id"] },
+        "executor": { "step": "TerminateRuntime", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"], "pipeline_span_id": pipeline["span_id"] },
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
@@ -260,7 +261,7 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
 /// A retirement whose mesh1 admins both withhold `announcements` on `channel` (`mesh`, `backbone`
 /// or `any`) from their leaves. Whichever admin of mesh1 is retired last, its legs withheld are
 /// exactly the armed ones, its door acknowledged the cut active and counted the publishes it
-/// withheld, and the executor's ObserveDeparture for that exact birth still completed inside the
+/// withheld, and the fabric-primary's TerminateRuntime for that exact birth still completed inside the
 /// unchanged bound. The matched healthy control is cell 1 of this job (the same retirement
 /// unarmed); a cut with nothing left to repair it is the retire Build's failure, which is Luke's
 /// to rule and has no cell here.
@@ -274,13 +275,13 @@ async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32
         assert_eq!(f.arm_ack["armed"], "lose-leaving", "the door of {} acknowledged the arm: {}", f.admin, f.arm_ack);
     }
 
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "ObserveDeparture" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")).collect();
-    let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the whole-mesh retire observed a mesh1 departure");
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
+    let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the mesh leave proved a mesh1 admin's exit");
     let last = s(&obs["attributes"]["node"]);
-    assert!(last.starts_with("mesh1.admin."), "the departure observed last is an admin's: {last}");
+    assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
     let obs_elapsed = attr_u64(obs, "elapsed_ms");
-    assert_eq!(obs["attributes"]["outcome"], "complete", "ObserveDeparture of {last} completed: {obs}");
-    assert!(obs_elapsed < OBSERVE_BOUND_MS, "ObserveDeparture of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
+    assert_eq!(obs["attributes"]["outcome"], "complete", "TerminateRuntime of {last} completed: {obs}");
+    assert!(obs_elapsed < OBSERVE_BOUND_MS, "TerminateRuntime of {last} completed inside {OBSERVE_BOUND_MS} ms ({obs_elapsed} ms)");
 
     let legs_of = |node: &str, ch: &str| -> Vec<&Value> {
         let mut v: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["channel"] == ch).collect();
@@ -313,7 +314,7 @@ async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32
         "models": "announcements withheld at the retiring admin's send seam; not peer-queue pressure in iroh-gossip",
         "arm_acks": fired.iter().map(|f| json!({"admin": f.admin, "ack": f.arm_ack})).collect::<Vec<_>>(),
         "door_last_reading": door.after, "withheld_publishes": withheld_total, "legs": rows,
-        "executor": { "step": "ObserveDeparture", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"] },
+        "executor": { "step": "TerminateRuntime", "node": last, "outcome": obs["attributes"]["outcome"], "elapsed_ms": obs_elapsed, "bound_ms": OBSERVE_BOUND_MS, "trace_id": obs["trace_id"], "span_id": obs["span_id"] },
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();

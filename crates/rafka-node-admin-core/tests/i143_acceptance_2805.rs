@@ -154,6 +154,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         republish: Arc::new(OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
         own: Arc::new(OnceLock::new()),
+        leaver: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
     });
@@ -460,7 +461,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         container: None,
         domain: Some("i143-2805".into()),
     };
-    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal, observe_departure: false };
+    let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, kind: RetireKind::Removal };
     let _ = pipeline.retire(&req).await;
     // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
     // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never

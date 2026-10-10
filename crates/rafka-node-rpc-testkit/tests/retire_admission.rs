@@ -43,9 +43,6 @@ impl NodeObserver for DeparturesLost<'_> {
     async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> Completion {
         self.live.await_completion(node, cmd, ctx, within).await
     }
-    async fn departed(&self, _: &Node) -> bool {
-        false
-    }
 }
 
 /// The real provider; `signal_stop` is ignored when armed, so the runtime
@@ -149,7 +146,6 @@ async fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_l
             node: created.node.clone(),
             handle: created.handle.clone(),
             kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
-            observe_departure: false,
         })
         .await;
     assert_eq!(
@@ -227,7 +223,6 @@ async fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             node: b.node.clone(),
             handle: b.handle.clone(),
             kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Restart,
-            observe_departure: false,
         })
         .await;
     // B is live and admits its node-admin: its drain-node and stop-node were admitted, and its
@@ -245,59 +240,4 @@ async fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         let completion: Completion = serde_json::from_value(output(step)).unwrap();
         assert!(matches!(completion, Completion::Received), "B's {step} completion call reached the commanding side: {completion:?}");
     }
-}
-
-/// CONTRACT (Luke 2026-10-05, a mesh retire's departure barrier): inside a whole-mesh retire, the
-/// local cleanup waits until this admin's own membership view has heard the birth's own `Leaving`.
-/// When every departure is lost, the retire stops at `ObserveDeparture` by name and the node is NOT
-/// removed from this admin's view: a completed `StopNode` step is not proof. Must NOT happen:
-/// `RemoveTopologyMembership` running, or success synthesised from the runtime's exit.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_retire_holds_the_local_cleanup_until_the_departure_is_heard() {
-    let fabric = FabricId::mint();
-    let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let builds = MemoryBuildStateAdapter::new();
-    let sink = Published::default();
-    let process = ProcessDeploymentProvider::new();
-    let provider = Stubborn { inner: &process, ignore_stop: false };
-    let observer = DeparturesLost { live: &admin.observer };
-    let pipeline = DeploymentPipeline { provider: &provider, joins: &admin.joins, observer: &observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
-    let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
-        .await
-        .unwrap_or_else(|e| panic!("create: {e}"));
-    let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
-    let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true })
-        .await;
-    let err = retired.expect_err("an unheard departure holds the mesh retire");
-    assert!(err.to_string().contains("never heard its own Leaving"), "{err}");
-    assert!(sink.removed.lock().unwrap().is_empty(), "the local cleanup did not run");
-    let _ = std::fs::remove_dir_all(&template.data_root);
-}
-
-/// CONTRACT (same ruling): with the live membership view, the birth's own `Leaving` is heard and
-/// the mesh retire completes: `ObserveDeparture` and then `RemoveTopologyMembership` run, and the
-/// node leaves this admin's view.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_mesh_retire_cleans_up_once_the_departure_is_heard() {
-    let fabric = FabricId::mint();
-    let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let builds = MemoryBuildStateAdapter::new();
-    let sink = Published::default();
-    let process = ProcessDeploymentProvider::new();
-    let pipeline = DeploymentPipeline { provider: &process, joins: &admin.joins, observer: &admin.observer, sink: &sink, lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents, builds: &builds, template: &template, timeouts: timeouts() };
-    let created = pipeline
-        .create(&CreateRequest { build_id: publish_build(&builds, add_node()).await, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() })
-        .await
-        .unwrap_or_else(|e| panic!("create: {e}"));
-    let build = publish_build(&builds, FabricTopology::root("fabric1", "mesh1")).await;
-    let retired = pipeline
-        .retire(&RetireRequest { build_id: build, attempt: 1, node: created.node.clone(), handle: created.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: true })
-        .await;
-    assert_eq!(retired, Ok(()), "the departure was heard: the mesh retire completes");
-    assert_eq!(sink.removed.lock().unwrap().as_slice(), &[created.node.name.clone()], "then the local cleanup ran");
-    let _ = std::fs::remove_dir_all(&template.data_root);
 }
