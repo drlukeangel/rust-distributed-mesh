@@ -3489,6 +3489,7 @@ dependencies = [
  "rafka-node-admin-core",
  "rafka-node-rpc",
  "rafka-node-rpc-contract",
+ "rafka-node-rpc-testkit",
  "reqwest",
  "serde",
  "serde_json",
