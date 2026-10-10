@@ -190,6 +190,40 @@ impl Drop for InFlight {
     }
 }
 
+/// The calls this server dispatched whose reply is not yet settled: written and acknowledged by
+/// the caller, or the caller or the connection gone. A node that closes its endpoint with a reply
+/// unsettled takes the reply down with the connection, so the caller reads `connection lost`
+/// where the node answered `Applied`.
+#[derive(Default)]
+struct UnsettledReplies {
+    next: AtomicU64,
+    open: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+
+/// One dispatched call's place in [`UnsettledReplies`]: held from the dispatch until the reply is
+/// settled, and released on every way out of the call.
+struct Unsettled {
+    book: Arc<UnsettledReplies>,
+    seq: u64,
+}
+
+impl Unsettled {
+    fn enter(book: &Arc<UnsettledReplies>) -> Self {
+        let mut open = book.open.lock().unwrap();
+        let seq = book.next.fetch_add(1, Ordering::SeqCst);
+        open.insert(seq);
+        Self { book: book.clone(), seq }
+    }
+}
+
+impl Drop for Unsettled {
+    fn drop(&mut self) {
+        self.book.open.lock().unwrap().remove(&self.seq);
+        self.book.changed.send_modify(|v| *v += 1);
+    }
+}
+
 impl ServerStats {
     /// Read `c` with sequential consistency.
     pub fn get(c: &AtomicU64) -> u64 {
@@ -319,6 +353,7 @@ impl ServerBuilder {
                 birth,
                 inbound: self.inbound,
                 withhold: self.withhold,
+                replies: Arc::new(UnsettledReplies::default()),
             }),
         })
     }
@@ -420,6 +455,7 @@ struct Inner {
     birth: ServedBirth,
     inbound: Option<Inbound>,
     withhold: Option<Arc<ReplyWithhold>>,
+    replies: Arc<UnsettledReplies>,
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
@@ -462,6 +498,24 @@ impl NodeRpcServer {
     /// The server's counters.
     pub fn stats(&self) -> Arc<ServerStats> {
         self.inner.stats.clone()
+    }
+
+    /// Resolves once every call dispatched before this one has its reply settled: written, and
+    /// acknowledged by the caller or abandoned by it or its connection. A node that is about to
+    /// close its endpoint waits here first, so no admitted answer is taken down with the
+    /// connection. Calls dispatched after this one do not extend the wait.
+    pub async fn settled(&self) {
+        let book = &self.inner.replies;
+        let upto = book.next.load(Ordering::SeqCst);
+        let mut changed = book.changed.subscribe();
+        loop {
+            if book.open.lock().unwrap().first().is_none_or(|first| *first >= upto) {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Enter `Draining`: new calls get a typed `Draining` refusal.
@@ -575,6 +629,7 @@ impl NodeRpcServer {
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
+                let _unsettled = Unsettled::enter(&self.inner.replies);
                 // Bad or over-bound context is dropped here, named, and the call proceeds.
                 let (context, dropped) = header.context.sanitized();
                 if !dropped.is_empty() {
@@ -614,6 +669,9 @@ impl NodeRpcServer {
                             let _ = send.write_all(&bytes).await;
                         }
                         let _ = send.finish();
+                        // Settled when the caller has the reply (or has stopped wanting it, or the
+                        // connection is gone): bounded by the connection, never by a timer.
+                        let _ = send.stopped().await;
                     }
                     Ok(Ok(_)) => {
                         stats.violations.fetch_add(1, Ordering::SeqCst);

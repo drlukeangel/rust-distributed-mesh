@@ -22,4 +22,5 @@ mod one_endpoint;
 mod pool;
 mod ready_gate;
 mod routing;
+mod settled_replies;
 mod streaming;

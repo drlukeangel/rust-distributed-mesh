@@ -163,6 +163,9 @@ impl RunningNode {
         // The provider's stop signal can arrive before `node-left` is sent: it is sent first, while
         // the endpoint is open.
         rafka_node_admin_core::node_self::stop_command().wait().await;
+        // The `stop-node` answer itself is among the replies this node owes: the endpoint closes
+        // after every answered call is settled with its caller.
+        self.server.settled().await;
         self.cancel.cancel();
         self.publisher.abort();
         if let Some(h) = &self.hydrating {

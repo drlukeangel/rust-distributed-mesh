@@ -2103,6 +2103,8 @@ pub struct Running {
     /// own `Leaving` out of its mesh ([`Running::leave`]).
     backbone: Backbone,
     router: IrohRouter,
+    /// This admin's Node RPC server: the leave waits for the replies it owes before it closes the transport.
+    rpc_server: rafka_node_rpc::NodeRpcServer,
     /// The digest cadence, the Build executor and the hierarchy publication:
     /// stopped first on leave.
     publisher: tokio::task::JoinHandle<()>,
@@ -2251,6 +2253,9 @@ impl Running {
         tracing::info_span!("rdm.mesh.node.update.via-leave-tasks", node = %me, aborted, elapsed_ms = started.elapsed().as_millis() as u64, outcome = "aborted").in_scope(|| tracing::info!("the node's tasks are aborted"));
         let started = std::time::Instant::now();
         let span = tracing::info_span!("rdm.mesh.node.update.via-leave-shutdown", node = %me, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+        // Every call this node answered is settled with its caller before the transport closes:
+        // a close takes an unacknowledged reply down with the connection.
+        self.rpc_server.settled().instrument(span.clone()).await;
         let r = self.router.shutdown().instrument(span.clone()).await;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         span.record("outcome", if r.is_ok() { "closed" } else { "refused" });
@@ -4005,7 +4010,7 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_handle, member_cert })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_handle, member_cert })
 }
 
 #[cfg(test)]
