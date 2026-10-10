@@ -205,3 +205,35 @@ impl CertIssuer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn birth() -> BirthIdentity {
+        BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), mesh: "mesh1".into(), endpoint_key: EndpointId("k".into()) }
+    }
+
+    // @feature: node-lifecycle
+    #[test]
+    fn an_issuer_whose_admin_holds_no_rafka_time_issues_nothing_and_says_so() {
+        let issuer = CertIssuer::no_certs(RafkaTime::unadopted());
+        match issuer.member(&birth()) {
+            Err(IssueFailure::NoRafkaTime(why)) => assert!(why.contains("no rafka-time"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(issuer.mesh_issuer("mesh2"), Err(IssueFailure::NoRafkaTime(_))));
+    }
+
+    // @feature: node-lifecycle
+    #[test]
+    fn the_explicit_no_certs_choice_issues_empty_bytes_and_an_unchosen_wiring_resolves_to_a_named_refusal() {
+        let time = RafkaTime::unadopted();
+        time.adopt(5);
+        let issuer = CertIssuer::new(CertChoice::NoCerts.resolve().unwrap(), time);
+        assert_eq!(issuer.member(&birth()), Ok(Vec::new()));
+        assert_eq!(issuer.mesh_issuer("mesh2"), Ok(Vec::new()));
+        let refused = CertChoice::default().resolve().err().expect("no choice is refused");
+        assert!(refused.contains("no cert choice") && refused.contains("NoCerts"), "{refused}");
+    }
+}

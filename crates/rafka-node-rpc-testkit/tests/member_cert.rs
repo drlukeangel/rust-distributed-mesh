@@ -48,7 +48,7 @@ fn birth_dir(what: &str) -> std::path::PathBuf {
 /// birth: its node id, incarnation, path.name, mesh and endpoint key, stamped with the issuing
 /// authority's rafka-time (the 7 000 000 000 ms lineage, never an OS clock). The bytes on the
 /// running handle are the bytes the signer wrote.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_birth() {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -114,7 +114,7 @@ async fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation(
 /// naming the signer's refusal, is never ready, and the authority installed nothing for its key:
 /// its membership book holds no digest of the node. What must NOT happen: the join retried as if the
 /// authority were not ready, or the birth admitted without a cert.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted() {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
@@ -164,7 +164,7 @@ async fn the_member_cert_is_in_the_hydrate_context_and_equals_the_handles() {
 // @feature: node-lifecycle
 /// CONTRACT: an authority explicitly configured with no certs admits a birth with an empty member
 /// cert and a span that names the choice; the empty bytes are the answer, not an absence.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and_says_so() {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));

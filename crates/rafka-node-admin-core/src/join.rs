@@ -235,8 +235,17 @@ impl JoinDoor {
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
                 let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.name.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
-                let _ = (&birth, &self.issuer);
-                let cert: Vec<u8> = Vec::new();
+                let cert = match self.issuer.member(&birth) {
+                    Ok(c) => c,
+                    Err(crate::certs::IssueFailure::NoRafkaTime(why)) => {
+                        span.record("outcome", "not-ready");
+                        return JoinReply::NotReady { reason: format!("{}: {why}", self.me) };
+                    }
+                    Err(crate::certs::IssueFailure::Refused(r)) => {
+                        span.record("outcome", "cert-refused");
+                        return JoinReply::CertRefused { name: r.name, detail: r.detail };
+                    }
+                };
                 span.record("cert_len", cert.len() as u64);
                 (self.install)(&d);
                 (self.known)().await;

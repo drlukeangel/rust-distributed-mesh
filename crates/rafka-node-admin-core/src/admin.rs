@@ -1311,7 +1311,7 @@ impl AdminRunner {
 
 
 
-    async fn template_for(&self, kind: NodeKind, mesh: &str, first_admin: bool) -> Result<LaunchTemplate, String> {
+    async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
         let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
         let mut t = self.template.clone();
         t.executable = match &self.bindings {
@@ -1340,16 +1340,18 @@ impl AdminRunner {
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
             t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
         }
-        // A mesh's first node-admin is launched with the mesh's issuing material, issued by the
-        // app's signer on this admin's rafka-time. A refusal fails the create by name: the admin
-        // is never launched without it.
-        if kind == NodeKind::NodeAdmin && first_admin {
-            let issuer = self.issuer.mesh_issuer(mesh).map_err(|e| match e {
-                crate::certs::IssueFailure::Refused(r) => format!("{mesh}: the cert signer refused to issue the mesh's issuing material: {r}"),
-                crate::certs::IssueFailure::NoRafkaTime(why) => format!("{mesh}: {why}"),
-            })?;
-            t.mesh_issuer = Some(issuer).filter(|b| !b.is_empty());
-        }
+        Ok(t)
+    }
+
+    /// `template` for the launch of a mesh's FIRST node-admin: it carries the mesh's issuing
+    /// material, issued by the app's signer on this admin's rafka-time. A refusal fails the create
+    /// by name: the admin is never launched without it.
+    fn with_mesh_issuer(&self, mut t: LaunchTemplate, mesh: &str) -> Result<LaunchTemplate, String> {
+        let issuer = self.issuer.mesh_issuer(mesh).map_err(|e| match e {
+            crate::certs::IssueFailure::Refused(r) => format!("{mesh}: the cert signer refused to issue the mesh's issuing material: {r}"),
+            crate::certs::IssueFailure::NoRafkaTime(why) => format!("{mesh}: {why}"),
+        })?;
+        t.mesh_issuer = Some(issuer).filter(|b| !b.is_empty());
         Ok(t)
     }
 
@@ -1496,7 +1498,10 @@ impl AdminRunner {
                 FenceOutcome::Clear { gone: None } => {}
             }
         }
-        let template = self.template_for(node.kind, &node.mesh, before_ready.is_some()).await?;
+        let mut template = self.template_for(node.kind, &node.mesh).await?;
+        if node.kind == NodeKind::NodeAdmin && before_ready.is_some() {
+            template = self.with_mesh_issuer(template, &node.mesh)?;
+        }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), restart_of, held_runtimes };
         let created = self.pipeline(&template).create_with(&req, before_ready).await.map_err(|e| e.to_string())?;
@@ -1537,7 +1542,10 @@ impl AdminRunner {
         // mesh's first admin and receives the fabric primary's Pending hand-off (e4.s11).
         let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
         let before_ready = if first_admin { Some(self.pending_handoff_hook(node)?) } else { None };
-        let template = self.template_for(node.kind, &node.mesh, first_admin).await?;
+        let mut template = self.template_for(node.kind, &node.mesh).await?;
+        if node.kind == NodeKind::NodeAdmin && first_admin {
+            template = self.with_mesh_issuer(template, &node.mesh)?;
+        }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = crate::deployment::pipeline::ReplaceRequest { build_id: build_id.clone(), attempt, predecessor, handle, spec: spec_for(node.kind), held_runtimes };
         let created = self.pipeline(&template).replace(&req, before_ready, |ready| async move { self.bring_into_traffic(&ready).await }).await.map_err(|e| e.to_string())?;
@@ -1689,7 +1697,7 @@ impl AdminRunner {
                 }
             }
         };
-        let template = self.template_for(node.kind, &node.mesh, false).await?;
+        let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.after_exit(&record, kind);

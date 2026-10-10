@@ -63,6 +63,15 @@ async fn main() {
         }
     };
     let _ = declare_client.set(running.node_rpc.clone());
+    // The member cert the admin that accepted this join issued, as the testkit's own span records it.
+    tracing::info_span!(
+        "rdm.testkit.cert.resolve.via-running-node",
+        node = %launch.name,
+        incarnation_id = %launch.incarnation,
+        member_cert_len = running.member_cert.len() as u64,
+        member_cert = %String::from_utf8_lossy(&running.member_cert),
+    )
+    .in_scope(|| tracing::info!("the node's member cert"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal("rafka-rpc-node").await;
