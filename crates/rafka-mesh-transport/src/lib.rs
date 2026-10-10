@@ -11,6 +11,7 @@
 
 
 pub mod chunking;
+pub(crate) mod forward_path;
 pub mod clock;
 pub(crate) mod discipline;
 pub mod iroh_obs;

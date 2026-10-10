@@ -15,6 +15,7 @@
 //! (its one endpoint), so HyParView reaches a peer it learned by id.
 
 use crate::clock::SharedClock;
+use crate::forward_path::ForwardPath;
 use crate::snapshot::{Chunk, Delta, Forward, Forwarder, Full, Gap, Install, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use anyhow::Result;
 use bytes::Bytes;
@@ -2010,6 +2011,8 @@ pub struct Membership {
     digest_seq: Arc<std::sync::atomic::AtomicU64>,
     /// This process's CPU and RAM, sampled into every digest it publishes.
     load: Arc<crate::load::LoadSampler>,
+    /// What the forwarder decides and where it goes: this mesh's channel.
+    forward_path: ForwardPath,
 }
 
 impl Membership {
@@ -2064,7 +2067,13 @@ impl Membership {
             Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, on_frame, targets, replay).await?;
         *lookup_slot.lock().unwrap() = Some((channel.lookup.clone(), channel.endpoint.clone()));
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()) };
+        let sink_channel = channel.clone();
+        let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
+            let channel = sink_channel.clone();
+            Box::pin(async move { channel.broadcast(&f).await })
+        });
+        let forward_path = ForwardPath::new(view.forwarder.clone(), sink);
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -2222,39 +2231,6 @@ impl Membership {
     /// Broadcast a frame onto this mesh's channel (a forward).
     pub async fn forward(&self, f: &Frame) -> Result<()> {
         self.mesh.broadcast(f).await
-    }
-
-    /// Put what the forwarder decided for `source_mesh` onto this mesh's channel, and name it.
-    async fn send_forward(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, out: Forward) {
-        match out {
-            Forward::Full(frames) => {
-                let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-                tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %source_mesh, source_publisher = %publisher, topology_version = version, reason = "first-for-source", chunks = frames.len(), bytes)
-                    .in_scope(|| tracing::info!("the first publication of this source into the mesh is a full, loads omitted"));
-                for f in &frames {
-                    let _ = self.forward(f).await;
-                }
-            }
-            Forward::Delta(frame) => {
-                if let Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. } = frame.as_ref() {
-                    tracing::info_span!(
-                        "rdm.mesh.membership.update.via-forwarded-delta",
-                        node = %me,
-                        mesh = %source_mesh,
-                        source_publisher = %publisher,
-                        base_version = *base_version,
-                        topology_version = version,
-                        changed = changed.len(),
-                        removed = removed.len(),
-                        in_flight = in_flight.len(),
-                        departed = departed.len(),
-                    )
-                    .in_scope(|| tracing::info!("a source moved: one delta from the version last published into this mesh"));
-                }
-                let _ = self.forward(&frame).await;
-            }
-            Forward::Nothing(_) => {}
-        }
     }
 
     /// Publish a lifecycle event this node authored on its own mesh channel,
@@ -2521,9 +2497,7 @@ impl Backbone {
                 // A complete snapshot of a source Mesh: the forwarding primary says what moved
                 // since it last published that source into its own Mesh.
                 if let (Some((source_mesh, publisher, version, full)), true) = (taken.source, fw.load(Ordering::Relaxed)) {
-                    let sent = m.view.forwarder.lock().unwrap().source(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
-                    let (m, me) = (m.clone(), me.clone());
-                    tokio::spawn(async move { m.send_forward(&me, &source_mesh, &publisher, version, sent).await });
+                    m.forward_path.source_spawned(&me, &source_mesh, &publisher, version, &full, m.clock.now_rafka_ms());
                 }
                 return;
             }
@@ -2733,8 +2707,7 @@ impl Backbone {
         if self.full_due.swap(false, Ordering::Relaxed) {
             self.forward_fulls().await;
         } else {
-            let out = self.membership.view.forwarder.lock().unwrap().source(&self.node, &self.mesh, &self.publisher, version, &overlays, sent);
-            self.membership.send_forward(&self.node, &self.mesh, &self.publisher, version, out).await;
+            self.membership.forward_path.source_awaited(&self.node, &self.mesh, &self.publisher, version, &overlays, sent).await;
         }
     }
 
