@@ -265,3 +265,21 @@ async fn a_mesh_retire_whose_seat_moved_at_prepare_is_passed_to_the_new_fabric_p
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!(p.state, rafka_node_admin_core::build_state::BuildState::Pending, "the handed-off attempt leaves the Build waiting for the new seat's claim");
 }
+
+/// CONTRACT (R-ON8: the fabric-primary plans and dispatches): an executor runs exactly the
+/// operations the call carries and never plans the Build again from its own view. The
+/// fabric-primary's view holds the node a previous run just launched (`mesh1.rpc.2`); the
+/// executor's view has not heard it yet. What is left is `mesh1.rpc.3` alone, and that is all the
+/// executor runs: the node launched a moment ago is not created a second time.
+#[tokio::test]
+async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the_call_carries() {
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
+    let mut ours = view();
+    ours.nodes.push(node("mesh1.rpc.2", false, false));
+    let r = rig_for(ours, change, |ran, _| ran).await;
+    r.dispatch.sees("mesh1.admin.2", Arc::new(RwLock::new(view())));
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.3".to_string()], "only what the fabric-primary planned ran; mesh1.rpc.2 was launched already");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)]);
+}
