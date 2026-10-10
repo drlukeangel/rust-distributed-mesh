@@ -71,7 +71,7 @@ const GATE_SCENARIOS: &[&str] = &[
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
-    "mesh_elections__cohort_election", "i143_acceptance_2803", "i143_acceptance_2803_detect", "i143_acceptance_2777",
+    "mesh_elections__cohort_election", "i143_acceptance_2803", "i143_acceptance_2803_detect", "i143_acceptance_2777", "i143_acceptance_2780",
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
