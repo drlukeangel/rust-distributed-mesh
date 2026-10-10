@@ -1365,7 +1365,10 @@ impl DeploymentPipeline<'_> {
                 match self.observer.ready(&node).await {
                     Ok(()) => return Ok(()),
                     Err(e) if Instant::now() >= until => return Err(e),
-                    Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                    Err(blocker) => {
+                        self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await
+                    }
                 }
             }
         })

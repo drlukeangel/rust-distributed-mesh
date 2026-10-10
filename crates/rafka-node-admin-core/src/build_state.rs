@@ -540,6 +540,10 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
+    /// The step in flight of `operation` in `attempt` waits on `reason`: live progress for a call
+    /// attached to the run, never a fact, never durable. A state with no call attached to its runs
+    /// has nobody to tell.
+    async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
 }
 
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.

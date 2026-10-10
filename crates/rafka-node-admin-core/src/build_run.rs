@@ -279,6 +279,11 @@ impl BuildStateAdapter for FramedBuilds {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
+    async fn note_blocked(&self, build_id: &BuildId, attempt: u32, operation: &str, step: &str, reason: &str) {
+        if let Some(run) = self.runs.get(build_id, attempt) {
+            run.blocked(operation, step, reason);
+        }
+    }
 }
 
 /// What `build.attempt.run` came to on this admin.
