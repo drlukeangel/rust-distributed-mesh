@@ -2378,8 +2378,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
             contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
         }
-        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN)
-            .instrument(boot.clone())
+        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
             .await
             .map_err(|e| format!("refusing to start: {e}"))?;
     }
@@ -2472,6 +2471,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let read = crate::topology_read::get_topology(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
                 .await
                 .map_err(|e| format!("the topology read from the launching admin {} failed: {e}", launcher.name))?;
+            // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
+            read.adopt_rafka_time(&rafka_time, &membership, &name.to_string(), &name.mesh, &node_id, &launcher.name.to_string())
+                .map_err(|e| format!("{name} could not adopt rafka-time from the launching admin {}: {e}", launcher.name))?;
             // When the own mesh already has nodes, this admin is entering an existing mesh
             // (recovery); a mesh's first birth finds none.
             // A maker that holds no snapshot of this mesh answers from its stored map: births to
@@ -2927,7 +2929,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // did not answer then enters the standard decommission.
     let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
     if let (true, Some((source, map))) = (entering_existing_mesh, entry_map.take()) {
-        let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone() };
+        let ctx = crate::reenter::EntryCtx { me: name.clone(), me_id: node_id.clone(), client: node_rpc.client.clone(), resolver: node_rpc_resolver.clone(), membership: membership.clone(), time: rafka_time.clone() };
         let (slot, records, provider_kind) = (sweep_slot.clone(), records.clone(), policy.provider);
         let decommission = crate::reenter::Decommission {
             me: name.clone(),

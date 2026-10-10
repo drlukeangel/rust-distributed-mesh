@@ -132,7 +132,7 @@ pub(crate) enum TopologySource<'a> {
     DurableMap(&'a [NodeRecord]),
     /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
     /// nothing (the map is for reaching nodes, not for holding them), and this admin joins the mesh channel with it as the seed.
-    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership },
+    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership, me: &'a PathName, me_id: &'a NodeId, time: &'a rafka_mesh_transport::clock::RafkaTime },
 }
 
 /// The topology `source` holds, every mesh, as births a Ping can reach. `Err` names what failed.
@@ -144,11 +144,13 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             .iter()
             .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false, data_dir: None, admin_api_base: None })
             .collect()),
-        TopologySource::LocalNode { node, client, membership } => {
+        TopologySource::LocalNode { node, client, membership, me, me_id, time } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership.node(), None, None)
                 .await
                 .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
+            // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
+            read.adopt_rafka_time(time, membership, &me.to_string(), &me.mesh, me_id, &node.name.to_string()).map_err(|e| format!("adopting rafka-time from {}: {e}", node.name))?;
             // The seats this node's mesh knows are held: an entering admin computes none before it has them.
             membership.learn_seats(&read.seats, "entry");
             membership.join_peers(vec![addr]).await.map_err(|e| format!("joining the mesh channel through {}: {e}", node.name))?;
@@ -168,6 +170,7 @@ pub(crate) struct EntryCtx {
     pub client: Arc<NodeRpcClient>,
     pub resolver: Arc<LiveNodeResolver>,
     pub membership: Membership,
+    pub time: rafka_mesh_transport::clock::RafkaTime,
 }
 
 /// What the sweep found.
@@ -216,7 +219,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         }
     }
     if let Some(l) = &local {
-        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, membership: &ctx.membership }).await {
+        match get_topology(TopologySource::LocalNode { node: l, client: &ctx.client, membership: &ctx.membership, me: &ctx.me, me_id: &ctx.me_id, time: &ctx.time }).await {
             Ok(current) => {
                 // The local node's read is current: it replaces the map's entry for a name, and
                 // adds the names the map lacked.

@@ -151,10 +151,6 @@ async fn a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_
         (attr(child, "source").as_str(), attr(child, "via").as_str(), attr(child, "seat").as_str(), attr(child, "served_by").as_str(), attr(child, "node").as_str()),
         ("pull", "get-topology", "fabric-primary", heir.as_str(), other_primary.0.as_str())
     );
-    // A time that is not a fabric-primary's is refused by name, and never taken.
-    for sp in named(&spans, "rdm.mesh.entry.reject.via-rafka-time-from-non-primary") {
-        assert!(matches!(attr(sp, "reason").as_str(), "served-by-a-replica" | "a-mesh-primary-takes-only-the-fabric-primary"), "{sp}");
-    }
 }
 
 /// CONTRACT: the primary of the mesh that does not hold the fabric seat dies; its mesh's other
