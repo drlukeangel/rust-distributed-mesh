@@ -141,7 +141,7 @@ mod tempdir {
     }
 }
 
-/// e11.s8 — the product's own unary family: `broker_data` (0x20, forwardable), ledgered under
+/// e11.s8 — the product's own unary family: `broker_data` (0x40, forwardable), ledgered under
 /// the product and served only by the broker. A compute catalogues the family (one ledger per
 /// process) and carries it for others, but serves no handler for it: a call there is unserved, 421.
 #[tokio::test]

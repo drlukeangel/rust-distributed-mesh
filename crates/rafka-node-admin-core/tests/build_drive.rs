@@ -79,18 +79,20 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    rig_for(view(), change, |ran, _| ran).await
+}
+
+/// A Build of `change` over `t`, run by `runner(ran, topology)`: `ran` records what ran.
+async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Creates>, Arc<RwLock<Topology>>) -> Arc<dyn OperationRunner>) -> Rig {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let t = view();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let topology = Arc::new(RwLock::new(t.clone()));
     let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
     cp.topology = topology.clone();
-    let opened = cp
-        .submit("test", TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) })
-        .await
-        .unwrap();
+    let opened = cp.submit("test", change).await.unwrap();
     let ran = Arc::new(Creates(Mutex::new(Vec::new())));
-    let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), ran.clone());
+    let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), topology.clone(), runner(ran.clone(), topology.clone()));
     let proofs = Arc::new(crate::loopback::Proofs::default());
     let switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false) });
     let me: PathName = "mesh1.admin.1".parse().unwrap();
@@ -218,4 +220,46 @@ async fn an_executor_whose_view_lags_runs_the_first_operation_it_was_claimed_for
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "one attempt, on the admin the fabric-primary's view named");
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 1);
+}
+
+/// Moves the fabric seat to `mesh2.admin.1` when the operation is prepared, as the mesh-retire
+/// handover does for the mesh that holds the seat.
+struct SeatMover {
+    ran: Arc<Creates>,
+    topology: Arc<RwLock<Topology>>,
+}
+
+#[async_trait::async_trait]
+impl OperationRunner for SeatMover {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+        self.ran.run(build, attempt, op).await
+    }
+    async fn prepare(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
+        if matches!(op, BuildOperation::ShutdownMesh { .. }) {
+            for n in self.topology.write().await.nodes.iter_mut() {
+                n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
+            }
+        }
+        Ok(())
+    }
+}
+
+/// CONTRACT: a mesh retire whose fabric-primary sits inside the leaving mesh is run by the admin
+/// the handover made the fabric-primary. The claimed executor hands the seat over when the
+/// operation is prepared, the executor of the operation is then another admin, and the attempt is
+/// passed to it before the operation runs: the leaving mesh's admin never runs its own retire.
+#[tokio::test]
+async fn a_mesh_retire_whose_seat_moved_at_prepare_is_run_by_the_new_fabric_primary() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, topology| Arc::new(SeatMover { ran, topology })).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(
+        *r.dispatch.dispatched.lock().unwrap(),
+        vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.1".to_string(), 2)],
+        "attempt 1 prepared the handover and passed the attempt on; attempt 2 ran it at the new fabric-primary"
+    );
+    assert_eq!(r.ran.0.lock().unwrap().len(), 1, "the retire ran once");
 }

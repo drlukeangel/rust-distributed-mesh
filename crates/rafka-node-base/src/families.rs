@@ -86,7 +86,7 @@ pub enum BrokerDataReply {
 }
 
 impl NodeProtocol for BrokerData {
-    const OP: u8 = 0x20;
+    const OP: u8 = 0x40;
     const NAME: &'static str = "broker-data";
     const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
