@@ -77,6 +77,24 @@ fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark
     W.get_or_init(Mutex::default)
 }
 
+/// The `(node.id, incarnation)` pairs a `node.deleted` fenced in the peer-location book: a digest of
+/// one never registers its socket for its key. A new node over a deleted one's data dir keeps the
+/// key and sets no `supersedes`, so lineage alone cannot refuse the deleted instance's late digest.
+fn fenced_incarnations() -> &'static Mutex<std::collections::HashSet<(String, String)>> {
+    static F: std::sync::OnceLock<Mutex<std::collections::HashSet<(String, String)>>> = std::sync::OnceLock::new();
+    F.get_or_init(Mutex::default)
+}
+
+/// Fence the exact birth `(node_id, incarnation)` in the peer-location book.
+pub fn fence_incarnation(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) {
+    fenced_incarnations().lock().unwrap().insert((node_id.to_string(), incarnation.0.clone()));
+}
+
+/// Whether `(node_id, incarnation)` is fenced in the peer-location book.
+fn incarnation_fenced(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) -> bool {
+    fenced_incarnations().lock().unwrap().contains(&(node_id.to_string(), incarnation.0.clone()))
+}
+
 /// Register where the birth `d` names is (rafka-v2 node-base `register_peer_location_if_fresher`).
 /// A digest newer than the last one this key was registered from REPLACES the key's addresses
 /// (`set_endpoint_info`, never a union): a node that restarts keeps its key and binds a fresh
@@ -91,6 +109,17 @@ fn location_watermarks() -> &'static Mutex<HashMap<iroh::PublicKey, LocationMark
 pub fn register_location(lookup: &MemoryLookup, d: &MeshDigest) -> Option<(iroh::PublicKey, std::net::SocketAddr)> {
     let addr = gossip_addr(d)?;
     let key = addr.id;
+    if incarnation_fenced(&d.node.node_id, &d.node.incarnation) {
+        tracing::info_span!(
+            "rdm.mesh.connection.reject.via-fenced-incarnation",
+            node = %d.node.name,
+            node_id = %d.node.node_id,
+            incarnation_id = %d.node.incarnation.0,
+            socket = %d.node.transport_addr,
+        )
+        .in_scope(|| tracing::info!("a digest of a deleted incarnation: its socket is not registered for the key"));
+        return None;
+    }
     let fresher = {
         let mut w = location_watermarks().lock().unwrap();
         let fresher = match w.get(&key) {
@@ -3031,6 +3060,7 @@ impl DigestBook {
             }
             departed.insert(id.clone(), (op.clone(), now));
         }
+        fence_incarnation(&op.node_id, &op.incarnation);
         self.in_flight.lock().unwrap().remove(&op.key());
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
@@ -3211,6 +3241,7 @@ impl DigestBook {
             }
             departed.insert(id.clone(), (op.clone(), Instant::now()));
         }
+        fence_incarnation(&op.node_id, &op.incarnation);
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.inner.lock().unwrap().remove(&id);
         true
