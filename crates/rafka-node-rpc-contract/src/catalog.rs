@@ -522,12 +522,12 @@ mod tests {
     #[test]
     fn the_testkit_range_holds_only_testkit_families_and_they_live_nowhere_else() {
         let product_inside = CatalogBuilder::new()
-            .ledger([LedgerEntry { op: 0x74, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
+            .ledger([LedgerEntry { op: 0x7F, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()), state: OpState::Live }])
             .seal()
             .unwrap_err();
         assert_eq!(
             product_inside,
-            vec![SealError::TestkitRange { op: 0x74, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()) }]
+            vec![SealError::TestkitRange { op: 0x7F, family: "sneaky".into(), owner: OpOwner::Product("rafka".into()) }]
         );
         let testkit_outside = CatalogBuilder::new()
             .ledger([LedgerEntry { op: 0x42, family: "stray".into(), owner: OpOwner::Testkit, state: OpState::Live }])
