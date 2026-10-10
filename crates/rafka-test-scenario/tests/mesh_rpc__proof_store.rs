@@ -99,11 +99,6 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
-    // The admin's view is current-only, so the probe's own resolver can only say the old id is
-    // nothing it knows.
-    let old = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
-    // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
-    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     // A node's own live resolver knows more: the replacement published the old birth's
     // departure, so the other rpc node answers Gone for the old id, the new holder for the
     // path, and Unknown for an id nobody ever saw.
@@ -114,6 +109,13 @@ async fn the_proof_store_survives_a_restart_and_never_a_replacement() {
     })
     .await;
     assert_eq!(gone["outcome"], "Reply", "{gone}");
+    // The admin holds the old birth as the replacement's predecessor until the departure is
+    // published, and it is published after the replacement is ready: the admin's view is
+    // current-only once the departure has been heard, so the probe's own resolver can only say
+    // the old id is nothing it knows.
+    let old = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
+    // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
+    assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     let holder = estate.probe(&["resolve", "--target", other, "--query", &format!("path:{NODE}")]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
