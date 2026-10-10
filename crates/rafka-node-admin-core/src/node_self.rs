@@ -364,10 +364,12 @@ impl NodeSelf {
                 }
             };
             tokio::join!(declared, self.complete(&commander, &op, false));
-            stop_command().request();
         }
         .instrument(span)
-        .await
+        .await;
+        // The stop span has ended, and its line is handed to the evidence sink, before the
+        // process is asked to end: a shutdown that raced the span's close would take it with it.
+        stop_command().request();
     }
 
     /// The completion: the node's own gossip hook on its mesh channel, then the call at the

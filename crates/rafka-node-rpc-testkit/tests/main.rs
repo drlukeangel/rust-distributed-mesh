@@ -1,6 +1,8 @@
 //! The crate's one integration-test executable: every file in this directory is a module
 //! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
 
+#[path = "../../../tools/test-support/own_process.rs"]
+mod own_process;
 mod common;
 mod container_pipeline;
 mod hydrate_before_ready;
@@ -20,3 +22,4 @@ mod replace_pipeline;
 mod retire_admission;
 mod retire_pipeline;
 mod status_probe_apply;
+mod stop_span;
