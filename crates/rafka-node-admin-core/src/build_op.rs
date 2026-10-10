@@ -173,8 +173,8 @@ impl BuildDoor {
         // Build (it took the seat after the Build ended) makes one, which attaches to the last
         // attempt's executor and reads its frames.
         let held = self.drives.get(&id);
-        if held.as_ref().map(|d| d.completed()).unwrap_or(p.state == BuildState::Complete) {
-            let drive = self.drives.ensure(&self.env, &id);
+        if p.state == BuildState::Complete && held.as_ref().map(|d| d.ended()).unwrap_or(true) {
+            let drive = self.drives.replay_of(&self.env, &id);
             let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
             return stream_frames(sink, drive.reader(from_attempt)).await;
         }

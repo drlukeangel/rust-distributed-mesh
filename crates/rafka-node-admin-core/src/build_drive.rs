@@ -350,12 +350,12 @@ impl Drives {
     pub fn ensure(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
         let drive = {
             let mut drives = self.drives.lock().unwrap();
-            if drives.get(build_id).is_some_and(|d| d.ended() && !d.completed()) {
+            if drives.get(build_id).is_some_and(|d| d.ended()) {
                 drives.remove(build_id);
             }
             drives.entry(build_id.clone()).or_insert_with(|| Drive::new(build_id.clone())).clone()
         };
-        if !drive.completed() && !drive.running.swap(true, Ordering::SeqCst) {
+        if !drive.running.swap(true, Ordering::SeqCst) {
             let (env, d, drives) = (env.clone(), drive.clone(), self.clone());
             let parent = tracing::Span::current();
             tokio::spawn(
@@ -376,6 +376,16 @@ impl Drives {
             );
         }
         drive
+    }
+
+    /// The drive a re-submit of a Build that ended is answered from: the completed drive this admin
+    /// kept, else the one running, else a new one (a fabric-primary that took the seat after the
+    /// Build ended, whose drive attaches to the last attempt's executor).
+    pub fn replay_of(self: &Arc<Self>, env: &Arc<DriveEnv>, build_id: &BuildId) -> Arc<Drive> {
+        if let Some(d) = self.get(build_id).filter(|d| d.completed()) {
+            return d;
+        }
+        self.ensure(env, build_id)
     }
 
     /// The Build left history: its drive's record goes with it.
