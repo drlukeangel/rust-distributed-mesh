@@ -2072,7 +2072,7 @@ impl Membership {
             let channel = sink_channel.clone();
             Box::pin(async move { channel.broadcast(&f).await })
         });
-        let forward_path = ForwardPath::new(view.forwarder.clone(), sink);
+        let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path };
         me.watch_meshes(node.to_string());
         Ok(me)
@@ -2508,10 +2508,7 @@ impl Backbone {
                 return;
             }
             if let Some(f) = forward_of(frame, &me, &own) {
-                let m = m.clone();
-                tokio::spawn(async move {
-                    let _ = m.forward(&f).await;
-                });
+                m.forward_path.carry(&me, f);
             }
         });
         let (replay_view, replay_fabric, replay_me) = (membership.view.clone(), membership.fabric.clone(), node.to_string());
@@ -2541,7 +2538,7 @@ impl Backbone {
             fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(membership.fabric.clone())))),
             wake: Arc::default(),
             publisher: PublisherId { node: node.to_string(), incarnation },
-            full_due: Arc::default(),
+            full_due: membership.forward_path.owes_full(),
             version: Arc::default(),
             own: Arc::default(),
         };
@@ -2724,7 +2721,7 @@ impl Backbone {
             held.push((self.mesh.clone(), self.publisher.clone(), version, full));
         }
         let now = self.membership.clock.now_rafka_ms();
-        self.membership.forward_path.fulls(&self.node, &self.mesh, &held, now);
+        self.membership.forward_path.fulls(&self.node, &self.mesh, "full-due", &held, now);
     }
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
