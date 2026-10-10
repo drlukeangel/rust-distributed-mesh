@@ -497,15 +497,17 @@ async fn mesh_id_of(estate: &Estate, mesh: &str) -> String {
 const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 
 /// CONTRACT (#2784): on a real Docker estate of two meshes (two node-admins and two rpc nodes each)
-/// the peer mesh that does not hold the fabric seat is lost whole: every one of its four containers
-/// is killed (`docker kill` of the exact container ids, both admins at once, then the two rpc
-/// nodes). The provider shows each of them not running. The fabric primary keeps the seat, opens a
-/// later attempt of the SAME accepted Build and runs the mesh-create flow for the lost mesh's first
-/// admin under its EXISTING MeshId; the new mesh primary creates the second admin. Afterwards every
-/// member of the lost mesh is a new birth in a new container, the surviving mesh's births are the
-/// births they were (never re-created), `Fabric.build_id` is the accepted Build, no MeshId is
-/// minted, and a call to a recovered rpc node is served. What must NOT happen: the fabric primary
-/// killed, a new Build or MeshId, a surviving member re-created, the seat moving.
+/// the peer mesh that does not hold the fabric seat loses both node-admins at once (`docker kill` of the
+/// exact container ids) while its two rpc nodes run. The provider shows each admin not running. The
+/// fabric primary hears nothing of the mesh; its investigation asks the members, which cannot reach
+/// their own node-admin, and it keeps the seat, opens a later attempt of the SAME accepted Build and
+/// runs the mesh-create flow for the lost mesh's first admin under its EXISTING MeshId; the new mesh
+/// primary creates the second admin. A mesh whose every container is gone has no member to say so and is
+/// held, never reborn (the process cell `peer_mesh_whose_members_all_stay_silent_is_held_not_reborn`).
+/// Afterwards both admins are new births in new containers, the lost mesh's rpc nodes and the surviving
+/// mesh's births are the births they were (never re-created), `Fabric.build_id` is the accepted Build, no
+/// MeshId is minted, and a call to an rpc node of the recovered mesh is served. What must NOT happen: the
+/// fabric primary killed, a new Build or MeshId, a surviving member re-created, the seat moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     if crate::own_process::delegated(module_path!(), "container_peer_mesh_lost_recovers_under_same_mesh_id") {
@@ -537,15 +539,17 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     // The mesh to lose: its containers, by exact id, before the fault.
     let lost_names: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{lost_mesh}."))).cloned().collect();
     let containers_before: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_else(|| panic!("{n}: no running container")))).collect();
-    let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| lost_names.contains(n)).collect();
+    let lost_admins: Vec<String> = lost_names.iter().filter(|n| n.contains(".admin.")).cloned().collect();
+    let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| lost_admins.contains(n)).collect();
+    let lost_mesh_rpc_births: BTreeSet<(String, String)> = births(&before).into_iter().filter(|(n, _)| lost_names.contains(n) && !lost_admins.contains(n)).collect();
     let kept_births: BTreeSet<(String, String)> = births(&before).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
     let build_now = estate.get(&format!("/api/builds?id={accepted}")).await.1;
     let attempt_before = attempt_of_build(&build_now);
     let fault_at = now_nanos();
 
-    // THE FAULT: both admins at once, then the two rpc nodes; each kill is the exact container.
+    // THE FAULT: both admins at once; each kill is the exact container.
     let mut killed = Vec::new();
-    for n in lost_names.iter().filter(|n| n.contains(".admin.")).chain(lost_names.iter().filter(|n| n.contains(".rpc."))) {
+    for n in &lost_admins {
         if estate.bootstrap_pid().is_some() && *n == format!("{}.admin.1", "mesh1") {
             estate.kill_bootstrap();
         } else {
@@ -553,9 +557,10 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         }
         killed.push(json!({"node": n, "container": containers_before[n]}));
     }
-    assert_eq!(killed.len(), 4, "the whole mesh {lost_mesh} was killed: {killed:?}");
+    assert_eq!(killed.len(), 2, "both node-admins of {lost_mesh} were killed: {killed:?}");
     let inspected_after_kill: BTreeMap<String, Value> = containers_before
         .iter()
+        .filter(|(n, _)| lost_admins.contains(n))
         .map(|(n, id)| {
             let v = match container_faults::inspect(id) {
                 Ok(i) => json!({"running": i.running, "status": i.status, "exit_code": i.exit_code}),
@@ -588,9 +593,14 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let kept_after: BTreeSet<(String, String)> = births(&after).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
     assert_eq!(kept_after, kept_births, "the surviving mesh's births were never re-created");
     let containers_after: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_default())).collect();
-    for n in &lost_names {
+    for n in &lost_admins {
         assert!(!containers_after[n].is_empty() && containers_after[n] != containers_before[n], "{n}: runs in a new container ({} -> {})", containers_before[n], containers_after[n]);
     }
+    for n in lost_names.iter().filter(|n| !lost_admins.contains(n)) {
+        assert_eq!(containers_after[n], containers_before[n], "{n}: the rpc node that outlived its mesh's admins runs in the container it ran in");
+    }
+    let lost_mesh_rpc_after: BTreeSet<(String, String)> = births(&after).into_iter().filter(|(n, _)| lost_names.contains(n) && !lost_admins.contains(n)).collect();
+    assert_eq!(lost_mesh_rpc_after, lost_mesh_rpc_births, "the lost mesh's rpc nodes were never re-created");
 
     // A recovered rpc node serves.
     let target = after.iter().find(|n| s(&n["name"]) == format!("{lost_mesh}.rpc.1")).cloned().expect("recovered rpc node");
@@ -1070,7 +1080,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let recovery_for = |path: &str| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == "proven-drift" && attr(r, "operations").contains(&format!("create-node:{path}")))
+            .find(|r| attr(r, "reason") == "proven-drift" && attr(r, "operations").split(',').any(|op| op == format!("replace-node:{path}")))
             .cloned()
             .cloned()
             .unwrap_or_else(|| panic!("a proven-drift attempt of {build_id} re-creating {path}: {reconciles:?}"))
@@ -1080,16 +1090,16 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let pipeline_of = |path: &str, attempt: u64| -> Value {
         named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
             .into_iter()
-            .find(|p| attr(p, "pipeline") == "create" && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
+            .find(|p| attr(p, "pipeline") == "replace" && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
             .cloned()
-            .unwrap_or_else(|| panic!("a create pipeline span of {path} at attempt {attempt}"))
+            .unwrap_or_else(|| panic!("a replace pipeline span of {path} at attempt {attempt}"))
     };
     let mut recoveries = Vec::new();
     for (path, rec) in [(&kill, &rpc_rec), (&admin, &admin_rec)] {
         let attempt = num(&rec["attributes"]["attempt"]);
         let pipe = pipeline_of(path, attempt);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
-        assert!(!steps.is_empty(), "{path}: step spans are children of the create pipeline");
+        assert!(!steps.is_empty(), "{path}: step spans are children of the replace pipeline");
         assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path}: every step shares the pipeline's trace");
         recoveries.push(json!({
             "path": path, "attempt": rec["attributes"]["attempt"], "reason": rec["attributes"]["reason"], "action": rec["attributes"]["action"], "operations": rec["attributes"]["operations"],
