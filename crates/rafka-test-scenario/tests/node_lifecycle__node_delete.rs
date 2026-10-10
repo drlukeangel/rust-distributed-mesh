@@ -182,7 +182,11 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     }
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
-    assert!(heard_deleting >= 5, "every other node heard the pre-notice: {heard_deleting}");
+    // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
+    // aggregate while the operation is open (`in_flight`: "while the operation is claimed and has no
+    // completed receipt", gossip.md Members): a retirement that completes within one aggregate interval
+    // reaches it as the retained departure alone, which `heard_deleted` below covers for every node.
+    assert!(heard_deleting >= 2, "the victim's own mesh heard the pre-notice: {heard_deleting}");
     // Each receiver's overlay install shows the victim found, live and not routable as the overlay
     // opens in its book (so before that receiver's own removal of it).
     let overlays: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
