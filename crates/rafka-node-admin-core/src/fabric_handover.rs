@@ -21,8 +21,15 @@
 //! `Applied` or `AlreadyApplied`, does. An uncertain handover is reconciled against its recorded
 //! payload and the committed seat: the identical command or completion is sent again and
 //! replayed, never a second epoch.
+//!
+//! Every stage a node reaches is a durable row in `fabric.storage` (`fabric_storage::HandoverRow`),
+//! written before the call or reply that depends on it and read back when the admin starts. The
+//! incumbent waits for the matching completion with no bound: it reacts to the completion, to the
+//! successor becoming reachable or changing, and to a seat record changing, and each of those
+//! sends the identical command again. The attempt stays open until the transfer is confirmed or a
+//! call is refused by name.
 
-use crate::fabric_storage::{FabricStorage, SeatRow};
+use crate::fabric_storage::{FabricStorage, HandoverRow, HandoverStage, SeatRow};
 use crate::model::{EndpointId, IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
 use rafka_mesh_entity::{Seat, SeatHolder};
@@ -33,13 +40,8 @@ use rafka_node_rpc_contract::handover::{FabricPrimaryHandover, FabricPrimaryHand
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 use tokio::sync::{watch, RwLock};
 use tracing::Instrument as _;
-
-/// How long the incumbent waits for the successor's `FabricPrimaryTaken` after its command was
-/// admitted. The successor's work is one durable seat write, one publication and one call.
-const CONFIRMATION_WAIT: Duration = Duration::from_secs(30);
 
 /// The operation identity of the handover that precedes `mesh_id`'s leave: one per shutdown.
 pub fn operation(mesh_id: impl std::fmt::Display) -> String {
@@ -81,6 +83,23 @@ pub enum Stage {
     Confirmed(u64),
 }
 
+impl Stage {
+    fn durable(self) -> HandoverStage {
+        match self {
+            Self::Sent => HandoverStage::Sent,
+            Self::Committed(committed_epoch) => HandoverStage::Committed { committed_epoch },
+            Self::Confirmed(committed_epoch) => HandoverStage::Confirmed { committed_epoch },
+        }
+    }
+    fn of(durable: HandoverStage) -> Self {
+        match durable {
+            HandoverStage::Sent => Self::Sent,
+            HandoverStage::Committed { committed_epoch } => Self::Committed(committed_epoch),
+            HandoverStage::Confirmed { committed_epoch } => Self::Confirmed(committed_epoch),
+        }
+    }
+}
+
 struct Entry {
     payload: Payload,
     stage: Stage,
@@ -96,12 +115,6 @@ pub struct HandoverBook {
 impl HandoverBook {
     fn put(&self, payload: Payload, stage: Stage) {
         self.entries.lock().unwrap().insert(payload.operation.clone(), Entry { payload, stage });
-        self.changed.send_modify(|v| *v += 1);
-    }
-    fn stage_of(&self, operation: &str, stage: Stage) {
-        if let Some(e) = self.entries.lock().unwrap().get_mut(operation) {
-            e.stage = stage;
-        }
         self.changed.send_modify(|v| *v += 1);
     }
     /// The recorded payload and stage of `operation`.
@@ -205,6 +218,31 @@ impl HandoverDoor {
         self.topology.read().await.births().find(|n| n.endpoint_id.as_ref() == Some(peer)).cloned()
     }
 
+    /// Make `stage` of `payload`'s handover durable, then hold it. A stage that could not be made
+    /// durable is not held: the caller answers the failure by name.
+    async fn record(&self, payload: &Payload, stage: Stage) -> Result<(), String> {
+        self.persist(payload, stage).await?;
+        self.handovers.put(payload.clone(), stage);
+        Ok(())
+    }
+
+    /// Make `stage` of `payload`'s handover durable: a blind put of its own row.
+    async fn persist(&self, payload: &Payload, stage: Stage) -> Result<(), String> {
+        let row = HandoverRow { operation: payload.operation.clone(), fabric: payload.fabric.clone(), incumbent: payload.incumbent.clone(), successor: payload.successor.clone(), expected_epoch: payload.expected_epoch, stage: stage.durable() };
+        self.storage.put_handover(&row).await.map_err(|e| format!("{}: handover {} could not be made durable at {stage:?}: {e}", self.me, payload.operation))
+    }
+
+    /// Hold the handovers `fabric.storage` records, as this admin started with them. Returns how
+    /// many it holds. A row this build does not recognise is refused by name.
+    pub async fn restore(&self) -> Result<usize, String> {
+        let rows = self.storage.handovers().await.map_err(|e| format!("fabric.storage handovers: {e}"))?;
+        let n = rows.len();
+        for r in rows {
+            self.handovers.put(Payload { fabric: r.fabric, incumbent: r.incumbent, successor: r.successor, expected_epoch: r.expected_epoch, operation: r.operation }, Stage::of(r.stage));
+        }
+        Ok(n)
+    }
+
     async fn call(&self, target: &NodeId, req: &Request) -> Result<Reply, String> {
         let (out, _) = self.client.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(target.clone()), req, &CallOptions::default()).await;
         match out {
@@ -244,38 +282,41 @@ impl HandoverDoor {
                     return Err(HandoverError::Refused(format!("{} holds no fabric seat record: the epoch the handover names is unknown", self.me)));
                 };
                 let p = Payload { fabric: self.fabric.clone(), incumbent, successor, expected_epoch: held.epoch, operation: operation.clone() };
-                self.handovers.put(p.clone(), Stage::Sent);
+                self.record(&p, Stage::Sent).await.map_err(HandoverError::Refused)?;
                 p
             }
         };
         let span = tracing::info_span!("rdm.node_admin.fabric.update.via-handover", fabric = %payload.fabric, operation = %payload.operation, expected_epoch = payload.expected_epoch, successor = %payload.successor.node_id, successor_mesh = %payload.successor.mesh);
         async {
-            let mut changed = self.handovers.changed.subscribe();
-            match self.call(&payload.successor.node_id, &payload.take()).await {
-                Ok(Reply::Applied | Reply::AlreadyApplied) => {}
-                Ok(refusal) => {
-                    let (reason, detail) = refusal_reason(&refusal);
-                    reject("take", "incumbent", reason, &detail, &payload);
-                    return Err(HandoverError::Refused(format!("{} refused {}: {} ({detail})", payload.successor.node_id, payload.take().op(), refusal.name())));
-                }
-                Err(e) => {
-                    reject("take", "incumbent", "uncertain", &e, &payload);
-                    return Err(HandoverError::Unconfirmed(e));
-                }
-            }
-            let deadline = tokio::time::sleep(CONFIRMATION_WAIT);
-            tokio::pin!(deadline);
+            // The events that reconcile an unconfirmed handover: the book moving (the completion),
+            // a seat record changing, a member of the fabric becoming reachable or changing. Each
+            // is subscribed before the first send, so none is missed.
+            let mut book = self.handovers.changed.subscribe();
+            let mut seats = self.membership.seats().subscribe();
+            let mut heard = self.book.heard_changes();
             loop {
                 if matches!(self.handovers.get(&payload.operation), Some((_, Stage::Confirmed(_)))) {
                     return Ok(());
                 }
-                tokio::select! {
-                    r = changed.changed() => { if r.is_err() { return Err(HandoverError::Unconfirmed("the handover book closed".into())); } }
-                    _ = &mut deadline => {
-                        let reason = format!("the successor {} admitted {} and sent no matching fabric-primary-taken within {CONFIRMATION_WAIT:?}; the handover is unconfirmed and the mesh keeps running until the same handover is reconciled", payload.successor.node_id, payload.take().op());
-                        reject("take", "incumbent", "unconfirmed", &reason, &payload);
-                        return Err(HandoverError::Unconfirmed(reason));
+                match self.call(&payload.successor.node_id, &payload.take()).await {
+                    Ok(Reply::Applied | Reply::AlreadyApplied) => {}
+                    Ok(refusal) => {
+                        let (reason, detail) = refusal_reason(&refusal);
+                        reject("take", "incumbent", reason, &detail, &payload);
+                        return Err(HandoverError::Refused(format!("{} refused {}: {} ({detail})", payload.successor.node_id, payload.take().op(), refusal.name())));
                     }
+                    Err(e) => reject("take", "incumbent", "uncertain", &e, &payload),
+                }
+                if matches!(self.handovers.get(&payload.operation), Some((_, Stage::Confirmed(_)))) {
+                    return Ok(());
+                }
+                let closed = tokio::select! {
+                    r = book.changed() => r.is_err().then_some("the handover book"),
+                    r = seats.changed() => r.is_err().then_some("the seat book"),
+                    r = heard.changed() => r.is_err().then_some("the digest book"),
+                };
+                if let Some(what) = closed {
+                    return Err(HandoverError::Unconfirmed(format!("{}: {what} closed while {} awaited the completion of {}", self.me, payload.operation, payload.successor.node_id)));
                 }
             }
         }
@@ -337,6 +378,10 @@ impl HandoverDoor {
             return refuse("not-ready", "the seat epoch cannot advance".into(), Reply::NotReady { reason: format!("{}: the fabric seat epoch {} cannot advance", self.me, payload.expected_epoch) });
         };
         let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
+        // The record is durable with or before the seat commit, and held only once the seat is.
+        if let Err(e) = self.persist(&payload, Stage::Committed(committed)).await {
+            return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
+        }
         if let Err(e) = self.storage.put_seat(&SeatRow { seat: Seat::FabricPrimary, holder: holder.clone() }).await {
             return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the fabric seat could not be made durable: {e}", self.me) });
         }
@@ -378,7 +423,10 @@ impl HandoverDoor {
         }
         match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
             Ok(Reply::Applied | Reply::AlreadyApplied) => {
-                self.handovers.stage_of(&payload.operation, Stage::Confirmed(committed));
+                if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
+                    reject("taken", "successor", "storage", &e, &payload);
+                    return;
+                }
                 tracing::info_span!("rdm.node_admin.fabric.update.via-handover-taken-acknowledged", fabric = %payload.fabric, operation = %payload.operation, committed_epoch = committed)
                     .in_scope(|| tracing::info!("the incumbent acknowledged the completion: the transfer is confirmed"));
             }
@@ -403,10 +451,18 @@ impl HandoverDoor {
         };
         let span = tracing::info_span!("rdm.node_admin.fabric.update.via-handover-reconcile", fabric = %payload.fabric, operation = %operation, committed_epoch = committed);
         async {
+            // The record says committed: the durable fabric seat must say so too before anything is sent.
+            let seats = self.storage.seats().await.map_err(|e| HandoverError::Unconfirmed(format!("{operation}: the durable fabric seat could not be read: {e}")))?;
+            let committed_seat = seats.iter().any(|r| r.seat == Seat::FabricPrimary && (r.holder.epoch > committed || (r.holder.epoch == committed && r.holder.is_birth(&payload.successor.node_id, &payload.successor.incarnation))));
+            if !committed_seat {
+                let held = seats.iter().find(|r| r.seat == Seat::FabricPrimary).map(|r| r.holder.to_string()).unwrap_or_else(|| "absent".into());
+                let reason = format!("{operation}: the handover record says committed at epoch {committed}, the durable fabric seat is {held}");
+                reject("taken", "successor", "seat-not-durable", &reason, &payload);
+                return Err(HandoverError::Unconfirmed(reason));
+            }
             match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
                 Ok(Reply::Applied | Reply::AlreadyApplied) => {
-                    self.handovers.stage_of(&operation, Stage::Confirmed(committed));
-                    Ok(())
+                    self.record(&payload, Stage::Confirmed(committed)).await.map_err(HandoverError::Unconfirmed)
                 }
                 Ok(refusal) => {
                     let (reason, detail) = refusal_reason(&refusal);
@@ -472,7 +528,9 @@ impl HandoverDoor {
         if let SeatTaken::Refused { held } = self.membership.seats().take(Seat::FabricPrimary, &holder) {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
-        self.handovers.put(payload.clone(), Stage::Confirmed(committed));
+        if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
+            return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
+        }
         tracing::info_span!(
             "rdm.node_admin.fabric.update.via-handover-confirmed",
             fabric = %payload.fabric,

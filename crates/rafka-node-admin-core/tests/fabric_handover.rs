@@ -9,7 +9,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolde
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, Stage};
-use rafka_node_admin_core::fabric_storage::{FabricStorage, MemoryFabricStorage};
+use rafka_node_admin_core::fabric_storage::{FabricStorage, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -72,7 +72,7 @@ struct Admin {
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
-    storage: Arc<MemoryFabricStorage>,
+    storage: Arc<dyn FabricStorage>,
     _router: Router,
 }
 
@@ -83,6 +83,12 @@ struct Pair {
 }
 
 async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool) -> (Admin, iroh::Endpoint) {
+    admin_over(fabric, mesh, path, node_id, fill_slot, Arc::new(MemoryFabricStorage::new())).await
+}
+
+/// An admin born over `storage`: a new birth (a new incarnation and a new endpoint key) of the
+/// node `node_id`, holding whatever `storage` already holds.
+async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, storage: Arc<dyn FabricStorage>) -> (Admin, iroh::Endpoint) {
     let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
@@ -92,7 +98,6 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
     let backbone = Backbone::join(&gossip, &ep, &membership, mesh, path, incarnation.clone(), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
-    let storage = Arc::new(MemoryFabricStorage::new());
     let slot: HandoverSlot = Arc::new(OnceLock::new());
     let server = rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
@@ -392,4 +397,169 @@ async fn new_fabric_primary_reconciles_an_unacknowledged_handover_before_the_lea
     assert!(matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8)))));
     assert_eq!(spans.named(CONFIRMED).len(), 1);
     assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)), "the incumbent yielded when it matched the completion");
+}
+
+fn operation_of(f: &Pair) -> String {
+    format!("fabric-primary-handover:{}", f.mesh1_id)
+}
+
+/// A data dir of this cell alone, removed by the cell.
+struct DataDir(std::path::PathBuf);
+impl DataDir {
+    fn new(tag: &str) -> Self {
+        let d = std::env::temp_dir().join(format!("{tag}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&d).unwrap();
+        Self(d)
+    }
+}
+impl Drop for DataDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// CONTRACT (fabric-primary-handover.md, step 6): every stage a node reaches is a durable row in its
+/// own `fabric.storage`, written with the stage and read back by a fresh storage over the same data
+/// dir. The incumbent records what it sent and then the confirmation; the successor records the
+/// commit and then the acknowledged completion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn each_stage_of_the_handover_is_a_durable_row_on_both_admins() {
+    if crate::own_process::delegated(module_path!(), "each_stage_of_the_handover_is_a_durable_row_on_both_admins") {
+        return;
+    }
+    let _spans = capture();
+    let (incumbent_dir, successor_dir) = (DataDir::new("handover-incumbent"), DataDir::new("handover-successor"));
+    let fabric_id = FabricId::mint();
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&incumbent_dir.0).unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&successor_dir.0).unwrap())).await;
+    let f = join(incumbent, successor).await;
+    let op = operation_of(&f);
+    f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("confirmed");
+    until("the successor holds the confirmation", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8))))).await;
+    let successor_rows = FileFabricStorage::open(&successor_dir.0).unwrap().handovers().await.unwrap();
+    let incumbent_rows = FileFabricStorage::open(&incumbent_dir.0).unwrap().handovers().await.unwrap();
+    let expect = |rows: &[HandoverRow], stage: HandoverStage| {
+        assert_eq!(rows.len(), 1, "one handover: {rows:?}");
+        let r = &rows[0];
+        assert_eq!((r.operation.as_str(), r.fabric.as_str(), r.expected_epoch, r.stage), (op.as_str(), "fabric1", 7, stage));
+        assert_eq!((&r.incumbent, &r.successor), (&birth(&f.incumbent), &birth(&f.successor)));
+    };
+    expect(&successor_rows, HandoverStage::Confirmed { committed_epoch: 8 });
+    expect(&incumbent_rows, HandoverStage::Confirmed { committed_epoch: 8 });
+}
+
+/// Two admins already placed in one view with the seat at epoch 7 held by the incumbent.
+async fn join(incumbent: Admin, successor: Admin) -> Pair {
+    let nodes = vec![node_of(&incumbent, NodeStatus::ReadyForTraffic, true), node_of(&successor, NodeStatus::ReadyForTraffic, false)];
+    for a in [&incumbent, &successor] {
+        *a.door.topology.write().await = view(nodes.clone());
+        for p in [&incumbent, &successor] {
+            a.resolver.insert(p.resolved.clone());
+        }
+        a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&incumbent, 7));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&incumbent, 1));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&successor, 1));
+    }
+    Pair { incumbent, successor, mesh1_id: MeshId::mint() }
+}
+
+/// CONTRACT (fabric-primary-handover.md, step 6): a successor that restarts between the commit and
+/// the confirmation comes back as a new birth over its own data dir. It holds the commit it
+/// recorded, so its gate refuses by name and the mesh leave does not open; the incumbent refuses
+/// the completion of a birth that is no longer the successor. What must NOT happen: the restarted
+/// admin finding no record and proceeding to the leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_closed() {
+    if crate::own_process::delegated(module_path!(), "a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_closed") {
+        return;
+    }
+    let spans = capture();
+    let dir = DataDir::new("handover-restart");
+    let fabric_id = FabricId::mint();
+    let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", false).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).unwrap())).await;
+    let f = join(incumbent, successor).await;
+    let op = operation_of(&f);
+    // The incumbent's door is not serving: the commit happens and its completion is not acknowledged.
+    assert_eq!(send(&f.incumbent, &f.successor, take(&f, 7, &op)).await, Reply::Applied);
+    until("the successor committed", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Committed(8))))).await;
+    until("the completion was refused", || spans.named(REJECTED).iter().any(|r| r["call"] == "taken")).await;
+    // The successor exits and is born again over its data dir.
+    let committed_birth = birth(&f.successor);
+    drop(f.successor);
+    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&dir.0).unwrap())).await;
+    assert_ne!(birth(&reborn).incarnation, committed_birth.incarnation, "a restart is a new birth");
+    assert!(reborn.door.handovers.get(&op).is_none(), "nothing is held before the admin reads its storage");
+    assert_eq!(reborn.door.restore().await.unwrap(), 1);
+    let (payload, stage) = reborn.door.handovers.get(&op).expect("the recorded handover");
+    assert_eq!((payload.successor, stage), (committed_birth, Stage::Committed(8)));
+    // The reborn successor sits in the incumbent's view, and the incumbent's door now serves.
+    let nodes = vec![node_of(&f.incumbent, NodeStatus::ReadyForTraffic, true), node_of(&reborn, NodeStatus::ReadyForTraffic, false)];
+    *f.incumbent.door.topology.write().await = view(nodes.clone());
+    *reborn.door.topology.write().await = view(nodes);
+    f.incumbent.resolver.insert(reborn.resolved.clone());
+    reborn.resolver.insert(f.incumbent.resolved.clone());
+    reborn.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&f.incumbent, 7));
+    let _ = f.incumbent.slot.set(f.incumbent.door.clone());
+    let err = reborn.door.confirmed(&f.mesh1_id).await.expect_err("the leave stays closed");
+    assert!(matches!(&err, HandoverError::Refused(r) if r.contains("rejected-wrong-birth") && r.contains("successor")), "refused by name: {err:?}");
+    assert!(spans.named(CONFIRMED).is_empty(), "the incumbent confirmed nothing");
+    assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.incumbent, 7)), "the incumbent did not yield to a birth that is not the committed successor");
+    assert!(matches!(reborn.door.handovers.get(&op), Some((_, Stage::Committed(8)))), "still unconfirmed");
+}
+
+/// CONTRACT: a handover record that says committed while the durable fabric seat says otherwise is
+/// not trusted: the gate refuses and names both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_committed_record_with_no_durable_seat_is_refused_by_name() {
+    if crate::own_process::delegated(module_path!(), "a_committed_record_with_no_durable_seat_is_refused_by_name") {
+        return;
+    }
+    let _spans = capture();
+    let storage = Arc::new(MemoryFabricStorage::new());
+    let fabric_id = FabricId::mint();
+    let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, storage.clone()).await;
+    let f = join(incumbent, successor).await;
+    let op = operation_of(&f);
+    storage
+        .put_handover(&HandoverRow { operation: op.clone(), fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: birth(&f.successor), expected_epoch: 7, stage: HandoverStage::Committed { committed_epoch: 8 } })
+        .await
+        .unwrap();
+    assert_eq!(f.successor.door.restore().await.unwrap(), 1);
+    let err = f.successor.door.confirmed(&f.mesh1_id).await.expect_err("no durable seat at epoch 8");
+    assert!(matches!(&err, HandoverError::Unconfirmed(r) if r.contains("committed at epoch 8") && r.contains("durable fabric seat")), "{err:?}");
+}
+
+/// CONTRACT: the incumbent's wait for the completion has no bound of its own. The completion is
+/// refused while the incumbent's door is not serving; the attempt stays open and blocking. It
+/// reacts to events only: once the door serves, a seat record changing sends the identical command,
+/// the successor replays its completion and the attempt confirms. What must NOT happen: the
+/// attempt failing on a clock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_incumbent_stays_open_until_a_late_completion_and_confirms_on_the_event() {
+    if crate::own_process::delegated(module_path!(), "the_incumbent_stays_open_until_a_late_completion_and_confirms_on_the_event") {
+        return;
+    }
+    let spans = capture();
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, false).await;
+    let op = operation_of(&f);
+    let door = f.incumbent.door.clone();
+    let mesh1_id = f.mesh1_id.clone();
+    let attempt = tokio::spawn(async move { door.hand_over("mesh1", &mesh1_id).await });
+    until("the successor committed", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Committed(8))))).await;
+    until("the completion was refused", || spans.named(REJECTED).iter().any(|r| r["call"] == "taken")).await;
+    let sent = spans.named(CALL).len();
+    // Nothing happens, and the attempt is open: no completion, no event, no clock.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!attempt.is_finished(), "the attempt stays open");
+    assert_eq!(spans.named(CALL).len(), sent, "and sends nothing without an event");
+    assert!(spans.named(CONFIRMED).is_empty());
+    // The incumbent's door serves; a seat record changing is the event.
+    let _ = f.incumbent.slot.set(f.incumbent.door.clone());
+    f.incumbent.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.successor, 2));
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(20), attempt).await.expect("the event confirmed the attempt").unwrap();
+    outcome.expect("confirmed on the late completion");
+    assert_eq!(spans.named(CONFIRMED).len(), 1);
+    assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)));
 }

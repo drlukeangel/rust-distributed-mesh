@@ -7,6 +7,8 @@
 //! freezes, so losing the fabric-primary and its storage loses nothing. A shutdown is never deleted
 //! while its Fabric lives, and an admin that starts on a data dir holding one comes up frozen.
 //!
+//! A handover of the fabric seat (`fabric_handover`) leaves one [`HandoverRow`] per stage it reached.
+//!
 //! The state is three kinds of row, each its own fact written on its own and never read back to be
 //! written again: the [`FabricIdentity`] (written once), one [`FabricPointer`] row per move of
 //! `Fabric.build_id` (a blind put ordered by the Build's submission time, folded to the newest by
@@ -107,6 +109,81 @@ fn standing(rows: impl IntoIterator<Item = SeatRow>) -> Vec<SeatRow> {
     held.into_values().collect()
 }
 
+/// How far one handover got at the admin that wrote the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandoverStage {
+    /// The incumbent recorded what it sent: nothing is confirmed.
+    Sent,
+    /// The successor committed the seat at `committed_epoch`: the completion is not acknowledged.
+    Committed {
+        /// The epoch the successor committed.
+        committed_epoch: u64,
+    },
+    /// The transfer is confirmed at `committed_epoch`.
+    Confirmed {
+        /// The epoch the confirmed transfer committed.
+        committed_epoch: u64,
+    },
+}
+
+impl HandoverStage {
+    fn rank(self) -> u8 {
+        match self {
+            Self::Sent => 0,
+            Self::Committed { .. } => 1,
+            Self::Confirmed { .. } => 2,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Sent => "sent",
+            Self::Committed { .. } => "committed",
+            Self::Confirmed { .. } => "confirmed",
+        }
+    }
+}
+
+/// One row per (handover operation, stage): the payload of the handover and how far it got. Each
+/// stage is its own row (a blind put of its own key); a reader keeps, per operation, the furthest
+/// stage, so a late write of an earlier stage never moves a handover back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoverRow {
+    /// The handover's operation identity.
+    pub operation: String,
+    /// The fabric's name.
+    pub fabric: String,
+    /// The fabric-primary that yields.
+    pub incumbent: rafka_node_rpc_contract::handover::HandoverBirth,
+    /// The mesh-primary that takes the seat.
+    pub successor: rafka_node_rpc_contract::handover::HandoverBirth,
+    /// The incumbent's seat epoch.
+    pub expected_epoch: u64,
+    /// How far the handover got.
+    pub stage: HandoverStage,
+}
+
+impl HandoverRow {
+    fn key(&self) -> String {
+        let operation: String = self.operation.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        format!("{operation}-{}", self.stage.name())
+    }
+}
+
+/// The rows that stand: per operation, the furthest stage.
+fn furthest(rows: impl IntoIterator<Item = HandoverRow>) -> Vec<HandoverRow> {
+    let mut held: std::collections::BTreeMap<String, HandoverRow> = Default::default();
+    for r in rows {
+        match held.get(&r.operation) {
+            Some(h) if h.stage.rank() >= r.stage.rank() => {}
+            _ => {
+                held.insert(r.operation.clone(), r);
+            }
+        }
+    }
+    held.into_values().collect()
+}
+
 /// A fabric shutdown in progress. `initiated_by` names the fabric-primary that began it;
 /// `initiated_at_ms` is a diagnostic and takes no part in authority or ordering. The record holds no
 /// drain progress: every admin derives the freeze barrier (every live admin `Draining`) and runtime
@@ -144,6 +221,10 @@ pub trait FabricStorage: Send + Sync {
     async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError>;
     /// The seat records that stand: per seat and mesh, the one that supersedes the others.
     async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError>;
+    /// Put the row for one stage of one handover operation: a blind put of its own key.
+    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError>;
+    /// The handovers this admin took part in: per operation, the furthest stage.
+    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError>;
 }
 
 /// A fabric store held in memory.
@@ -153,6 +234,7 @@ pub struct MemoryFabricStorage {
     pointers: Mutex<Vec<FabricPointer>>,
     shutdown: Mutex<Option<FabricShutdown>>,
     seats: Mutex<Vec<SeatRow>>,
+    handovers: Mutex<Vec<HandoverRow>>,
 }
 
 impl MemoryFabricStorage {
@@ -193,6 +275,15 @@ impl FabricStorage for MemoryFabricStorage {
     async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
         Ok(standing(self.seats.lock().unwrap().iter().cloned()))
     }
+    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
+        let mut rows = self.handovers.lock().unwrap();
+        rows.retain(|r| r.key() != row.key());
+        rows.push(row.clone());
+        Ok(())
+    }
+    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
+        Ok(furthest(self.handovers.lock().unwrap().iter().cloned()))
+    }
 }
 
 /// The directory inside an admin's data dir.
@@ -200,6 +291,8 @@ pub const FABRIC_DIR: &str = "fabric";
 const POINTERS_DIR: &str = "fabric/pointers";
 const SEATS_DIR: &str = "fabric/seats";
 const SEAT_FORMAT: &str = "fabric-seat/1";
+const HANDOVERS_DIR: &str = "fabric/handovers";
+const HANDOVER_FORMAT: &str = "fabric-handover/1";
 const IDENTITY_KEY: &str = "identity";
 const SHUTDOWN_KEY: &str = "shutdown";
 /// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and pointer in
@@ -216,6 +309,7 @@ pub struct FileFabricStorage {
     records: crate::record_store::FileRecords,
     pointers: crate::record_store::FileRecords,
     seats: crate::record_store::FileRecords,
+    handovers: crate::record_store::FileRecords,
 }
 
 impl FileFabricStorage {
@@ -229,7 +323,7 @@ impl FileFabricStorage {
                 reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} and {POINTER_FORMAT} rows"),
             });
         }
-        Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)?, seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR)? })
+        Ok(Self { records, pointers: crate::record_store::FileRecords::open(own_data_dir, POINTERS_DIR)?, seats: crate::record_store::FileRecords::open(own_data_dir, SEATS_DIR)?, handovers: crate::record_store::FileRecords::open(own_data_dir, HANDOVERS_DIR)? })
     }
 }
 
@@ -259,6 +353,12 @@ impl FabricStorage for FileFabricStorage {
     }
     async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
         Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT)?))
+    }
+    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
+        self.handovers.write(&row.key(), HANDOVER_FORMAT, row).await
+    }
+    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
+        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT)?))
     }
 }
 
@@ -316,6 +416,52 @@ mod tests {
         let d = tempdir();
         FileFabricStorage::open(&d).unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
         assert_eq!(FileFabricStorage::open(&d).unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
+    }
+
+    fn handover_row(operation: &str, stage: HandoverStage) -> HandoverRow {
+        let birth = |mesh: &str, node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(inc.into()) };
+        HandoverRow { operation: operation.into(), fabric: "fabric1".into(), incumbent: birth("mesh1", "100000000000", "i1"), successor: birth("mesh2", "200000000000", "i2"), expected_epoch: 7, stage }
+    }
+
+    /// CONTRACT (fabric-primary-handover.md, step 6): a handover leaves one row per stage, each a
+    /// blind put of its own key, and a reader keeps the furthest stage per operation whatever the
+    /// write order: a late write of an earlier stage never moves a handover back. A file store
+    /// reloads the rows and refuses a format it does not recognise by name.
+    #[tokio::test]
+    async fn the_handover_rows_that_stand_are_the_furthest_stage_whatever_the_write_order() {
+        let d = tempdir();
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&d).unwrap())] {
+            assert!(s.handovers().await.unwrap().is_empty());
+            for row in [
+                handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }),
+                handover_row("fabric-primary-handover:a", HandoverStage::Committed { committed_epoch: 8 }),
+                handover_row("fabric-primary-handover:a", HandoverStage::Sent),
+                handover_row("fabric-primary-handover:b", HandoverStage::Sent),
+                handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 }),
+            ] {
+                s.put_handover(&row).await.unwrap();
+            }
+            assert_eq!(
+                s.handovers().await.unwrap(),
+                vec![handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }), handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 })]
+            );
+        }
+        assert_eq!(FileFabricStorage::open(&d).unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
+        let f = d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_a-sent.json");
+        std::fs::write(&f, br#"{"format":"fabric-handover/9","record":{}}"#).unwrap();
+        assert!(matches!(FileFabricStorage::open(&d).unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
+    }
+
+    /// CONTRACT: the committed-stage row of a handover is stored in this exact shape (format
+    /// `fabric-handover/1`); a build that cannot read it refuses by name.
+    #[tokio::test]
+    async fn a_handover_row_is_stored_in_the_fabric_handover_one_shape() {
+        let d = tempdir();
+        let s = FileFabricStorage::open(&d).unwrap();
+        s.put_handover(&handover_row("fabric-primary-handover:m1", HandoverStage::Committed { committed_epoch: 8 })).await.unwrap();
+        let text = std::fs::read_to_string(d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_m1-committed.json")).unwrap();
+        let expected = r#"{"format":"fabric-handover/1","record":{"operation":"fabric-primary-handover:m1","fabric":"fabric1","incumbent":{"mesh":"mesh1","node_id":"100000000000","incarnation":"i1"},"successor":{"mesh":"mesh2","node_id":"200000000000","incarnation":"i2"},"expected_epoch":7,"stage":{"Committed":{"committed_epoch":8}}}}"#;
+        assert_eq!(text, expected);
     }
 
     #[tokio::test]

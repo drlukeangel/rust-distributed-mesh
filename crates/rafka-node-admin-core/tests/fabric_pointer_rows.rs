@@ -48,6 +48,12 @@ impl FabricStorage for HoldsFirstWrite {
     async fn seats(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::SeatRow>, FabricStorageError> {
         self.inner.seats().await
     }
+    async fn put_handover(&self, row: &rafka_node_admin_core::fabric_storage::HandoverRow) -> Result<(), FabricStorageError> {
+        self.inner.put_handover(row).await
+    }
+    async fn handovers(&self) -> Result<Vec<rafka_node_admin_core::fabric_storage::HandoverRow>, FabricStorageError> {
+        self.inner.handovers().await
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
