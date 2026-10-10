@@ -257,7 +257,7 @@ pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_
 
 /// The five typed arms of the landed `CommandAdmission` (what a directed `drain-node` / `stop-node`
 /// call established at the exact birth).
-pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Left", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
+pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
 pub const STATUS_REQUESTS: u32 = 17;

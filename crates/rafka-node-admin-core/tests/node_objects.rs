@@ -470,7 +470,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
             reason: "mesh1.rpc.3: hydrate_before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready".into()
         }
     );
-    assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
+    assert_eq!(after, [Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "a repeated blocker makes no second frame, and the ready node ends the stream: {after:?}");
 }
 
 /// CONTRACT (ops-naming acceptance 2, "A broken stream is not a failure"): the transport between
