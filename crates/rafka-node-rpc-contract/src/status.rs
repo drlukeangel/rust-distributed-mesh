@@ -162,9 +162,10 @@ pub enum StatusRequest {
         /// The operation: `drain-node:<path>`.
         operation: String,
     },
-    /// Downward: the owning mesh-admin tells the exact birth to enter `Leaving` and shut down,
-    /// with no implicit drain (`stop-node`; node-stop.md). The reply admits the command;
-    /// completion is [`Self::NodeLeft`] and the provider's terminal proof.
+    /// Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md):
+    /// drain, hard-cut its mesh connections, enter `Leaving` and park, its process alive with its
+    /// endpoint bound. The reply is held until the stop is done and is [`StatusReply::Left`]:
+    /// `left` rides the stop call's own reply, never a gossip frame and never a second call.
     StopNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -177,8 +178,8 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
-    /// Upward: the exact birth tells its owning mesh-admin that `Leaving` is committed and its
-    /// shutdown admitted (`node-left`), sent before it closes its endpoint. Not terminal proof.
+    /// Reserved: a stopped birth reports `left` on the reply of its `StopNode` call, so this call is
+    /// never sent and a receiver refuses it by name.
     NodeLeft {
         /// The birth that is leaving.
         node_id: NodeId,
@@ -288,6 +289,24 @@ pub enum StatusRequest {
         /// The operation: `open-traffic:<fabric_id>`.
         operation: String,
     },
+    /// Downward: the owning mesh-admin tells the parked exact birth to rejoin as itself
+    /// (`start-node`; node-start.md): the same node id, incarnation, endpoint key and port. The
+    /// birth joins its authority, rejoins its mesh channel and takes its topology, then runs its
+    /// `hydrate_before_ready` hook with `AfterStop` in its context and declares itself ready. The
+    /// reply is [`StatusReply::Started`] once it has rejoined, or [`StatusReply::StartFailed`]
+    /// naming the step that failed. A birth that is not parked refuses it.
+    StartNode {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `start-node:<path>`.
+        operation: String,
+    },
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -313,6 +332,7 @@ impl StatusRequest {
             Self::StateCommitted { .. } => "state-committed",
             Self::OpenTraffic { .. } => "open-traffic",
             Self::TrafficOpened { .. } => "traffic-opened",
+            Self::StartNode { .. } => "start-node",
         }
     }
 }
@@ -341,6 +361,33 @@ impl NotAuthority {
             Self::ReceiverNotPrimary { .. } => "receiver-not-primary",
             Self::SenderNotSubject { .. } => "sender-not-subject",
             Self::SubjectUnknown => "subject-unknown",
+        }
+    }
+}
+
+/// What a drain established (node-drain.md): the count it measured, and whether the work finished
+/// inside the drain bound. `Deadline` records the last observed count and never claims zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DrainReceipt {
+    /// The eligible in-flight work finished: `in_flight` is the count at the moment it was
+    /// established.
+    Established {
+        /// The in-flight count when the drain was established.
+        in_flight: u64,
+    },
+    /// The drain bound passed with work still in flight: `last_in_flight` is the last count seen.
+    Deadline {
+        /// The last in-flight count observed before the bound.
+        last_in_flight: u64,
+    },
+}
+
+impl DrainReceipt {
+    /// The receipt's name as it appears in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Established { .. } => "established",
+            Self::Deadline { .. } => "deadline",
         }
     }
 }
@@ -438,6 +485,30 @@ pub enum StatusReply {
         /// What the completion reported.
         reported: String,
     },
+    /// The reply of a `StopNode` call, sent when the stop is done (`left`): the birth drained, cut
+    /// its mesh connections and is `Leaving`, parked with its process alive. The receipt is what
+    /// its drain established.
+    Left {
+        /// What the drain established.
+        receipt: DrainReceipt,
+    },
+    /// The reply of a `StartNode` call: the parked birth rejoined as itself.
+    Started,
+    /// The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran.
+    StartFailed {
+        /// The step that failed: `node.join`, `node.topology` or `node.hydrate`.
+        step: String,
+        /// Why it failed.
+        reason: String,
+    },
+    /// The exact birth's own answer to a probe while it is parked: `Leaving`, its process alive and
+    /// its endpoint bound, waiting for `StartNode` or a delete.
+    CurrentParked {
+        /// The answering birth's logical node.
+        node_id: NodeId,
+        /// The answering birth's incarnation.
+        incarnation: IncarnationId,
+    },
 }
 
 impl StatusReply {
@@ -461,6 +532,10 @@ impl StatusReply {
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::RejectedUnmatchedCompletion { .. } => "rejected-unmatched-completion",
+            Self::Left { .. } => "left",
+            Self::Started => "started",
+            Self::StartFailed { .. } => "start-failed",
+            Self::CurrentParked { .. } => "current-parked",
         }
     }
 }
@@ -474,22 +549,29 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 16;
-    const REPLY_VARIANTS: u32 = 17;
+    const REQUEST_VARIANTS: u32 = 17;
+    const REPLY_VARIANTS: u32 = 21;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
 
     fn classify_reply(reply: &StatusReply) -> ReplyKind {
         match reply {
-            StatusReply::Applied | StatusReply::AlreadyApplied | StatusReply::NodeDrainingApplied { .. } | StatusReply::Current { .. } => ReplyKind::Success,
+            StatusReply::Applied
+            | StatusReply::AlreadyApplied
+            | StatusReply::NodeDrainingApplied { .. }
+            | StatusReply::Current { .. }
+            | StatusReply::CurrentParked { .. }
+            | StatusReply::Left { .. }
+            | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
             | StatusReply::RejectedStaleFabric { .. }
             | StatusReply::RejectedNotAuthority { .. }
             | StatusReply::RejectedInvalidNodeTransition { .. }
             | StatusReply::RejectedInvalidMeshTransition { .. }
-            | StatusReply::RejectedUnmatchedCompletion { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedUnmatchedCompletion { .. }
+            | StatusReply::StartFailed { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -567,6 +649,10 @@ mod tests {
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::Left { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
+            (StatusReply::Started, ReplyKind::Success),
+            (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -600,6 +686,7 @@ mod tests {
             StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "commit-state:fabric1".into() },
             StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

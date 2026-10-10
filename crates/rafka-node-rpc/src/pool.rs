@@ -158,6 +158,45 @@ impl Pool {
         }
     }
 
+    /// Hard-cut every connection this pool holds: cancel the dials in flight, remove the pooled
+    /// connections and close them with `reason`. A call riding one ends where the connection ends;
+    /// the next call dials afresh. Returns how many pooled connections were closed.
+    pub fn close_all(&self, reason: &'static [u8]) -> usize {
+        for (_, d) in self.inner.dials.lock().unwrap().iter() {
+            let _ = d.cancel.send(true);
+        }
+        let closed: Vec<(PoolKey, Connection)> = self.inner.conns.lock().unwrap().drain().collect();
+        self.inner.strikes.lock().unwrap().clear();
+        for (key, conn) in &closed {
+            conn.close(0u32.into(), reason);
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
+                .in_scope(|| tracing::info!("a pooled connection was closed"));
+        }
+        closed.len()
+    }
+
+    /// Close the connections this pool holds to `peer`, whatever their scope or birth, and cancel the
+    /// dials in flight to it: the next call to it dials afresh. Returns how many were closed.
+    pub fn close_peer(&self, peer: &iroh::PublicKey, reason: &'static [u8]) -> usize {
+        for (k, d) in self.inner.dials.lock().unwrap().iter() {
+            if &k.peer == peer {
+                let _ = d.cancel.send(true);
+            }
+        }
+        let closed: Vec<(PoolKey, Connection)> = {
+            let mut conns = self.inner.conns.lock().unwrap();
+            let keys: Vec<PoolKey> = conns.keys().filter(|k| &k.peer == peer).cloned().collect();
+            keys.into_iter().filter_map(|k| conns.remove(&k).map(|c| (k, c))).collect()
+        };
+        for (key, conn) in &closed {
+            self.inner.strikes.lock().unwrap().remove(key);
+            conn.close(0u32.into(), reason);
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
+                .in_scope(|| tracing::info!("a pooled connection was closed"));
+        }
+        closed.len()
+    }
+
     /// A live pooled connection for `key`.
     pub fn pooled(&self, key: &PoolKey) -> Option<Connection> {
         let mut conns = self.inner.conns.lock().unwrap();

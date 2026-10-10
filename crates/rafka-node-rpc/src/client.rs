@@ -219,6 +219,20 @@ impl NodeRpcClient {
         self.pool.dialing()
     }
 
+    /// Close the connections this client holds to `peer`: the next call to it dials afresh. A caller
+    /// that has just been answered `left` by a node closes the connection the stop rode, so its start
+    /// reaches the parked node on a fresh dial.
+    pub fn close_pooled_to(&self, peer: &iroh::PublicKey, reason: &'static str) -> usize {
+        self.pool.close_peer(peer, reason.as_bytes())
+    }
+
+    /// Hard-cut every connection this client holds (`node.connections.delete`): dials in flight are
+    /// cancelled and every pooled connection is closed, so no call rides one and the next call dials
+    /// afresh. Returns how many pooled connections were closed.
+    pub fn close_pooled(&self, reason: &'static str) -> usize {
+        self.pool.close_all(reason.as_bytes())
+    }
+
     /// Invoke protocol `P` on `target`.
     pub async fn call<P: NodeProtocol>(
         &self,

@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Whether this node's `hydrate_before_ready` returned `Ok`. Closed at birth; RDM opens it when the
-/// hook passes, and nothing closes it again. Cloned into every handler that must not answer before
+/// hook passes, and closes it when the birth is parked (a stop), so a parked node answers no app op
+/// until its start has hydrated it again. Cloned into every handler that must not answer before
 /// then.
 #[derive(Clone, Debug, Default)]
 pub struct HydrationGate {
@@ -30,6 +31,11 @@ impl HydrationGate {
     /// The hook returned `Ok`: app ops are served from here on.
     pub fn open(&self) {
         self.passed.store(true, Ordering::SeqCst);
+    }
+
+    /// The birth is parked: app ops are refused until the hook passes again.
+    pub fn close(&self) {
+        self.passed.store(false, Ordering::SeqCst);
     }
 
     /// Whether the hook has passed.
@@ -105,5 +111,36 @@ impl ServerBuilder {
                 }
             }
         })
+    }
+}
+
+/// A birth's retirement across its parked cycles: the token the current cycle's hook and pulls end
+/// with. A stop (or drain) cancels it; a start renews it for the next cycle.
+#[derive(Clone, Debug, Default)]
+pub struct Retirement {
+    current: Arc<std::sync::Mutex<CancelToken>>,
+}
+
+impl Retirement {
+    /// A retirement whose current token is not cancelled.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current cycle's token.
+    pub fn token(&self) -> CancelToken {
+        self.current.lock().unwrap().clone()
+    }
+
+    /// Cancel the current cycle's token.
+    pub fn cancel(&self) {
+        self.current.lock().unwrap().cancel();
+    }
+
+    /// Begin the next cycle with a token not cancelled, and return it.
+    pub fn renew(&self) -> CancelToken {
+        let fresh = CancelToken::new();
+        *self.current.lock().unwrap() = fresh.clone();
+        fresh
     }
 }

@@ -354,6 +354,7 @@ impl ServerBuilder {
                 inbound: self.inbound,
                 withhold: self.withhold,
                 replies: Arc::new(UnsettledReplies::default()),
+                connections: std::sync::Mutex::default(),
             }),
         })
     }
@@ -456,6 +457,8 @@ struct Inner {
     inbound: Option<Inbound>,
     withhold: Option<Arc<ReplyWithhold>>,
     replies: Arc<UnsettledReplies>,
+    /// The connections this server accepted and still holds open, by their stable id.
+    connections: std::sync::Mutex<HashMap<usize, Connection>>,
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
@@ -518,9 +521,31 @@ impl NodeRpcServer {
         }
     }
 
+    /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
+    /// `reason`, except those from `spare` (the peer whose call is in flight and answered on its
+    /// connection). The endpoint stays bound and fresh dials are accepted. Returns how many were
+    /// closed.
+    pub fn close_connections_except(&self, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
+        let cut: Vec<Connection> = {
+            let held = self.inner.connections.lock().unwrap();
+            held.values().filter(|c| Some(c.remote_id()) != spare).cloned().collect()
+        };
+        for c in &cut {
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
+                .in_scope(|| tracing::info!("an accepted connection was closed"));
+            c.close(0u32.into(), reason.as_bytes());
+        }
+        cut.len()
+    }
+
     /// Enter `Draining`: new calls get a typed `Draining` refusal.
     pub fn drain(&self) {
         self.inner.draining.store(true, Ordering::SeqCst);
+    }
+
+    /// Leave `Draining`: a parked birth that starts again takes new calls.
+    pub fn resume(&self) {
+        self.inner.draining.store(false, Ordering::SeqCst);
     }
 
     async fn refuse(&self, op: u8, r: Refusal, mut send: SendStream, mut recv: RecvStream) {
@@ -708,9 +733,12 @@ impl ProtocolHandler for NodeRpcServer {
                 inbound.observer.direct_accepted(&node);
             }
         }
+        let id = connection.stable_id();
+        self.inner.connections.lock().unwrap().insert(id, connection.clone());
         while let Ok((send, recv)) = connection.accept_bi().await {
             tokio::spawn(self.clone().invocation(peer, send, recv));
         }
+        self.inner.connections.lock().unwrap().remove(&id);
         Ok(())
     }
 }

@@ -6,7 +6,7 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
 fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
@@ -20,7 +20,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_sixteen_variant_wire_schema() {
+fn requests_match_the_frozen_seventeen_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -51,6 +51,7 @@ fn requests_match_the_frozen_sixteen_variant_wire_schema() {
         (StateCommitted { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "commit-state:fabric1".into() }, "0d0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f31613262336334640114636f6d6d69742d73746174653a66616272696331"),
         (OpenTraffic { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0e0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f316132623363346401146f70656e2d747261666669633a66616272696331"),
         (TrafficOpened { fabric_id: fabric(), node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "open-traffic:fabric1".into() }, "0f0c3231323334353637383961620c3031323334353637383961620562697274680c626c645f316132623363346401146f70656e2d747261666669633a66616272696331"),
+        (StartNode { node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() }, "100c3031323334353637383961620562697274680c626c645f3161326233633464011673746172742d6e6f64653a6d657368312e7270632e31"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -61,7 +62,7 @@ fn requests_match_the_frozen_sixteen_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_seventeen_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_one_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -81,9 +82,29 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
         (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),
+        (Left { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Started, "12"),
+        (StartFailed { step: "node.join".into(), reason: "refused".into() }, "13096e6f64652e6a6f696e0772656675736564"),
+        (CurrentParked { node_id: node(), incarnation: birth() }, "140c303132333435363738396162056269727468"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
+        let expected = bytes(hex);
+        assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
+        assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
+    }
+}
+
+/// CONTRACT: the drain receipt a `Left` carries is frozen: `Established` is variant 0, `Deadline` variant 1,
+/// each with its count as a varint.
+#[test]
+fn a_left_reply_carries_its_drain_receipt_in_frozen_bytes() {
+    use StatusReply::Left;
+    for (reply, hex) in [
+        (Left { receipt: DrainReceipt::Established { in_flight: 0 } }, "110000"),
+        (Left { receipt: DrainReceipt::Established { in_flight: 3 } }, "110003"),
+        (Left { receipt: DrainReceipt::Deadline { last_in_flight: 300 } }, "1101ac02"),
+    ] {
         let expected = bytes(hex);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Status::decode_reply(&expected).unwrap(), reply);

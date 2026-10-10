@@ -1228,7 +1228,12 @@ pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::Endpoint
 /// otherwise never dialed again. Nothing is sent.
 #[derive(Clone)]
 struct Channel {
-    sender: Arc<tokio::sync::RwLock<GossipSender>>,
+    /// The topic's sender; `None` while the channel is parked (the topic is left).
+    sender: Arc<tokio::sync::RwLock<Option<GossipSender>>>,
+    /// `true` while the channel is parked: the topic is left and nothing is sent or heard on it.
+    parked: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Counts the times the receive task has finished leaving the topic for a park.
+    left: Arc<tokio::sync::watch::Sender<u64>>,
     /// Every peer this channel was seeded with or asked to join.
     peers: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
     /// The peers asked while they stayed on the live list.
@@ -1237,6 +1242,8 @@ struct Channel {
     endpoint: Endpoint,
     /// The active gossip neighbours on this channel (NeighborUp minus NeighborDown).
     neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>,
+    /// Counts the changes of `neighbors`: what a waiter on "a neighbour is up" wakes on.
+    neighbors_changed: Arc<tokio::sync::watch::Sender<u64>>,
     /// Frames broadcast on this channel since this birth.
     frames_sent: Arc<std::sync::atomic::AtomicU64>,
     /// Frames decoded from this channel since this birth.
@@ -1270,17 +1277,24 @@ impl Channel {
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
         tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node, channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
-        let (sender, mut receiver) = sub.split();
+        let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(sender)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone(), neighbors: Arc::default(), frames_sent: Arc::default(), frames_received: Arc::default() };
+        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, lookup, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default() };
         let neighbors = me.neighbors.clone();
+        let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
         me.refeed(node.to_string(), channel.to_string(), neighbors.clone(), targets);
         let (shared, known, gossip, fabric, channel, node) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), node.to_string());
+        let (parked, left) = (me.parked.clone(), me.left.clone());
         tokio::spawn(async move {
+            let mut receiver = Some(receiver);
             loop {
+                let mut parked_rx = parked.subscribe();
                 let reason = loop {
-                    let ev = receiver.next().await;
+                    let ev = tokio::select! {
+                        ev = receiver.as_mut().expect("the receiver is held while the channel is open").next() => ev,
+                        _ = parked_rx.wait_for(|p| *p) => break "parked".to_string(),
+                    };
                     match &ev {
                         Some(Ok(Event::Received(m))) => {
                             match Frame::decode(&m.content) {
@@ -1310,21 +1324,24 @@ impl Channel {
                                 n.insert(*p);
                                 n.len()
                             };
+                            neighbors_changed.send_modify(|v| *v += 1);
                             tracing::info_span!("rdm.mesh.connection.update.via-neighbour-up", node = %node, channel = %channel, peer = %p.fmt_short(), neighbours = count)
                                 .in_scope(|| tracing::info!("a neighbour came up on this channel"));
                             // A join, a heal or a refeed brings a neighbour up: the holder says the
                             // statuses it holds once (gossip.md §3.1), the original authors intact.
                             let sender = shared.read().await.clone();
-                            let frames = replay();
+                            let frames = if sender.is_some() { replay() } else { Vec::new() };
                             if !frames.is_empty() {
                                 let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
                                 let fulls = frames.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
                                 tracing::info_span!("rdm.mesh.membership.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = frames.len(), full_chunks = fulls, bytes)
                                     .in_scope(|| tracing::info!("a neighbour came up: this primary says what it holds once"));
                             }
-                            for f in frames {
-                                if sender.broadcast(Bytes::from(f.encode())).await.is_ok() {
-                                    sent.fetch_add(1, Ordering::Relaxed);
+                            if let Some(sender) = sender {
+                                for f in frames {
+                                    if sender.broadcast(Bytes::from(f.encode())).await.is_ok() {
+                                        sent.fetch_add(1, Ordering::Relaxed);
+                                    }
                                 }
                             }
                         }
@@ -1334,6 +1351,7 @@ impl Channel {
                                 n.remove(p);
                                 n.len()
                             };
+                            neighbors_changed.send_modify(|v| *v += 1);
                             tracing::info_span!("rdm.mesh.connection.update.via-neighbour-down", node = %node, channel = %channel, peer = %p.fmt_short(), neighbours = count)
                                 .in_scope(|| tracing::info!("a neighbour went down on this channel"));
                         }
@@ -1344,6 +1362,16 @@ impl Channel {
                     }
                 };
                 neighbors.lock().unwrap().clear();
+                if reason == "parked" {
+                    // The topic is left: the sender and the receiver are both dropped, so this node
+                    // is no neighbour of anyone on it. It joins again only when the channel is unparked.
+                    *shared.write().await = None;
+                    drop(receiver.take());
+                    left.send_modify(|n| *n += 1);
+                    tracing::info_span!("rdm.mesh.connection.delete.via-channel-parked", node = %node, channel = %channel)
+                        .in_scope(|| tracing::info!("the topic is left: the channel is parked"));
+                    let _ = parked_rx.wait_for(|p| !*p).await;
+                }
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rdm.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
@@ -1357,18 +1385,41 @@ impl Channel {
                 };
                 span.in_scope(|| tracing::info!("subscription re-opened"));
                 let (s, r) = reopened.split();
-                *shared.write().await = s;
-                receiver = r;
+                *shared.write().await = Some(s);
+                receiver = Some(r);
             }
         });
         Ok(me)
     }
 
     async fn broadcast(&self, f: &Frame) -> Result<()> {
-        let sender = self.sender.read().await.clone();
+        let sender = self.sender.read().await.clone().ok_or_else(|| anyhow::anyhow!("the channel is parked: its topic is left, nothing is sent"))?;
         sender.broadcast(Bytes::from(f.encode())).await?;
         self.frames_sent.fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// Leave the topic: the sender and the receiver are dropped, so this node is a neighbour of no
+    /// one on it, and nothing is sent or heard until [`Self::unpark`]. Resolves once the topic is
+    /// left. Parking a parked channel is a no-op.
+    async fn park(&self) {
+        if *self.parked.borrow() {
+            return;
+        }
+        let mut left = self.left.subscribe();
+        left.borrow_and_update();
+        self.parked.send_replace(true);
+        let _ = left.changed().await;
+    }
+
+    /// Join the topic again through the peers this channel knows.
+    async fn unpark(&self) {
+        let mut ready = self.sender.read().await.is_some();
+        self.parked.send_replace(false);
+        while !ready {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            ready = self.sender.read().await.is_some();
+        }
     }
 
     /// Register `peer`'s address; `true` when it is new to this channel.
@@ -1386,7 +1437,7 @@ impl Channel {
         let live: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         let fresh = rejoin(&self.joined, &live);
         if !fresh.is_empty() {
-            let sender = self.sender.read().await.clone();
+            let Some(sender) = self.sender.read().await.clone() else { return Ok(0) };
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
@@ -1427,7 +1478,10 @@ impl Channel {
                     me.lookup.add_endpoint_info(t.addr.clone());
                     me.peers.lock().unwrap().insert(t.addr.id);
                     let sender = me.sender.read().await.clone();
-                    let joined = sender.join_peers(vec![t.addr.id]).await.is_ok();
+                    let joined = match sender {
+                        Some(sender) => sender.join_peers(vec![t.addr.id]).await.is_ok(),
+                        None => false,
+                    };
                     tracing::info_span!(
                         "rdm.mesh.connection.update.via-refeed",
                         node = %node,
@@ -1457,7 +1511,10 @@ impl Channel {
                     continue;
                 }
                 let sender = me.sender.read().await.clone();
-                let joined = sender.join_peers(peers.clone()).await.is_ok();
+                let joined = match sender {
+                    Some(sender) => sender.join_peers(peers.clone()).await.is_ok(),
+                    None => continue,
+                };
                 tracing::info_span!("rdm.mesh.connection.update.via-refeed", node = %node, channel = %channel, reason = "no-neighbours-fallback", peers = peers.len(), joined)
                     .in_scope(|| tracing::info!("no neighbour: every known peer handed to the channel again"));
                 alone_since = Some(Instant::now());
@@ -2279,6 +2336,39 @@ impl Membership {
         self.mesh.broadcast(f).await
     }
 
+    /// Leave this mesh's gossip topic: this node is a neighbour of no one on it and sends and hears
+    /// nothing there until [`Membership::unpark`]. Resolves once the topic is left.
+    pub async fn park(&self) {
+        self.mesh.park().await;
+    }
+
+    /// Join this mesh's gossip topic again through the peers it knows. Resolves once the topic is
+    /// re-subscribed.
+    pub async fn unpark(&self) {
+        self.mesh.unpark().await;
+    }
+
+    /// Resolves once this node's mesh channel has a gossip neighbour (at once when it has one). A node
+    /// that rejoins waits here before it says it is back: what it says before it has a neighbour
+    /// reaches no one.
+    pub async fn wait_for_neighbour(&self) {
+        let mut changed = self.mesh.neighbors_changed.subscribe();
+        loop {
+            changed.borrow_and_update();
+            if !self.mesh.neighbors.lock().unwrap().is_empty() {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// The active gossip neighbours on this node's mesh channel.
+    pub fn neighbours(&self) -> usize {
+        self.mesh.neighbors.lock().unwrap().len()
+    }
+
     /// Publish a lifecycle event this node authored on its own mesh channel,
     /// applying it to its own view first.
     pub async fn publish_lifecycle(&self, f: &Frame) -> Result<()> {
@@ -2524,6 +2614,17 @@ pub struct Backbone {
 }
 
 impl Backbone {
+    /// Leave the backbone topic: this admin is a neighbour of no one on it and sends and hears
+    /// nothing there until [`Backbone::unpark`]. Resolves once the topic is left.
+    pub async fn park(&self) {
+        self.channel.park().await;
+    }
+
+    /// Join the backbone topic again through the peers it knows.
+    pub async fn unpark(&self) {
+        self.channel.unpark().await;
+    }
+
     /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
     /// aggregate this admin publishes names as its publisher.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
@@ -2924,7 +3025,11 @@ pub struct DigestBook {
     /// The parked births (`NodeStopped`) by NodeId: the incarnation and the highest `digest_seq`
     /// this book held of it when it dropped it. Only that birth's own rejoin (a `Pending`, or a
     /// `ReadyForTraffic` after a `Draining`, with a higher sequence) reopens it.
-    stopped_marks: Arc<Mutex<HashMap<String, (IncarnationId, u64)>>>,
+    stopped_marks: Arc<Mutex<HashMap<String, (IncarnationId, u64, Option<MeshDigest>)>>>,
+    /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
+    /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
+    /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
+    ended_overlays: Arc<Mutex<BTreeSet<(String, u32, String)>>>,
     /// The meshes this book heard `mesh-leaving` for and not yet `mesh-left`, by mesh id: Leaving.
     /// Nothing is kept of a mesh once its `mesh-left` is applied.
     leaving: Arc<Mutex<BTreeMap<String, LeavingMesh>>>,
@@ -3024,6 +3129,7 @@ impl DigestBook {
             departed: Arc::default(),
             in_flight: Arc::default(),
             stopped_marks: Arc::default(),
+            ended_overlays: Arc::default(),
             leaving: Arc::default(),
             accepted_meshes: Arc::default(),
             retention,
@@ -3112,6 +3218,9 @@ impl DigestBook {
         if self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(held, _, _)| held.node.incarnation != op.incarnation && held.node.supersedes.as_ref() == Some(&op.incarnation)) {
             return false;
         }
+        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
+            return false;
+        }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if new {
             tracing::info_span!(
@@ -3128,6 +3237,32 @@ impl DigestBook {
         new
     }
 
+    /// The restart overlays the Build facts name open, applied as the facts' truth: each is open here
+    /// until its operation's `Complete` is receipted, whatever a rejoin digest did to it before, and a
+    /// restart overlay this book holds that the facts no longer name is closed. This is the lifetime
+    /// the aggregate carries a restart for: from its pre-event to the end of the operation.
+    pub fn restarts_from_facts(&self, open: &[LifecycleOp]) {
+        {
+            let mut ended = self.ended_overlays.lock().unwrap();
+            for op in open.iter().filter(|o| o.is_restart()) {
+                ended.remove(&op.key());
+            }
+        }
+        for op in open.iter().filter(|o| o.is_restart()) {
+            self.restarting(op.clone());
+        }
+        let keep: BTreeSet<(String, u32, String)> = open.iter().filter(|o| o.is_restart()).map(|o| o.key()).collect();
+        let mut in_flight = self.in_flight.lock().unwrap();
+        let mut ended = self.ended_overlays.lock().unwrap();
+        in_flight.retain(|k, o| {
+            let gone = o.is_restart() && !keep.contains(k);
+            if gone {
+                ended.insert(k.clone());
+            }
+            !gone
+        });
+    }
+
     /// The open restart of `node_id`'s birth `incarnation`, if any.
     pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
@@ -3141,8 +3276,15 @@ impl DigestBook {
         use rafka_mesh_entity::MemberStatus::{Draining, Leaving, Pending, ReadyForTraffic};
         let rejoin = d.status == Pending || (d.status == ReadyForTraffic && matches!(prior, Some(Draining | Leaving) | None));
         let mut in_flight = self.in_flight.lock().unwrap();
+        let mut ended = self.ended_overlays.lock().unwrap();
         let before = in_flight.len();
-        in_flight.retain(|_, op| !(op.is_restart() && op.node_id == d.node.node_id && op.incarnation == d.node.incarnation && rejoin));
+        in_flight.retain(|k, op| {
+            let gone = op.is_restart() && op.node_id == d.node.node_id && ((op.incarnation == d.node.incarnation && rejoin) || op.incarnation != d.node.incarnation);
+            if gone {
+                ended.insert(k.clone());
+            }
+            !gone
+        });
         if in_flight.len() != before {
             tracing::info_span!("rdm.mesh.membership.update.via-node-restarted", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0)
                 .in_scope(|| tracing::info!("the restarted node is heard again: the restart is over"));
@@ -3157,8 +3299,12 @@ impl DigestBook {
         if self.is_departed(op.node_id.as_str()) {
             return false;
         }
-        let held = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| (d.node.incarnation.clone(), d.digest_seq, d.status));
+        let held_digest = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| d.clone());
+        let held = held_digest.as_ref().map(|d| (d.node.incarnation.clone(), d.digest_seq, d.status));
         if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
+            return false;
+        }
+        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
             return false;
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
@@ -3166,7 +3312,7 @@ impl DigestBook {
             return false;
         }
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
-        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq));
+        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), (op.incarnation.clone(), seq, held_digest));
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-stopped",
@@ -3191,7 +3337,7 @@ impl DigestBook {
     /// birth of the node ends the stop and is taken by the rules of any birth.
     fn stopped_refuses(&self, d: &MeshDigest) -> bool {
         let mark = self.stopped_marks.lock().unwrap().get(d.node.node_id.as_str()).cloned();
-        let Some((incarnation, seq)) = mark else { return false };
+        let Some((incarnation, seq, _)) = mark else { return false };
         let rejoin = incarnation != d.node.incarnation || (d.digest_seq > seq && matches!(d.status, rafka_mesh_entity::MemberStatus::Pending | rafka_mesh_entity::MemberStatus::ReadyForTraffic));
         if !rejoin {
             tracing::info_span!(
@@ -3212,10 +3358,25 @@ impl DigestBook {
         false
     }
 
+    /// The last digest this book held of each parked birth: a node-admin keeps showing the birth,
+    /// `Leaving`, in its view though the book dropped it. A birth this book never held a digest of
+    /// (a late joiner) is not listed.
+    pub fn parked(&self) -> Vec<MeshDigest> {
+        self.stopped_marks.lock().unwrap().values().filter_map(|(_, _, d)| d.clone()).collect()
+    }
+
     /// The stop of `node_id` is over (it rejoined, or departed): its overlay and mark clear.
     fn end_stop(&self, node_id: &str) {
         self.stopped_marks.lock().unwrap().remove(node_id);
-        self.in_flight.lock().unwrap().retain(|_, o| !(o.is_stop() && o.node_id.as_str() == node_id));
+        let mut in_flight = self.in_flight.lock().unwrap();
+        let mut ended = self.ended_overlays.lock().unwrap();
+        in_flight.retain(|k, o| {
+            let gone = o.is_stop() && o.node_id.as_str() == node_id;
+            if gone {
+                ended.insert(k.clone());
+            }
+            !gone
+        });
     }
 
     /// Accept an open lifecycle overlay: the node stays held and stops being
@@ -3871,6 +4032,28 @@ mod tests {
         assert!(book.depart(op(&id, &inc, "retire-node:mesh1.rpc.1")));
         assert!(book.in_flight().is_empty(), "the departure cleared the stop overlay");
         assert!(!book.record(digest(&id, &inc, None, MemberStatus::Pending, 400)), "a departed node never returns");
+    }
+
+    /// CONTRACT: an overlay that ended because its birth rejoined stays ended: the primary re-applying
+    /// the operation each round (its `Complete` is not receipted yet) and a snapshot built before the
+    /// rejoin open nothing. Must NOT happen: a rejoined node held restarting or parked again.
+    #[test]
+    fn an_ended_restart_or_stop_overlay_is_not_opened_again_by_a_later_copy() {
+        let book = DigestBook::default();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
+        let restart = op(&id, &inc, "restart-node:mesh1.rpc.1");
+        assert!(book.restarting(restart.clone()));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
+        assert!(book.restart_of(id.as_str(), &inc).is_none());
+        assert!(!book.restarting(restart), "the same operation again opens nothing");
+        assert!(book.routable(id.as_str()));
+        let stop = op(&id, &inc, "stop-node:mesh1.rpc.1");
+        assert!(book.stopped(stop.clone()));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 130)));
+        assert!(!book.stopped(stop), "a snapshot built before the rejoin does not park the node again");
+        assert!(book.get(id.as_str()).is_some());
     }
 
     /// CONTRACT: a stop of an older birth than the one held, and a stop of a departed node, are refused;

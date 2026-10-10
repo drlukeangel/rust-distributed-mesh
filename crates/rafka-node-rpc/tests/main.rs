@@ -7,6 +7,7 @@ mod common;
 #[allow(dead_code)]
 #[path = "common/forward_rig.rs"]
 mod rig;
+mod connection_cut;
 mod connection_observer;
 mod connections_integration;
 mod context;

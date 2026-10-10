@@ -6,6 +6,7 @@ mod own_process;
 mod i143_acceptance_2900;
 mod i143_acceptance_2901;
 mod i143_acceptance_2902;
+mod channel_park;
 mod gossip_stats;
 mod heartbeat_spans;
 mod lifecycle_frames_wire;
