@@ -133,9 +133,39 @@ impl Clock for OsClock {
 /// hand it to the embedding app once the process has joined, so it is always adopted by then.
 ///
 /// A process adopts the authority's time once per join ([`RafkaTime::adopt`]); neither side
-/// estimates network delay. A read answers `max(reference + monotonic elapsed, last returned)`, so
-/// an adoption of a reference behind the last reading stalls the reader until the new reference
+/// estimates network delay. A read answers `max(reference + advancement, last returned)`, so an
+/// adoption of a reference behind the last reading stalls the reader until the new reference
 /// catches up and never steps rafka-time back. The OS clock takes no part in a read.
+///
+/// # Discipline from the authority's heartbeats
+///
+/// After its adoption the process keeps the clock on its authority's time from the stamps the
+/// authority already publishes ([`Clock::observe`]; the caller proves the sample eligible: the
+/// authority's exact birth, freshly admitted, ready-for-traffic, from the lineage only). This
+/// follows RFC 5905 §11.3 in separating three things:
+///
+/// - **Offset.** One sample's offset is `stamp - reading at receipt`. A stamp is the authority's
+///   time at publication, so a delivered sample is older by its delivery delay and an offset is
+///   `true offset - delay`; the delay is never measured (neither side estimates it). A sample
+///   with `offset > 0` is proof the clock is behind (delay is never negative), so the reference
+///   **steps forward** to the stamp at once, the slew in progress is cancelled and the window is
+///   cleared. Nothing steps back: a read is `max(.., last returned)`.
+/// - **Network jitter.** The sample filter is the minimum-delay selection of RFC 5905 §10, applied
+///   to offsets: over [`WINDOW_SAMPLES`] consecutive fresh samples of at most [`WINDOW_SPAN`] the
+///   decision reads the **largest** offset (the least delayed sample). A late delivery cannot lower
+///   it. The window's peak-to-peak spread is reported as the jitter. A sample behind the clock by
+///   no more than [`JITTER_ALLOWANCE_MS`] is ordinary delivery delay: the clock is left alone.
+/// - **Frequency error.** It is not estimated; it shows as offset again and again. A clock whose
+///   best sample of a whole window stands behind by more than the allowance has run fast: it
+///   **sheds the excess** (`-best - allowance`) by advancing at `1 - MAX_SLEW_PPM/1e6` of elapsed
+///   time until the excess is gone, then resumes. The shed is a budget: with no further evidence
+///   the clock never slows by more than that excess, however long the silence.
+///
+/// The existing stall (an adoption behind the last reading holds the reader flat) is the same
+/// instrument at rate zero; the slew is its gentle form. A decision is taken once per window and
+/// every step or decision clears the window, so an offset is never measured across a changed
+/// clock. A sample before any adoption moves nothing: only an adoption from the authority's answer
+/// anchors a clock.
 #[derive(Clone, Default)]
 pub struct RafkaTime {
     inner: Arc<std::sync::Mutex<TimeState>>,
@@ -144,9 +174,31 @@ pub struct RafkaTime {
 #[derive(Default)]
 struct TimeState {
     /// The adopted reference and the monotonic instant it was adopted at.
-    anchor: Option<(u64, std::time::Instant)>,
+    anchor: Option<Anchor>,
     /// The last value returned: reads never go below it.
     last: u64,
+    /// The shed in progress, from the anchor.
+    slew: Option<Slew>,
+    /// The offsets of the current window.
+    window: std::collections::VecDeque<(std::time::Instant, i64)>,
+    /// The newest stamp taken, in milliseconds: a duplicate or reordered delivery is not newer.
+    newest_stamp: u64,
+    /// A testkit executable's injected rate error in parts per million, zero everywhere else.
+    drift_ppm: i64,
+}
+
+#[derive(Clone, Copy)]
+struct Anchor {
+    /// The reference in nanoseconds of rafka-time (an adoption is whole milliseconds).
+    reference_ns: u128,
+    since: std::time::Instant,
+}
+
+#[derive(Clone, Copy)]
+struct Slew {
+    ppm: u32,
+    /// What is left to shed, in nanoseconds of advancement, counted from the anchor.
+    remaining_ns: u128,
 }
 
 /// What one [`RafkaTime::adopt`] changed.
@@ -167,6 +219,8 @@ impl std::fmt::Debug for RafkaTime {
     }
 }
 
+const NS_PER_MS: u128 = 1_000_000;
+
 impl RafkaTime {
     /// A reader that holds no rafka-time yet: it judges nothing until a join adopts one.
     pub fn unadopted() -> Self {
@@ -181,33 +235,86 @@ impl RafkaTime {
 
     fn adopt_at(&self, reference_ms: u64, at: std::time::Instant) -> Adopted {
         let mut s = self.inner.lock().unwrap();
-        let previous_ms = s.anchor.map(|_| s.last.max(Self::read(&s, at)));
+        let previous_ms = s.anchor.map(|_| Self::read(&s, at));
         if let Some(p) = previous_ms {
             s.last = p;
         }
-        s.anchor = Some((reference_ms, at));
+        s.anchor = Some(Anchor { reference_ns: reference_ms as u128 * NS_PER_MS, since: at });
+        s.slew = None;
+        s.window.clear();
         Adopted { reference_ms, previous_ms, stalls_ms: previous_ms.map_or(0, |p| p.saturating_sub(reference_ms)) }
+    }
+
+    /// The anchor's reference advanced to `at`, in nanoseconds, before the floor of the last
+    /// value returned. Pure: callers hold the lock and call nothing that takes it.
+    fn advanced_ns(s: &TimeState, a: Anchor, at: std::time::Instant) -> u128 {
+        let elapsed = at.saturating_duration_since(a.since).as_nanos();
+        let driven = if s.drift_ppm == 0 { elapsed } else { (elapsed as i128 * (1_000_000 + s.drift_ppm as i128) / 1_000_000).max(0) as u128 };
+        let shed = s.slew.map_or(0, |w| (driven * w.ppm as u128 / 1_000_000).min(w.remaining_ns));
+        a.reference_ns + driven - shed
     }
 
     fn read(s: &TimeState, at: std::time::Instant) -> u64 {
         match s.anchor {
-            Some((reference, since)) => reference.saturating_add(at.saturating_duration_since(since).as_millis() as u64).max(s.last),
+            Some(a) => ((Self::advanced_ns(s, a, at) / NS_PER_MS) as u64).max(s.last),
             None => s.last,
         }
     }
 
-    /// Milliseconds of rafka-time now, or `None` while the process holds none.
-    pub fn try_now_ms(&self) -> Option<u64> {
-        let mut s = self.inner.lock().unwrap();
-        s.anchor?;
-        let now = Self::read(&s, std::time::Instant::now());
-        s.last = now;
-        Some(now)
+    /// Fold the clock as it stands at `at` into the anchor, so the rate can change from here
+    /// without a jump: the reference is the reading now, the budget left is what is unshed.
+    fn rebase(s: &mut TimeState, at: std::time::Instant) {
+        let Some(a) = s.anchor else { return };
+        let elapsed = at.saturating_duration_since(a.since).as_nanos();
+        let driven = if s.drift_ppm == 0 { elapsed } else { (elapsed as i128 * (1_000_000 + s.drift_ppm as i128) / 1_000_000).max(0) as u128 };
+        let reference_ns = Self::advanced_ns(s, a, at);
+        if let Some(w) = s.slew.as_mut() {
+            w.remaining_ns -= (driven * w.ppm as u128 / 1_000_000).min(w.remaining_ns);
+        }
+        s.anchor = Some(Anchor { reference_ns, since: at });
     }
 
-    /// [`Clock::observe`] at `at`.
-    pub fn observe_at(&self, _stamp_ms: u64, _at: std::time::Instant) -> Observed {
-        Observed::Ignored(Ignored::NotDisciplined)
+    /// [`Clock::observe`] at `at`: a monotonic instant not before any earlier one given.
+    pub fn observe_at(&self, stamp_ms: u64, at: std::time::Instant) -> Observed {
+        let mut s = self.inner.lock().unwrap();
+        let Some(a) = s.anchor else { return Observed::Ignored(Ignored::NotAdopted) };
+        if stamp_ms == 0 {
+            return Observed::Ignored(Ignored::NoStamp);
+        }
+        if stamp_ms <= s.newest_stamp {
+            return Observed::Ignored(Ignored::NotNewer);
+        }
+        s.newest_stamp = stamp_ms;
+        // The clock as a read at `at` would answer it, in nanoseconds.
+        let now_ns = Self::advanced_ns(&s, a, at).max(s.last as u128 * NS_PER_MS);
+        let stamp_ns = stamp_ms as u128 * NS_PER_MS;
+        if stamp_ns > now_ns {
+            // Ahead: the authority was at least here when it published. Step the reference to it.
+            s.last = Self::read(&s, at);
+            s.anchor = Some(Anchor { reference_ns: stamp_ns, since: at });
+            s.slew = None;
+            s.window.clear();
+            return Observed::Stepped { by_ms: ((stamp_ns - now_ns) / NS_PER_MS) as u64 };
+        }
+        let offset_ms = -(((now_ns - stamp_ns) / NS_PER_MS) as i64);
+        while s.window.front().is_some_and(|(t, _)| at.saturating_duration_since(*t) > WINDOW_SPAN) {
+            s.window.pop_front();
+        }
+        s.window.push_back((at, offset_ms));
+        if s.window.len() < WINDOW_SAMPLES {
+            return Observed::Collecting;
+        }
+        let best = s.window.iter().map(|(_, o)| *o).max().expect("a full window");
+        let worst = s.window.iter().map(|(_, o)| *o).min().expect("a full window");
+        s.window.clear();
+        if best >= -(JITTER_ALLOWANCE_MS as i64) {
+            return Observed::Within { best_offset_ms: best, jitter_ms: (best - worst) as u64 };
+        }
+        let excess_ms = (-best) as u64 - JITTER_ALLOWANCE_MS;
+        s.last = Self::read(&s, at);
+        Self::rebase(&mut s, at);
+        s.slew = Some(Slew { ppm: MAX_SLEW_PPM, remaining_ns: excess_ms as u128 * NS_PER_MS });
+        Observed::SlewStarted { best_offset_ms: best, excess_ms, ppm: MAX_SLEW_PPM, recovers_in_ms: excess_ms * 1_000_000 / MAX_SLEW_PPM as u64 }
     }
 
     /// The reading at `at` (a monotonic instant not before any earlier one given), `None` while
@@ -218,6 +325,23 @@ impl RafkaTime {
         let now = Self::read(&s, at);
         s.last = now;
         Some(now)
+    }
+
+    /// Run this process's monotonic time `ppm` parts per million fast (negative: slow) from now
+    /// on. Called only by a testkit executable that reads a test knob from its environment, to
+    /// prove the discipline holds a clock with a frequency error on its authority's time; no
+    /// product executable calls it.
+    pub fn drift_for_testkit(&self, ppm: i64) {
+        let mut s = self.inner.lock().unwrap();
+        let now = std::time::Instant::now();
+        s.last = Self::read(&s, now);
+        Self::rebase(&mut s, now);
+        s.drift_ppm = ppm;
+    }
+
+    /// Milliseconds of rafka-time now, or `None` while the process holds none.
+    pub fn try_now_ms(&self) -> Option<u64> {
+        self.reading_at(std::time::Instant::now())
     }
 
     /// Whether the process has adopted a rafka-time.
@@ -623,5 +747,54 @@ mod discipline_sim {
         }
         let reads: u64 = readers.into_iter().map(|r| r.join().unwrap()).sum();
         assert!(reads > 0);
+    }
+
+    /// One follower of a lineage: its own monotonic rate and clock.
+    struct Node {
+        base: Instant,
+        ppm: i64,
+        t: RafkaTime,
+    }
+
+    impl Node {
+        fn at(&self, true_us: u64) -> Instant {
+            self.base + Duration::from_nanos(((true_us as i128) * 1000 * (1_000_000 + self.ppm as i128) / 1_000_000) as u64)
+        }
+        fn read(&self, true_ms: u64) -> i64 {
+            self.t.reading_at(self.at(true_ms * 1000)).unwrap() as i64
+        }
+    }
+
+    #[test]
+    fn two_hops_of_the_lineage_stay_inside_the_spread_bound() {
+        // authority (exact) -> two mesh primaries (+50 and -50 ppm) -> a member each (-50 and +50
+        // ppm), the worst pairing: heartbeats every 2 s, delivered after 20 ms, six hours.
+        let base = Instant::now();
+        let mk = |ppm: i64| {
+            let t = RafkaTime::unadopted();
+            t.adopt_at(T0, base);
+            Node { base, ppm, t }
+        };
+        let (p1, p2, m1, m2) = (mk(50), mk(-50), mk(-50), mk(50));
+        let (mut worst_spread, mut worst_abs) = (0i64, 0i64);
+        let mut now_ms = 0u64;
+        while now_ms < 6 * H {
+            now_ms += 2_000;
+            // The authority's stamp reaches the primaries; their stamps reach their members.
+            let auth_stamp = T0 + now_ms;
+            for p in [&p1, &p2] {
+                p.t.observe_at(auth_stamp, p.at((now_ms + 20) * 1000));
+            }
+            let (s1, s2) = (p1.read(now_ms) as u64, p2.read(now_ms) as u64);
+            m1.t.observe_at(s1, m1.at((now_ms + 40) * 1000));
+            m2.t.observe_at(s2, m2.at((now_ms + 40) * 1000));
+            let t = now_ms + 50;
+            let (e1, e2) = (m1.read(t) - (T0 + t) as i64, m2.read(t) - (T0 + t) as i64);
+            worst_spread = worst_spread.max((e1 - e2).abs());
+            worst_abs = worst_abs.max(e1.abs()).max(e2.abs());
+        }
+        // Each node stands in [-(delay), allowance - delay] of its lineage: two hops, two members.
+        assert!(worst_abs <= 2 * JITTER_ALLOWANCE_MS as i64, "{worst_abs}");
+        assert!(worst_spread <= 4 * JITTER_ALLOWANCE_MS as i64, "inside four allowances: {worst_spread}");
     }
 }

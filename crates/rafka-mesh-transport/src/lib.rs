@@ -12,6 +12,7 @@
 
 pub mod chunking;
 pub mod clock;
+pub(crate) mod discipline;
 pub mod iroh_obs;
 pub mod load;
 pub mod membership;

@@ -1335,6 +1335,18 @@ struct SnapshotTaken {
     /// A complete backbone snapshot of a source Mesh: `(mesh, publisher, version, full)`, for the
     /// forwarding primary.
     source: Option<(String, PublisherId, u64, Full)>,
+    /// A complete snapshot installed from the backbone: who published it, when, and the
+    /// publisher's own digest as the snapshot lists it. Evidence for the clock's discipline.
+    publication: Option<Publication>,
+}
+
+/// A backbone snapshot as its publisher stamped it.
+struct Publication {
+    publisher: PublisherId,
+    /// The publisher's rafka-time when it published (`Frame::Members::published_at_rafka_ms`).
+    published_at_rafka_ms: u64,
+    /// The publisher's own digest in the snapshot, matched by its exact birth.
+    publisher_digest: Option<MeshDigest>,
 }
 
 /// What a node's view holds, fed by its mesh channel (and, for an admin, the
@@ -1376,13 +1388,26 @@ impl View {
     /// Hold what `f` carries; the digests it carries (for their addresses). A snapshot frame is
     /// not taken here: see [`View::take_snapshot`].
     fn take(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
-        match f {
-            Frame::Digest { digest } if &digest.fabric_id == fabric => {
-                if self.book.record(digest.clone()) {
+        self.take_with(f, fabric, via).0
+    }
+
+    /// [`View::take`], and whether a digest the frame carried was newer than the one held: the
+    /// book's admission of a heartbeat.
+    fn take_with(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> (Vec<MeshDigest>, bool) {
+        if let Frame::Digest { digest } = f {
+            if &digest.fabric_id == fabric {
+                let fresh = self.book.record(digest.clone());
+                if fresh {
                     self.note(digest, via);
                 }
-                vec![digest.clone()]
+                return (vec![digest.clone()], fresh);
             }
+        }
+        (self.take_other(f, fabric, via), false)
+    }
+
+    fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
+        match f {
             Frame::NodeDeleting { op, .. } => {
                 self.book.deleting(op.clone());
                 Vec::new()
@@ -1446,7 +1471,7 @@ impl View {
     /// channel is refused by name.
     fn take_snapshot(&self, f: &Frame, fabric: &FabricId, side: Side) -> SnapshotTaken {
         match f {
-            Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => {
+            Frame::Members { mesh, publisher, forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => {
                 if forwarded_by.is_some() == (side == Side::Backbone) {
                     tracing::info_span!(
                         "rdm.mesh.membership.reject.via-members-on-wrong-channel",
@@ -1493,7 +1518,7 @@ impl View {
                         SnapshotTaken::default()
                     }
                     Taken::Installed(i) => {
-                        let installed = self.installed(&i, fabric, side);
+                        let installed = self.installed(&i, fabric, side, *published_at_rafka_ms);
                         drop(rx);
                         installed
                     }
@@ -1526,7 +1551,7 @@ impl View {
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
                         let carried = self.apply_full(mesh, &full, fabric, side);
                         drop(rx);
-                        SnapshotTaken { carried, source: None }
+                        SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
                     Moved::Duplicate { held_version } => {
                         drop(rx);
@@ -1570,7 +1595,7 @@ impl View {
     }
 
     /// A complete snapshot is held: apply it to the book.
-    fn installed(&self, i: &Install, fabric: &FabricId, side: Side) -> SnapshotTaken {
+    fn installed(&self, i: &Install, fabric: &FabricId, side: Side, published_at_rafka_ms: u64) -> SnapshotTaken {
         tracing::info_span!(
             "rdm.mesh.membership.update.via-snapshot-installed",
             node = %self.node,
@@ -1587,7 +1612,12 @@ impl View {
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
         let carried = self.apply_full(&i.mesh, &i.full, fabric, side);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
-        SnapshotTaken { carried, source }
+        let publication = (side == Side::Backbone).then(|| Publication {
+            publisher: i.publisher.clone(),
+            published_at_rafka_ms,
+            publisher_digest: i.full.digests().into_iter().find(|d| d.node.incarnation == i.publisher.incarnation),
+        });
+        SnapshotTaken { carried, source, publication }
     }
 
     /// Apply the members, overlays and departures of a snapshot or a delta to the book. Departures
@@ -1698,11 +1728,19 @@ impl Membership {
             }
         });
         let lookup_slot: Arc<Mutex<Option<(MemoryLookup, Endpoint)>>> = Arc::default();
-        let (v, f, ls) = (view.clone(), fabric.clone(), lookup_slot.clone());
+        let (v, f, ls, observing) = (view.clone(), fabric.clone(), lookup_slot.clone(), clock.clone());
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             let carried = match &frame {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
-                _ => v.take(&frame, &f, "mesh-channel"),
+                _ => {
+                    let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
+                    // A member's clock follows its current mesh primary's heartbeat.
+                    if let Frame::Digest { digest } = &frame {
+                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &v.node, v.primary.load(Ordering::Relaxed), &v.book.seats, digest, fresh);
+                        crate::discipline::offer(&observing, &v.node, "mesh-primary-digest", verdict);
+                    }
+                    carried
+                }
             };
             if let Some((l, ep)) = ls.lock().unwrap().as_ref() {
                 for d in &carried {
@@ -1960,7 +1998,7 @@ impl Membership {
         let taken = rx.take_read_chunk(chunk);
         if let Taken::Installed(i) = &taken {
             let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
-            self.view.installed(i, &self.fabric, side);
+            self.view.installed(i, &self.fabric, side, 0);
             drop(rx);
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
                 self.mesh.register(&d);
@@ -2148,6 +2186,11 @@ impl Backbone {
         let on_frame: Arc<dyn Fn(Frame) + Send + Sync> = Arc::new(move |frame: Frame| {
             if matches!(frame, Frame::Members { .. } | Frame::MembersDelta { .. }) {
                 let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone);
+                // A mesh primary's clock follows its current fabric-primary's aggregate.
+                if let Some(p) = &taken.publication {
+                    let verdict = crate::discipline::from_fabric_primary_members(&m.view.node, m.view.primary.load(Ordering::Relaxed), &m.view.book.seats, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
+                    crate::discipline::offer(&m.clock, &m.view.node, "fabric-primary-members", verdict);
+                }
                 for d in &taken.carried {
                     register_location(&m.mesh.lookup, d);
                 }
