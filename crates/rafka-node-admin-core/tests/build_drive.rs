@@ -315,5 +315,5 @@ async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it()
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.rpc.1".to_string()]);
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1), ("mesh2.admin.1".to_string(), 2)], "mesh2's own primary ran the members");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.1".to_string(), 2)], "mesh2's own primary ran the members");
 }

@@ -231,16 +231,19 @@ impl BuildExecutor {
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
-            // An operation's executor can move while it is prepared (the seat handover of a mesh
-            // retire): the operation then belongs to the admin the view now names, and it is passed
-            // to it unrun. Nothing else hands an operation off from here; the run is the
-            // fabric-primary's plan.
+            // An operation's executor can move while the run goes: at prepare (the seat handover
+            // of a mesh retire) or once an earlier operation of the run has seated a mesh's first
+            // admin. The operation then belongs to the admin the view now names, and it is passed
+            // to it unrun. The operations themselves are always the fabric-primary's plan.
             let named = executor_for(op, &*self.topology.read().await);
             if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
                 return self.finish(&build, attempt, Err((op.key(), e))).await;
             }
             let to = executor_for(op, &*self.topology.read().await);
-            if to != named {
+            // After the first operation the view can name another executor for the rest: the run
+            // seated a mesh's first admin, which executes that mesh's members from then on. An
+            // operation a view does not place stays with this admin.
+            if to != named || i > 0 {
                 if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
