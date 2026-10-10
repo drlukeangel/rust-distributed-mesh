@@ -254,6 +254,9 @@ impl StatusAuthority {
     /// receiver holds its mesh's seat (accepting a Pending hand-off is not an election).
     pub async fn apply(&self, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let view = self.topology.read().await.clone();
+        if let (Some(from), Some(rounds)) = (sender.as_ref(), self.rounds.get()) {
+            rounds.heard_from(&from.node_id);
+        }
         match req {
             StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } => return self.accept_completion(sender.as_ref(), req),
             StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } => return self.serve_command(&view, sender.as_ref(), req).await,

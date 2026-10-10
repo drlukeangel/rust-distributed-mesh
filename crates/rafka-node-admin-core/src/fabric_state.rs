@@ -10,12 +10,14 @@
 //! only when it checks in as its planned birth, after the primary received this round's down op.
 //! Nothing leaves a checklist by a timer.
 
-use crate::model::{FabricId, IncarnationId, NodeId};
+use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeStatus};
+use crate::status_declare::{eligible, Destination, Sent};
+use crate::topology::Topology;
 use crate::round::Missing;
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 /// The state of the fabric: the value of a FabricStatus frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -171,20 +173,40 @@ pub struct Expected {
     pub name: String,
 }
 
+/// Where one planned birth's down op stands.
+#[derive(Debug, Clone)]
+enum Command {
+    /// The call is out: nothing is sent while it is.
+    Out { to: Destination, status: NodeStatus },
+    /// The birth answered (it admitted the op or refused it by name): the op is never sent again.
+    Answered,
+    /// The call was not delivered, or the birth said it is not ready. Sent again only on an eligible
+    /// event (R-S2): the target is reachable again after its route was lost, the destination moved
+    /// (a new endpoint, address or incarnation), the target's state changed, or the target addressed
+    /// this admin.
+    Undelivered { sent: Sent, status: NodeStatus, addressed: bool },
+}
+
 #[derive(Debug, Default)]
 struct Round {
     expected: BTreeMap<NodeId, Expected>,
     /// Planned births the primary's view holds no birth of yet: each blocks completion by name.
     unresolved: Vec<Missing>,
     checked: HashSet<(NodeId, IncarnationId)>,
-    commanded: HashSet<(NodeId, IncarnationId)>,
+    commands: HashMap<(NodeId, IncarnationId), Command>,
 }
 
-/// The rounds one primary has received the down op of, with their checklists.
+/// The rounds one primary has received the down op of, with their checklists. A change to any
+/// checklist, or a birth with an undelivered command addressing this primary, moves `tick`: the
+/// waiter arms on it before it reads, so a change that happened during the read is not lost.
 #[derive(Debug, Default)]
 pub struct RoundBook {
     rounds: Mutex<HashMap<RoundKey, Round>>,
-    changed: Notify,
+    tick: watch::Sender<u64>,
+}
+
+fn deliverable(n: &Node) -> bool {
+    n.status.is_live() && n.incarnation_id.is_some()
 }
 
 impl RoundBook {
@@ -216,29 +238,99 @@ impl RoundBook {
     /// that is no longer planned stays held but counts for nothing.
     /// `unresolved` are planned births with no birth in the view: they block completion.
     pub fn expect(&self, key: &RoundKey, planned: BTreeMap<NodeId, Expected>, unresolved: Vec<Missing>) {
-        if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
-            r.expected = planned;
-            r.unresolved = unresolved;
+        let moved = match self.rounds.lock().unwrap().get_mut(key) {
+            Some(r) if r.expected != planned || r.unresolved != unresolved => {
+                r.expected = planned;
+                r.unresolved = unresolved;
+                true
+            }
+            _ => false,
+        };
+        if moved {
+            self.bump();
         }
-        self.changed.notify_waiters();
     }
 
-    /// The planned births not yet commanded, marked commanded.
-    pub fn take_uncommanded(&self, key: &RoundKey) -> Vec<(NodeId, Expected)> {
+    /// The planned births whose down op is due now, marked out. A birth never commanded is due once it
+    /// is deliverable in `view`. A command that was not delivered is due again only on an eligible
+    /// event ([`eligible`], R-S2, and a change of the target's state): reading the checklist again
+    /// is not one.
+    pub fn take_due(&self, key: &RoundKey, view: &Topology) -> Vec<(NodeId, Expected)> {
         let mut rounds = self.rounds.lock().unwrap();
         let Some(r) = rounds.get_mut(key) else { return Vec::new() };
-        let due: Vec<(NodeId, Expected)> = r.expected.iter().filter(|(n, e)| !r.commanded.contains(&((*n).clone(), e.incarnation.clone()))).map(|(n, e)| (n.clone(), e.clone())).collect();
-        for (n, e) in &due {
-            r.commanded.insert((n.clone(), e.incarnation.clone()));
+        let mut due = Vec::new();
+        for (n, e) in &r.expected {
+            let target = view.members().find(|t| &t.node_id == n);
+            let slot = (n.clone(), e.incarnation.clone());
+            let go = match (r.commands.get_mut(&slot), target) {
+                (None, Some(t)) => deliverable(t),
+                (None, None) => false,
+                (Some(Command::Out { .. } | Command::Answered), _) => false,
+                (Some(Command::Undelivered { sent, .. }), None) => {
+                    if !sent.typed {
+                        sent.route_lost = true;
+                    }
+                    false
+                }
+                (Some(Command::Undelivered { sent, status, addressed }), Some(t)) => {
+                    let ok = deliverable(t);
+                    if !sent.typed && !ok {
+                        sent.route_lost = true;
+                    }
+                    eligible(Some(sent), &Destination::of(t), ok, *addressed) || (ok && t.status != *status)
+                }
+            };
+            if go {
+                let t = target.expect("a due birth is in the view");
+                r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status });
+                due.push((n.clone(), e.clone()));
+            }
         }
         due
     }
 
-    /// The command to this birth was not delivered: it is sent again.
-    pub fn uncommand(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId) {
+    /// The down op to this birth was answered, by name: it is not sent again.
+    pub fn answered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId) {
         if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
-            r.commanded.remove(&(node_id.clone(), incarnation.clone()));
+            r.commands.insert((node_id.clone(), incarnation.clone()), Command::Answered);
         }
+    }
+
+    /// The down op to this birth was not delivered (`typed`: the birth replied that it is not ready;
+    /// otherwise no reply came): it waits for an eligible event.
+    pub fn undelivered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) {
+        if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
+            let slot = (node_id.clone(), incarnation.clone());
+            if let Some(Command::Out { to, status }) = r.commands.get(&slot).cloned() {
+                r.commands.insert(slot, Command::Undelivered { sent: Sent { to, typed, route_lost: false }, status, addressed: false });
+            }
+        }
+    }
+
+    /// `node_id` addressed this primary (any Status call from it): an undelivered command to it is
+    /// eligible to be sent again.
+    pub fn heard_from(&self, node_id: &NodeId) {
+        let mut any = false;
+        for r in self.rounds.lock().unwrap().values_mut() {
+            for ((n, _), c) in r.commands.iter_mut() {
+                if let (true, Command::Undelivered { addressed, .. }) = (n == node_id, c) {
+                    *addressed = true;
+                    any = true;
+                }
+            }
+        }
+        if any {
+            self.bump();
+        }
+    }
+
+    /// The tick a waiter arms on: it moves when a checklist or an undelivered command's eligibility may have.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.tick.subscribe()
+    }
+
+    fn bump(&self) {
+        self.tick.send_modify(|v| *v += 1);
     }
 
     /// Record the check-in of the planned birth `node_id`/`incarnation` without a call (a primary's
@@ -247,12 +339,7 @@ impl RoundBook {
         if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
             r.checked.insert((node_id.clone(), incarnation.clone()));
         }
-        self.changed.notify_waiters();
-    }
-
-    /// Wait for the next change to any checklist.
-    pub async fn changed(&self) {
-        self.changed.notified().await
+        self.bump();
     }
 
     /// Whether every planned birth has checked in as its planned birth. An empty checklist is complete.
@@ -329,7 +416,7 @@ impl RoundBook {
         };
         drop(rounds);
         if matches!(reply, StatusReply::Applied) {
-            self.changed.notify_waiters();
+            self.bump();
         }
         reply
     }
@@ -387,21 +474,49 @@ mod tests {
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "checked-in-as-another-birth" }]);
     }
 
-    /// CONTRACT: a planned birth is commanded once as its exact birth; a birth that replaced it is commanded
-    /// as a new one, and a command not delivered is sent again.
+    fn target(inc: &IncarnationId, status: NodeStatus) -> Node {
+        let mut n = Node::allocated("mesh2.admin.1".parse().unwrap());
+        n.status = status;
+        n.incarnation_id = Some(inc.clone());
+        n
+    }
+
+    fn view_of(nodes: Vec<Node>) -> Topology {
+        Topology { fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::Pending, provider: crate::model::ProviderKind::Process }, meshes: Vec::new(), nodes }
+    }
+
+    /// A book holding an open round whose checklist names `n` (as `inc`), the command to it out and then not delivered.
+    fn undelivered(typed: bool, status: NodeStatus) -> (RoundBook, RoundKey, Node, IncarnationId) {
+        let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
+        let (book, k, n) = (RoundBook::default(), key("bld_1", 1, &fabric), target(&inc, status));
+        book.open(&k);
+        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        assert_eq!(book.take_due(&k, &view_of(vec![n.clone()])).len(), 1);
+        book.undelivered(&k, &n.node_id, &inc, typed);
+        (book, k, n, inc)
+    }
+
+    /// CONTRACT: a planned birth is commanded once as its exact birth, once it is deliverable; a birth
+    /// that replaced it is commanded as a new one; one that answered is never commanded again.
     #[test]
     fn a_planned_birth_is_commanded_once_per_exact_birth() {
-        let (fabric, node, a, b) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        let (fabric, a, b) = (FabricId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let book = RoundBook::default();
         let k = key("bld_1", 1, &fabric);
+        let n = target(&a, NodeStatus::ReadyForTraffic);
         book.open(&k);
-        book.expect(&k, planned(&node, &a, "mesh2.admin.1"), Vec::new());
-        assert_eq!(book.take_uncommanded(&k).len(), 1);
-        assert!(book.take_uncommanded(&k).is_empty());
-        book.uncommand(&k, &node, &a);
-        assert_eq!(book.take_uncommanded(&k).len(), 1, "an undelivered command is sent again");
-        book.expect(&k, planned(&node, &b, "mesh2.admin.1"), Vec::new());
-        assert_eq!(book.take_uncommanded(&k).len(), 1, "the new birth is commanded as itself");
+        book.expect(&k, planned(&n.node_id, &a, "mesh2.admin.1"), Vec::new());
+        assert!(book.take_due(&k, &view_of(vec![])).is_empty(), "a birth the view does not hold is not sent to");
+        let dead = Node { status: NodeStatus::Dead, ..n.clone() };
+        assert!(book.take_due(&k, &view_of(vec![dead])).is_empty(), "a birth that is not live is not sent to");
+        let view = view_of(vec![n.clone()]);
+        assert_eq!(book.take_due(&k, &view).len(), 1);
+        assert!(book.take_due(&k, &view).is_empty(), "the call is out");
+        book.answered(&k, &n.node_id, &a);
+        assert!(book.take_due(&k, &view).is_empty(), "an answered op is not sent again");
+        let reborn = Node { incarnation_id: Some(b.clone()), ..n.clone() };
+        book.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
+        assert_eq!(book.take_due(&k, &view_of(vec![reborn])).len(), 1, "the new birth is commanded as itself");
     }
 
     /// CONTRACT (R-S2): a command that was not delivered is sent again only on an eligible event, never
@@ -409,14 +524,53 @@ mod tests {
     /// next read of the checklist.
     #[test]
     fn an_undelivered_command_is_not_sent_again_by_reading_the_checklist_again() {
-        let (fabric, node, a) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
-        let book = RoundBook::default();
-        let k = key("bld_1", 1, &fabric);
-        book.open(&k);
-        book.expect(&k, planned(&node, &a, "mesh2.admin.1"), Vec::new());
-        assert_eq!(book.take_uncommanded(&k).len(), 1);
-        book.uncommand(&k, &node, &a);
-        assert!(book.take_uncommanded(&k).is_empty(), "nothing happened to the target: the command is not sent again");
+        for typed in [false, true] {
+            let (book, k, n, _) = undelivered(typed, NodeStatus::Pending);
+            let view = view_of(vec![n]);
+            for _ in 0..3 {
+                assert!(book.take_due(&k, &view).is_empty(), "typed={typed}: nothing happened to the target: the command is not sent again");
+            }
+        }
+    }
+
+    /// CONTRACT (R-S2): a command that never got a reply is sent again when the target becomes reachable
+    /// again after its route was lost, and not while it stays unreachable.
+    #[test]
+    fn an_undelivered_command_is_sent_again_when_the_target_becomes_reachable() {
+        let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
+        let gone = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
+        for _ in 0..2 {
+            assert!(book.take_due(&k, &view_of(vec![gone.clone()])).is_empty(), "an unreachable target is sent nothing");
+        }
+        let back = view_of(vec![n.clone()]);
+        assert_eq!(book.take_due(&k, &back).len(), 1, "reachable again: sent again");
+        assert!(book.take_due(&k, &back).is_empty(), "and once");
+    }
+
+    /// CONTRACT (R-S2): a command that the birth refused as not ready is sent again when the birth's
+    /// state changed, and when its destination moved, and not otherwise.
+    #[test]
+    fn an_undelivered_command_is_sent_again_when_the_targets_state_or_destination_changed() {
+        let (book, k, n, inc) = undelivered(true, NodeStatus::Pending);
+        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty());
+        let ready = Node { status: NodeStatus::ReadyForTraffic, ..n.clone() };
+        assert_eq!(book.take_due(&k, &view_of(vec![ready])).len(), 1, "its state changed");
+        book.undelivered(&k, &n.node_id, &inc, true);
+        let moved = Node { transport_addr: Some("127.0.0.1:9".parse().unwrap()), ..n.clone() };
+        assert_eq!(book.take_due(&k, &view_of(vec![moved])).len(), 1, "its destination moved");
+    }
+
+    /// CONTRACT (R-S2): a command not delivered is sent again when the target addressed this primary,
+    /// and the address counts once.
+    #[test]
+    fn an_undelivered_command_is_sent_again_when_the_target_addresses_the_primary() {
+        let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
+        let view = view_of(vec![n.clone()]);
+        assert!(book.take_due(&k, &view).is_empty());
+        book.heard_from(&NodeId::mint());
+        assert!(book.take_due(&k, &view).is_empty(), "a stranger addressing this primary is not the target");
+        book.heard_from(&n.node_id);
+        assert_eq!(book.take_due(&k, &view).len(), 1, "the target addressed this primary");
     }
 
     #[test]

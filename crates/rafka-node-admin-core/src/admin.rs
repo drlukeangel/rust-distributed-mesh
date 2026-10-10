@@ -270,6 +270,8 @@ pub struct Records {
     /// The accepted Build's planned births per mesh: the nodes a mesh's readiness is counted over.
     /// Empty until an accepted Build is held, when the members the view holds are counted.
     planned: Mutex<BTreeMap<String, BTreeSet<PathName>>>,
+    /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
+    view_tick: tokio::sync::watch::Sender<u64>,
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -307,6 +309,11 @@ impl Records {
             self.wake.poke();
         }
         changed
+    }
+
+    /// The tick a waiter arms on to see the view change.
+    pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.view_tick.subscribe()
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
@@ -431,6 +438,7 @@ impl Records {
             }
             *held = t.clone();
             drop(held);
+            self.view_tick.send_modify(|v| *v += 1);
             self.wake.poke();
         }
         t

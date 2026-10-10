@@ -18,7 +18,7 @@ use crate::admin::Records;
 use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
 use crate::fabric_state::{Expected, FabricState, RoundBook, RoundKey, RoundKind, RoundOp};
-use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
+use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeKind, PathName};
 use crate::round::Missing;
 use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
@@ -75,8 +75,9 @@ pub(crate) async fn run_action(actions: &dyn RoundActions, node: &PathName, kind
 enum Delivery {
     /// The peer answered with a typed reply the round can act on (it admitted or refused by name).
     Answered(StatusReply),
-    /// The peer was not reached, or said it is not ready: the same op is sent again.
-    Undelivered(String),
+    /// The peer was not reached (`typed: false`), or replied that it is not ready (`typed: true`):
+    /// the same op is sent again on an eligible event only (`RoundBook::take_due`).
+    Undelivered { why: String, typed: bool },
 }
 
 /// A reply that names why the op is refused: sending it again changes nothing.
@@ -97,8 +98,8 @@ fn delivery(out: &RpcOutcome<StatusReply>) -> Delivery {
     match out.reply().map(|r| r.value()) {
         Some(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => Delivery::Answered(r.clone()),
         Some(r) if typed_refusal(r) => Delivery::Answered(r.clone()),
-        Some(other) => Delivery::Undelivered(format!("{other:?}")),
-        None => Delivery::Undelivered(out.name().to_string()),
+        Some(other) => Delivery::Undelivered { why: format!("{other:?}"), typed: true },
+        None => Delivery::Undelivered { why: out.name().to_string(), typed: false },
     }
 }
 
@@ -531,7 +532,7 @@ impl FabricRounds {
             self.mesh_book.open(key);
             self.spawn_mesh_driver(key.clone(), None, parent.clone());
         }
-        for (node_id, expected) in self.fabric_book.take_uncommanded(key) {
+        for (node_id, expected) in self.fabric_book.take_due(key, view) {
             if node_id == self.env.node_id {
                 continue;
             }
@@ -565,7 +566,7 @@ impl FabricRounds {
     // ------------------------------------------------------------ commands down, one hop
 
     /// Send the down op of `key` to the planned birth `to`, on its own task. The book it was taken
-    /// from commands it once per exact birth; an op the peer did not take is sent again.
+    /// from commands it once per exact birth; an op the peer did not take waits for an eligible event.
     fn spawn_command(self: &Arc<Self>, key: RoundKey, fabric_level: bool, to: NodeId, expected: Expected, parent: tracing::Span) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -576,10 +577,11 @@ impl FabricRounds {
             match delivery(&out) {
                 Delivery::Answered(r) => {
                     span.record("outcome", r.name());
+                    book.answered(&key, &to, &expected.incarnation);
                 }
-                Delivery::Undelivered(why) => {
+                Delivery::Undelivered { why, typed } => {
                     span.record("outcome", why.as_str());
-                    book.uncommand(&key, &to, &expected.incarnation);
+                    book.undelivered(&key, &to, &expected.incarnation, typed);
                 }
             }
         });
@@ -607,7 +609,13 @@ impl FabricRounds {
         let mesh = self.env.me.mesh.clone();
         let mut own_done = false;
         let round_span = tracing::Span::current();
+        // The wait is armed before the read: a checklist change, a view change or a birth addressing
+        // this primary that happens during the read is seen by the wait, never lost, and nothing
+        // here runs on a timer.
+        let (mut book_tick, mut view_tick) = (self.mesh_book.subscribe(), self.env.records.subscribe_view());
         loop {
+            book_tick.borrow_and_update();
+            view_tick.borrow_and_update();
             let view = self.env.topology.read().await.clone();
             if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.name == self.env.me) {
                 tracing::info!("this admin no longer holds its mesh's primary seat: the round is the next primary's");
@@ -630,7 +638,7 @@ impl FabricRounds {
                 }
             }
             self.mesh_book.expect(key, planned, unresolved);
-            for (node_id, expected) in self.mesh_book.take_uncommanded(key) {
+            for (node_id, expected) in self.mesh_book.take_due(key, &view) {
                 self.spawn_command(key.clone(), false, node_id, expected, round_span.clone());
             }
             if !own_done {
@@ -648,8 +656,8 @@ impl FabricRounds {
                 break;
             }
             tokio::select! {
-                _ = self.mesh_book.changed() => {}
-                _ = tokio::time::sleep(rafka_mesh_entity::cadence::gossip_interval()) => {}
+                _ = book_tick.changed() => {}
+                _ = view_tick.changed() => {}
             }
         }
         match commander {
@@ -669,6 +677,13 @@ impl FabricRounds {
     }
 
     // ----------------------------------------------------------------- served by an admin
+
+    /// `node_id` sent this admin a Status call: an undelivered round command to it is eligible again.
+    pub fn heard_from(&self, node_id: &NodeId) {
+        self.mesh_book.heard_from(node_id);
+        self.fabric_book.heard_from(node_id);
+        self.climb_wake.notify_one();
+    }
 
     /// A round op addressed to this admin, decided from `view`. `own` answers it as a plain member.
     pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {

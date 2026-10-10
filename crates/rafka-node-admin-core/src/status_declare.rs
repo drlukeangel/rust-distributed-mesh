@@ -88,7 +88,7 @@ pub struct Destination {
 }
 
 impl Destination {
-    fn of(n: &crate::model::Node) -> Self {
+    pub(crate) fn of(n: &crate::model::Node) -> Self {
         Self { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: n.endpoint_id.clone(), addr: n.transport_addr }
     }
 }
