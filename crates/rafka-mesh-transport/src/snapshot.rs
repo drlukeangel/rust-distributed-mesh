@@ -569,13 +569,10 @@ impl SnapshotReceiver {
         }
     }
 
-    /// Move the projection held of `mesh` by `delta` without moving its version: what this node
-    /// learned of the mesh's lifecycle itself (a mesh shutdown's overlays and, once the mesh is
-    /// Dead, its departed births), which no older aggregate may undo.
-    pub fn overlay(&mut self, mesh: &str, delta: &Delta) {
-        if let Some(h) = self.held.get_mut(mesh) {
-            h.full.apply(delta);
-        }
+    /// Forget the source projection held of `mesh`: the mesh left, and nothing of it is kept.
+    pub fn remove(&mut self, mesh: &str) {
+        self.held.remove(mesh);
+        self.unbased.remove(mesh);
     }
 
     /// The version held of `mesh` and its publisher.
@@ -712,12 +709,9 @@ impl Forwarder {
         Forward::Delta(Box::new(frame))
     }
 
-    /// Move what was last published of `mesh` by `delta` without moving its version (see
-    /// [`SnapshotReceiver::overlay`]): a replay or a top-up then carries the mesh's lifecycle.
-    pub fn overlay(&mut self, mesh: &str, delta: &Delta) {
-        if let Some(p) = self.published.get_mut(mesh) {
-            p.full.apply(delta);
-        }
+    /// Forget what was published of `mesh`: the mesh left.
+    pub fn remove(&mut self, mesh: &str) {
+        self.published.remove(mesh);
     }
 
     /// The first publication, on taking the seat, of every source in `held`, `(mesh, publisher,

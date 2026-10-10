@@ -90,9 +90,6 @@ struct Live {
     by_path: HashMap<PathName, NodeId>,
     retired: HashMap<NodeId, HashSet<IncarnationId>>,
     departed: HashMap<NodeId, Instant>,
-    /// Nodes that departed with a dead mesh: `Gone` for as long as the mesh is dead, never
-    /// forgotten with the departed retention.
-    gone_for_good: HashSet<NodeId>,
     /// Births known to have exited (an executor's proof): the node resolves nothing until a
     /// successor birth is applied, so nothing dials or installs the dead birth's address.
     exited: HashSet<(NodeId, IncarnationId)>,
@@ -100,8 +97,7 @@ struct Live {
 
 impl Live {
     fn expire(&mut self, retention: Duration, now: Instant) {
-        let for_good = &self.gone_for_good;
-        self.departed.retain(|id, at| for_good.contains(id) || now.duration_since(*at) < retention);
+        self.departed.retain(|_, at| now.duration_since(*at) < retention);
     }
 
     /// The path's holder after `gone` left it: another live node heard at the
@@ -213,18 +209,6 @@ impl LiveNodeResolver {
 }
 
 impl LiveNodeResolver {
-    /// The exact birth `incarnation` of `node_id` at `path` departed with its mesh, which is Dead:
-    /// the logical node is `Gone` for as long as the mesh is dead, beyond the departed retention.
-    pub fn depart_for_good(&self, node_id: &NodeId, incarnation: &IncarnationId, path: &PathName) -> Applied {
-        let first = self.live.write().unwrap().gone_for_good.insert(node_id.clone());
-        let applied = self.depart(node_id, incarnation, path);
-        if first && applied == Applied::Unchanged {
-            // Departed already, within its retention: now held for good.
-            self.tick();
-        }
-        applied
-    }
-
     /// The exact birth `incarnation` of `node_id` is known to have exited (the provider proved
     /// it): until a successor birth is applied the node resolves `Unavailable`, a dial in flight
     /// to the dead birth is cancelled, and nothing dials or installs its address again.
@@ -252,7 +236,7 @@ impl LiveNodeResolver {
             NodeTarget::ExactNode(id) => match live.nodes.get(id) {
                 Some(n) => current(n),
                 None => Err(match live.departed.get(id) {
-                    Some(at) if live.gone_for_good.contains(id) || now.saturating_duration_since(*at) < self.retention => ResolveFailure::Gone,
+                    Some(at) if now.saturating_duration_since(*at) < self.retention => ResolveFailure::Gone,
                     _ => ResolveFailure::Unknown,
                 }),
             },

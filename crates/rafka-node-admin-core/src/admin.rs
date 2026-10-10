@@ -592,7 +592,9 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         meshes: Vec::new(),
         nodes: nodes.into_values().collect(),
     };
-    let mesh_names: BTreeSet<String> = mesh_ids.keys().cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
+    // A mesh the accepted Build names, or one that still has members: a mesh that left (the Build
+    // does not name it and it has no member) is not in the topology.
+    let mesh_names: BTreeSet<String> = mesh_ids.keys().filter(|m| book.accepted_has_mesh(m) != Some(false)).cloned().chain(topology.members().map(|n| n.mesh.clone())).collect();
     // Every seat, by the one election function (`election`); through a fabric shutdown, the
     // seats held when it was learned (`Seats`).
     if records.is_entering() {
@@ -639,11 +641,6 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
         let id = mesh_ids.get(&m).cloned();
-        // A Dead mesh is not in the active topology: its births departed and its id stays held
-        // (`records.meshes`, the book's dead set), never reissued.
-        if id.as_ref().is_some_and(|i| book.is_mesh_dead(i)) {
-            continue;
-        }
         let status = match &id {
             Some(i) if leaving.contains(i.as_str()) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::ReadyForTraffic,
@@ -1758,10 +1755,6 @@ impl AdminRunner {
             BuildOperation::CreateMesh { mesh } => {
                 {
                     let mut meshes = self.records.meshes.lock().unwrap();
-                    // A dead mesh's id is never reissued: a name whose recorded id is Dead takes a new one.
-                    if meshes.get(mesh).is_some_and(|id| self.book.is_mesh_dead(id)) {
-                        meshes.remove(mesh);
-                    }
                     meshes.entry(mesh.clone()).or_insert_with(MeshId::mint);
                 }
                 self.records.wake.poke();
@@ -3508,6 +3501,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     }
                 }
                 let t = topology.read().await.clone();
+                // The accepted Build is the authority on which meshes the fabric has: the book
+                // takes no old aggregate of a mesh it does not name, and a mesh it does not name
+                // that has no member left keeps no recorded id (a name added again is a new mesh).
+                if let Some(b) = accepted.current(&*adapter).await {
+                    membership.book.set_accepted_meshes(b.topology.meshes.keys().cloned().collect());
+                    records.meshes.lock().unwrap().retain(|name, _| b.topology.meshes.contains_key(name) || t.members().any(|n| &n.mesh == name));
+                }
                 // Cut off, or within one silence window of healing, its view
                 // authorizes nothing: it publishes as no primary.
                 let live = membership.authorizes();
