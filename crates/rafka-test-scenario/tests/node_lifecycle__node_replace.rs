@@ -289,20 +289,17 @@ async fn a_planned_replace_admits_the_successor_before_the_old_identity_is_delet
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("replace", NODE), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
     let attempt_no = Estate::attempt_of(&r);
-    // While the replace runs, /api/nodes names the predecessor `<path>.old` and never holds two births at
-    // `<path>`: the successor is the one birth there.
+    // While the replace runs, /api/nodes never holds two births at `<path>`: the successor is the one
+    // birth there. That the view named the predecessor `<path>.old` is read from the span below, not
+    // from this poll: the window is the drain-to-NodeDeleted span of the replace.
     let old_name = format!("{NODE}.old");
-    let saw_old = std::cell::Cell::new(false);
     let after = wait_for(&format!("{NODE} ready under a new NodeId"), SETTLE, || async {
         let nodes = estate.nodes().await;
-        if nodes.iter().any(|n| n["name"] == old_name.as_str() && n["node_id"] == before["node_id"]) {
-            saw_old.set(true);
-        }
         assert!(nodes.iter().filter(|n| n["name"] == NODE).count() <= 1, "two births at {NODE}: {nodes:#?}");
         nodes.into_iter().find(|n| n["name"] == NODE && ready(n) && n["node_id"] != before["node_id"])
     })
     .await;
-    assert!(saw_old.get(), "/api/nodes never named the predecessor {old_name} while the replace ran");
+
     estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new node has a new transport key");
     let attempt = attempt_no.to_string();
@@ -312,6 +309,12 @@ async fn a_planned_replace_admits_the_successor_before_the_old_identity_is_delet
     })
     .await;
     assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &after, &REPLACE_ORDER);
+    let held_old = named(&spans, "rdm.node_admin.topology.update.via-predecessor-held")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["node_id"] == before["node_id"])
+        .unwrap_or_else(|| panic!("the executor's view never named the predecessor {old_name}"));
+    let deleted_step = step_span(&spans, &birth_build, &attempt, NODE, "NodeDeleted").expect("NodeDeleted ran");
+    assert!(start(held_old) < start(deleted_step), "the view named the predecessor {old_name} before its NodeDeleted: {held_old}");
     let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).expect("the node operation span");
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
     let settled = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;

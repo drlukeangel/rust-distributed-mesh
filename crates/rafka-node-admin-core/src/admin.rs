@@ -361,6 +361,12 @@ impl Records {
         let mut held = topology.write().await;
         let t = project();
         if *held != t {
+            // A replaced predecessor this view now names `<path>.old` (the executor's own view; its
+            // digest still says `<path>`): one span as it enters, with the member that took the path.
+            for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
+                tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
+                    .in_scope(|| tracing::info!("the view names a replaced predecessor under its .old path"));
+            }
             *held = t.clone();
             drop(held);
             self.wake.poke();
