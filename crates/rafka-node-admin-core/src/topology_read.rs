@@ -35,6 +35,8 @@ pub struct TopologyDoor {
     stored: Option<StoredSource>,
     /// Whether this node holds a seat holder's exact birth as proven gone.
     gone: Option<GoneSource>,
+    /// The rafka-time this node adopted: the value its answer carries, never its own clock.
+    time: rafka_mesh_transport::clock::RafkaTime,
     snapshots: AtomicU64,
 }
 
@@ -58,9 +60,9 @@ pub type StoredSource = Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Futur
 const STORED_PER_FRAME: usize = 24;
 
 impl TopologyDoor {
-    /// A door over `membership` and the node's own digest.
-    pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>) -> Self {
-        Self { membership, own, stored: None, gone: None, snapshots: AtomicU64::new(0) }
+    /// A door over `membership`, the node's own digest and the rafka-time the node adopted.
+    pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
+        Self { membership, own, stored: None, gone: None, time, snapshots: AtomicU64::new(0) }
     }
 
     /// This node also answers, for a mesh it holds no snapshot of, from the map it stores.
@@ -130,11 +132,18 @@ impl TopologyDoor {
             unchanged = tracing::field::Empty,
             stored = tracing::field::Empty,
             seats = tracing::field::Empty,
+            rafka_time_ms = tracing::field::Empty,
+            seat = tracing::field::Empty,
             bytes = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
         async move {
             let span = tracing::Span::current();
+            // A node that holds no rafka-time has none to serve: it starts no stream and says why.
+            let Some(time_ms) = self.time.try_now_ms() else {
+                span.record("outcome", "not-ready");
+                return TopologyReply::NotReady { reason: format!("{}: this node holds no rafka-time yet", me.node.name) };
+            };
             let mut held = self.membership.held_topology(&me);
             if let Some(m) = &mesh {
                 held.retain(|s| &s.mesh == m);
@@ -217,6 +226,18 @@ impl TopologyDoor {
                     return TopologyReply::End { meshes: answered };
                 }
             }
+            // The rafka-time this node adopted and the seat it holds, read from its own seat
+            // records: the puller applies its own rule to the pair (`rafka_time::adopt_pulled`).
+            let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
+            let seat = crate::rafka_time::seat_held(self.membership.seats(), &me.node.name.mesh, &me.node.node_id);
+            let r = TopologyReply::RafkaTime { ms: time_ms, seat };
+            bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+            if let Err(e) = sink.data(r).await {
+                span.record("outcome", format!("caller-gone: {e:?}").as_str());
+                return TopologyReply::End { meshes: answered };
+            }
+            span.record("rafka_time_ms", time_ms);
+            span.record("seat", seat.map_or("none", rafka_mesh_entity::Seat::name));
             span.record("seats", seat_records);
             span.record("stored", stored_meshes);
             span.record("meshes", answered);
@@ -259,6 +280,47 @@ pub struct TopologyRead {
     pub stored: Vec<StoredMesh>,
     /// The seat records the target holds, in the order it sent them.
     pub seats: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder, bool)>,
+    /// The rafka-time the target served and the seat it held when it served it. Every accepted
+    /// read carries it.
+    pub rafka_time: Option<ServedTime>,
+}
+
+/// The rafka-time a topology read was served with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedTime {
+    /// The target's rafka-time in milliseconds.
+    pub ms: u64,
+    /// The seat the target held, `None` for a replica.
+    pub seat: Option<rafka_mesh_entity::Seat>,
+}
+
+impl TopologyRead {
+    /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
+    /// `node_id` of `mesh` as its own seat records stand (the same [`crate::rafka_time::adopt_pulled`]
+    /// every pull goes through). `served_by` is the target's `path.name`.
+    pub fn adopt_rafka_time(&self, time: &rafka_mesh_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rafka_mesh_entity::NodeId, served_by: &str) -> Result<rafka_mesh_transport::clock::Adopted, TimeNotAdopted> {
+        let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
+        let puller = crate::rafka_time::Puller::of(membership.seats(), mesh, node_id);
+        crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, seat: served.seat }).map_err(TimeNotAdopted::Refused)
+    }
+}
+
+/// Why a read's rafka-time was not adopted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeNotAdopted {
+    /// The answer carried no rafka-time.
+    Absent(String),
+    /// A mesh primary refused it by name.
+    Refused(crate::rafka_time::Refusal),
+}
+
+impl std::fmt::Display for TimeNotAdopted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Absent(why) => f.write_str(why),
+            Self::Refused(r) => write!(f, "rafka-time refused: {r}"),
+        }
+    }
 }
 
 /// A mesh answered from the target's stored map.
@@ -395,6 +457,7 @@ async fn read_with(
                 None => read.stored.push(StoredMesh { mesh, mesh_id, nodes }),
             },
             StreamItem::Frame(_, TopologyReply::Seats { seat, holder, gone }) => read.seats.push((seat, holder, gone)),
+            StreamItem::Frame(_, TopologyReply::RafkaTime { ms, seat }) => read.rafka_time = Some(ServedTime { ms, seat }),
             StreamItem::Frame(_, TopologyReply::End { meshes }) => served_meshes = Some(meshes),
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),

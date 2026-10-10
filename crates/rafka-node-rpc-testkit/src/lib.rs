@@ -17,3 +17,19 @@ pub mod admin_faults;
 /// The launcher half of a functional fabric, shared by test crates.
 #[cfg(feature = "rig")]
 pub mod rig;
+
+/// The directory under an estate's data root where a scenario records the OS-clock skew of one
+/// node: the file `<root>/os-clock-skew/<path.name>` holds signed milliseconds.
+pub fn os_clock_skew_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("os-clock-skew")
+}
+
+/// Skew this process's OS clock by the milliseconds a scenario recorded for `name` under `root`
+/// (`os_clock_skew_dir`), if it recorded any. Called only by testkit executables: it proves no
+/// stamp of a node reads the OS clock (rafka-time is adopted, and the OS clock takes part in no
+/// fleet decision). A product executable never calls it. Returns the skew applied.
+pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64> {
+    let ms: i64 = std::fs::read_to_string(os_clock_skew_dir(root).join(name)).ok()?.trim().parse().ok()?;
+    rafka_mesh_transport::clock::skew_os_clock_for_testkit(ms);
+    Some(ms)
+}

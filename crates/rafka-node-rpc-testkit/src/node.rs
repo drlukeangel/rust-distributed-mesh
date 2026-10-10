@@ -38,6 +38,12 @@ pub fn core_protocols(b: ServerBuilder, client: Arc<rafka_node_rpc::NodeRpcClien
 /// A node running on the imported substrate: its endpoint routers, membership, Node RPC server and
 /// tasks.
 pub struct RunningNode {
+    /// Rafka-time: the app's way to read it. The one reader every gossip stamp this node publishes
+    /// reads, already adopted when the node has started. Cloneable; every clone reads the same
+    /// instance. `now_ms()` is `max(reference + monotonic elapsed, last returned)`; an app that
+    /// stamps its records with rafka-time (the OrderKey's `writer_timestamp_ms`) reads it here and
+    /// never from the OS clock.
+    pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
     /// The endpoint's protocol routers.
     pub routers: Vec<Router>,
     /// The node's membership.
@@ -204,23 +210,25 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
 /// [`start_with_client`], handing `register` every process seam the testkit doors act through:
 /// the resolver, the client, the connections writer and the storage fault.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
-    start_with_clock(launch, rafka_mesh_transport::clock::os_clock(), register).await
+    // The Rafka-time this node composes: adopted from its authority's join answer, before its first
+    // gossip frame. Every stamp this node puts on a frame, and the handle `RunningNode::rafka_time`
+    // gives the app, read this one instance.
+    let rafka_time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    start_with_rafka_time(launch, rafka_time, register).await
 }
 
-/// [`start_with_seams`], stamping every gossip frame this node publishes with `clock`: the
-/// Rafka-time the executable composes (an RDM executable supplies the OS clock).
-pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
+async fn start_with_rafka_time(launch: &Launch, rafka_time: rafka_mesh_transport::clock::RafkaTime, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
-    let started = start_booted(launch, clock, register, &boot).await;
+    let started = start_booted(launch, rafka_time, register, &boot).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
     started
 }
 
-async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder, boot: &tracing::Span) -> Result<RunningNode> {
+async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::RafkaTime, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder, boot: &tracing::Span) -> Result<RunningNode> {
     // An ordinary node is admitted by the admin that launched it (`node-ready-for-traffic.md`
     // step 1): a launch naming no launcher has nothing to be admitted by.
     let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.name))?;
@@ -360,11 +368,14 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
         Err(rafka_node_admin_core::join::JoinFailure::Refused(why)) => return Err(anyhow!("{} was refused its join by {}: {why}", launch.name, launcher.name)),
         Err(rafka_node_admin_core::join::JoinFailure::Unreached(why)) => return Err(anyhow!("{} could not join through {}: unreached: {why}", launch.name, launcher.name)),
     };
+    // The authority's rafka-time is adopted as its answer carries it, before this node's first
+    // gossip frame.
+    rafka_node_admin_core::rafka_time::adopt_join_answer(&rafka_time, &name, &joined);
     // The mesh's id names its channel; the launching admin writes it.
     let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
     drop(join_step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
-    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
+    let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
     drop(step);
     let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
     // This node serves the topology it holds from here on (until now a read is `NotReady`).
@@ -378,6 +389,7 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
                 d.status = *st.lock().unwrap();
                 d
             }),
+            rafka_time.clone(),
         )));
     }
     // Take the launching admin's topology before marking ready: the join answered the control
@@ -388,6 +400,9 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
     let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
         .await
         .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
+    // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
+    read.adopt_rafka_time(&rafka_time, &membership, &name, &launch.name.mesh, &launch.node_id, &launcher.name.to_string())
+        .map_err(|e| anyhow!("{} could not adopt rafka-time from {}: {e}", launch.name, launcher.name))?;
     let mesh_peers: Vec<EndpointAddr> = read
         .installed
         .iter()
@@ -400,15 +415,16 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
     // A delta that does not follow what this node holds desynchronizes that source; the node tops
     // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
     {
-        let client = client.clone();
+        let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone());
         membership.spawn_top_up(Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
-            let client = client.clone();
+            let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), me.clone(), me_id.clone());
             Box::pin(async move {
                 let mut done = rafka_mesh_transport::membership::TopUpDone::default();
                 for mesh in meshes {
                     let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None)
                         .await
                         .map_err(|e| format!("{mesh}: {e}"))?;
+                    read.adopt_rafka_time(&rafka_time, &membership, &me, &me.split('.').next().unwrap_or_default().to_string(), &me_id, &primary.node.name.to_string()).map_err(|e| format!("{mesh}: {e}"))?;
                     done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
                 }
                 Ok(done)
@@ -481,7 +497,7 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
             }
         })
     };
-    Ok(RunningNode { routers, membership, server, status, digest, node_rpc, owed_state, gossip: g, publisher, node_rpc_feed, declare_loop })
+    Ok(RunningNode { rafka_time, routers, membership, server, status, digest, node_rpc, owed_state, gossip: g, publisher, node_rpc_feed, declare_loop })
 }
 
 /// One attempt at the owed declaration: the node-admins of this birth's mesh it hears, in path

@@ -53,10 +53,6 @@ pub struct Wiring {
     pub provider: Option<Wrap<dyn DeploymentProvider>>,
     /// Wraps the lifecycle events a retirement publishes.
     pub lifecycle_events: Option<Wrap<dyn LifecycleEvents>>,
-    /// The Rafka-time source the admin stamps every gossip frame with. `None` is the OS clock, the
-    /// binding an RDM executable supplies; a product that has adopted a Rafka-time source supplies
-    /// that source here.
-    pub clock: Option<rafka_mesh_transport::clock::SharedClock>,
     /// Hooks registered, in order, before the lifecycle registry seals.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
 }

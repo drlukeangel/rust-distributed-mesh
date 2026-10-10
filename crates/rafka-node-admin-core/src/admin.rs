@@ -1082,19 +1082,24 @@ struct EntryState {
     builds: Arc<dyn BuildStateAdapter>,
     shutdown: Arc<crate::shutdown::ShutdownControl>,
     membership: Membership,
+    /// The rafka-time this admin adopted: a join is answered with it, never with the OS clock.
+    time: rafka_mesh_transport::clock::RafkaTime,
 }
 
 impl EntryState {
     /// What this admin holds now: the answer to a join (its control state and statuses; the
     /// topology is read with `GetTopology`).
-    async fn answer(&self) -> crate::wire::JoinAnswer {
+    async fn answer(&self) -> Result<crate::wire::JoinAnswer, String> {
         let e = self;
+        // An admin that holds no rafka-time has none to hand a joiner: the join is not completed,
+        // and the refusal says why.
+        let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{}: this admin holds no rafka-time to answer a join with", e.name))?;
         // The fabric control state a new admin hydrates before it may be Ready: the attempt the
         // answering admin holds of the Build the pointer names is the floor a joiner's own copy
         // of that Build's attempt facts must reach before it is Ready.
         let build = e.accepted.current(&*e.builds).await.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
-        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build };
-        crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) }
+        let control = crate::wire::JoinControl { provider: e.provider, fabric: e.accepted.record().await.ok().flatten(), shutdown: e.shutdown.held(), build, rafka_time_ms };
+        Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
     }
 }
 
@@ -1866,6 +1871,12 @@ impl crate::shutdown::Stopper for AdminStopper {
 
 /// A running node-admin: what `run` needs to keep alive and shut down.
 pub struct Running {
+    /// Rafka-time: the app's way to read it. The one reader every gossip stamp, lifecycle event and
+    /// fleet judgement of this admin reads, already adopted when the admin has started. Cloneable;
+    /// every clone reads the same instance. `now_ms()` is `max(reference + monotonic elapsed, last
+    /// returned)`; an app that stamps its records with rafka-time (the OrderKey's
+    /// `writer_timestamp_ms`) reads it here and never from the OS clock.
+    pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
     /// The base of this admin's control API.
     pub api_base: String,
     /// The control plane the API serves.
@@ -2056,9 +2067,11 @@ pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Resu
 }
 
 async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, boot: tracing::Span) -> Result<Running, String> {
-    // The Rafka-time this process composes: the product's adopted source when its wiring supplies
-    // one, else the OS clock. Every gossip stamp this admin puts on a frame reads it.
-    let clock: rafka_mesh_transport::clock::SharedClock = wiring.clock.take().unwrap_or_else(rafka_mesh_transport::clock::os_clock);
+    // The Rafka-time this process composes: held by no one until the join (or the Day-0 root's
+    // boot) adopts it. Every gossip stamp, lifecycle event and fleet judgement this admin makes
+    // reads this one reader.
+    let rafka_time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let clock: rafka_mesh_transport::clock::SharedClock = Arc::new(rafka_time.clone());
     let step = if cfg.data_dir.join("node-key").exists() {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
     } else {
@@ -2331,8 +2344,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         let answer = crate::join::call_join(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &anchor.id.fmt_short().to_string(), &join_digest, 5)
             .await
             .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
+        // The authority's rafka-time is adopted as the answer carries it, before this admin's
+        // first gossip frame.
+        crate::rafka_time::adopt_join_answer(&rafka_time, &name.to_string(), &answer);
         entry_retrieval = Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), join_digest));
         pulled = Some(answer);
+    }
+    // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
+    // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
+    if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
+        crate::rafka_time::adopt_own_clock(&rafka_time, &name.to_string());
     }
     let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
@@ -2346,6 +2367,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         .await
         .map_err(|e| format!("membership: {e}"))?;
     drop(step);
+    // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
+    // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
+    // publishes anything or judges any lease.
+    if !rafka_time.is_adopted() {
+        let mut contacts = Vec::new();
+        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+            contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
+        }
+        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN)
+            .await
+            .map_err(|e| format!("refusing to start: {e}"))?;
+    }
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
         .await
         .map_err(|e| format!("backbone: {e}"))?;
@@ -2792,6 +2825,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         builds: builds_dyn.clone(),
         shutdown: shutdown_control.clone(),
         membership: membership.clone(),
+        time: rafka_time.clone(),
     });
     // The join door: this admin verifies a node's digest against what it deployed, installs the
     // address for its key and answers what it holds.
@@ -2804,7 +2838,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let st = st.clone();
                 Box::pin(async move {
                     match st.get() {
-                        Some(e) => Ok(e.answer().await),
+                        Some(e) => e.answer().await,
                         None => Err("this admin holds no view yet".to_string()),
                     }
                 })
@@ -2847,7 +2881,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let (book, records) = (book.clone(), records.clone());
             Arc::new(move |h: &rafka_mesh_entity::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
         };
-        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone())).with_stored(stored).with_gone(gone)));
+        let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()), rafka_time.clone()).with_stored(stored).with_gone(gone)));
     }
     // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
     // a blind put (a successor fabric primary proves an exit from it).
@@ -2951,11 +2985,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 })
             });
             let entry: Option<crate::hydrate::EntryRepeat> = entry_retrieval.map(|(target, anchor, digest)| {
-                let (client, accepted, builds, floor, shutdown) = (node_rpc.client.clone(), accepted.clone(), builds_dyn.clone(), entry_floor.clone(), shutdown_control.clone());
+                let (client, accepted, builds, floor, shutdown, rafka_time) = (node_rpc.client.clone(), accepted.clone(), builds_dyn.clone(), entry_floor.clone(), shutdown_control.clone(), rafka_time.clone());
                 Arc::new(move || {
-                    let (client, target, anchor, digest, accepted, builds, floor, shutdown) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), builds.clone(), floor.clone(), shutdown.clone());
+                    let (client, target, anchor, digest, accepted, builds, floor, shutdown, rafka_time) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), builds.clone(), floor.clone(), shutdown.clone(), rafka_time.clone());
                     Box::pin(async move {
                         let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
+                        crate::rafka_time::adopt_join_answer(&rafka_time, &digest.node.name.to_string(), &answer);
                         take_entry_control(&answer, &accepted, &*builds, &floor).await;
                         if let Some(sd) = answer.control.shutdown.clone() {
                             shutdown.learn(sd, "hydration", &answer.served_by).await.map_err(|e| e.to_string())?;
@@ -3548,7 +3583,7 @@ let opened =                     reconcile_drift(&me, &now, &accepted, &book, &*
         }
     }));
     let _ = std::fs::write(cfg.data_dir.join("node-admin.json"), serde_json::json!({ "api_base": api_base, "node": name.to_string() }).to_string());
-    Ok(Running { api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone() })
+    Ok(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, publisher, executor, hierarchy, tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone() })
 }
 
 #[cfg(test)]
@@ -3970,7 +4005,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None },
+                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000 },
                         statuses: vec![],
                     })
                 })

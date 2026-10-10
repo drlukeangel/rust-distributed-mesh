@@ -15,6 +15,7 @@ fn answer() -> JoinAnswer {
             fabric: Some(FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: None }),
             shutdown: Some(FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: "n".into(), initiated_at_ms: 4 }),
             build: Some(BuildFloor { build_id: rafka_node_admin_core::build::BuildId::mint(), attempt: 2 }),
+            rafka_time_ms: 1_700_000_000_123,
         },
         statuses: vec![],
     }
@@ -31,6 +32,7 @@ fn a_join_request_and_its_answer_round_trip_through_postcard() {
     assert_eq!(back.control.provider, a.control.provider);
     assert_eq!(back.control.fabric, a.control.fabric);
     assert_eq!(back.control.shutdown, a.control.shutdown);
+    assert_eq!(back.control.rafka_time_ms, 1_700_000_000_123);
     assert_eq!(back.control.build.map(|b| (b.build_id, b.attempt)), a.control.build.map(|b| (b.build_id, b.attempt)));
 }
 
@@ -40,4 +42,14 @@ fn a_truncated_answer_is_refused_by_name_not_decoded_partially() {
     let bytes = answer_to_wire(&answer()).unwrap();
     let e = answer_from_wire(&bytes[..bytes.len() - 1]).unwrap_err();
     assert!(!e.is_empty());
+}
+
+// @feature: node-lifecycle
+#[test]
+fn the_answers_rafka_time_is_the_control_frames_last_field_before_the_statuses() {
+    let mut a = answer();
+    a.control.rafka_time_ms = 300;
+    let bytes = answer_to_wire(&a).unwrap();
+    // postcard varint 300 = ac 02, then the empty statuses vector = 00.
+    assert_eq!(&bytes[bytes.len() - 3..], &[0xac, 0x02, 0x00], "{bytes:02x?}");
 }

@@ -5,7 +5,7 @@
 //! by the one method gossip's `Members` snapshots use:
 //!
 //! ```text
-//! Started  (Snapshot* | Unchanged* | Stored*) Seats*  End { meshes }   a stream
+//! Started  (Snapshot* | Unchanged* | Stored*) Seats* RafkaTime  End { meshes }   a stream
 //! NotReady | UnknownMesh                                  one refusal, nothing started
 //! ```
 //!
@@ -175,6 +175,18 @@ pub enum TopologyReply {
         /// Whether the target holds the holder's exact birth as proven gone.
         gone: bool,
     },
+    /// The rafka-time the target holds, and the seat it holds: one frame, sent after the `Seats`
+    /// records and before `End`. A puller adopts the time by its own seat's rule (a member adopts
+    /// from whoever answers; a mesh primary only from a fabric-primary seat). The target answers
+    /// the rafka-time it adopted and never its own clock; a target that holds none answers
+    /// `NotReady` and starts no stream.
+    RafkaTime {
+        /// The target's rafka-time now, in milliseconds.
+        ms: u64,
+        /// The seat the target holds, from its own seat records: the fabric seat when it holds it,
+        /// else its mesh's, else none (a replica).
+        seat: Option<Seat>,
+    },
 }
 
 impl TopologyReply {
@@ -194,6 +206,7 @@ impl TopologyReply {
             Self::Started => "started",
             Self::Stored { .. } => "stored",
             Self::Seats { .. } => "seats",
+            Self::RafkaTime { .. } => "rafka-time",
         }
     }
 }
@@ -207,14 +220,14 @@ impl NodeProtocol for Topology {
     const MAX_REPLY_FRAME_BYTES: usize = 8 * 1024;
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 13;
+    const REPLY_VARIANTS: u32 = 14;
 
     type Request = TopologyRequest;
     type Reply = TopologyReply;
 
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
             TopologyReply::UnknownMesh { .. } => ReplyKind::ProtocolRefusal,
             TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
@@ -248,7 +261,7 @@ impl StreamingProtocol for Topology {
     fn frame_kind(frame: &TopologyReply) -> FrameKind {
         match frame {
             TopologyReply::Started => FrameKind::Started,
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } => FrameKind::Data,
+            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } => FrameKind::Data,
             TopologyReply::End { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(Topology::classify_reply(other)),
         }

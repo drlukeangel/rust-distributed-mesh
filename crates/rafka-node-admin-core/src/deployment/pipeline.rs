@@ -617,7 +617,7 @@ pub trait LifecycleEvents: Send + Sync {
     fn now_rafka_ms(&self) -> u64;
 }
 
-/// No events: a pipeline under test with no membership.
+/// No events: a pipeline under test with no membership, and so no rafka-time.
 pub struct NoLifecycleEvents;
 
 #[async_trait::async_trait]
@@ -625,8 +625,10 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleting(&self, _op: &LifecycleOp) {}
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
+    /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
+    /// stands in for one.
     fn now_rafka_ms(&self) -> u64 {
-        rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock)
+        0
     }
 }
 

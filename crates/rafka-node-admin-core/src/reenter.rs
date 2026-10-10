@@ -45,7 +45,7 @@ pub(crate) struct MapNode {
 }
 
 impl MapNode {
-    fn resolved(&self) -> Option<ResolvedNode> {
+    pub(crate) fn resolved(&self) -> Option<ResolvedNode> {
         Some(ResolvedNode {
             node_id: self.node_id.clone(),
             name: self.name.clone(),

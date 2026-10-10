@@ -16,12 +16,14 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    let skew = launch.data_dir.parent().and_then(|root| rafka_node_rpc_testkit::skew_os_clock_from_root(root, &launch.name.to_string()));
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = %launch.name,
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = "rpc_node",
+        os_clock_skew_ms = skew.unwrap_or(0),
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_mesh_telemetry::set_parent(&boot, &tp);

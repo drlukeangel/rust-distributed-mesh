@@ -140,7 +140,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                 Box::pin(async {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None },
+                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: 1_000 },
                         statuses: vec![],
                     })
                 })

@@ -33,6 +33,7 @@ pub mod node_commands;
 pub mod node_rpc;
 pub mod node_self;
 pub mod offline;
+pub mod rafka_time;
 pub mod readiness;
 pub(crate) mod reenter;
 pub mod round;

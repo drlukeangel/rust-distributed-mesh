@@ -642,6 +642,9 @@ pub struct JoinControl {
     pub shutdown: Option<FabricShutdown>,
     /// The attempt of the pointed Build the joiner's copy of its facts must reach before Ready.
     pub build: Option<BuildFloor>,
+    /// The answering admin's rafka-time now, in milliseconds: the joiner adopts it as it stands.
+    /// An admin that holds no rafka-time answers `NotReady` naming why and builds no answer.
+    pub rafka_time_ms: u64,
 }
 
 /// The attempt of the pointed Build a joiner's copy must reach before Ready.
@@ -666,6 +669,7 @@ struct WireControl {
     fabric: Option<WireFabric>,
     shutdown: Option<FabricShutdown>,
     build: Option<WireBuildFloor>,
+    rafka_time_ms: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -684,6 +688,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             fabric: c.fabric.as_ref().map(|r| WireFabric { fabric_id: r.fabric_id.clone(), name: r.name.clone(), build_id: r.build_id.clone() }),
             shutdown: c.shutdown.clone(),
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
+            rafka_time_ms: c.rafka_time_ms,
         },
         statuses: answer.statuses.clone(),
     };
@@ -700,6 +705,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
             fabric: w.control.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
             shutdown: w.control.shutdown,
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
+            rafka_time_ms: w.control.rafka_time_ms,
         },
         statuses: w.statuses,
     })
