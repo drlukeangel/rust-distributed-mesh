@@ -370,7 +370,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     };
     // The authority's rafka-time is adopted as its answer carries it, before this node's first
     // gossip frame.
-    rafka_node_admin_core::rafka_time::adopt_join_answer(&rafka_time, &name, &joined);
+    join_step.in_scope(|| rafka_node_admin_core::rafka_time::adopt_join_answer(&rafka_time, &name, &joined));
     // The mesh's id names its channel; the launching admin writes it.
     let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
     drop(join_step);

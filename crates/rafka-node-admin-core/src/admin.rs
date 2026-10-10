@@ -2349,14 +2349,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             .map_err(|e| format!("the join to the launching admin {} failed: {e}", launcher.name))?;
         // The authority's rafka-time is adopted as the answer carries it, before this admin's
         // first gossip frame.
-        crate::rafka_time::adopt_join_answer(&rafka_time, &name.to_string(), &answer);
+        boot.in_scope(|| crate::rafka_time::adopt_join_answer(&rafka_time, &name.to_string(), &answer));
         entry_retrieval = Some((rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), anchor.id.fmt_short().to_string(), join_digest));
         pulled = Some(answer);
     }
     // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
     // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
     if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
-        crate::rafka_time::adopt_own_clock(&rafka_time, &name.to_string());
+        boot.in_scope(|| crate::rafka_time::adopt_own_clock(&rafka_time, &name.to_string()));
     }
     let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
@@ -2379,6 +2379,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
         }
         crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN)
+            .instrument(boot.clone())
             .await
             .map_err(|e| format!("refusing to start: {e}"))?;
     }
