@@ -709,7 +709,7 @@ impl Forwarder {
         Forward::Delta(Box::new(frame))
     }
 
-    /// Forget what was published of `mesh`: the mesh left, or a forward of it was not sent.
+    /// Forget what was published of `mesh`: the mesh left.
     pub fn remove(&mut self, mesh: &str) {
         self.published.remove(mesh);
     }
