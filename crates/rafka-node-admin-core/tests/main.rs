@@ -29,6 +29,7 @@ mod admin_serves_forward;
 mod loopback;
 mod build_catch_up;
 mod build_claim;
+mod build_drive;
 mod build_facts_read;
 mod build_takeover;
 mod client_contract;

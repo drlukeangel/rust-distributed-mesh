@@ -519,4 +519,162 @@ mod tests {
         let other = Some(("create-node:mesh1.rpc.9".to_string(), "DeployRuntime".to_string(), "other".to_string()));
         assert!(matches!(terminal_of(&id(), &r, other), BuildReply::Failed { step, .. } if step == "attempt"), "a failed receipt of another operation is not this attempt's step");
     }
+
+    use crate::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, ClaimOutcome, MemoryBuildStateAdapter};
+
+    /// A Build state whose step appends fail: nothing is durable, so no frame may exist.
+    struct FailingAppend(Arc<MemoryBuildStateAdapter>);
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for FailingAppend {
+        async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+            self.0.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
+            self.0.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+            self.0.read_build(id).await
+        }
+        async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+            self.0.list_active().await
+        }
+        async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+            self.0.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+            self.0.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, _: &BuildStepReceipt) -> Result<(), BuildStateError> {
+            Err(BuildStateError::Io("the disk refused the receipt".into()))
+        }
+        async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+            self.0.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+            self.0.facts().await
+        }
+        async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+            self.0.forget(id).await
+        }
+    }
+
+    fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
+        BuildStepReceipt { build_id: id(), attempt, operation: "create-node:mesh1.rpc.2".into(), step: step.into(), outcome, output: None, executor: Some("mesh1.admin.1".into()) }
+    }
+
+    /// CONTRACT: a step frame is made only after the step's `Complete` receipt has been appended on
+    /// the admin that wrote it. An append that fails makes no frame; a failed step makes none either
+    /// (it is the terminal's step, never a step frame).
+    #[tokio::test]
+    async fn a_step_frame_follows_its_appended_receipt_and_never_precedes_or_replaces_it() {
+        let runs = Arc::new(AttemptRuns::default());
+        let (log, _) = runs.begin(&id(), 1);
+        let mut tail = log.tail();
+        let memory = Arc::new(MemoryBuildStateAdapter::new());
+        let ok = FramedBuilds::new(memory.clone(), runs.clone());
+        ok.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
+        assert!(matches!(tail.next().await.unwrap(), BuildReply::Step { step, .. } if step == "AllocateIdentity"));
+        assert_eq!(memory.facts().await.unwrap().len(), 1, "the receipt was appended before the frame was readable");
+
+        let failing = FramedBuilds::new(Arc::new(FailingAppend(memory.clone())), runs.clone());
+        assert!(failing.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Complete)).await.is_err());
+        ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::Failed { reason: "no port".into() })).await.unwrap();
+        log.finish(BuildReply::Complete { build_id: id().0, attempt: 1 });
+        assert_eq!(tail.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
+        assert_eq!(log.last_failed_step(), Some(("create-node:mesh1.rpc.2".into(), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
+    }
+
+    struct Nothing;
+
+    #[async_trait::async_trait]
+    impl crate::executor::OperationRunner for Nothing {
+        async fn run(&self, _: &BuildId, _: u32, _: &crate::build::BuildOperation) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    async fn door(me: &str) -> (RunDoor, Arc<MemoryBuildStateAdapter>) {
+        use crate::model::*;
+        let memory = Arc::new(MemoryBuildStateAdapter::new());
+        let runs = Arc::new(AttemptRuns::default());
+        let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
+        let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin.status = NodeStatus::ReadyForTraffic;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let topology = Arc::new(tokio::sync::RwLock::new(crate::topology::Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            nodes: vec![admin],
+        }));
+        let exec = Arc::new(BuildExecutor { executor: me.into(), builds: builds.clone(), topology, runner: Arc::new(Nothing) });
+        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone() }, memory)
+    }
+
+    async fn accepted(memory: &MemoryBuildStateAdapter) {
+        memory
+            .publish_accepted(&BuildAccepted { build_id: id(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 0 })
+            .await
+            .unwrap();
+    }
+
+    /// CONTRACT (acceptance 6): a call whose claim names another admin is refused `NotExecutor`
+    /// naming both; a claim that is not the current folded attempt is refused `StaleClaim` naming the
+    /// attempt and executor the projection holds; a Build the admin holds nothing of is
+    /// `UnknownBuild`. Nothing is recorded or run by a refusal.
+    #[tokio::test]
+    async fn a_call_for_another_executor_or_a_stale_claim_is_refused_by_name_and_records_nothing() {
+        let (door, memory) = door("mesh1.admin.1").await;
+        let ctx = CallContext::default();
+        assert!(matches!(door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await, Attached::Refused(BuildReply::UnknownBuild { .. })));
+        accepted(&memory).await;
+        assert!(matches!(
+            door.attempt_run(&id(), 1, "mesh2.admin.1", &ctx, &[]).await,
+            Attached::Refused(BuildReply::NotExecutor { named, recipient }) if named == "mesh2.admin.1" && recipient == "mesh1.admin.1"
+        ));
+        // Attempt 1 is claimed and converged; attempt 4 is ahead of the Build, attempt 0 behind it.
+        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.append_attempt_receipt(&BuildAttemptReceipt { build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+        for carried in [4u32, 0] {
+            assert_eq!(
+                match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[]).await {
+                    Attached::Refused(r) => r,
+                    _ => panic!("attempt {carried} is not the current folded attempt"),
+                },
+                BuildReply::StaleClaim { held_attempt: 1, held_executor: Some("mesh1.admin.1".into()), carried_attempt: carried }
+            );
+        }
+        assert_eq!(memory.facts().await.unwrap().len(), 3, "a refusal recorded nothing: acceptance, claim, verdict");
+    }
+
+    /// CONTRACT: a claimed attempt with no run on the admin is started (a fabric-primary that died
+    /// after claiming, or an executor that was reborn); the run ends with its terminal; a call for
+    /// the same attempt after its end reads the receipts it holds, replaying a frame per `Complete`
+    /// receipt and the terminal, and runs nothing again.
+    #[tokio::test]
+    async fn a_claimed_attempt_is_started_and_a_call_after_its_end_replays_its_receipts_and_runs_nothing() {
+        let (door, memory) = door("mesh1.admin.1").await;
+        accepted(&memory).await;
+        let ctx = CallContext::default();
+        // The fabric-primary won attempt 1 for this admin and died before calling it.
+        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        let Attached::Live { disposition, mut tail, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await else { panic!("the claimed attempt is started") };
+        assert_eq!(disposition, Disposition::Started);
+        let mut last = None;
+        while let Some(f) = tail.next().await {
+            last = Some(f);
+        }
+        assert!(matches!(last, Some(BuildReply::Complete { attempt: 1, .. })), "{last:?}");
+        // A recorded step of that attempt, then a call after the end.
+        memory.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
+        memory.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Failed { reason: "x".into() })).await.unwrap();
+        match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await {
+            Attached::Ended { replay, terminal } => {
+                assert_eq!(names(&replay), vec!["step"], "a frame per Complete receipt, none for a failed one");
+                assert!(matches!(terminal, BuildReply::Complete { attempt: 1, .. }));
+            }
+            _ => panic!("an attempt with its verdict is read, never run again"),
+        }
+    }
 }
