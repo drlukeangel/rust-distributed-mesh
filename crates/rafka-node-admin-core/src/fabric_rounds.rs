@@ -367,6 +367,12 @@ impl FabricRounds {
             self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "state-sync names the accepted Build");
             return;
         };
+        // The sync_state round names the accepted Build's attempt: a Build whose first attempt no
+        // executor has claimed yet has none, and the round is asked for the attempt that exists.
+        if build.attempt == 0 {
+            self.block(climb, &[Missing { who: "build".into(), why: "no-attempt-claimed" }], "state-sync names the accepted Build's attempt");
+            return;
+        }
         if !self.may_advance() {
             return;
         }
