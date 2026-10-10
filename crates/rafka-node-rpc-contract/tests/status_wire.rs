@@ -3,10 +3,10 @@
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
 fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
@@ -20,7 +20,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_ten_variant_wire_schema() {
+fn requests_match_the_frozen_twelve_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -33,6 +33,20 @@ fn requests_match_the_frozen_ten_variant_wire_schema() {
         (NodeDrained { node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "070c3031323334353637383961620562697274680c626c645f31613262336334640116647261696e2d6e6f64653a6d657368312e7270632e31"),
         (StopNode { node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "080c3031323334353637383961620562697274680c626c645f3161326233633464011573746f702d6e6f64653a6d657368312e7270632e31"),
         (NodeLeft { node_id: node(), incarnation: birth(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "090c3031323334353637383961620562697274680c626c645f3161326233633464011573746f702d6e6f64653a6d657368312e7270632e31"),
+        (LeaveMesh { mesh_id: mesh(), build_id: "bld_1a2b3c4d".into(), attempt: 1, operation: "shutdown-mesh:1123456789ab".into() }, "0a0c3131323334353637383961620c626c645f3161326233633464011a73687574646f776e2d6d6573683a313132333435363738396162"),
+        (
+            MeshLeave {
+                mesh_id: mesh(),
+                build_id: "bld_1a2b3c4d".into(),
+                attempt: 1,
+                operation: "shutdown-mesh:1123456789ab".into(),
+                final_node_id: node(),
+                final_incarnation: birth(),
+                final_runtime: RuntimeFact { deployment_id: "dep_mesh1_admin1".into(), provider: RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: RuntimeLocator::Process { pid: 4321, start: 123456 } },
+                receipt_manifest: "bld_1a2b3c4d/1/shutdown-mesh:1123456789ab/other-members-exited".into(),
+            },
+            "0b0c3131323334353637383961620c626c645f3161326233633464011a73687574646f776e2d6d6573683a3131323334353637383961620c303132333435363738396162056269727468106465705f6d657368315f61646d696e31001670726f636573733a626f6f742d613a7069646e732d6100e121c0c4073e626c645f31613262336334642f312f73687574646f776e2d6d6573683a3131323334353637383961622f6f746865722d6d656d626572732d657869746564",
+        ),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -70,6 +84,26 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
     }
+}
+
+/// CONTRACT: the largest `MeshLeave` (a container's 64-character id and a manifest reference at its
+/// 128-byte bound) fits the Status request ceiling with room for every other field; a manifest
+/// reference over its bound is the caller's to refuse before it sends.
+#[test]
+fn the_largest_mesh_leave_fits_the_request_ceiling() {
+    let request = StatusRequest::MeshLeave {
+        mesh_id: mesh(),
+        build_id: "bld_1a2b3c4d".into(),
+        attempt: u32::MAX,
+        operation: "shutdown-mesh:1123456789ab".into(),
+        final_node_id: node(),
+        final_incarnation: IncarnationId("i".repeat(32)),
+        final_runtime: RuntimeFact { deployment_id: "d".repeat(64), provider: RuntimeProvider::Container, control_domain: "c".repeat(128), locator: RuntimeLocator::Container { id: "a".repeat(64) } },
+        receipt_manifest: "m".repeat(MAX_RECEIPT_MANIFEST_BYTES),
+    };
+    let bytes = Status::encode_request(&request).unwrap();
+    assert!(bytes.len() + 512 <= Status::MAX_REQUEST_FRAME_BYTES, "{} bytes of {}", bytes.len(), Status::MAX_REQUEST_FRAME_BYTES);
+    assert_eq!(Status::decode_request(&bytes).unwrap(), request);
 }
 
 fn golden<T: serde::Serialize>(value: T, expected: &str) {

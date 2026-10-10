@@ -210,10 +210,14 @@ pub enum BuildOperation {
         /// The node to retire.
         node: PathName,
     },
-    /// Retire a whole mesh.
-    RetireMesh {
-        /// The mesh to retire.
+    /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
+    /// primary drains and stops every other member, and the fabric-primary stops the final primary
+    /// and records the departure. The operation key names the mesh by its minted id.
+    ShutdownMesh {
+        /// The mesh's name.
         mesh: String,
+        /// The mesh's minted id.
+        mesh_id: rafka_mesh_entity::MeshId,
     },
 }
 
@@ -226,7 +230,7 @@ impl BuildOperation {
             Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
-            Self::RetireMesh { mesh } => format!("retire-mesh:{mesh}"),
+            Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }
     }
 }
@@ -259,6 +263,12 @@ pub enum BuildReject {
     },
     /// The mesh is not one the fabric holds.
     UnknownMesh {
+        /// The mesh.
+        mesh: String,
+    },
+    /// The mesh is held but no member has stated the id it carries, so its shutdown has no
+    /// operation key (`shutdown-mesh:<mesh_id>`).
+    MeshIdUnknown {
         /// The mesh.
         mesh: String,
     },
@@ -326,6 +336,7 @@ impl BuildReject {
             Self::DuplicateMesh { .. } => "duplicate-mesh",
             Self::MeshWithoutAdmin { .. } => "mesh-without-admin",
             Self::UnknownMesh { .. } => "unknown-mesh",
+            Self::MeshIdUnknown { .. } => "mesh-id-unknown",
             Self::UnknownNode { .. } => "unknown-node",
             Self::NodeNotLive { .. } => "node-not-live",
             Self::WouldLeaveMeshWithoutAdmin { .. } => "would-leave-mesh-without-admin",
@@ -346,6 +357,7 @@ impl fmt::Display for BuildReject {
             Self::DuplicateMesh { mesh } => write!(f, "mesh `{mesh}` is desired twice"),
             Self::MeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` needs at least one node-admin"),
             Self::UnknownMesh { mesh } => write!(f, "mesh `{mesh}` is not in the fabric"),
+            Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
             Self::UnknownNode { node } => write!(f, "node `{node}` is not in the fabric"),
             Self::NodeNotLive { node } => write!(f, "node `{node}` is not live"),
             Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a live node-admin"),
@@ -468,7 +480,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             let mut gone: Vec<&String> = observed.meshes.iter().map(|m| &m.name).filter(|m| !names.contains(*m)).collect();
             gone.sort();
             for m in gone {
-                ops.push(BuildOperation::RetireMesh { mesh: m.clone() });
+                ops.push(shutdown_mesh(observed, m)?);
             }
         }
         BuildIntent::ReconcileMesh { desired } => {
@@ -537,10 +549,19 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if observed.meshes.len() <= 1 {
                 return Err(BuildReject::EmptyFabric);
             }
-            ops.push(BuildOperation::RetireMesh { mesh: mesh.clone() });
+            ops.push(shutdown_mesh(observed, mesh)?);
         }
     }
     Ok(BuildPlan { operations: ops })
+}
+
+/// The shutdown of the mesh named `mesh`, keyed by the id its members carry; refused by name when
+/// no member has stated it.
+pub(crate) fn shutdown_mesh(observed: &Topology, mesh: &str) -> Result<BuildOperation, BuildReject> {
+    match observed.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone()) {
+        Some(mesh_id) => Ok(BuildOperation::ShutdownMesh { mesh: mesh.to_string(), mesh_id }),
+        None => Err(BuildReject::MeshIdUnknown { mesh: mesh.to_string() }),
+    }
 }
 
 /// Validate `intent` against the topology it is submitted against and pin
@@ -750,9 +771,15 @@ mod tests {
         let c = plan(&BuildIntent::CreateMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)]) }, &t).unwrap();
         assert_eq!(c.operations, vec![BuildOperation::CreateMesh { mesh: "mesh2".into() }, create("mesh2.admin.1"), create("mesh2.rpc.1")]);
         let mut two = mn();
-        two.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+        let id2 = MeshId::mint();
+        two.meshes.push(Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
         let d = plan(&BuildIntent::RemoveMesh { mesh: "mesh2".into() }, &two).unwrap();
-        assert_eq!(d.operations, vec![BuildOperation::RetireMesh { mesh: "mesh2".into() }]);
+        assert_eq!(d.operations, vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }]);
+        assert_eq!(d.operations[0].key(), format!("shutdown-mesh:{id2}"), "the operation names the mesh by its minted id");
+        // A mesh no member has stated an id for has no key: refused by name.
+        let mut unnamed = two.clone();
+        unnamed.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().id = None;
+        assert_eq!(plan(&BuildIntent::RemoveMesh { mesh: "mesh2".into() }, &unnamed), Err(BuildReject::MeshIdUnknown { mesh: "mesh2".into() }));
         // replacement: {mesh1, mesh2} -> {mesh2, mesh3}
         let r = plan(&desired(&[("mesh2", 0 + 1, 0), ("mesh3", 1, 0)]), &two).unwrap();
         assert_eq!(
@@ -761,7 +788,7 @@ mod tests {
                 create("mesh2.admin.1"),
                 BuildOperation::CreateMesh { mesh: "mesh3".into() },
                 create("mesh3.admin.1"),
-                BuildOperation::RetireMesh { mesh: "mesh1".into() },
+                BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: two.meshes.iter().find(|m| m.name == "mesh1").unwrap().id.clone().unwrap() },
             ]
         );
     }

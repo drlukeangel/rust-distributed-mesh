@@ -394,6 +394,71 @@ pub enum Frame {
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
+    /// The fabric-primary accepted `leave-mesh` for `mesh_id` (gossip.md, mesh-leaving): leave
+    /// intent, never exit proof. Published by the leave-mesh command hook on the backbone and the
+    /// fabric-primary's own mesh channel; a peer mesh's primary forwards it onto its own channel.
+    MeshLeaving {
+        /// The mesh that leaves.
+        mesh_id: MeshId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// `shutdown-mesh:<mesh_id>`.
+        operation: String,
+        /// The fabric-primary that authored the frame.
+        publisher: String,
+        /// The Rafka-time of the event; evidence only.
+        event_at_rafka_ms: u64,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
+    /// The leaving mesh's still-running primary handed its member receipts to the fabric-primary
+    /// (gossip.md, mesh-leave): handoff evidence, not completed departure; the final primary keeps
+    /// running. Published on the backbone and the primary's own mesh channel.
+    MeshLeave {
+        /// The mesh that leaves.
+        mesh_id: MeshId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// `shutdown-mesh:<mesh_id>`.
+        operation: String,
+        /// The final mesh-primary's node.
+        final_node_id: NodeId,
+        /// The final mesh-primary's incarnation.
+        final_incarnation: IncarnationId,
+        /// The reference to the other members' terminal receipts.
+        receipt_manifest: String,
+        /// The mesh-primary that authored the frame.
+        publisher: String,
+        /// The Rafka-time of the event; evidence only.
+        event_at_rafka_ms: u64,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
+    /// The fabric-primary recorded the completed mesh departure (gossip.md, mesh-left): every
+    /// accepted birth, the final primary included, was proven exited. Published on the backbone and
+    /// the fabric-primary's own mesh channel; a peer mesh's primary forwards it onto its own.
+    MeshLeft {
+        /// The mesh that left.
+        mesh_id: MeshId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// `shutdown-mesh:<mesh_id>`.
+        operation: String,
+        /// The reference to the complete terminal proof set.
+        receipt_manifest: String,
+        /// The fabric-primary that authored the frame.
+        publisher: String,
+        /// The Rafka-time of the event; evidence only.
+        event_at_rafka_ms: u64,
+        /// The local primary that forwards the frame onto its own channel.
+        forwarded_by: Option<String>,
+    },
 }
 
 impl Frame {
@@ -845,6 +910,11 @@ impl ConcernInbox {
     }
 }
 
+/// The mesh a publisher's `path.name` (`<mesh>.<kind>.<ordinal>`) belongs to.
+fn publisher_mesh(publisher: &str) -> &str {
+    publisher.split('.').next().unwrap_or(publisher)
+}
+
 /// What a peer mesh's primary puts on its own mesh channel for a lifecycle or status frame it
 /// heard on the backbone: the frame, unchanged but for `forwarded_by`, or nothing. A source Mesh's
 /// members are never forwarded as heard: the [`Forwarder`] derives the delta or the stripped full
@@ -860,6 +930,15 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeDrained { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDrained { op, forwarded_by: Some(me.to_string()) }),
+        Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by: None } if publisher_mesh(&publisher) != own_mesh => {
+            Some(Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by: Some(me.to_string()) })
+        }
+        Frame::MeshLeave { mesh_id, build_id, attempt, operation, final_node_id, final_incarnation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: None } if publisher_mesh(&publisher) != own_mesh => {
+            Some(Frame::MeshLeave { mesh_id, build_id, attempt, operation, final_node_id, final_incarnation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: Some(me.to_string()) })
+        }
+        Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: None } if publisher_mesh(&publisher) != own_mesh => {
+            Some(Frame::MeshLeft { mesh_id, build_id, attempt, operation, receipt_manifest, publisher, event_at_rafka_ms, forwarded_by: Some(me.to_string()) })
+        }
         Frame::MeshStatus { mesh, status, publisher, forwarded_by: None, changed_at_rafka_ms } if mesh != own_mesh => {
             Some(Frame::MeshStatus { mesh, status, publisher, forwarded_by: Some(me.to_string()), changed_at_rafka_ms })
         }

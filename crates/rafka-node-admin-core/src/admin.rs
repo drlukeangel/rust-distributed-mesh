@@ -1741,7 +1741,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
-            BuildOperation::RetireMesh { mesh } => {
+            BuildOperation::ShutdownMesh { mesh, .. } => {
                 let (members, last_admin) = {
                     let view = self.topology.read().await;
                     let mut m: BTreeSet<PathName> = view.members().filter(|n| n.mesh == *mesh && n.status.is_live()).map(|n| n.name.clone()).collect();
