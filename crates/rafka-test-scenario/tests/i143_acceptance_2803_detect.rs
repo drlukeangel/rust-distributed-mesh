@@ -103,6 +103,14 @@ async fn fixture(cell: &str) -> Fixture {
     let (_, b0) = estate.get(&format!("/api/builds?id={accepted}")).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
     estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    // The fault falls on an established fabric: a cut that falls while the commit-state or
+    // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
+    // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
+    wait_for("the fabric is ready-for-traffic before the fault", Duration::from_secs(60), || async {
+        let (_, f) = estate.get("/api/fabric").await;
+        (s(&f["status"]) == "ready-for-traffic").then_some(())
+    })
+    .await;
     Fixture { estate, accepted, attempt_before: b0["attempt"].as_u64().unwrap_or(0), fabric_primary, lost, lost_mesh_id: s(&lost_view["id"]), before }
 }
 
