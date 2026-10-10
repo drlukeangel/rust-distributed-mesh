@@ -200,11 +200,6 @@ impl Drive {
         self.wake.notify_waiters();
     }
 
-    /// How many steps this drive has framed so far.
-    fn step_count(&self) -> usize {
-        self.state.lock().unwrap().seen.iter().filter(|k| k.starts_with("step|")).count()
-    }
-
     /// The first attempt this drive dispatched.
     fn note_first_attempt(&self, attempt: u32) -> u32 {
         let _ = self.first_attempt.compare_exchange(0, attempt, Ordering::SeqCst, Ordering::SeqCst);
@@ -447,10 +442,6 @@ impl DriveEnv {
         let id = drive.build_id.clone();
         let mut handed_to: Option<PathName> = None;
         let mut departed: Option<String> = None;
-        // The executors that handed an attempt off with no step completed since: two admins whose
-        // views name each other as the executor would otherwise claim attempts back and forth.
-        let mut idle_handoffs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut steps_framed = drive.step_count();
         loop {
             if let Some(end) = self.may_act(drive).await {
                 return end;
@@ -515,15 +506,6 @@ impl DriveEnv {
                 Inner::Terminal(BuildReply::HandedOff { to, .. }) => {
                     dspan.record("outcome", "handed-off");
                     self.verdicts.record(BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
-                    if drive.step_count() != steps_framed {
-                        steps_framed = drive.step_count();
-                        idle_handoffs.clear();
-                    }
-                    if !idle_handoffs.insert(executor.to_string()) {
-                        let why = format!("{executor} handed attempt {attempt} of Build {id} off to {to}, having handed one off before with no step completed in between: the views of {executor} and {to} disagree about who runs it");
-                        self.blocked(drive, attempt, "", "hand-off", &why);
-                        return self.stalled(drive, why);
-                    }
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
