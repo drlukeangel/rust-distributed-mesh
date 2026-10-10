@@ -46,6 +46,7 @@ mod i143_rb2_abandoned_join;
 mod i143_rj1_join;
 mod join_wire;
 mod node_objects;
+mod node_rpc_objects;
 mod process_launch_environment;
 mod provider_policy;
 mod readiness_gates;

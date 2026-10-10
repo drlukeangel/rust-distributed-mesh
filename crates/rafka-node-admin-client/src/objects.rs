@@ -369,3 +369,126 @@ impl Builds {
         self.call(BuildOp::Delete, self.admin.forget(id)).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held() -> NodeMeta {
+        NodeMeta {
+            node_id: NodeId::mint(),
+            incarnation: Some(IncarnationId::mint()),
+            endpoint: Some("ep-1".into()),
+            transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
+            exe: Some("rpc-node@abc123".into()),
+            status: NodeStatus::ReadyForTraffic,
+            name: "mesh1.rpc.1".parse().unwrap(),
+            mesh: "mesh1".into(),
+            kind: NodeKind::RpcNode,
+            otel_debug: false,
+        }
+    }
+
+    /// CONTRACT: a put may change only the caller-owned group. Flipping `otel_debug` is accepted; a
+    /// body that differs from what RDM holds in any RDM-owned field is refused naming that field.
+    #[test]
+    fn a_put_changing_a_field_rdm_owns_is_refused_naming_the_field() {
+        let held = held();
+        assert_eq!(NodeMeta { otel_debug: true, ..held.clone() }.check_put(&held, false), Ok(()));
+        let cases: Vec<(NodeMeta, MetaField)> = vec![
+            (NodeMeta { node_id: NodeId::mint(), ..held.clone() }, MetaField::NodeId),
+            (NodeMeta { incarnation: Some(IncarnationId::mint()), ..held.clone() }, MetaField::Incarnation),
+            (NodeMeta { endpoint: Some("ep-2".into()), ..held.clone() }, MetaField::Endpoint),
+            (NodeMeta { transport_addr: Some("127.0.0.1:4001".parse().unwrap()), ..held.clone() }, MetaField::TransportAddr),
+            (NodeMeta { exe: Some("rpc-node@def456".into()), ..held.clone() }, MetaField::Exe),
+            (NodeMeta { status: NodeStatus::Leaving, ..held.clone() }, MetaField::Status),
+            (NodeMeta { mesh: "mesh2".into(), ..held.clone() }, MetaField::Mesh),
+            (NodeMeta { kind: NodeKind::Broker, ..held.clone() }, MetaField::Kind),
+            (NodeMeta { name: "mesh2.rpc.1".parse().unwrap(), ..held.clone() }, MetaField::Path),
+        ];
+        for (body, field) in cases {
+            assert_eq!(body.check_put(&held, true), Err(MetaFieldIsRdmOwned { field }), "{}", field.name());
+        }
+    }
+
+    /// CONTRACT: a node's name changes only while the node is stopped, and only to or from its
+    /// `.old` form: a live node's rename is refused, and so is a new ordinal on a stopped node.
+    #[test]
+    fn a_name_changes_only_while_stopped_and_only_to_or_from_old() {
+        let held = held();
+        let old = NodeMeta { name: PathName { old: true, ..held.name.clone() }, ..held.clone() };
+        assert_eq!(old.check_put(&held, false), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "a live node keeps its name");
+        assert_eq!(old.check_put(&held, true), Ok(()), "a stopped node gives up its name to <name>.old");
+        assert_eq!(held.check_put(&old, true), Ok(()), "and takes it back");
+        let renumbered = NodeMeta { name: PathName { ordinal: 9, ..held.name.clone() }, ..held.clone() };
+        assert_eq!(renumbered.check_put(&held, true), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
+    }
+
+    /// CONTRACT: a valid put ends `NotBackedToday` naming the call, because no op carries the put;
+    /// an invalid one is refused before that. Calls whose request no op carries say so by name.
+    #[test]
+    fn calls_no_op_carries_today_say_so_by_name() {
+        let nodes = Nodes::new(NodeAdminClient::new("http://127.0.0.1:1"));
+        let held = held();
+        assert!(matches!(nodes.update(&held, &held, false), Ok(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
+        assert!(nodes.update(&NodeMeta { status: NodeStatus::Dead, ..held.clone() }, &held, false).is_err());
+        for (end, op) in [(nodes.connections_delete(), NodeOp::ConnectionsDelete), (nodes.config_get(), NodeOp::ConfigGet), (nodes.config_update(), NodeOp::ConfigUpdate), (nodes.start(), NodeOp::Start)] {
+            assert!(matches!(end, CallEnd::NotBackedToday { op: got, .. } if got == op), "{end:?}");
+        }
+    }
+
+    /// CONTRACT: each op has one canonical name, rendered the same way everywhere: the name is
+    /// `node.<verb>`, the span of a single call is `rdm.node_admin.<name>.via-call` and of a
+    /// workflow `…via-workflow`, and an event's frame span is `…<event>.via-reply-frame`.
+    #[test]
+    fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
+        use crate::names::NodeEvent;
+        let (_g, spans) = capture_spans();
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::Declare, NodeOp::Apply, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Drain, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+            drop(op.span());
+        }
+        for e in [NodeEvent::Created, NodeEvent::Started, NodeEvent::Joined, NodeEvent::Ready, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Left, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+            drop(e.span());
+        }
+        for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
+            drop(b.span());
+        }
+        let names = spans.lock().unwrap().clone();
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::Declare, NodeOp::Apply, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Drain, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+            let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
+            let want = format!("rdm.node_admin.{}.{via}", op.name());
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for e in [NodeEvent::Created, NodeEvent::Started, NodeEvent::Joined, NodeEvent::Ready, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Left, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
+            let want = format!("rdm.node_admin.{}.via-reply-frame", e.name());
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+        for b in [BuildOp::Create, BuildOp::Get, BuildOp::Delete] {
+            let want = format!("rdm.node_admin.{}.via-call", b.name());
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
+    }
+
+    /// A subscriber that records the name of every span created while the guard lives.
+    fn capture_spans() -> (tracing::subscriber::DefaultGuard, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tracing::span;
+        struct Names(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        impl tracing::Subscriber for Names {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, a: &span::Attributes<'_>) -> span::Id {
+                let mut n = self.0.lock().unwrap();
+                n.push(a.metadata().name().to_string());
+                span::Id::from_u64(n.len() as u64)
+            }
+            fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+            fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+            fn event(&self, _: &tracing::Event<'_>) {}
+            fn enter(&self, _: &span::Id) {}
+            fn exit(&self, _: &span::Id) {}
+        }
+        let names = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (tracing::subscriber::set_default(Names(names.clone())), names)
+    }
+}

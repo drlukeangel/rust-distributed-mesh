@@ -142,15 +142,39 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     };
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
     let (node_id, build_id, attempt, operation) = (node.node_id.clone(), ctx.build_id.clone(), ctx.attempt, ctx.operation.clone());
-    let req = match cmd {
-        NodeCommand::Drain => StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation },
-        NodeCommand::Stop => StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation },
+    let admission = match cmd {
+        // `node.drain` is the typed object: it builds `DrainNode` and ends the call as the transport did.
+        NodeCommand::Drain => {
+            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
+            let drain = rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
+            debug_assert_eq!(drain.operation(), operation, "the drain context derives the operation key the pipeline named");
+            admission_of(rafka_node_admin_client::NodeRpc::new(client).drain(&birth, &drain, &CallOptions::default()).await)
+        }
+        NodeCommand::Stop => {
+            let req = StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation };
+            let (out, _) = client.call::<Status>(target, &req, &CallOptions::default()).await;
+            command_admission(&out)
+        }
     };
-    let (out, _) = client.call::<Status>(target, &req, &CallOptions::default()).await;
-    let admission = command_admission(&out);
     tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
     admission
+}
+
+/// The arm a `node.drain` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
+/// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
+fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> CommandAdmission {
+    use rafka_node_admin_client::CallEnd;
+    match r {
+        Ok(StatusReply::Applied) => CommandAdmission::Admitted,
+        Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted,
+        Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
+        Err(CallEnd::NotSent { reason }) => CommandAdmission::NotSent { reason },
+        Err(CallEnd::Indeterminate { reason }) => CommandAdmission::Indeterminate { reason },
+        Err(CallEnd::Unserved { op }) => CommandAdmission::Refused { reply: format!("unserved op {op:#04x}") },
+        Err(CallEnd::RejectedStale { target_node_id }) => CommandAdmission::Refused { reply: format!("stale target {target_node_id}") },
+        Err(other) => CommandAdmission::Refused { reply: other.to_string() },
+    }
 }
 
 /// Wait up to `within` for the completion call of the command `ctx` names for `node`.
