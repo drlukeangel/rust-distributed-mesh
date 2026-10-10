@@ -21,7 +21,6 @@ use crate::topology::Topology;
 use rafka_mesh_entity::{MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::{Announced, DigestBook};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::status::{Status, StatusRequest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -314,9 +313,12 @@ fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String,
                     (Some(n), Some(client)) => match n.incarnation_id.clone() {
                         None => "birth-has-no-incarnation".to_string(),
                         Some(incarnation) => {
-                            let req = StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation };
-                            let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &CallOptions::default()).await;
-                            out.reply().map(|r| r.value().name().to_string()).unwrap_or_else(|| out.name().to_string())
+                            // `node.get` of the exact birth: it reasserts itself and answers its state.
+                            let birth = rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
+                            match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &CallOptions::default()).await {
+                                Ok(reply) => reply.name().to_string(),
+                                Err(end) => end.rpc_name().to_string(),
+                            }
                         }
                     },
                 };

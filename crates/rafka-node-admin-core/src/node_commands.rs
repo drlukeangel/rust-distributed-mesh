@@ -147,7 +147,6 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         NodeCommand::Drain => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let drain = rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
-            debug_assert_eq!(drain.operation(), operation, "the drain context derives the operation key the pipeline named");
             admission_of(rafka_node_admin_client::NodeRpc::new(client).drain(&birth, &drain, &CallOptions::default()).await)
         }
         NodeCommand::Stop => {

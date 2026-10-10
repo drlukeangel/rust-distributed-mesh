@@ -100,6 +100,20 @@ impl CallEnd {
     }
 }
 
+impl CallEnd {
+    /// The name the node-RPC outcome algebra gives this ending (`NotSent`, `Indeterminate`, …), for
+    /// the callers whose span attributes already carry it.
+    pub fn rpc_name(&self) -> &'static str {
+        match self {
+            Self::NotSent { .. } => "NotSent",
+            Self::Indeterminate { .. } => "Indeterminate",
+            Self::Unserved { .. } => "Unserved",
+            Self::RejectedStale { .. } => "RejectedStale",
+            other => other.outcome(),
+        }
+    }
+}
+
 impl From<ClientError> for CallEnd {
     fn from(e: ClientError) -> Self {
         match e {

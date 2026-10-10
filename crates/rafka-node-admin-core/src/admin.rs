@@ -3627,8 +3627,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 }
                                 // The ping answered: the status kick. The node re-publishes its presence
                                 // and answers its status.
-                                let (out, _) = client.call::<rafka_node_rpc_contract::status::Status>(&target, &kick_of(&node), &rafka_node_rpc::CallOptions::default()).await;
-                                tracing::info!(node = %node.name, kick = %out.reply().map(|r| r.value().name()).unwrap_or(out.name()), "status kick after an answered ping");
+                                let birth = rafka_node_admin_client::ExactBirth {
+                                    target: target.clone(),
+                                    node_id: node.node_id.clone(),
+                                    incarnation: node.incarnation_id.clone().unwrap_or_else(|| crate::model::IncarnationId(String::new())),
+                                };
+                                let kick = match rafka_node_admin_client::NodeRpc::new(&client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+                                    Ok(reply) => reply.name(),
+                                    Err(end) => end.rpc_name(),
+                                };
+                                tracing::info!(node = %node.name, kick, "status kick after an answered ping");
                                 Ok(())
                             }
                         },

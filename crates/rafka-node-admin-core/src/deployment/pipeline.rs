@@ -1495,7 +1495,12 @@ impl DeploymentPipeline<'_> {
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
     /// operation (`drain-node:<path>` / `stop-node:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
-        CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: format!("{}:{}", cmd.operation_prefix(), node.name) }
+        // A drain's operation key has one source: the `node.drain` object derives it, and the receipt, the wire request and the completion all carry that key.
+        let operation = match cmd {
+            crate::node_commands::NodeCommand::Drain => rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Stop => format!("{}:{}", cmd.operation_prefix(), node.name),
+        };
+        CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation }
     }
 
     /// The lifecycle op a command's gossip hook carries.

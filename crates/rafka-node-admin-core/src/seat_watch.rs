@@ -188,7 +188,8 @@ impl Looker {
         let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
         let (out, _) = self.client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &CallOptions::default()).await;
         if out.reply().is_some() {
-            let _ = self.client.call::<rafka_node_rpc_contract::status::Status>(&target, &kick, &CallOptions::default()).await;
+            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap_or_else(|| IncarnationId(String::new())) };
+            let _ = rafka_node_admin_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
             return Finding::Answered;
         }
         // 2. The same kick through a live member of the birth's mesh.

@@ -7,6 +7,12 @@
 //! failed. [`fold`] is the one place a Build's receipt step keys meet the canonical names; the
 //! keys themselves are untouched.
 //!
+//! The commit cut over the control API: a submit that fails before its connection is made
+//! (`reqwest`'s connect error) provably reached no handler and ends `NotSent`; once the request
+//! was written, a transport failure is `Indeterminate`; a `202` is the cut. After it, every
+//! failed read of the Build is `Indeterminate`, whether or not that read's own request was
+//! written, because the call it belongs to is already committed.
+//!
 //! The Build is read over the control API today, so the stream polls it; node-RPC carries no
 //! Build op yet. A read that fails after the call was accepted ends the stream
 //! `Indeterminate`: missing frames prove nothing about the step in flight. The caller then

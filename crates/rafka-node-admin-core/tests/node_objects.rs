@@ -389,7 +389,15 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
                 other => panic!("the stream ended before the cut: {other:?}"),
             }
         }
-        // The cut: the executor's process dies at the join and the caller's wire is severed.
+        // The cut: the executor's process dies at the join and the caller's wire is severed. The
+        // join is where it is cut once the step before it has its receipt.
+        loop {
+            let view = rig.builds.read_build(&build).await.unwrap();
+            if view.steps.iter().any(|s| s.step == "ApplyMeshPending") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         executor.abort();
         let _ = executor.await;
         wire.sever();
