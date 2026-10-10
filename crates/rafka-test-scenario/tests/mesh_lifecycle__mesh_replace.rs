@@ -1,9 +1,11 @@
 //! i143.e4.s8 process E2E: the mesh replacement contract (PRD §12.3).
 //!
-//! desired {mesh1, mesh2} -> {mesh2, mesh3} through one Build: mesh1 is drained and retired
-//! through the retire pipeline, and mesh3 is created under a new identity. This is a desired
-//! change, never a recovery: no proven-drift Build names mesh1, nothing recreates a mesh1 node, and
-//! the scenario carries its own manifest (subfeature `mesh-replace`).
+//! desired {mesh1, mesh2} -> {mesh2, mesh3} through one Build: mesh1 leaves (mesh-leave.md: the
+//! owner outside mesh1 runs `shutdown-mesh:<mesh_id>`, mesh1's primary drains and stops every other
+//! member, the owner drains and stops mesh1's final primary and records `MeshLeft`), and mesh3 is
+//! created under a new identity. This is a desired change, never a recovery: no proven-drift Build
+//! names mesh1, nothing recreates a mesh1 node, and the scenario carries its own manifest
+//! (subfeature `mesh-replace`).
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -36,6 +38,18 @@ fn names(meshes: &[&str]) -> BTreeSet<String> {
         .collect()
 }
 
+fn start_ns(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().unwrap_or(0)
+}
+
+fn end_ns(sp: &Value) -> u64 {
+    sp["end_unix_nano"].as_u64().unwrap_or(0)
+}
+
+fn attr_u(sp: &Value, k: &str) -> u64 {
+    sp["attributes"][k].as_str().and_then(|v| v.parse().ok()).or_else(|| sp["attributes"][k].as_u64()).unwrap_or(0)
+}
+
 fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
@@ -65,6 +79,10 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         }
         v
     };
+
+    // The Node rows mesh1's admin holds, read from its data dir while it runs.
+    let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let mesh1_dir = estate.data_dir_of("mesh1.admin.1").await;
 
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.
     let mesh2_admin = before
@@ -96,25 +114,96 @@ async fn replacing_a_mesh_retires_the_old_one_and_creates_a_new_identity() {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
     }
 
+    // Dead is final and its members resolve Gone: a mesh2 ordinary node's own live resolver answers
+    // `gone` for every departed mesh1 birth, never `unknown`, and nothing dials it.
+    for (name, id) in mesh1_ids.iter() {
+        let query = format!("exact:{id}");
+        wait_for(&format!("mesh2.rpc.1's resolver answers Gone for departed {name}"), Duration::from_secs(30), || async {
+            let r = estate.probe(&["resolve", "--target", "path:mesh2.rpc.1", "--query", &query]);
+            (r["reply"]["resolution"] == "gone").then_some(())
+        })
+        .await;
+    }
+    // The durable Node rows are not deleted: mesh1's admin still holds its own row and a contact
+    // row for every other birth it launched.
+    assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
+    for (name, id) in mesh1_ids.iter().filter(|(n, _)| n != "mesh1.admin.1") {
+        assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/contacts/{id}.json")).exists(), "the Node row of {name} ({id}) remains in {mesh1_dir}");
+    }
     let (_, fabric_now) = estate.get("/api/fabric").await;
     estate.admin = s(&fabric_now["admin_api_base"]);
+    let owner_name = {
+        let spans = estate.spans();
+        let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
+        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile executed the shutdown-mesh operation");
+        s(&r["attributes"]["executor"])
+    };
+    // The MeshLeft receipt, read from the live Build projection (the admin API): one Complete
+    // receipt under the outer operation, covering every birth of the mesh.
+    let (_, build_now) = estate.get(&format!("/api/builds?id={b}")).await;
+    let left_receipts: Vec<Value> = build_now["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == "MeshLeft").collect();
+    let other_receipts: Vec<Value> = build_now["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == "OtherMembersExited").collect();
     estate.stop().await;
     let spans = estate.spans();
+    assert_eq!(other_receipts.len(), 1, "one OtherMembersExited receipt, recorded by mesh1's primary: {build_now}");
+    assert_eq!(other_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(3), "a terminal receipt for every birth of mesh1 but its final primary");
+    assert_eq!(left_receipts.len(), 1, "one MeshLeft receipt under {b} (owner {owner_name})");
+    assert_eq!(left_receipts[0]["outcome"], json!("complete"), "{}", left_receipts[0]);
+    assert_eq!(left_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_id}"), "keyed by the mesh's minted id");
+    assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
 
-    // mesh1 retired through the retire pipeline under B: each node drained, then terminated,
-    // then removed from the topology.
+    // mesh1 left through the mesh-leave workflow under B: every member drained, stopped and proven
+    // exited in the documented order, and none of the node-removal steps ran (the Node rows stay).
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
+    let order_of = |name: &str| -> Vec<(String, u64, u64)> {
+        let mut v: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name && sp["attributes"]["build_id"] == b.as_str()).collect();
+        v.sort_by_key(|sp| sp["start_unix_nano"].as_u64());
+        v.iter().map(|sp| (s(&sp["attributes"]["step"]), sp["start_unix_nano"].as_u64().unwrap_or(0), sp["end_unix_nano"].as_u64().unwrap_or(0))).collect()
+    };
     for (name, _) in &mesh1_pids {
+        let order = order_of(name);
+        let names: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime"], "{name}: drain-node, node-drained, stop-node, node-left, then the provider's exit proof; no node-removal step");
         let mine: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["build_id"] == b.as_str()).collect();
-        let order: Vec<String> = {
-            let mut v = mine.clone();
-            v.sort_by_key(|sp| sp["start_unix_nano"].as_u64());
-            v.iter().map(|sp| s(&sp["attributes"]["step"])).collect()
-        };
-        let at = |step: &str| order.iter().position(|x| x == step).unwrap_or_else(|| panic!("{name}: no {step} under {b}: {order:?}"));
-        assert!(at("DrainNode") < at("TerminateRuntime") && at("TerminateRuntime") < at("RemoveTopologyMembership"), "{name}: {order:?}");
-        assert!(mine.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{name}: every retire step completed");
+        assert!(mine.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{name}: every step completed");
     }
+    // Tiers: the ordinary nodes' workflows overlap in time; the other node-admin starts only after
+    // the last ordinary node's exit is proven; the final primary's drain starts after the other
+    // admin's exit is proven and the handoff was validated.
+    let member = |name: &str| -> (u64, u64) {
+        let sp = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().find(|sp| sp["attributes"]["node"] == name && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().unwrap_or_else(|| panic!("no shutdown-member span for {name}"));
+        (start_ns(&sp), end_ns(&sp))
+    };
+    let terminal_end = |name: &str| order_of(name).iter().find(|(n, _, _)| n == "TerminateRuntime").map(|(_, _, e)| *e).unwrap();
+    let drain_start = |name: &str| order_of(name).iter().find(|(n, _, _)| n == "DrainNode").map(|(_, st, _)| *st).unwrap();
+    let (r1, r2) = (member("mesh1.rpc.1"), member("mesh1.rpc.2"));
+    assert!(r1.0 < r2.1 && r2.0 < r1.1, "the ordinary nodes' workflows overlap in time: {r1:?} {r2:?}");
+    let tier1_last = terminal_end("mesh1.rpc.1").max(terminal_end("mesh1.rpc.2"));
+    let others: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| n.contains(".admin.")).collect();
+    // The final primary is the one whose workflow the owner ran: its shutdown-member span is not in the mesh-primary's tier.
+    let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().expect("the handoff was validated");
+    assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-leave handoff: {handoff}");
+    let final_name = others.iter().max_by_key(|n| drain_start(n)).unwrap().clone();
+    let tier2: Vec<&String> = others.iter().filter(|n| **n != final_name).collect();
+    for n in &tier2 {
+        assert!(drain_start(n) > tier1_last, "{n} (a node-admin) drained only after every ordinary node's exit was proven: {} <= {tier1_last}", drain_start(n));
+    }
+    let tier2_last = tier2.iter().map(|n| terminal_end(n)).max().unwrap_or(tier1_last);
+    assert!(drain_start(&final_name) > tier2_last && drain_start(&final_name) > end_ns(&handoff), "the final primary {final_name} drained after every other exit and after the validated handoff");
+    // The gossip hooks: mesh-leaving by the owner, mesh-leave by the still-running primary, mesh-left
+    // by the owner after the final exit; each heard by another mesh's nodes.
+    for hook in ["via-mesh-leaving", "via-mesh-leave", "via-mesh-left"] {
+        let published = named(&spans, &format!("rdm.node_admin.mesh.{}.{hook}", "update"));
+        assert!(!published.is_empty(), "the {hook} hook ran");
+    }
+    let heard = |name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with("mesh2.")).collect() };
+    let leaving = heard("via-mesh-leaving");
+    assert!(leaving.iter().any(|sp| attr_u(sp, "members_marked") > 0), "a mesh2 node marked mesh1's births Leaving: {leaving:?}");
+    let left = heard("via-mesh-left");
+    assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a mesh2 node held mesh1's births departed on mesh-left: {left:?}");
+    let last_exit = tier2_last.max(terminal_end(&final_name));
+    assert!(left.iter().all(|sp| start_ns(sp) >= last_exit.saturating_sub(1)), "mesh-left was heard only after the last exact exit was proven");
+    assert!(leaving.iter().all(|sp| start_ns(sp) < drain_start("mesh1.rpc.1")), "mesh-leaving was heard before any member drained");
 
     // A desired change, not a recovery.
     assert!(

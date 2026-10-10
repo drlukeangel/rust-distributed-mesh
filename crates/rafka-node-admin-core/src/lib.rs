@@ -29,6 +29,7 @@ pub mod fabric_storage;
 pub mod http;
 pub mod investigate;
 pub mod lifecycle;
+pub mod mesh_leave;
 pub mod model;
 pub mod node_commands;
 pub mod node_rpc;

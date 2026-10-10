@@ -85,14 +85,6 @@ impl NodeObserver for LiveMesh {
     async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
         rafka_node_admin_core::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
-
-    async fn departed(&self, node: &Node) -> bool {
-        use rafka_mesh_entity::MemberStatus;
-        self.membership
-            .book
-            .get(node.node_id.as_str())
-            .is_some_and(|(d, _)| Some(&d.node.incarnation) == node.incarnation_id.as_ref() && d.status == MemberStatus::Leaving)
-    }
 }
 
 /// The id of the one mesh these functional fabrics hold (`mesh1`).

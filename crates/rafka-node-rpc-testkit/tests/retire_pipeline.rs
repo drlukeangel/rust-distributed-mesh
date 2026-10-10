@@ -48,7 +48,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
 
     let retire_build = publish_build(&builds, add_node()).await; // the Build names the path: an rpc node's meta is Ephemeral, so a permanent retirement releases its storage
     pipeline
-        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false })
+        .retire(&RetireRequest { build_id: retire_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
         .await
         .unwrap_or_else(|e| panic!("retire: {e}"));
 
@@ -124,7 +124,7 @@ async fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
     keep.meshes.get_mut("mesh1").unwrap().set_meta(&again.node.name, preserve).unwrap();
     let again_build = publish_build(&builds, keep).await;
     pipeline
-        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal, observe_departure: false })
+        .retire(&RetireRequest { build_id: again_build.clone(), attempt: 1, node: again.node.clone(), handle: again.handle.clone(), kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal })
         .await
         .unwrap();
     assert!(std::path::Path::new(again.node.data_dir.as_deref().unwrap()).exists(), "Persistent/Preserve: the data dir stays on a permanent retirement");

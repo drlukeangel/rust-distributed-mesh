@@ -635,10 +635,21 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
         // that holds no seat serves the `degraded` the holder published.
         topology.fabric.status = if records.peer_recovery.lock().unwrap().is_some() || records.adopted_degraded() || records.published_degraded() { ScopeStatus::Degraded } else { ScopeStatus::ReadyForTraffic };
     }
+    let leaving: BTreeSet<String> = book.leaving_meshes().into_iter().collect();
     for m in mesh_names {
         let ready = topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some();
         let id = mesh_ids.get(&m).cloned();
-        topology.meshes.push(Mesh { id, name: m, status: if ready { ScopeStatus::ReadyForTraffic } else { ScopeStatus::Pending } });
+        // A Dead mesh is not in the active topology: its births departed and its id stays held
+        // (`records.meshes`, the book's dead set), never reissued.
+        if id.as_ref().is_some_and(|i| book.is_mesh_dead(i)) {
+            continue;
+        }
+        let status = match &id {
+            Some(i) if leaving.contains(i.as_str()) => ScopeStatus::Leaving,
+            _ if ready => ScopeStatus::ReadyForTraffic,
+            _ => ScopeStatus::Pending,
+        };
+        topology.meshes.push(Mesh { id, name: m, status });
     }
     topology
 }
@@ -929,21 +940,6 @@ pub async fn hydration_blocker(me: &PathName, accepted: &AcceptedStore, builds: 
     }
 }
 
-/// The order a whole-mesh retire takes `members`: every ordinary member, then the admin cohort,
-/// then `last_admin` (the mesh's admin primary) last, so a live admin of the mesh forwards every
-/// departure before the last one goes. Within a group, path order.
-pub fn retire_mesh_order(members: Vec<PathName>, last_admin: Option<&PathName>) -> Vec<PathName> {
-    let mut ordinary: Vec<PathName> = members.iter().filter(|n| n.kind != NodeKind::NodeAdmin).cloned().collect();
-    let mut admins: Vec<PathName> = members.iter().filter(|n| n.kind == NodeKind::NodeAdmin && Some(*n) != last_admin).cloned().collect();
-    ordinary.sort();
-    admins.sort();
-    ordinary.extend(admins);
-    if let Some(r) = last_admin.filter(|r| members.contains(r)) {
-        ordinary.push(r.clone());
-    }
-    ordinary
-}
-
 /// A person-started admin that is not a restart (no row of its own in nodes.storage): what it
 /// is must be stated by its parameters, and contradictory inputs are refused by name. Day 0 is
 /// the start with no mesh, no seed and no flag on a data dir that holds nothing; a recovery start
@@ -1083,9 +1079,6 @@ impl NodeObserver for MembershipObserver {
         crate::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
 
-    async fn departed(&self, node: &Node) -> bool {
-        self.digest_of(node).is_some_and(|d| d.status == MemberStatus::Leaving)
-    }
 }
 
 /// What this admin answers an entry pull with.
@@ -1116,6 +1109,9 @@ impl EntryState {
         Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
     }
 }
+
+mod leave;
+pub use leave::LeaveDoor;
 
 use crate::fence::FenceOutcome;
 
@@ -1164,6 +1160,20 @@ pub struct AdminRunner {
     pub node_rpc: Option<crate::node_rpc::ProcessNodeRpc>,
     /// Where the retire pipeline's lifecycle events go: this admin's membership and backbone.
     pub lifecycle_events: Arc<dyn crate::deployment::pipeline::LifecycleEvents>,
+    /// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a handoff for.
+    pub leaves: Arc<crate::mesh_leave::LeaveBook>,
+    /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished.
+    pub leave_runs: Mutex<HashMap<crate::mesh_leave::LeaveKey, LeaveRun>>,
+}
+
+/// One mesh leave at the leaving mesh's primary.
+#[derive(Clone)]
+pub enum LeaveRun {
+    /// The member workflows are running for the owner that sent `leave-mesh`.
+    Running(NodeId),
+    /// Every other member exited and the manifest is recorded: the handoff to the owner is what
+    /// is left.
+    Exited(NodeId, crate::mesh_leave::ExitManifest),
 }
 
 /// The lifecycle events of an operation this admin executes, on its own mesh channel only. The
@@ -1175,6 +1185,8 @@ pub struct GossipLifecycle {
     /// This admin's place on the backbone: the `node-draining` and `node-leaving` command hooks
     /// publish there as well.
     pub backbone: Backbone,
+    /// This admin's own path: the publisher of the mesh frames it authors.
+    pub me: PathName,
 }
 
 #[async_trait::async_trait]
@@ -1222,6 +1234,51 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         async {
             self.backbone.publish_command_hook(&f).await;
             tracing::info!("the stop command was accepted: node-leaving published on the mesh channel and the backbone");
+        }
+        .instrument(span)
+        .await
+    }
+    async fn mesh_leaving(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
+        use rafka_mesh_transport::membership::Frame;
+        let f = Frame::MeshLeaving { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leaving", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, channels = "mesh,backbone");
+        async {
+            self.backbone.publish_command_hook(&f).await;
+            tracing::info!("the leave-mesh command was accepted: mesh-leaving published on the backbone and this mesh's channel");
+        }
+        .instrument(span)
+        .await
+    }
+    async fn mesh_leave(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
+        use rafka_mesh_transport::membership::Frame;
+        let Some((final_node_id, final_incarnation)) = e.final_primary.clone() else { return };
+        let f = Frame::MeshLeave {
+            mesh_id: e.mesh_id.clone(),
+            build_id: e.build_id.clone(),
+            attempt: e.attempt,
+            operation: e.operation.clone(),
+            final_node_id,
+            final_incarnation,
+            receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(),
+            publisher: self.me.to_string(),
+            event_at_rafka_ms: self.membership.clock().now_rafka_ms(),
+            forwarded_by: None,
+        };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leave", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
+        async {
+            self.backbone.publish_command_hook(&f).await;
+            tracing::info!("the mesh-leave handoff was called: mesh-leave published on the backbone and this mesh's channel");
+        }
+        .instrument(span)
+        .await
+    }
+    async fn mesh_left(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
+        use rafka_mesh_transport::membership::Frame;
+        let f = Frame::MeshLeft { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
+        async {
+            self.backbone.publish_command_hook(&f).await;
+            tracing::info!("every exact exit is proven: mesh-left published on the backbone and this mesh's channel");
         }
         .instrument(span)
         .await
@@ -1513,12 +1570,12 @@ impl AdminRunner {
     }
 
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, RetireKind::Removal, false).await
+        self.retire_with(build_id, attempt, node, RetireKind::Removal).await
     }
 
     /// The retire half of a restart: the birth stops; its logical node and storage stay.
     async fn retire_for_restart(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
-        self.retire_with(build_id, attempt, node, RetireKind::Restart, false).await
+        self.retire_with(build_id, attempt, node, RetireKind::Restart).await
     }
 
     /// The target of a retire the view cannot name: the accepted Build's `Replace` action names the
@@ -1606,7 +1663,7 @@ impl AdminRunner {
         Ok((record, handle))
     }
 
-    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind, observe_departure: bool) -> Result<Option<Node>, String> {
+    async fn retire_with(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, kind: RetireKind) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => self.handle_for(&n).await?,
@@ -1622,7 +1679,7 @@ impl AdminRunner {
             }
         };
         let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind, observe_departure };
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, kind };
         self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
         self.after_exit(&record, kind);
         self.handles.lock().unwrap().remove(node);
@@ -1699,7 +1756,14 @@ impl AdminRunner {
         use tracing::Instrument;
         match op {
             BuildOperation::CreateMesh { mesh } => {
-                self.records.meshes.lock().unwrap().entry(mesh.clone()).or_insert_with(MeshId::mint);
+                {
+                    let mut meshes = self.records.meshes.lock().unwrap();
+                    // A dead mesh's id is never reissued: a name whose recorded id is Dead takes a new one.
+                    if meshes.get(mesh).is_some_and(|id| self.book.is_mesh_dead(id)) {
+                        meshes.remove(mesh);
+                    }
+                    meshes.entry(mesh.clone()).or_insert_with(MeshId::mint);
+                }
                 self.records.wake.poke();
                 Ok(())
             }
@@ -1741,26 +1805,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
-            BuildOperation::ShutdownMesh { mesh, .. } => {
-                let (members, last_admin) = {
-                    let view = self.topology.read().await;
-                    let mut m: BTreeSet<PathName> = view.members().filter(|n| n.mesh == *mesh && n.status.is_live()).map(|n| n.name.clone()).collect();
-                    m.extend(self.handles.lock().unwrap().keys().filter(|n| n.mesh == *mesh).cloned());
-                    let last_admin = view.cohort_primary(mesh, NodeKind::NodeAdmin).map(|n| n.name.clone());
-                    (m.into_iter().collect::<Vec<_>>(), last_admin)
-                };
-                // Members first, the admin cohort last, the mesh's admin primary very
-                // last: every departure leaves the mesh through a live admin (Luke 2026-10-05).
-                // Each retire holds its local cleanup until this admin has heard the birth's own
-                // `Leaving`.
-                for node in retire_mesh_order(members, last_admin.as_ref()) {
-                    let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
-                    self.retire_with(build_id, attempt, &node, RetireKind::Removal, true).instrument(span).await?;
-                }
-                self.records.meshes.lock().unwrap().remove(mesh);
-                self.records.wake.poke();
-                Ok(())
-            }
+            BuildOperation::ShutdownMesh { mesh, mesh_id } => self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
         }
     }
 }
@@ -2663,6 +2708,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // holds as applied. A reader folds; nothing here writes a row.
     let commands = Arc::new(crate::node_commands::CommandBook::default());
     let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
+    let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
     let status_storage: Arc<dyn crate::status_storage::StatusStorage> = Arc::new(crate::status_storage::FileStatusStorage::open(&cfg.data_dir).map_err(storage_err)?);
     *records.declared.lock().unwrap() = crate::status_rpc::Declared::rehydrate(&*status_storage, &*nodes_storage).await?;
     {
@@ -2678,6 +2724,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             republish: republish.clone(),
             commands: commands.clone(),
             own: own_commands.clone(),
+            leaver: leaver.clone(),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
         }));
@@ -2735,8 +2782,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         node_id: node_id.clone(),
         endpoint: Some(endpoint.clone()),
         node_rpc: Some(node_rpc.clone()),
-        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone() })),
+        lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
+        leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
+        leave_runs: Mutex::new(HashMap::new()),
     });
+    let _ = leaver.set(Arc::new(LeaveDoor { runner: runner.clone() }));
 
     // This birth's exact runtime. A launched admin takes the record its
     // launcher's pipeline made available; the bootstrap admin, which nobody
@@ -3704,17 +3754,6 @@ let opened =                     reconcile_drift(&drift_time, &me, &now, &accept
 mod tests {
     use super::*;
 
-    /// CONTRACT (Luke 2026-10-05): a whole-mesh retire takes the mesh's ordinary members first,
-    /// then its admin cohort, and its admin primary last. Must NOT happen: an admin
-    /// before a member (path order puts `admin` before `rpc`).
-    #[test]
-    fn a_mesh_retire_takes_members_first_and_its_admin_primary_last() {
-        let p = |s: &str| -> PathName { s.parse().unwrap() };
-        let members = vec![p("mesh2.admin.1"), p("mesh2.admin.2"), p("mesh2.rpc.2"), p("mesh2.rpc.1")];
-        let order = retire_mesh_order(members, Some(&p("mesh2.admin.1")));
-        assert_eq!(order, vec![p("mesh2.rpc.1"), p("mesh2.rpc.2"), p("mesh2.admin.2"), p("mesh2.admin.1")]);
-    }
-
     fn fabric1() -> FabricId {
         FabricId::parse("fab000000001").unwrap()
     }
@@ -4090,6 +4129,7 @@ mod tests {
             republish: Arc::new(std::sync::OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(std::sync::OnceLock::new()),
+            leaver: Arc::new(std::sync::OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: records.wake.clone(),
         };

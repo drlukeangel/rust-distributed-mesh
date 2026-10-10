@@ -71,10 +71,10 @@ pub enum ScopeStatus {
     Pending,
     /// Ready: it takes traffic.
     ReadyForTraffic,
-    /// Draining: it takes no new work.
-    Draining,
-    /// Retired: it has been taken out of service.
-    Retired,
+    /// Leaving: a mesh whose shutdown was accepted; it is not selected for new work.
+    Leaving,
+    /// Dead: a mesh every one of whose births was proven exited; final, its id never reissued.
+    Dead,
     /// The fabric primary has decided a peer mesh is reborn (`investigate`).
     Degraded,
 }
