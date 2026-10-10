@@ -24,25 +24,34 @@ use std::time::Duration;
 
 /// Whether this process was commanded to stop, and the wake of whoever waits to shut it down.
 pub struct StopCommand {
+    admitted: std::sync::atomic::AtomicBool,
     tx: tokio::sync::watch::Sender<bool>,
 }
 
 /// The process's stop command: set by `stop-node`, waited on beside the stop signal.
 pub fn stop_command() -> &'static StopCommand {
     static STOP: std::sync::OnceLock<StopCommand> = std::sync::OnceLock::new();
-    STOP.get_or_init(|| StopCommand { tx: tokio::sync::watch::Sender::new(false) })
+    STOP.get_or_init(|| StopCommand { admitted: std::sync::atomic::AtomicBool::new(false), tx: tokio::sync::watch::Sender::new(false) })
 }
 
 impl StopCommand {
+    /// A `stop-node` was admitted: from this moment whatever ends the process (the provider's stop
+    /// signal after the admin has `node-left`, or this node's own shutdown) is the commanded stop,
+    /// which has no drain leg and no second `Leaving`. The process does not end yet: `node-left` is
+    /// still to be sent while the endpoint is open ([`StopCommand::request`]).
+    pub fn admit(&self) {
+        self.admitted.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     /// Ask the process to stop (a `stop-node` was admitted and its `node-left` sent).
     pub fn request(&self) {
+        self.admit();
         self.tx.send_replace(true);
     }
     /// Whether a `stop-node` was admitted: the shutdown that follows has no drain leg.
     pub fn commanded(&self) -> bool {
-        *self.tx.borrow()
+        self.admitted.load(std::sync::atomic::Ordering::SeqCst)
     }
-    /// Resolves once a `stop-node` was admitted.
+    /// Resolves once the admitted `stop-node` has sent its `node-left` ([`StopCommand::request`]).
     pub async fn wait(&self) {
         let _ = self.tx.subscribe().wait_for(|v| *v).await;
     }
@@ -190,6 +199,7 @@ impl NodeSelf {
             commander = %commander, state = "Leaving", "otel.kind" = "internal"
         );
         async {
+            stop_command().admit();
             let leaving = (self.set_status)(MemberStatus::Leaving);
             let _ = self.membership.publish(&leaving).await;
             let declared = async {

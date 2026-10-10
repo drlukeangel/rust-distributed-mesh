@@ -118,6 +118,9 @@ impl RunningNode {
     /// `Leaving`, published it and called `node-left` while its endpoint was open
     /// (`node_self`), so nothing is announced again. The tasks end and the endpoints close.
     pub async fn stop_commanded(self) {
+        // The provider's stop signal can arrive before `node-left` is sent: it is sent first, while
+        // the endpoint is open.
+        rafka_node_admin_core::node_self::stop_command().wait().await;
         self.publisher.abort();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();

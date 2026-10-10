@@ -82,6 +82,14 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
         }
     };
+    // A `stop-node` was admitted and the provider's stop signal arrived before its `node-left` was
+    // sent: the stop is still the commanded one, completed first, with no drain leg.
+    if crate::node_self::stop_command().commanded() {
+        crate::node_self::stop_command().wait().await;
+        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, commanded = true);
+        running.leave_after_stop().instrument(span).await;
+        return;
+    }
     // Instrumented, never entered across the await: the span's busy and idle time are real.
     let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown);
     running.leave().instrument(span).await;
