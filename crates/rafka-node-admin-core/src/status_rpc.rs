@@ -116,7 +116,7 @@ pub enum Effect {
 /// The decision, pure over a view and what was applied: what the admin does with a declaration
 /// from `sender`. It reads `declared` and returns the effect to commit; it writes nothing.
 pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, sender: Option<&crate::model::Node>, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
-    let me = match view.nodes.iter().find(|n| n.name == auth.me) {
+    let me = match view.members().find(|n| n.name == auth.me) {
         Some(n) => n,
         None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } }, None),
     };
@@ -238,7 +238,7 @@ impl StatusAuthority {
     /// peer"). A birth this admin admitted over `JoinNode` is in the view when its join is
     /// answered (`join::JoinDoor::known`), so it is never a stranger.
     pub async fn sender_of(&self, peer: &EndpointId) -> Option<crate::model::Node> {
-        self.topology.read().await.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(peer)).cloned()
+        self.topology.read().await.births().find(|n| n.endpoint_id.as_ref() == Some(peer)).cloned()
     }
 
     /// The one door every declaration goes through, whoever the sender is: a peer over Node RPC,
@@ -255,12 +255,12 @@ impl StatusAuthority {
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
-        if let Some(me) = view.nodes.iter().find(|n| n.name == self.me) {
+        if let Some(me) = view.members().find(|n| n.name == self.me) {
             if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.wake).await {
                 return reply;
             }
         }
-        let receiver_is_primary = view.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let receiver_is_primary = view.members().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
         let (reply, effect) = {
             let declared = self.declared.lock().unwrap();
             decide(self, &view, &declared, sender.as_ref(), req)
@@ -304,7 +304,7 @@ impl StatusAuthority {
     /// node-admin (its owning mesh-admin).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, req: &StatusRequest) -> StatusReply {
         let (StatusRequest::DrainNode { node_id, incarnation, .. } | StatusRequest::StopNode { node_id, incarnation, .. }) = req else { unreachable!("serve_command is called for commands only") };
-        let me = view.nodes.iter().find(|n| n.name == self.me);
+        let me = view.members().find(|n| n.name == self.me);
         let reply = match (me, sender, self.own.get()) {
             (Some(me), _, _) if me.node_id != *node_id => StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } },
             (Some(me), _, _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
@@ -379,7 +379,7 @@ impl StatusAuthority {
     /// for its own mesh; the seat check does not apply because no seat exists yet. The same span
     /// as every decision, with the sender named as itself.
     pub(crate) async fn self_apply_mesh_pending(&self, mesh_id: &MeshId) -> StatusReply {
-        let receiver_is_primary = self.topology.read().await.nodes.iter().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
+        let receiver_is_primary = self.topology.read().await.members().find(|n| n.name == self.me).is_some_and(|n| n.is_primary);
         let (decided, effect) = apply_mesh(&self.declared.lock().unwrap(), mesh_id, MeshState::Pending);
         let reply = match effect {
             Some(effect) => self.persist_then_commit(effect).await,

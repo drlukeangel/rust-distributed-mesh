@@ -349,7 +349,7 @@ pub async fn run(w: Watch) {
 /// learned them from topology alone, which is not liveness (R-G2), so nothing says whether they are
 /// alive. An admin that took the fabric-primary seat watches them from the moment it took it.
 pub(crate) fn never_heard(view: &Topology, me_mesh: &str, heard: &BTreeSet<String>) -> BTreeSet<String> {
-    view.nodes.iter().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
+    view.members().map(|n| n.mesh.clone()).filter(|m| m != me_mesh && !heard.contains(m)).collect()
 }
 
 /// Forget every investigation of a mesh the backbone no longer carries (a retired mesh).
@@ -468,7 +468,7 @@ async fn probe(w: &Watch, view: &Topology, mesh: &str, n: u8) -> Found {
     let Some(admin) = admin else {
         return Found { outcome: ProbeOutcome::Unreachable, target: String::new(), members: String::new(), carrier: String::new(), detail: format!("the view holds no node-admin of {mesh}") };
     };
-    let mut members: Vec<Node> = view.nodes.iter().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
+    let mut members: Vec<Node> = view.members().filter(|m| m.mesh == mesh && m.kind != NodeKind::NodeAdmin && m.status != NodeStatus::Leaving && m.status != NodeStatus::Restarting).cloned().collect();
     members.sort_by_key(|m| (!(w.connected)(&m.node_id), m.name.to_string()));
     let used = w.ladder_last_carrier(mesh, n);
     if n > 1 {

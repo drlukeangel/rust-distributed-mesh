@@ -10,7 +10,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 use std::sync::Arc;
 
 fn path(kind: NodeKind, ordinal: u32) -> PathName {
-    PathName { mesh: "mesh1".into(), kind, ordinal }
+    PathName { mesh: "mesh1".into(), kind, ordinal, old: false }
 }
 
 fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {

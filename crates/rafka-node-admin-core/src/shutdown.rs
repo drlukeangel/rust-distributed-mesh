@@ -149,7 +149,7 @@ impl ShutdownControl {
 
 /// Every current live admin birth in `view` is `Draining`: the Fabric-wide freeze barrier.
 pub(crate) fn freeze_barrier(view: &Topology) -> bool {
-    let admins: Vec<&Node> = view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
+    let admins: Vec<&Node> = view.births().filter(|n| n.kind == NodeKind::NodeAdmin && n.status.is_live()).collect();
     !admins.is_empty() && admins.iter().all(|n| n.status == NodeStatus::Draining)
 }
 
@@ -162,16 +162,16 @@ fn present(n: &Node) -> bool {
 /// members, then its non-primary admins.
 pub(crate) fn own_mesh_drain(view: &Topology, me: &PathName) -> (Vec<Node>, Vec<Node>) {
     let mesh = me.mesh.clone();
-    let members = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && present(n)).cloned().collect();
-    let admins = view.nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.name != *me && present(n)).cloned().collect();
+    let members = view.births().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin && present(n)).cloned().collect();
+    let admins = view.births().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.name != *me && present(n)).cloned().collect();
     (members, admins)
 }
 
 /// Whether every Mesh in `view` holds no runtime but its mesh-primary: what the fabric-primary
 /// waits on before stopping the spine. Returns the runtimes still present otherwise.
 pub(crate) fn drained_to_primaries(view: &Topology) -> Result<Vec<Node>, Vec<Node>> {
-    let primaries: Vec<Node> = view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
-    let left: Vec<Node> = view.nodes.iter().filter(|n| present(n) && !primaries.iter().any(|p| p.name == n.name)).cloned().collect();
+    let primaries: Vec<Node> = view.births().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
+    let left: Vec<Node> = view.births().filter(|n| present(n) && !primaries.iter().any(|p| p.name == n.name)).cloned().collect();
     if left.is_empty() {
         Ok(primaries)
     } else {
@@ -208,7 +208,7 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
     }
     control.set_phase(ShutdownPhase::Draining);
     let view = stopper.view().await;
-    let i_am_mesh_primary = view.nodes.iter().any(|n| n.name == me && n.is_primary);
+    let i_am_mesh_primary = view.births().any(|n| n.name == me && n.is_primary);
     if !i_am_mesh_primary {
         return false;
     }
@@ -218,7 +218,7 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
     for group in [members, admins] {
         stop_and_wait(&control, &*stopper, group).await;
     }
-    let is_fabric_primary = stopper.view().await.nodes.iter().any(|n| n.name == me && n.is_fabric_primary);
+    let is_fabric_primary = stopper.view().await.births().any(|n| n.name == me && n.is_fabric_primary);
     if !is_fabric_primary {
         return false;
     }
@@ -231,7 +231,7 @@ pub async fn drain(me: PathName, control: Arc<ShutdownControl>, stopper: Arc<dyn
                 for n in &left {
                     control.incomplete(&n.name.to_string(), format!("still present ({:?}) when the drain bound passed", n.status));
                 }
-                break stopper.view().await.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
+                break stopper.view().await.births().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && present(n)).cloned().collect();
             }
             Err(_) => tokio::time::sleep(tick).await,
         }
@@ -259,7 +259,7 @@ async fn stop_and_wait(control: &ShutdownControl, stopper: &dyn Stopper, nodes: 
     let deadline = tokio::time::Instant::now() + drain_bound();
     loop {
         let view = stopper.view().await;
-        waiting.retain(|w| view.nodes.iter().any(|n| n.name == w.name && n.incarnation_id == w.incarnation_id && present(n)));
+        waiting.retain(|w| view.births().any(|n| n.name == w.name && n.incarnation_id == w.incarnation_id && present(n)));
         if waiting.is_empty() {
             return;
         }

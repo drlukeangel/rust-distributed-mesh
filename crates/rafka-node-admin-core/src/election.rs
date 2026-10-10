@@ -132,7 +132,8 @@ pub fn resolve(nodes: &mut [Node]) {
 }
 
 /// Mark each cohort's primary and the fabric primary in `nodes` by the rules in the module docs,
-/// given the seat holders held and the births proven gone.
+/// given the seat holders held and the births proven gone. `nodes` are members: a replaced
+/// predecessor (`<path>.old`) is not passed (`Topology::members`).
 pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for n in nodes.iter_mut() {
         n.is_primary = false;
@@ -240,7 +241,7 @@ impl ElectionLog {
         let mesh = self.observer.mesh.clone();
         let mut last = self.last.lock().unwrap();
         let mut now: BTreeMap<NodeKind, Option<Seat>> = BTreeMap::new();
-        for n in t.nodes.iter().filter(|n| n.mesh == mesh) {
+        for n in t.members().filter(|n| n.mesh == mesh) {
             let e = now.entry(n.kind).or_default();
             if n.is_primary {
                 *e = Some(Seat::of(n));
@@ -311,10 +312,10 @@ impl ElectionLog {
         drop(owned);
         if owner && (gained || last_fabric.as_ref() != Some(&fabric)) {
             let previous = last_fabric.clone().flatten();
-            let candidates: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
+            let candidates: Vec<String> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
             // The exact inputs: every node-admin of every mesh as this view holds it, with the id
             // the order is decided on and the status the eligibility is decided on.
-            let inputs: Vec<String> = t.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| format!("{}={}:{:?}{}", n.name, n.node_id, n.status, if n.is_primary { ":primary" } else { "" })).collect();
+            let inputs: Vec<String> = t.members().filter(|n| n.kind == NodeKind::NodeAdmin).map(|n| format!("{}={}:{:?}{}", n.name, n.node_id, n.status, if n.is_primary { ":primary" } else { "" })).collect();
             let span = tracing::info_span!(
                 parent: None,
                 "rdm.mesh.election.resolve.via-fabric-recompute",
@@ -366,6 +367,27 @@ mod tests {
 
     fn fabric(nodes: &[Node]) -> Vec<String> {
         nodes.iter().filter(|n| n.is_fabric_primary).map(|n| n.name.to_string()).collect()
+    }
+
+    /// CONTRACT: a replaced predecessor (`<path>.old`) holds no seat and is no candidate, even when its
+    /// digest still reads ready and its NodeId is the lowest: the successor at `<path>` is the cohort's.
+    #[test]
+    fn a_renamed_predecessor_is_never_a_candidate_or_a_primary() {
+        let mut old = node("mesh1.rpc.1", "000000000001", true);
+        old.name = old.name.renamed();
+        let successor = node("mesh1.rpc.1", "000000000009", true);
+        let view = crate::topology::Topology {
+            fabric: crate::model::Fabric { id: crate::model::FabricId::mint(), name: "f".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: vec![],
+            nodes: vec![old, successor, node("mesh1.admin.1", "000000000005", true)],
+        };
+        // An election takes the view's members: the renamed predecessor is not among them.
+        let mut members: Vec<Node> = view.members().cloned().collect();
+        resolve(&mut members);
+        assert_eq!(members.len(), 2);
+        assert_eq!(primaries(&members), vec!["mesh1.rpc.1".to_string(), "mesh1.admin.1".to_string()]);
+        assert_eq!(view.births().count(), 3, "the predecessor is still a birth the view holds");
+        assert_eq!(view.predecessors().count(), 1);
     }
 
     #[test]

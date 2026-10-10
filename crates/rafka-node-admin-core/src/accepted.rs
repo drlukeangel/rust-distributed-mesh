@@ -139,7 +139,7 @@ impl FabricTopology {
     pub fn of_observed(observed: &Topology) -> Self {
         let mut meshes: BTreeMap<String, MeshTopology> =
             observed.meshes.iter().map(|m| (m.name.clone(), MeshTopology { name: m.name.clone(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() })).collect();
-        for n in observed.nodes.iter().filter(|n| n.status.is_live()) {
+        for n in observed.members().filter(|n| n.status.is_live()) {
             let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| MeshTopology { name: n.mesh.clone(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() });
             mesh.node_meta_by_path.insert(n.name.clone(), NodeMeta::default_for(n.name.kind));
             mesh.nodes.insert(n.name.clone());
@@ -334,53 +334,78 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, false, false)
+    plan_with(topology, observed, action, false, ReplaceProgress::default())
 }
 
 /// [`plan`] for an attempt of the Build's `reason`: a requested replacement (`Replace`) of a birth
-/// that does not answer is a decommission, so the exact runtime is retired first (drain when
-/// sendable, terminate and inspect, `NodeDeleted` only on proven exit) and a new node is created
-/// after it. Proven drift (`ProvenDrift`) names a runtime already proven exited, which needs no
-/// retirement.
+/// the view does not hold at all is still a replacement of that exact birth, which the operation
+/// resolves from the durable records.
 #[cfg(test)]
 pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
-    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, false)
+    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::default())
 }
 
-/// [`plan_for`] for `build`'s current attempt, given what its receipts say already ran. A retire of
-/// a birth the view never held again leaves the view as it was, so the receipt, not the view, says
-/// the retire is done: the create that follows it is what is left.
+/// How far the `replace-node:<path>` operation of a Replace attempt's exact birth got, from the
+/// Build's receipts. The view alone cannot say: once the successor holds the path the view names
+/// another birth, while the old identity's `NodeDeleted` is still owed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ReplaceProgress {
+    /// The old birth's `NodeDeleting` is receipted: the operation began for this birth.
+    started: bool,
+    /// The old birth's `NodeDeleted` and the operation's `Complete` are receipted.
+    finished: bool,
+}
+
+impl ReplaceProgress {
+    /// The progress of `build`'s Replace action, `default` for any other.
+    pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
+        let Some(AttemptAction::Replace { path, from_incarnation }) = &build.action else { return Self::default() };
+        let operation = format!("replace-node:{path}");
+        let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
+        let done = |step: &str, only_birth: bool| {
+            build
+                .steps
+                .iter()
+                .filter(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete)
+                .filter(|s| !only_birth || s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth))
+                .map(|s| s.attempt)
+                .min()
+        };
+        let started = done("NodeDeleting", true).is_some();
+        let finished = done("NodeDeleted", true).is_some_and(|deleted| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= deleted));
+        Self { started, finished }
+    }
+}
+
+/// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
 pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
-    let retired = match &build.action {
-        Some(AttemptAction::Replace { path, from_incarnation }) => {
-            // The departure published on the provider's proof names the exact birth: that receipt
-            // (this attempt or one that handed it on) is the retire done.
-            let operation = format!("retire-node:{path}");
-            let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
-            build.steps.iter().any(|s| {
-                s.operation == operation && s.step == "NodeDeleted" && s.outcome == crate::build_state::StepOutcome::Complete && s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth)
-            })
-        }
-        _ => false,
-    };
-    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, retired)
+    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::of(build))
 }
 
-fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, retired: bool) -> BuildPlan {
+fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, replace_progress: ReplaceProgress) -> BuildPlan {
     let mut ops = Vec::new();
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
-    // The birth the attempt's action is fenced to, when the view still holds exactly it and it is
-    // not already leaving (a leaving birth keeps the path to its departure). The action owns its
+    // A restart's birth: the one the attempt is fenced to, when the view still holds exactly it and
+    // it is not already leaving (a leaving birth keeps the path to its departure). The action owns
+    // its path: the generic create below never plans it a second time.
+    let restarted: Option<&PathName> = match action {
+        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| path),
+        _ => None,
+    };
+    // One replace operation for the exact birth, never a retirement followed by a creation: the
+    // old identity's departure is published only after the successor is admitted and ready. The
+    // operation is planned while the view holds that birth, while its receipts say it began (the
+    // view then holds the successor, or nothing, at the path), and for a birth the view never held
+    // again that a requested replacement names (resolved from the durable records). It owns its
     // path: the generic create below never plans it a second time.
-    let acted: Option<(&PathName, &IncarnationId)> = action.and_then(|a| {
-        let (AttemptAction::Restart { path, from_incarnation } | AttemptAction::Replace { path, from_incarnation }) = a;
-        observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| (path, from_incarnation))
-    });
-    // A replacement of a birth the view does not hold at all (silent past every window the view
-    // keeps) is still the standard decommission: the exact runtime is retired from the durable
-    // records, then the node is created. A path the view holds under any birth is decided above.
-    let absent: Option<&PathName> = match action {
-        Some(AttemptAction::Replace { path, .. }) if decommission_unheard && observed.node(path).is_none() && topology.contains(path) => Some(path),
+    let replaced: Option<(&PathName, &IncarnationId)> = match action {
+        Some(AttemptAction::Replace { path, from_incarnation }) if !replace_progress.finished => {
+            let planned = match observed.node(path) {
+                Some(n) => n.incarnation_id.as_ref() == Some(from_incarnation) || replace_progress.started,
+                None => (decommission_unheard && topology.contains(path)) || replace_progress.started,
+            };
+            planned.then_some((path, from_incarnation))
+        }
         _ => None,
     };
     for (name, m) in &topology.meshes {
@@ -391,7 +416,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::fence_predecessor`).
-            if acted.is_some_and(|(a, _)| a == p) || absent == Some(p) {
+            if restarted == Some(p) || replaced.is_some_and(|(r, _)| r == p) {
                 continue;
             }
             // An attempt that carries an action repairs exactly its birth. Another unheard birth is
@@ -402,31 +427,15 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
                 }
             }
             if !observed.node(p).is_some_and(|n| n.status.is_live()) {
-                ops.push(BuildOperation::CreateNode { node: p.clone(), replaces: None });
+                ops.push(BuildOperation::CreateNode { node: p.clone() });
             }
         }
     }
-    if let Some(path) = absent {
-        if !retired {
-            ops.push(BuildOperation::RetireNode { node: path.clone() });
-        }
-        ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
+    if let Some(path) = restarted {
+        ops.push(BuildOperation::RestartNode { node: path.clone() });
     }
-    if let (Some(a), Some((path, _))) = (action, acted) {
-        let birth = observed.node(path).expect("acted names a held birth");
-        match a {
-            // The birth is live (a requested restart) or proven exited (a drift restart): either
-            // way the same identity is re-created.
-            AttemptAction::Restart { .. } => ops.push(BuildOperation::RestartNode { node: path.clone() }),
-            // A live birth is retired, then a new one is created at the path.
-            AttemptAction::Replace { .. } if birth.status.is_live() || decommission_unheard => {
-                ops.push(BuildOperation::RetireNode { node: path.clone() });
-                ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: None });
-            }
-            // A proven-exited birth needs no retirement: the create publishes its departure from the
-            // provider's proof of that exact birth, then births the new node.
-            AttemptAction::Replace { from_incarnation, .. } => ops.push(BuildOperation::CreateNode { node: path.clone(), replaces: Some(from_incarnation.clone()) }),
-        }
+    if let Some((path, from_incarnation)) = replaced {
+        ops.push(BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from_incarnation.clone() });
     }
     // A live node of a kept mesh that the topology no longer names is retired; a mesh the
     // topology no longer names is retired whole (every member, dead or live, by the retire
@@ -434,8 +443,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
     let mut extra: Vec<&PathName> = observed
-        .nodes
-        .iter()
+        .members()
         .filter(|n| action.is_none() && n.status.is_live() && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
@@ -674,12 +682,33 @@ mod tests {
         o.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         assert_eq!(
             plan(&cur, &o, None).operations,
-            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), replaces: None }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]
+            vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }, BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]
         );
         // A mesh outside the topology is retired after everything else.
         let mut o2 = mn();
         o2.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
         assert_eq!(plan(&cur, &o2, None).operations, vec![BuildOperation::RetireMesh { mesh: "mesh2".into() }]);
+    }
+
+    /// CONTRACT: a replaced predecessor (`<path>.old`) is neither the live birth at `<path>` nor a missing
+    /// node nor a surplus one: the plan of the settled topology is empty with it in the view, and a
+    /// successor at the path is the one birth the plan counts.
+    #[test]
+    fn a_renamed_predecessor_changes_no_plan() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        for status in [NodeStatus::Draining, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::ReadyForTraffic] {
+            let mut o = mn();
+            let mut old = n("mesh1.rpc.2", status, false);
+            old.name = old.name.renamed();
+            o.nodes.push(old);
+            assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}");
+            let mut missing = mn();
+            let mut old = n("mesh1.rpc.2", status, false);
+            old.name = old.name.renamed();
+            missing.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.2");
+            missing.nodes.push(old);
+            assert_eq!(plan(&cur, &missing, None).operations, vec![BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }], "the path itself is missing: {status:?}");
+        }
     }
 
     #[test]
@@ -693,7 +722,8 @@ mod tests {
         let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(
             plan(&cur, &o, Some(&replace)).operations,
-            vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }]
+            vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }],
+            "a replace is one operation, never a retire then a create"
         );
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();
@@ -709,8 +739,9 @@ mod tests {
 
     /// CONTRACT: an action fenced to a birth the view holds exited plans that path exactly once, as
     /// the action says: a Restart re-creates the SAME identity (no fresh create beside it); a Replace
-    /// creates the next node and names the exact birth whose departure the create publishes from the
-    /// provider's proof. A birth already leaving keeps its path to its departure.
+    /// is the one `replace-node` operation fenced to the exact birth, whatever reason opened it. A
+    /// birth already leaving keeps its path to its departure: a restart plans the create, a replace
+    /// resumes its operation.
     #[test]
     fn an_action_on_an_exited_birth_plans_its_path_once() {
         let cur = t(&[("mesh1", 2, 3)]);
@@ -722,54 +753,52 @@ mod tests {
             let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
             assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
             let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-            assert_eq!(plan(&cur, &o, Some(&replace)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
-            // A requested replacement of a birth that does not answer is a decommission: retire the
-            // exact runtime, then create.
-            assert_eq!(
-                plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations,
-                vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }],
-                "{dead:?}"
-            );
-            assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: Some(from.clone()) }], "{dead:?}");
+            let replace_op = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
+            assert_eq!(plan(&cur, &o, Some(&replace)).operations, replace_op, "{dead:?}");
+            for reason in [crate::build_state::AttemptReason::Replace, crate::build_state::AttemptReason::ProvenDrift] {
+                assert_eq!(plan_for(&cur, &o, Some(&replace), reason).operations, replace_op, "{dead:?} {reason:?}");
+            }
             // Another birth at the path: the action is satisfied, and the unheard birth is not swept
             // up by it (its own proven drift opens its own attempt).
             let other = AttemptAction::Replace { path: path.clone(), from_incarnation: IncarnationId::mint() };
             assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![], "{dead:?}");
-            assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }], "no action: the generic create decides");
+            assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone() }], "no action: the generic create decides");
         }
         // A surplus live birth is retired by an attempt of its own, never beside an action.
         let mut surplus = mn();
         surplus.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         let from = surplus.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from };
+        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(plan(&cur, &surplus, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap() }]);
-        assert_eq!(plan(&cur, &surplus, Some(&replace)).operations, vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
+        assert_eq!(plan(&cur, &surplus, Some(&replace)).operations, vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }]);
         let mut leaving = mn();
         leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;
         let from = leaving.node(&path).unwrap().incarnation_id.clone().unwrap();
-        for a in [AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() }, AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }] {
-            assert_eq!(plan(&cur, &leaving, Some(&a)).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
-        }
+        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan(&cur, &leaving, Some(&restart)).operations, vec![BuildOperation::CreateNode { node: path.clone() }]);
+        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+        assert_eq!(plan(&cur, &leaving, Some(&replace)).operations, vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }]);
     }
 
     /// CONTRACT (node-admin-lifecycle.md 4.2): a replacement of a birth the view does not hold at
-    /// all (it is silent past every window the view keeps) is still the standard decommission: the
-    /// exact runtime is retired, then the node is created. The generic create alone would find the
-    /// runtime still running and hold the path forever. A view that holds another birth at the path
-    /// satisfies the action, and a restart of an absent birth plans nothing (its identity is not
-    /// held to re-create).
+    /// all (it is silent past every window the view keeps) is still the one replace operation: the
+    /// exact runtime is resolved from the durable records and replaced. The generic create alone would
+    /// find the runtime still running and hold the path forever. A view that holds another birth at
+    /// the path satisfies the action, and a restart of an absent birth plans nothing (its identity is
+    /// not held to re-create).
     #[test]
-    fn a_replace_of_a_birth_the_view_lacks_retires_then_creates() {
+    fn a_replace_of_a_birth_the_view_lacks_is_still_one_replace_operation() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
         let mut o = mn();
         o.nodes.retain(|x| x.name != path);
         let from = IncarnationId::mint();
         let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-        let want = vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }];
+        let want = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
-        // Proven drift names a runtime already proven exited: no retire.
-        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }]);
+        // Proven drift names a birth from a view that has since lost it: nothing to replace, the path
+        // is missing and the generic create fills it.
+        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone() }]);
     }
 
     /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
@@ -785,31 +814,29 @@ mod tests {
         let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
         let mut o = mn();
         o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
-        let want = vec![BuildOperation::RetireNode { node: path.clone() }, BuildOperation::CreateNode { node: path.clone(), replaces: None }];
+        let want = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
         assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
         // With no action the generic create still plans every missing member.
         assert!(plan(&cur, &o, None).operations.len() >= 3);
     }
 
-    /// CONTRACT: once the departure of the exact birth a replace names is published on the
-    /// provider's proof (the `NodeDeleted` receipt of that birth), a re-plan of the same attempt, or
-    /// of the one that continues it on another admin, plans only the create; a receipt of another
-    /// birth of the path is not that proof.
+    /// CONTRACT: the replace operation is planned until the old birth's `NodeDeleted` and the
+    /// operation's `Complete` are receipted. Once its `NodeDeleting` is receipted it is planned
+    /// whatever the view holds at the path (the successor, or nothing): the departure is still owed.
+    /// A receipt of another birth of the path is not this replace's progress.
     #[test]
-    fn a_published_departure_of_the_named_birth_leaves_only_the_create() {
+    fn a_replace_is_planned_until_its_old_identity_is_deleted_and_the_operation_complete() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
-        let mut o = mn();
-        o.nodes.retain(|x| x.name != path);
         let from = IncarnationId::mint();
-        let receipt = |birth: &IncarnationId| BuildStepReceipt {
+        let step = |attempt: u32, step: &str, birth: Option<&IncarnationId>| BuildStepReceipt {
             build_id: crate::build::BuildId("b1".into()),
-            attempt: 6,
-            operation: format!("retire-node:{path}"),
-            step: "NodeDeleted".into(),
+            attempt,
+            operation: format!("replace-node:{path}"),
+            step: step.into(),
             outcome: StepOutcome::Complete,
-            output: Some(serde_json::json!({ "incarnation": birth })),
+            output: birth.map(|b| serde_json::json!({ "incarnation": b })),
             executor: None,
         };
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
@@ -822,13 +849,25 @@ mod tests {
             executor: None,
             steps,
             last_failure: None,
-            reason: AttemptReason::Replace,
+            reason: AttemptReason::ProvenDrift,
             action: Some(AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }),
         };
-        let create = vec![BuildOperation::CreateNode { node: path.clone(), replaces: None }];
-        assert_eq!(plan_for_build(&build(vec![receipt(&from)]), &o).operations, create);
-        assert_eq!(plan_for_build(&build(vec![receipt(&IncarnationId::mint())]), &o).operations.len(), 2, "another birth's departure is not this retire");
-        assert_eq!(plan_for_build(&build(vec![]), &o).operations.len(), 2);
+        let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
+        // The view holds the successor (another birth) at the path.
+        let mut o = mn();
+        o.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
+        assert_eq!(plan_for_build(&build(vec![]), &o).operations, vec![], "no receipt of this birth: the path runs another birth, nothing to replace");
+        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's receipt is not this replace's");
+        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &o).operations, replace, "begun: the successor holds the path, the departure is owed");
+        let deleted = vec![step(6, "NodeDeleting", Some(&from)), step(6, "NodeDeleted", Some(&from))];
+        assert_eq!(plan_for_build(&build(deleted.clone()), &o).operations, replace, "NodeDeleted without Complete: the storage release is owed");
+        let mut finished = deleted;
+        finished.push(step(6, "Complete", None));
+        assert_eq!(plan_for_build(&build(finished), &o).operations, vec![], "finished");
+        // The view holds nothing at the path.
+        let mut gone = mn();
+        gone.nodes.retain(|x| x.name != path);
+        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &gone).operations, replace);
     }
 
     /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's

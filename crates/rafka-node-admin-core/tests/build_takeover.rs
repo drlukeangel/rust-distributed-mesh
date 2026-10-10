@@ -254,8 +254,8 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
                 attempt: 2,
                 operations: vec![
                     // A's admin is lost too: its path is part of what is left.
-                    BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), replaces: None },
-                    BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), replaces: None },
+                    BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() },
+                    BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() },
                 ]
             }
         )]
@@ -263,15 +263,15 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(
         *a_runner.ran.lock().unwrap(),
         vec![
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap(), replaces: None }),
-            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), replaces: None }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.2".parse().unwrap() }),
+            (1, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }),
         ]
     );
     assert_eq!(
         *b_runner.ran.lock().unwrap(),
         vec![
-            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap(), replaces: None }),
-            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap(), replaces: None }),
+            (2, BuildOperation::CreateNode { node: "mesh1.admin.1".parse().unwrap() }),
+            (2, BuildOperation::CreateNode { node: "mesh1.rpc.3".parse().unwrap() }),
         ],
         "mesh1.rpc.2 is never created twice"
     );

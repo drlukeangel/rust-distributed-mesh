@@ -127,10 +127,29 @@ pub struct FabricView {
 }
 
 impl Topology {
-    /// Every node of one cohort.
+    /// The members: the births that hold their paths. Every decision (planning, drift, election,
+    /// seats, executors) reads the view through this. A replaced predecessor (`<path>.old`) is not a
+    /// member: its path is its successor's. This is the one place that rule lives.
+    pub fn members(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.iter().filter(|n| !n.name.old)
+    }
+
+    /// Every birth the view holds, replaced predecessors included. For what names or waits on a
+    /// birth wherever it is: the REST views, an identity lookup by node id or endpoint, and the
+    /// shutdown that stops every runtime still present.
+    pub fn births(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.iter()
+    }
+
+    /// The replaced predecessors (`<path>.old`) still held, until their departure.
+    pub fn predecessors(&self) -> impl Iterator<Item = &Node> {
+        self.nodes.iter().filter(|n| n.name.old)
+    }
+
+    /// Every node of one cohort, among the members.
     pub fn cohort(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
         let mesh = mesh.to_string();
-        self.nodes.iter().filter(move |n| n.mesh == mesh && n.kind == kind)
+        self.members().filter(move |n| n.mesh == mesh && n.kind == kind)
     }
 
     /// The single primary of a cohort, when exactly one live node claims it.
@@ -142,7 +161,7 @@ impl Topology {
 
     /// The fabric primary, when exactly one live node holds the role.
     pub fn fabric_primary(&self) -> Option<&Node> {
-        let mut p = self.nodes.iter().filter(|n| n.is_fabric_primary && n.status.is_live());
+        let mut p = self.members().filter(|n| n.is_fabric_primary && n.status.is_live());
         let first = p.next()?;
         p.next().is_none().then_some(first)
     }
@@ -159,7 +178,7 @@ impl Topology {
 
     /// The node named `name`.
     pub fn node(&self, name: &PathName) -> Option<&Node> {
-        self.nodes.iter().find(|n| &n.name == name)
+        self.births().find(|n| &n.name == name)
     }
 
     /// Every invariant a converged topology satisfies, as named violations.
@@ -173,7 +192,7 @@ impl Topology {
             }
         }
         let mut seen = BTreeMap::new();
-        for n in &self.nodes {
+        for n in self.births() {
             if seen.insert(n.name.clone(), ()).is_some() {
                 out.push(V::DuplicateNode(n.name.clone()));
             }
@@ -189,7 +208,7 @@ impl Topology {
         }
         // One primary per declared cohort that has a live member.
         let mut cohorts: BTreeMap<(String, NodeKind), Vec<&Node>> = BTreeMap::new();
-        for n in self.nodes.iter().filter(|n| n.status.is_live()) {
+        for n in self.members().filter(|n| n.status.is_live()) {
             cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(n);
         }
         for ((mesh, kind), members) in &cohorts {
@@ -206,7 +225,7 @@ impl Topology {
             }
         }
         // Exactly one fabric primary, a node-admin that is its mesh's admin primary.
-        let fps: Vec<&Node> = self.nodes.iter().filter(|n| n.is_fabric_primary).collect();
+        let fps: Vec<&Node> = self.members().filter(|n| n.is_fabric_primary).collect();
         if fps.len() != 1 {
             out.push(V::FabricPrimaryCount(fps.len()));
         }
@@ -228,7 +247,7 @@ impl Topology {
     /// The mesh named or identified by `id_or_name`, as clients see it.
     pub fn mesh_view(&self, id_or_name: &str) -> Option<MeshView> {
         let m = self.meshes.iter().find(|m| m.name == id_or_name || m.id.as_ref().is_some_and(|i| i.as_str() == id_or_name))?;
-        let mut nodes: Vec<PathName> = self.nodes.iter().filter(|n| n.mesh == m.name).map(|n| n.name.clone()).collect();
+        let mut nodes: Vec<PathName> = self.births().filter(|n| n.mesh == m.name).map(|n| n.name.clone()).collect();
         nodes.sort();
         Some(MeshView {
             id: m.id.clone(),

@@ -58,7 +58,8 @@ impl std::fmt::Display for Shortfall {
 /// The births of `t` the authority may have to prove: the ones it no longer hears
 /// (`PendingReconnect`, or `Dead` once its offline tickle found no path). Only these are inspected.
 pub fn unheard(t: &Topology) -> Vec<&crate::model::Node> {
-    t.nodes.iter().filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).collect()
+    // `members`: a replaced predecessor (`<path>.old`) is its replacement operation's, never drift's.
+    t.members().filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).collect()
 }
 
 /// The cohorts of `topology` that `t` holds fewer births for than it names,
@@ -126,6 +127,20 @@ mod tests {
         let s = shortfall(&d, &t, &exited);
         assert_eq!(s, vec![Shortfall { mesh: "mesh1".into(), kind: NodeKind::RpcNode, desired: 3, present: 2, exited: vec!["mesh1.rpc.2".into()] }]);
         assert_eq!(s[0].to_string(), "mesh1.rpc_node: 2 present of 3 accepted (exited: mesh1.rpc.2)");
+    }
+
+    /// CONTRACT: a replaced predecessor (`<path>.old`) is its replacement's, never drift's: it is not
+    /// unheard, and it counts as no birth of its cohort, so the successor at `<path>` is the one
+    /// present.
+    #[test]
+    fn a_renamed_predecessor_is_neither_unheard_nor_a_birth_of_its_cohort() {
+        use NodeStatus::{Dead, ReadyForTraffic as R};
+        let mut old = node("mesh1.rpc.1", Dead);
+        old.name = old.name.renamed();
+        let t = view(vec![node("mesh1.admin.1", R), node("mesh1.rpc.1", R), old.clone()]);
+        assert!(unheard(&t).is_empty());
+        let exited: HashSet<_> = [old.incarnation_id.clone().unwrap()].into();
+        assert!(shortfall(&desired(1, 1), &t, &exited).is_empty(), "one rpc node present of one accepted");
     }
 
     #[test]

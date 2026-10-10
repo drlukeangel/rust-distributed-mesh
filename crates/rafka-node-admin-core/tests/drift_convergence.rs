@@ -205,7 +205,7 @@ fn birth_as(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, 
     n
 }
 
-/// Realises `CreateNode` as the admin does: the real fence first; a birth only when it clears.
+/// Realises `CreateNode` and `ReplaceNode` as the admin does: the real fence first; a birth only when it clears.
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
@@ -233,7 +233,9 @@ impl OperationRunner for Runner {
             rafka_node_admin_core::election::resolve(&mut v.nodes);
             return Ok(());
         }
-        let BuildOperation::CreateNode { node: path, .. } = op else { return Err(format!("unexpected {op:?}")) };
+        // A replacement is realised like a creation at a path whose exact birth the provider's proof
+        // clears: the fence stands for the exact terminal proof the replace's stop step obtains.
+        let (BuildOperation::CreateNode { node: path } | BuildOperation::ReplaceNode { node: path, .. }) = op else { return Err(format!("unexpected {op:?}")) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));

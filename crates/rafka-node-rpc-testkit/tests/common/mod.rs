@@ -89,6 +89,8 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 pub struct Published {
     pub nodes: Mutex<Vec<Node>>,
     pub removed: Mutex<Vec<PathName>>,
+    /// The births that gave up their path to a successor, in order.
+    pub renamed: Mutex<Vec<(PathName, NodeId, IncarnationId)>>,
 }
 impl TopologySink for Published {
     fn publish(&self, node: Node) {
@@ -96,6 +98,9 @@ impl TopologySink for Published {
     }
     fn remove(&self, name: &PathName) {
         self.removed.lock().unwrap().push(name.clone());
+    }
+    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+        self.renamed.lock().unwrap().push((name.clone(), node_id.clone(), incarnation.clone()));
     }
 }
 

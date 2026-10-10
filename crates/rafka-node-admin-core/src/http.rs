@@ -479,7 +479,7 @@ async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
     let t = cp.topology.read().await;
-    let mut nodes = serde_json::to_value(&t.nodes).unwrap_or(Value::Null);
+    let mut nodes = serde_json::to_value(t.births().collect::<Vec<_>>()).unwrap_or(Value::Null);
     // Each node's CPU and RAM and mesh-channel counts from its latest digest as this admin holds it; absent when its
     // digest carried none (a member of a peer mesh is held without its load).
     if let (Some(loads), Some(list)) = (cp.loads.get(), nodes.as_array_mut()) {

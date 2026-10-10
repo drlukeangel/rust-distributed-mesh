@@ -154,7 +154,7 @@ pub enum BuildIntent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_incarnation: Option<IncarnationId>,
     },
-    /// Retire the node and create a new logical node at the same path.
+    /// Replace the node's live birth with a new logical node at the same path.
     ReplaceNode {
         /// The node to replace.
         node: PathName,
@@ -182,20 +182,27 @@ pub enum BuildOperation {
         /// The mesh to create.
         mesh: String,
     },
-    /// Create a node at `node`. `replaces` names the birth at the path an accepted Replace
-    /// attempt proved exited: its departure (NodeDeleted) is published from the provider's proof
-    /// of that exact birth before the new one is born.
+    /// Create a node at `node`.
     CreateNode {
         /// The node to create.
         node: PathName,
-        /// The birth at the path an accepted Replace attempt proved exited.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        replaces: Option<IncarnationId>,
     },
     /// Restart a node's exact birth.
     RestartNode {
         /// The node to restart.
         node: PathName,
+    },
+    /// Replace the exact birth `from_incarnation` of `node` with a new logical node at the same
+    /// path (node-replace.md, node-recovery.md): the old birth drains and is renamed
+    /// `<path>.old`, the successor is created at the path, the old birth is stopped with exact
+    /// terminal proof and its storage handed over, the successor starts and is admitted and
+    /// ready, and only then is the old identity deleted. One operation, never a retire followed
+    /// by a create.
+    ReplaceNode {
+        /// The path the successor takes.
+        node: PathName,
+        /// The birth the replacement is fenced to.
+        from_incarnation: IncarnationId,
     },
     /// Remove the logical node through the retire pipeline; what happens to its storage is the
     /// accepted Build's StorageMeta for the path, decided there.
@@ -215,7 +222,8 @@ impl BuildOperation {
     pub fn key(&self) -> String {
         match self {
             Self::CreateMesh { mesh } => format!("create-mesh:{mesh}"),
-            Self::CreateNode { node, .. } => format!("create-node:{node}"),
+            Self::CreateNode { node } => format!("create-node:{node}"),
+            Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::RetireMesh { mesh } => format!("retire-mesh:{mesh}"),
@@ -394,10 +402,10 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
             let taken: BTreeSet<u32> = members.iter().map(|n| n.name.ordinal).collect();
             let mut ord = 1;
             for _ in have..want {
-                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None }) {
+                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) }) {
                     ord += 1;
                 }
-                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None });
+                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
                 ord += 1;
             }
         } else if have > want {
@@ -415,7 +423,7 @@ fn create_mesh(desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     ops.push(BuildOperation::CreateMesh { mesh: desired.name.clone() });
     for (kind, want) in desired.counts() {
         for ord in 1..=want {
-            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), replaces: None });
+            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
         }
     }
 }
@@ -475,7 +483,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
                 return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
             }
             if !observed.node(target).is_some_and(|n| n.status.is_live()) {
-                ops.push(BuildOperation::CreateNode { node: target.clone(), replaces: None });
+                ops.push(BuildOperation::CreateNode { node: target.clone() });
             }
         }
         BuildIntent::AddNode { mesh, node_kind, target: None } => {
@@ -511,9 +519,9 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             }
         }
         BuildIntent::ReplaceNode { node } => {
-            find_live(observed, node)?;
-            ops.push(BuildOperation::RetireNode { node: node.clone() });
-            ops.push(BuildOperation::CreateNode { node: node.clone(), replaces: None });
+            let birth = find_live(observed, node)?;
+            let from_incarnation = birth.incarnation_id.clone().ok_or_else(|| BuildReject::NodeNotLive { node: node.to_string() })?;
+            ops.push(BuildOperation::ReplaceNode { node: node.clone(), from_incarnation });
         }
         BuildIntent::CreateMesh { desired } => {
             validate_mesh(desired)?;
@@ -603,7 +611,7 @@ mod tests {
     }
 
     fn create(s: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: p(s), replaces: None }
+        BuildOperation::CreateNode { node: p(s) }
     }
 
     fn with_incarnations(mut t: Topology) -> Topology {
@@ -730,8 +738,10 @@ mod tests {
         assert_eq!(del.operations, vec![retire("mesh1.rpc.2")]);
         let rs = plan(&BuildIntent::RestartNode { node: p("mesh1.rpc.2"), from_incarnation: None }, &t).unwrap();
         assert_eq!(rs.operations, vec![BuildOperation::RestartNode { node: p("mesh1.rpc.2") }]);
+        let t = with_incarnations(t);
         let rp = plan(&BuildIntent::ReplaceNode { node: p("mesh1.rpc.2") }, &t).unwrap();
-        assert_eq!(rp.operations, vec![retire("mesh1.rpc.2"), create("mesh1.rpc.2")]);
+        let birth = t.node(&p("mesh1.rpc.2")).unwrap().incarnation_id.clone().unwrap();
+        assert_eq!(rp.operations, vec![BuildOperation::ReplaceNode { node: p("mesh1.rpc.2"), from_incarnation: birth }], "a replace is one operation, never a retire then a create");
     }
 
     #[test]
@@ -758,7 +768,7 @@ mod tests {
 
     #[test]
     fn every_mutation_kind_plans_deterministically() {
-        let t = mn();
+        let t = with_incarnations(mn());
         let intents = [
             desired(&[("mesh1", 3, 7), ("mesh2", 2, 3)]),
             BuildIntent::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 4)]) },

@@ -63,7 +63,8 @@ impl NodeKind {
     }
 }
 
-/// A node's stable logical address `<mesh>.<kind>.<ordinal>`.
+/// A node's stable logical address `<mesh>.<kind>.<ordinal>`; `<mesh>.<kind>.<ordinal>.old` names
+/// the predecessor a replacement renamed to free the path for its successor (node-replace.md).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathName {
     /// The mesh's name.
@@ -72,6 +73,8 @@ pub struct PathName {
     pub kind: NodeKind,
     /// The node's ordinal within its mesh and kind, from 1.
     pub ordinal: u32,
+    /// The path is the `.old` name of a replaced predecessor.
+    pub old: bool,
 }
 
 /// Why a `path.name` was refused.
@@ -85,6 +88,8 @@ pub enum PathNameError {
     Kind(String),
     /// The ordinal is not a number of at least 1.
     Ordinal(String),
+    /// A fourth segment other than the one `old` suffix a replaced predecessor carries.
+    Suffix(String),
 }
 
 impl fmt::Display for PathNameError {
@@ -94,6 +99,7 @@ impl fmt::Display for PathNameError {
             Self::MeshName(s) => write!(f, "mesh name `{s}` must match [a-z0-9][a-z0-9-]{{0,63}}"),
             Self::Kind(s) => write!(f, "node kind `{s}` is not admin, rpc, broker, gateway or compute"),
             Self::Ordinal(s) => write!(f, "ordinal `{s}` is not a number >= 1"),
+            Self::Suffix(s) => write!(f, "`{s}` is not a path.name: the only suffix is one `.old`, on a replaced predecessor"),
         }
     }
 }
@@ -110,7 +116,12 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 impl PathName {
     /// A `path.name` from its parts.
     pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self { mesh: mesh.into(), kind, ordinal }
+        Self { mesh: mesh.into(), kind, ordinal, old: false }
+    }
+
+    /// The name the predecessor of a replacement keeps: this path with the `.old` suffix.
+    pub fn renamed(&self) -> Self {
+        Self { old: true, ..self.clone() }
     }
 }
 
@@ -118,7 +129,12 @@ impl FromStr for PathName {
     type Err = PathNameError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('.').collect();
-        let [mesh, kind, ord] = parts[..] else { return Err(PathNameError::Shape(s.into())) };
+        let (mesh, kind, ord, old) = match parts[..] {
+            [mesh, kind, ord] => (mesh, kind, ord, false),
+            [mesh, kind, ord, "old"] => (mesh, kind, ord, true),
+            [_, _, _, _] => return Err(PathNameError::Suffix(s.into())),
+            _ => return Err(PathNameError::Shape(s.into())),
+        };
         if !is_valid_mesh_name(mesh) {
             return Err(PathNameError::MeshName(mesh.into()));
         }
@@ -128,13 +144,17 @@ impl FromStr for PathName {
             .ok()
             .filter(|n| *n >= 1 && !ord.starts_with('0'))
             .ok_or_else(|| PathNameError::Ordinal(ord.into()))?;
-        Ok(Self { mesh: mesh.into(), kind, ordinal })
+        Ok(Self { mesh: mesh.into(), kind, ordinal, old })
     }
 }
 
 impl fmt::Display for PathName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)
+        write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)?;
+        if self.old {
+            f.write_str(".old")?;
+        }
+        Ok(())
     }
 }
 
@@ -165,5 +185,14 @@ mod tests {
         assert_eq!("mesh1.registry.1".parse::<PathName>(), Err(PathNameError::Kind("registry".into())));
         assert_eq!("mesh1.rpc.0".parse::<PathName>(), Err(PathNameError::Ordinal("0".into())));
         assert_eq!("mesh1.rpc".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc".into())));
+        // A replaced predecessor carries exactly one `.old`; anything else is refused by name.
+        let old: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        assert!(old.old);
+        assert_eq!(old, "mesh1.rpc.2".parse::<PathName>().unwrap().renamed());
+        assert_ne!(old, "mesh1.rpc.2".parse::<PathName>().unwrap());
+        assert_eq!(old.to_string(), "mesh1.rpc.2.old");
+        assert_eq!(serde_json::to_string(&old).unwrap(), "\"mesh1.rpc.2.old\"");
+        assert_eq!("mesh1.rpc.2.older".parse::<PathName>(), Err(PathNameError::Suffix("mesh1.rpc.2.older".into())));
+        assert_eq!("mesh1.rpc.2.old.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.old.old".into())));
     }
 }

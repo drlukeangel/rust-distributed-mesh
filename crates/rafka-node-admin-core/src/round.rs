@@ -229,13 +229,13 @@ impl RoundDriver {
             let first = self.mesh.is_none();
             let round = self.mesh.get_or_insert_with(|| Round { began: Instant::now(), held: None });
             if first {
-                let targets: Vec<(String, Option<crate::model::Node>)> = i.planned.iter().flatten().filter(|p| **p != self.me).map(|p| (p.to_string(), i.view.nodes.iter().find(|n| &n.name == p).cloned())).collect();
+                let targets: Vec<(String, Option<crate::model::Node>)> = i.planned.iter().flatten().filter(|p| **p != self.me).map(|p| (p.to_string(), i.view.members().find(|n| &n.name == p).cloned())).collect();
                 send_down(&self.me, "mesh", &mesh_name, targets, i.client);
             }
             let missing = match &i.planned {
                 None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
                 Some(planned) => {
-                    let me_ready = i.view.nodes.iter().any(|n| n.name == self.me && n.status == crate::model::NodeStatus::ReadyForTraffic);
+                    let me_ready = i.view.members().any(|n| n.name == self.me && n.status == crate::model::NodeStatus::ReadyForTraffic);
                     let (heard, known) = (i.book.heard_direct_since(round.began), i.book.all());
                     missing_members(planned, &self.me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
                 }

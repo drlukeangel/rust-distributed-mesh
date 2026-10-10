@@ -73,7 +73,7 @@ fn birth(n: &Node) -> Option<Birth> {
 
 /// The pass: `me` is this admin's exact birth, `heard` the Concerns drained since the last pass.
 pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHeard], said: &mut Said) -> Plan {
-    let silent: HashSet<Birth> = view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
+    let silent: HashSet<Birth> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
     said.concerned.retain(|b| silent.contains(b));
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
@@ -81,7 +81,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
 
     // A mesh primary says the fabric primary's exact birth is silent, once per mark.
     if view.cohort_primary(mesh, NodeKind::NodeAdmin).is_some_and(|n| &n.name == me) {
-        for n in view.nodes.iter().filter(|n| n.is_fabric_primary && n.status == NodeStatus::PendingReconnect) {
+        for n in view.members().filter(|n| n.is_fabric_primary && n.status == NodeStatus::PendingReconnect) {
             if let Some(b) = birth(n) {
                 if said.concerned.insert(b.clone()) {
                     plan.concerns.push(b);
@@ -93,7 +93,7 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
     // What others said: the named birth looks to its neighbours when it is this admin; an admin of
     // its mesh looks at it.
     for c in heard.iter().filter(|c| c.seat == Seat::FabricPrimary) {
-        let Some(n) = view.nodes.iter().find(|n| n.node_id == c.node_id && n.incarnation_id.as_ref() == Some(&c.incarnation)) else { continue };
+        let Some(n) = view.births().find(|n| n.node_id == c.node_id && n.incarnation_id.as_ref() == Some(&c.incarnation)) else { continue };
         if &c.node_id == &me_birth.0 && c.incarnation == me_birth.1 {
             plan.answer = true;
         } else if &n.mesh == mesh && n.kind == NodeKind::NodeAdmin {
@@ -103,8 +103,8 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
 
     // What this admin sees itself: a silent seat holder of its own mesh, and any silent node-admin
     // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside).
-    let fabric_mesh = view.nodes.iter().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
-    for n in view.nodes.iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && &n.name != me) {
+    let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
+    for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && &n.name != me) {
         let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = fabric_mesh.as_ref() == Some(&n.mesh);
         if !(own_holder || incumbent) {
@@ -192,7 +192,7 @@ impl Looker {
             return Finding::Answered;
         }
         // 2. The same kick through a live member of the birth's mesh.
-        for c in view.nodes.iter().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.name != self.me && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
+        for c in view.members().filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.name != self.me && c.status == NodeStatus::ReadyForTraffic).take(crate::offline::VIA_PEER_TICKLE_FANOUT) {
             let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
             let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, &kick, &CallOptions::default()).await;
             if matches!(out.reply().map(|r| r.value()), Some(rafka_node_rpc_contract::status::StatusReply::Current { .. })) {
@@ -271,7 +271,7 @@ pub async fn run(w: Watch) {
         let view = w.topology.read().await.clone();
         let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);
         for (node_id, incarnation) in plan.concerns {
-            let holder_key = view.nodes.iter().find(|n| n.node_id == node_id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
+            let holder_key = view.births().find(|n| n.node_id == node_id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
             w.backbone.concern(Seat::FabricPrimary, node_id, incarnation, holder_key).await;
         }
         if plan.answer {

@@ -178,7 +178,7 @@ impl ClaimDoor {
         if let Some(refusal) = self.not_fabric_primary().await {
             return refusal;
         }
-        let sender = self.topology.read().await.nodes.iter().find(|n| n.endpoint_id.as_ref() == Some(&peer)).cloned();
+        let sender = self.topology.read().await.births().find(|n| n.endpoint_id.as_ref() == Some(&peer)).cloned();
         let Some(sender) = sender else {
             return BuildClaimReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not a node of this admin's view", self.me, peer.0) };
         };
@@ -296,8 +296,7 @@ impl FabricPrimaryClaimer {
             .topology
             .read()
             .await
-            .nodes
-            .iter()
+            .members()
             .find(|n| n.name == *target)
             .map(|n| n.node_id.clone())
             .ok_or_else(|| format!("{target} is not a node of this admin's view"))?;

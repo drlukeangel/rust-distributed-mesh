@@ -38,7 +38,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A member node of any kind is born, restarted and retired by its own mesh's primary
         // admin (the fabric primary when the mesh has none): the rule names no role, so a
         // product's kinds get the same executor as the proof product's rpc node.
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node }
+        BuildOperation::CreateNode { node } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node } | BuildOperation::ReplaceNode { node, .. }
             if node.kind != NodeKind::NodeAdmin =>
         {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
@@ -46,7 +46,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A mesh's missing node-admin is created by that mesh's primary node-admin, its claim
         // fenced at the fabric primary (node-admin-lifecycle.md §4.3); the fabric primary creates
         // only the first admin of a mesh that has none.
-        BuildOperation::CreateNode { node, .. } if node.kind == NodeKind::NodeAdmin => {
+        BuildOperation::CreateNode { node } if node.kind == NodeKind::NodeAdmin => {
             t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).map(|n| n.name.clone()).or_else(fabric)
         }
         // A whole-mesh retire runs outside the mesh it removes: an executor inside M cannot see a
@@ -57,21 +57,21 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
             Some(fp) if fp.mesh != *mesh => Some(fp.name.clone()),
             _ => retire_mesh_executor_outside(mesh, t),
         },
-        // The fabric primary is never the executor of its own retire or restart: the operation's
-        // terminate step would stop the executor mid-step. It is a hand-off: the admin the
-        // election seats once the target drains (a Draining birth is no candidate,
+        // The fabric primary is never the executor of its own retire, restart or replace: the
+        // operation's terminate step would stop the executor mid-step. It is a hand-off: the admin
+        // the election seats once the target drains (a Draining birth is no candidate,
         // fabric-node-lifecycle-elections.md section 2) executes it, and drains the target first.
-        BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node }
+        BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. }
             if t.fabric_primary().is_some_and(|fp| fp.name == *node) =>
         {
             successor_of(node, t)
         }
-        // A node-admin's restart and retire belong to its mesh's primary admin, like every other
-        // member of the mesh (Master Event Matrix: the executing Mesh admin is the owning
+        // A node-admin's restart, retire and replace belong to its mesh's primary admin, like every
+        // other member of the mesh (Master Event Matrix: the executing Mesh admin is the owning
         // mesh-admin). The mesh primary never executes its own: the admin its mesh seats once it
         // drains does. A mesh with no other admin has no mesh admin to execute it: the fabric
         // primary, which owns what happens to a mesh that has none.
-        BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node } => {
+        BuildOperation::RetireNode { node } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } => {
             if t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) {
                 mesh_successor_of(node, t).or_else(fabric)
             } else {
@@ -85,7 +85,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
 /// The admin primary of `target`'s mesh once `target` drains; `None` when no other admin of the
 /// mesh can hold the seat.
 fn mesh_successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
-    let mut nodes = t.nodes.clone();
+    let mut nodes: Vec<_> = t.members().cloned().collect();
     for n in nodes.iter_mut().filter(|n| n.name == *target) {
         n.status = crate::model::NodeStatus::Draining;
     }
@@ -96,7 +96,7 @@ fn mesh_successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
 /// The fabric primary the election resolves in `t` once `target` drains; `None` when no other
 /// admin can hold the seat.
 fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
-    let mut nodes = t.nodes.clone();
+    let mut nodes: Vec<_> = t.members().cloned().collect();
     for n in nodes.iter_mut().filter(|n| n.name == *target) {
         n.status = crate::model::NodeStatus::Draining;
     }
@@ -107,8 +107,7 @@ fn successor_of(target: &PathName, t: &Topology) -> Option<PathName> {
 /// The admin that executes `retire-mesh:mesh` when the fabric primary is inside `mesh`: the
 /// lowest-NodeId ready-for-traffic admin primary of another mesh.
 fn retire_mesh_executor_outside(mesh: &str, t: &Topology) -> Option<PathName> {
-    t.nodes
-        .iter()
+    t.members()
         .filter(|n| n.kind == NodeKind::NodeAdmin && n.is_primary && n.mesh != mesh && n.status == crate::model::NodeStatus::ReadyForTraffic)
         .min_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()))
         .map(|n| n.name.clone())
@@ -222,7 +221,7 @@ impl BuildExecutor {
             // end, so its own open attempt is one a previous birth left).
             BuildState::Running => {
                 let holder_live = build.executor.as_deref().is_some_and(|h| {
-                    h != self.executor && t.nodes.iter().any(|n| n.name.to_string() == h && n.status.is_live())
+                    h != self.executor && t.members().any(|n| n.name.to_string() == h && n.status.is_live())
                 });
                 if holder_live {
                     return false;
@@ -359,7 +358,7 @@ mod tests {
     }
 
     fn create(n: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: n.parse().unwrap(), replaces: None }
+        BuildOperation::CreateNode { node: n.parse().unwrap() }
     }
 
     fn who(op: &BuildOperation, t: &Topology) -> String {
@@ -386,6 +385,10 @@ mod tests {
         assert_eq!(who(&BuildOperation::RestartNode { node: m2.parse().unwrap() }, &t3), p2, "a non-primary admin's restart is its mesh primary's");
         assert_eq!(who(&BuildOperation::RestartNode { node: p2.parse().unwrap() }, &t3), m2, "a mesh primary's own restart is handed to the admin its mesh seats once it drains");
         assert_eq!(who(&BuildOperation::RetireNode { node: p2.parse().unwrap() }, &t3), m2, "a mesh primary's own retire is handed to the admin its mesh seats once it drains");
+        let replace = |n: &str| BuildOperation::ReplaceNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
+        assert_eq!(who(&replace("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's replace is its mesh primary's");
+        assert_eq!(who(&replace(m2), &t3), p2, "a non-primary admin's replace is its mesh primary's");
+        assert_eq!(who(&replace(p2), &t3), m2, "a mesh primary's own replace is handed to the admin its mesh seats once it drains");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into() }, &t), "mesh1.admin.1");
         assert_eq!(who(&BuildOperation::RetireMesh { mesh: "mesh2".into() }, &t), "mesh1.admin.1");
     }

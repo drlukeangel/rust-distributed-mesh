@@ -10,6 +10,7 @@ mod probe_root_span;
 mod process_pipeline;
 mod process_pipeline_failure;
 mod ready_prerequisites;
+mod replace_pipeline;
 mod retire_admission;
 mod retire_pipeline;
 mod status_probe_apply;
