@@ -88,6 +88,7 @@ pub(crate) fn core_ledger() -> Vec<LedgerEntry> {
         LedgerEntry { op: 0x71, family: "resolve-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x72, family: "declare-probe".into(), owner: OpOwner::Testkit, state: OpState::Live },
         LedgerEntry { op: 0x73, family: "originate".into(), owner: OpOwner::Testkit, state: OpState::Live },
+        LedgerEntry { op: 0x74, family: "hydrate-pull".into(), owner: OpOwner::Testkit, state: OpState::Live },
     ]
 }
 
@@ -508,14 +509,14 @@ mod tests {
     fn the_core_ledger_matches_the_ownership_amendment() {
         let l = core_ledger();
         let tags: Vec<u8> = l.iter().map(|r| r.op).collect();
-        assert_eq!(tags, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x70, 0x71, 0x72, 0x73]);
+        assert_eq!(tags, vec![0x01, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x70, 0x71, 0x72, 0x73, 0x74]);
         assert_eq!(l.iter().find(|r| r.op == 0x11).map(|r| r.state), Some(OpState::Retired), "echo is retired forever; ping took op 1");
         assert!(l.iter().all(|r| r.op != 0), "op 0 is reserved as invalid");
         assert_eq!(l.iter().find(|r| r.op == 0x1B).map(|r| r.owner.clone()), Some(OpOwner::Product("rdm".into())), "status is RDM's control family, not core");
         let core: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Core && r.state == OpState::Live).map(|r| r.op).collect();
         assert_eq!(core, vec![0x01, 0x1A], "the live core ops are exactly ping and Forward");
         let testkit: Vec<u8> = l.iter().filter(|r| r.owner == OpOwner::Testkit).map(|r| r.op).collect();
-        assert_eq!(testkit, vec![0x70, 0x71, 0x72, 0x73], "the testkit tags are the proof store, the resolve probe, the declare probe and the originate door");
+        assert_eq!(testkit, vec![0x70, 0x71, 0x72, 0x73, 0x74], "the testkit tags are the proof store, the resolve probe, the declare probe, the originate door and the hydrate pull");
     }
 
     #[test]
