@@ -22,6 +22,8 @@ pub struct Loopback {
     topology: Arc<RwLock<Topology>>,
     runner: Arc<dyn OperationRunner>,
     doors: Mutex<BTreeMap<String, Arc<RunDoor>>>,
+    /// The view an executor runs from, when it is not the fixture's one.
+    views: Mutex<BTreeMap<String, Arc<RwLock<Topology>>>>,
     lost: Mutex<BTreeSet<String>>,
     /// Every executor a dispatch reached, in order: `(executor, attempt)`.
     pub dispatched: Mutex<Vec<(String, u32)>>,
@@ -29,7 +31,12 @@ pub struct Loopback {
 
 impl Loopback {
     pub fn new(builds: Arc<dyn BuildStateAdapter>, local: Arc<dyn LocalBuildLog>, topology: Arc<RwLock<Topology>>, runner: Arc<dyn OperationRunner>) -> Arc<Self> {
-        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()) })
+        Arc::new(Self { builds, local, topology, runner, doors: Mutex::new(BTreeMap::new()), views: Mutex::new(BTreeMap::new()), lost: Mutex::new(BTreeSet::new()), dispatched: Mutex::new(Vec::new()) })
+    }
+
+    /// `executor` plans and hands off from `view`, which may disagree with the fabric-primary's.
+    pub fn sees(&self, executor: &str, view: Arc<RwLock<Topology>>) {
+        self.views.lock().unwrap().insert(executor.to_string(), view);
     }
 
     /// `executor` is gone: nothing reaches it.
@@ -43,7 +50,7 @@ impl Loopback {
             .unwrap()
             .entry(executor.to_string())
             .or_insert_with(|| {
-                let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.topology.clone(), runner: self.runner.clone() });
+                let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
                 Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone() })
             })
             .clone()

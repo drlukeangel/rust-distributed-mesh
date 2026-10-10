@@ -198,3 +198,39 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
         "the lost admin's path is part of what is left, planned from the view as it is now"
     );
 }
+
+/// CONTRACT: two admins whose views name each other as the executor do not claim attempts back and
+/// forth. The first admin hands the attempt off with nothing run, the second hands it back, and the
+/// first would hand it off again: the drive stops there, names the disagreement in a `Blocked` frame
+/// and ends the pass, having claimed three attempts and run nothing. When the views agree the next
+/// pass runs it.
+#[tokio::test]
+async fn admins_whose_views_name_each_other_as_the_executor_do_not_claim_attempts_back_and_forth() {
+    let r = rig().await;
+    // mesh1.admin.2's own view holds no mesh primary for mesh1 (it has not elected itself yet): the
+    // operation is the fabric-primary's by its view, while the fabric-primary's view names mesh1.admin.2.
+    let mut theirs = view();
+    for n in theirs.nodes.iter_mut() {
+        n.is_primary = false;
+    }
+    let theirs = Arc::new(RwLock::new(theirs));
+    r.dispatch.sees("mesh1.admin.2", theirs.clone());
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("disagree about who runs it"), "{why}"),
+        other => panic!("a hand-off back and forth ends the pass: {other:?}"),
+    }
+    assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 3, "three attempts were claimed, no more");
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran while the views disagreed");
+    assert!(matches!(next_within(&mut reader).await, Some(Read::Frame(BuildReply::Blocked { step, .. })) if step == "hand-off"));
+    // The view of mesh1.admin.2 catches up with the fabric-primary's: the next pass runs it.
+    {
+        let mut v = theirs.write().await;
+        for n in v.nodes.iter_mut() {
+            n.is_primary = n.name.to_string() == "mesh1.admin.2";
+        }
+    }
+    assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+}
