@@ -717,7 +717,9 @@ pub async fn reconcile_drift(
         // (R-D1: provider evidence is not authority, and a node this authority replaces while the
         // mesh's first admin is still to be reborn is a node that admin then replaces again from
         // its own map). A node of a mesh that still has a live node-admin is proven here as ever.
-        if n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+        // An ordinary birth of such a mesh is held as evidence once the ladder tracks the mesh as
+        // unheard (`hold`); until then it waits with the admins.
+        if n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) && (n.kind == NodeKind::NodeAdmin || hold(&n.mesh).is_none()) {
             // The hold is named once per mesh and Build: an unnamed deferral is a rebirth nobody is
             // waiting on.
             let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
