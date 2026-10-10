@@ -214,8 +214,12 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
 
     // The second admin was created by an attempt the NEW mesh primary executed, not the fabric primary.
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
+    // The birth is an operation of the accepted Build: `create.via-build` when the drift check
+    // proved the exit first (node-recovery.md), `update.via-build` when the sweep's decommission
+    // queue opened the replace first (node-replace.md). Either admin of the mesh may open it.
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
+        .chain(named(&spans, "rdm.node_admin.node.update.via-build"))
         .filter(|c| attr(c, "build_id") == accepted && attr(c, "node").starts_with(&format!("{lost}.admin.")) && attr(c, "node") != recovery_admin && at(c) > at(first))
         .collect();
     assert!(!creates.is_empty(), "the second admin of {lost} was created after the first: {creates:?}");
@@ -344,6 +348,16 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         "the person-started admin recorded both recovery flags: {started:?}"
     );
     let t0 = started.iter().map(|sp| at(sp)).min().unwrap_or(0);
+    // It holds the fabric seat in its own seat records and holds no rafka-time: it is the fabric's
+    // root and adopts its own clock, once, without looking for a node that holds one.
+    let own: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == holder && at(sp) >= t0 && attr(sp, "source") == "own-clock")
+        .collect();
+    assert_eq!(own.len(), 1, "the reborn fabric primary adopted its own clock once: {own:?}");
+    assert_eq!(attr(own[0], "reason"), "fabric-seat-held-without-rafka-time");
+    let pulls: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-recovery-pull").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
+    assert!(pulls.is_empty(), "the fabric-seat holder looked for no node that holds rafka-time: {pulls:?}");
     // No maker: its topology is its durable map; one sweep of its own mesh, once.
     let sweeps: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-entry-sweep").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
     assert_eq!(sweeps.len(), 1, "one sweep on entering its mesh: {sweeps:?}");
@@ -376,4 +390,63 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         "not_reached": silent,
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// CONTRACT (fabric-node-lifecycle.md 2.5: "a node-admin that holds the fabric seat and no
+/// rafka-time adopts its own clock"): every runtime of the fabric is lost at once, the admins and
+/// the ordinary members alike, so no node is left that holds rafka-time. A person starts ONE
+/// node-admin on the former fabric primary's data dir with both primary flags. It holds the fabric
+/// seat in its own seat records, so it adopts its own clock at once
+/// (`rdm.mesh.entry.update.via-rafka-time-adopted{source=own-clock,
+/// reason=fabric-seat-held-without-rafka-time}`) and never waits out the recovery pull. The
+/// births the fabric then recreates adopt rafka-time from it. What must NOT happen: a refusal to
+/// start, a recovery pull, a node that adopts from anyone but the holder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
+    let cell = "fabric_recovery_with_no_running_node_adopts_the_holders_own_clock";
+    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let shape = json!({"fabric": "fabric1", "meshes": [
+        {"name": "mesh1", "node_admin": 2, "rpc_node": 1},
+        {"name": "mesh2", "node_admin": 2, "rpc_node": 1},
+    ]});
+    let (status, a) = estate.post("/api/build", &shape).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_attempt(&s(&a["build_id"]), Estate::attempt_of(&a), Duration::from_secs(120)).await;
+    let want = names(&[("mesh1", 2, 1), ("mesh2", 2, 1)]);
+    let before = estate.settled(&want, Duration::from_secs(30)).await;
+    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir_of(&holder).await };
+
+    // The fault: every runtime of the fabric, at once.
+    for (_, pid) in estate.live_runtimes() {
+        estate.kill_pid(pid);
+    }
+    estate.kill_bootstrap();
+    assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
+
+    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.admin = base;
+    let after = estate.settled(&want, Duration::from_secs(240)).await;
+    assert_eq!(after.len(), want.len());
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-recovery-start").into_iter().filter(|sp| attr(sp, "node") == holder).collect();
+    let t0 = started.iter().map(|sp| at(sp)).min().expect("the person-started admin recorded its recovery start");
+    let own: Vec<&Value> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == holder && at(sp) >= t0 && attr(sp, "source") == "own-clock")
+        .collect();
+    assert_eq!(own.len(), 1, "the reborn fabric primary adopted its own clock once: {own:?}");
+    assert_eq!(attr(own[0], "reason"), "fabric-seat-held-without-rafka-time");
+    let pulls: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-recovery-pull").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
+    assert!(pulls.is_empty(), "the fabric-seat holder looked for no node that holds rafka-time: {pulls:?}");
+    let others: Vec<String> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted")
+        .into_iter()
+        .filter(|sp| at(sp) >= t0 && attr(sp, "source") == "pull" && attr(sp, "node") != holder)
+        .map(|sp| attr(sp, "served_by"))
+        .collect();
+    assert!(!others.is_empty(), "the births the fabric recreated adopted rafka-time");
 }

@@ -2356,7 +2356,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
     // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
     if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
-        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string());
+        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
     }
     let mesh_id = match (&cfg.mesh_id, &pulled) {
         (Some(id), _) => id.clone(),
@@ -2374,13 +2374,26 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
     // publishes anything or judges any lease.
     if !rafka_time.is_adopted() {
-        let mut contacts = Vec::new();
-        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
-            contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
-        }
-        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
+        // The admin that holds the fabric seat in its own seat records is the fabric's root: it
+        // adopts its own clock at once (fabric-node-lifecycle.md 2.5). Every other admin takes
+        // rafka-time from the first node it reaches that holds one.
+        let holds_fabric_seat = fabric_storage
+            .seats()
             .await
-            .map_err(|e| format!("refusing to start: {e}"))?;
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|row| row.seat == rafka_mesh_entity::Seat::FabricPrimary && row.holder.node_id == node_id);
+        if holds_fabric_seat {
+            crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
+        } else {
+            let mut contacts = Vec::new();
+            for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+                contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, settled: true, ready: false, data_dir: None, admin_api_base: None });
+            }
+            crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
+                .await
+                .map_err(|e| format!("refusing to start: {e}"))?;
+        }
     }
     let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
         .await

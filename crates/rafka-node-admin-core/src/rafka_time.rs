@@ -5,7 +5,8 @@
 //! the one entry point [`adopt_pulled`]:
 //!
 //! - The fabric's Day-0 root, a node-admin with no launcher, no seeds and no recovery flag,
-//!   adopts its own OS clock once at boot ([`adopt_own_clock`]).
+//!   adopts its own OS clock once at boot ([`adopt_own_clock`]); so does a restarted node-admin
+//!   whose own seat records name it the fabric-primary and that holds no rafka-time.
 //! - Every other process adopts from the answer to its pull: the `JoinNode` answer
 //!   ([`crate::wire::JoinControl::rafka_time_ms`]) and every `GetTopology` read
 //!   ([`rafka_node_rpc_contract::topology::TopologyReply::RafkaTime`]). A member adopts from
@@ -151,9 +152,14 @@ pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, a
         .expect("a member adopts from whoever answers")
 }
 
-/// The Day-0 root adopts its own OS clock as rafka-time, once, at boot: there is no authority
-/// above it.
-pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str) -> Adopted {
+/// Why the Day-0 root adopts its own clock: no authority exists above it.
+pub const OWN_CLOCK_DAY0_ROOT: &str = "day0-root";
+/// Why a restarted fabric-seat holder adopts its own clock: it is the fabric's root and holds none.
+pub const OWN_CLOCK_FABRIC_SEAT: &str = "fabric-seat-held-without-rafka-time";
+
+/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, and an
+/// admin that holds the fabric seat and no rafka-time. There is no authority above either.
+pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
     let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
     let adopted = time.adopt(now);
     tracing::info_span!(
@@ -161,10 +167,10 @@ pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str) -> 
         "rdm.mesh.entry.update.via-rafka-time-adopted",
         node,
         source = "own-clock",
-        reason = "day0-root",
+        reason,
         reference_ms = adopted.reference_ms,
     )
-    .in_scope(|| tracing::info!("the fabric's Day-0 root adopted its own OS clock as rafka-time"));
+    .in_scope(|| tracing::info!("the fabric's root adopted its own OS clock as rafka-time"));
     adopted
 }
 
@@ -376,7 +382,7 @@ mod tests {
     #[test]
     fn the_day0_root_adopts_its_own_clock_once() {
         let time = RafkaTime::unadopted();
-        let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.admin.1");
+        let adopted = adopt_own_clock(&tracing::Span::none(), &time, "mesh1.admin.1", OWN_CLOCK_DAY0_ROOT);
         assert_eq!(adopted.previous_ms, None);
         assert!(time.now_ms() >= adopted.reference_ms);
     }
