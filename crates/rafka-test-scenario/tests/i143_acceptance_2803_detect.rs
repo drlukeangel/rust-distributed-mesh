@@ -17,7 +17,16 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-const ROUND_MS: u64 = 500;
+/// One backbone round, as the estate runs it (`RDM_BACKBONE_INTERVAL_MS`, 2 s by default). The
+/// investigation counts rounds, so a cell waits rounds, never a fixed number of milliseconds.
+fn round_ms() -> u64 {
+    rafka_mesh_transport::membership::backbone_gossip_interval().as_millis() as u64
+}
+
+/// The staleness floor the estate runs at (`RDM_STALENESS_MS`, 30 s by default).
+fn floor_ms() -> u64 {
+    rafka_mesh_transport::membership::staleness_floor().as_millis() as u64
+}
 
 fn owner(test: &str) -> Owner {
     Owner {
@@ -300,7 +309,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     f.estate.stop().await;
     let spans = f.estate.spans();
     let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
-    let round = |sp: &Value| (at_ns(sp) / 1_000_000).saturating_sub(last_heard_ms) / ROUND_MS;
+    let round = |sp: &Value| (at_ns(sp) / 1_000_000).saturating_sub(last_heard_ms) / round_ms();
 
     let probes = f.probes(&spans);
     assert_eq!(probes.len(), 2, "two probes, no more: {probes:#?}");
@@ -437,7 +446,7 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
     .await;
     assert_eq!(attr(&first, "outcome"), "admin-alive", "the node-admin answered the carried probe: {first:#?}");
     // 40 rounds on (past probe 2 and the decision), the investigation is over.
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 40)).await;
+    tokio::time::sleep(Duration::from_millis(round_ms() * 40)).await;
     let fabric = f.fabric_status().await;
     drop(cut);
     let fp = f.fabric_primary.clone();
@@ -470,7 +479,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     }
     // Probe 1 is due at 10 rounds unheard and takes as long as the dial to a frozen node-admin
     // does; the mesh is continued at 11 rounds, between probe 1 and probe 2 (20 rounds).
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 11)).await;
+    tokio::time::sleep(Duration::from_millis(round_ms() * 11)).await;
     for (_, pid) in &admins {
         signal(*pid, "-CONT");
     }
@@ -480,7 +489,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
         async move { found }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 40)).await;
+    tokio::time::sleep(Duration::from_millis(round_ms() * 40)).await;
     let fabric = f.fabric_status().await;
     let fp = f.fabric_primary.clone();
     f.estate.stop().await;
@@ -505,6 +514,7 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     let mut f = fixture(cell).await;
     let all: Vec<(String, u32)> = f.lost_admins().into_iter().chain(f.lost_members()).collect();
     assert_eq!(all.len(), 5, "every runtime of {}: {all:?}", f.lost);
+    let frozen_at = std::time::Instant::now();
     for (_, pid) in &all {
         signal(*pid, "-STOP");
     }
@@ -514,7 +524,23 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
         async move { found }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 20)).await;
+    // The offline tickle of a silent node-admin is on the staleness floor, not on the backbone rounds:
+    // the mark at the floor, round 1 half a floor later (at most one tickle round), round 2 at least
+    // one floor after round 1 found no path (at most one tickle round), and the tickle loop sleeps one
+    // gossip interval between ticks. The failed round 2 is awaited for exactly that long from the freeze.
+    let budget = match rafka_node_rpc::CallOptions::default().budget {
+        rafka_node_rpc::Budget::Overall(d) => d,
+        other => panic!("the default call budget is not one overall deadline: {other:?}"),
+    };
+    let tickle_round = budget * (1 + rafka_node_admin_core::offline::VIA_PEER_TICKLE_FANOUT as u32);
+    let floor = Duration::from_millis(floor_ms());
+    let round_two_by = floor + floor / 2 + tickle_round + floor + tickle_round + rafka_mesh_transport::membership::gossip_interval() * 2;
+    wait_for("a frozen node-admin of the peer mesh is tickled to round 2", round_two_by.saturating_sub(frozen_at.elapsed()), || {
+        let spans = f.estate.spans();
+        let found = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| attr(sp, "path").starts_with(&format!("{}.admin.", f.lost))).cloned();
+        async move { found }
+    })
+    .await;
     let fabric = f.fabric_status().await;
     for (_, pid) in &all {
         signal(*pid, "-CONT");
@@ -581,13 +607,23 @@ async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost(
         async move { found }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 40)).await;
+    tokio::time::sleep(Duration::from_millis(round_ms() * 40)).await;
     let fabric = f.fabric_status().await;
     drop(cut);
     let fp = f.fabric_primary.clone();
     f.estate.stop().await;
     let spans = f.estate.spans();
-    assert_eq!(attr(&first, "outcome"), "carrier-edge-lost", "frozen node-admins cannot be reached by their members: {first:#?}");
+    // A frozen node-admin keeps its sockets, so a member's pooled connection to it closes only when the
+    // connection idles out after the staleness floor. Probe 1 is made at 10 rounds unheard: past the floor
+    // the member's dial fails (`carrier-edge-lost`); inside it the member still holds the pooled
+    // connection, the probe commits over it and loses its reply (`unreachable`, detail `Indeterminate`).
+    let pool_idles_out_before_probe1 = floor_ms() < round_ms() * 10;
+    if pool_idles_out_before_probe1 {
+        assert_eq!(attr(&first, "outcome"), "carrier-edge-lost", "frozen node-admins cannot be reached by their members: {first:#?}");
+    } else {
+        assert_eq!(attr(&first, "outcome"), "unreachable", "a member still holds its pooled connection to the frozen node-admin at probe 1: {first:#?}");
+        assert_eq!(attr(&first, "detail"), "Indeterminate", "the probe committed over the pooled connection and lost its reply: {first:#?}");
+    }
     assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
     assert_eq!(f.probes(&spans).len(), 2, "no third probe");
     assert!(f.rebirths(&spans).is_empty(), "the latest probe decides: no rebirth");
@@ -803,7 +839,7 @@ async fn reborn_mesh_with_a_planned_member_that_has_not_checked_in_holds_degrade
         }
     })
     .await;
-    tokio::time::sleep(Duration::from_millis(ROUND_MS * 10)).await;
+    tokio::time::sleep(Duration::from_millis(round_ms() * 10)).await;
     let held_status = f.fabric_status().await;
     let held_spans = f.estate.spans();
     let sent_while_held = mesh_sends_after(&held_spans, &f.lost, rebirth_start(&held_spans, &f.lost));
