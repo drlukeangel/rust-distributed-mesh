@@ -563,3 +563,26 @@ async fn the_incumbent_stays_open_until_a_late_completion_and_confirms_on_the_ev
     assert_eq!(spans.named(CONFIRMED).len(), 1);
     assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)));
 }
+
+/// CONTRACT: repeats of one command and repeats of one completion that arrive together are decided
+/// one at a time: one commit, one confirmation, and every other call replays. What must NOT
+/// happen: two calls both finding no record and both committing or confirming.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_repeats_of_the_command_and_the_completion_commit_and_confirm_once() {
+    if crate::own_process::delegated(module_path!(), "concurrent_repeats_of_the_command_and_the_completion_commit_and_confirm_once") {
+        return;
+    }
+    let spans = capture();
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, false).await;
+    let op = operation_of(&f);
+    let replies = futures_util::future::join_all((0..8).map(|_| send(&f.incumbent, &f.successor, take(&f, 7, &op)))).await;
+    assert_eq!(replies.iter().filter(|r| **r == Reply::Applied).count(), 1, "one call commits: {replies:?}");
+    assert!(replies.iter().all(|r| matches!(r, Reply::Applied | Reply::AlreadyApplied)), "{replies:?}");
+    until("the completion was refused while the incumbent's door is not serving", || spans.named(REJECTED).iter().any(|r| r["call"] == "taken")).await;
+    let _ = f.incumbent.slot.set(f.incumbent.door.clone());
+    let replies = futures_util::future::join_all((0..8).map(|_| send(&f.successor, &f.incumbent, taken(&f, 7, 8, &op)))).await;
+    assert_eq!(replies.iter().filter(|r| **r == Reply::Applied).count(), 1, "one call confirms: {replies:?}");
+    assert!(replies.iter().all(|r| matches!(r, Reply::Applied | Reply::AlreadyApplied)), "{replies:?}");
+    assert_eq!(spans.named(COMMITTED).len(), 1, "one commit");
+    assert_eq!(spans.named(CONFIRMED).len(), 1, "one confirmation");
+}

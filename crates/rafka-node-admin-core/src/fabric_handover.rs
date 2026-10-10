@@ -110,6 +110,10 @@ struct Entry {
 pub struct HandoverBook {
     entries: Mutex<HashMap<String, Entry>>,
     changed: watch::Sender<u64>,
+    /// One command or completion is decided at a time: the replay lookup, the commit or the
+    /// confirmation and the record are one step, so a repeat that arrives while its first is being
+    /// served finds the record and replays it.
+    serving: tokio::sync::Mutex<()>,
 }
 
 impl HandoverBook {
@@ -327,6 +331,7 @@ impl HandoverDoor {
     // ---- the successor: serve the command ----
 
     async fn serve_take(self: &Arc<Self>, peer: EndpointId, payload: Payload) -> Reply {
+        let _one_at_a_time = self.handovers.serving.lock().await;
         let side = "successor";
         let refuse = |reason: &'static str, detail: String, reply: Reply| {
             reject("take", side, reason, &detail, &payload);
@@ -482,6 +487,7 @@ impl HandoverDoor {
     // ---- the incumbent: serve the completion ----
 
     async fn serve_taken(&self, peer: EndpointId, payload: Payload, committed: u64) -> Reply {
+        let _one_at_a_time = self.handovers.serving.lock().await;
         let side = "incumbent";
         let refuse = |reason: &'static str, detail: String, reply: Reply| {
             reject("taken", side, reason, &detail, &payload);
