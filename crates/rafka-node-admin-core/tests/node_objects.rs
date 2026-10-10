@@ -593,7 +593,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
-    assert_eq!(first[1..], [Frame::Event(NodeEvent::Created), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Ready), Frame::Complete], "{first:?}");
+    assert_eq!(first[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "{first:?}");
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
 }
