@@ -273,6 +273,11 @@ pub struct Records {
     /// The accepted Build's planned births per mesh: the nodes a mesh's readiness is counted over.
     /// Empty until an accepted Build is held, when the members the view holds are counted.
     planned: Mutex<BTreeMap<String, BTreeSet<PathName>>>,
+    /// The meshes whose last heard MeshStatus is ready-for-traffic. A mesh's lifecycle is pending,
+    /// ready-for-traffic, leaving, dead (states.md): a ready mesh that loses a node is not pending
+    /// again, so its projection holds ready while it has a primary, and the primary that takes over
+    /// adopts that state and runs its round (R-S3).
+    heard_ready: Mutex<BTreeSet<String>>,
     /// Moves each time the installed view changed: what a round waits on to see a target reachable again.
     view_tick: tokio::sync::watch::Sender<u64>,
 }
@@ -317,6 +322,16 @@ impl Records {
     /// The tick a waiter arms on to see the view change.
     pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
         self.view_tick.subscribe()
+    }
+
+    /// Hold which meshes were last heard ready-for-traffic.
+    pub fn set_heard_ready(&self, meshes: BTreeSet<String>) {
+        *self.heard_ready.lock().unwrap() = meshes;
+    }
+
+    /// Whether `mesh` was last heard ready-for-traffic.
+    pub fn heard_ready(&self, mesh: &str) -> bool {
+        self.heard_ready.lock().unwrap().contains(mesh)
     }
 
     /// The planned births per mesh of the accepted Build held (empty: none held).
@@ -716,8 +731,10 @@ pub fn project_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind, bo
     }
     let leaving: BTreeSet<String> = book.leaving_meshes().into_iter().collect();
     for m in mesh_names {
-        // A mesh is ready-for-traffic when every node of the mesh is (states.md).
-        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty();
+        // A mesh becomes ready-for-traffic when every node of the mesh is (states.md); once heard
+        // ready it stays ready while it has a primary, because a lost node is a degraded fabric and
+        // a round for the primary that takes over, never a mesh gone back to pending.
+        let ready = topology.mesh_unready(&m, planned.get(&m)).is_empty() || (records.heard_ready(&m) && topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some());
         let id = mesh_ids.get(&m).cloned();
         let status = match &id {
             Some(i) if leaving.contains(i.as_str()) => ScopeStatus::Leaving,
@@ -3750,6 +3767,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 if let Some(b) = accepted.current(&*adapter).await {
                     records.set_planned(&b.topology);
                 }
+                records.set_heard_ready(records.planned().keys().chain(std::iter::once(&mesh)).filter(|m| membership.mesh_status(m).is_some_and(|h| h.status == "ready-for-traffic")).cloned().collect());
                 // Decide on the view as it is now: a cached view can predate the seat record this admin holds
                 // (a hand-over just taken), and a seat is announced from the decision, never from a stale one.
                 let t = records.install_projected(&topology, || project(&view_fabric, &view_fabric_id, view_provider, &view_book, &records)).await;
@@ -4131,6 +4149,26 @@ mod tests {
         assert!(t.mesh_view("mesh2").is_none(), "mesh2 is planned and does not exist yet: the view lists what is observed, so the Build still plans its creation");
         let why = t.mesh_unready("mesh1", records.planned().get("mesh1")).iter().map(|m| m.to_string()).collect::<Vec<_>>();
         assert_eq!(why, ["mesh1.rpc.2(no-birth-heard)"], "the node behind a pending mesh is named");
+    }
+
+    /// CONTRACT (R-S3, states.md): a mesh's lifecycle is pending, ready-for-traffic, leaving, dead. A mesh
+    /// heard ready-for-traffic that loses a node projects ready while it has a primary, so the primary that
+    /// takes over adopts the state and runs its round. A mesh never heard ready projects pending while a
+    /// node is not ready. Must NOT happen: a ready mesh projected pending because one of its nodes is gone,
+    /// which gives the takeover a new status and no round.
+    #[test]
+    fn a_mesh_heard_ready_stays_ready_when_a_node_is_lost() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        for d in [with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000"), with_id(digest("mesh1.rpc.1", ReadyForTraffic), "300000000000"), with_id(digest("mesh1.rpc.2", Pending), "400000000000")] {
+            book.record(d);
+        }
+        let records = Records::default();
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::Pending, "never heard ready, and mesh1.rpc.2 is not ready");
+        records.set_heard_ready(BTreeSet::from(["mesh1".to_string()]));
+        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
+        assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::ReadyForTraffic, "heard ready: a node not ready does not take the mesh back to pending");
     }
 
     /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
