@@ -127,30 +127,30 @@ impl RunLog {
 
     /// A call attached to the run after it began: the frames it is replayed (a `Step` per
     /// `Complete` receipt held, then the current `Blocked` if the run is still blocked) and the
-    /// live tail after them.
-    pub fn attach(self: &Arc<Self>) -> (Vec<BuildReply>, RunTail) {
+    /// live reader after them.
+    pub fn attach(self: &Arc<Self>) -> (Vec<BuildReply>, RunReader) {
         let s = self.state.lock().unwrap();
         let mut replay = s.steps.clone();
         if let Some((operation, step, reason)) = &s.blocked {
             replay.push(BuildReply::Blocked { build_id: self.build_id.clone(), attempt: self.attempt, operation: operation.clone(), step: step.clone(), reason: bounded_reason(reason.clone()) });
         }
-        (replay, RunTail { log: self.clone(), cursor: s.events.len(), done: false })
+        (replay, RunReader { log: self.clone(), cursor: s.events.len(), done: false })
     }
 
-    /// The tail of a run from its first frame: the call that started it.
-    pub fn tail(self: &Arc<Self>) -> RunTail {
-        RunTail { log: self.clone(), cursor: 0, done: false }
+    /// The reader of a run from its first frame: the call that started it.
+    pub fn reader(self: &Arc<Self>) -> RunReader {
+        RunReader { log: self.clone(), cursor: 0, done: false }
     }
 }
 
 /// A call's read position in a [`RunLog`].
-pub struct RunTail {
+pub struct RunReader {
     log: Arc<RunLog>,
     cursor: usize,
     done: bool,
 }
 
-impl RunTail {
+impl RunReader {
     /// The next frame in order: every `Step` and `Blocked` frame, then the terminal, then `None`.
     pub async fn next(&mut self) -> Option<BuildReply> {
         if self.done {
@@ -283,14 +283,14 @@ impl BuildStateAdapter for FramedBuilds {
 
 /// What `build.attempt.run` came to on this admin.
 pub enum Attached {
-    /// The attempt is running here: `replay` first, then the tail.
+    /// The attempt is running here: `replay` first, then the reader.
     Live {
         /// How the call came to the run.
         disposition: Disposition,
         /// The frames the call is replayed before the live ones.
         replay: Vec<BuildReply>,
         /// The live frames.
-        tail: RunTail,
+        reader: RunReader,
     },
     /// The attempt already has its verdict: its receipts, then the terminal.
     Ended {
@@ -354,8 +354,8 @@ impl RunDoor {
             return Attached::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: self.me.to_string() });
         }
         if let Some(log) = self.runs.get(build_id, attempt) {
-            let (replay, tail) = log.attach();
-            return Attached::Live { disposition: Disposition::Reattached, replay, tail };
+            let (replay, reader) = log.attach();
+            return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
         // The intent the fabric-primary decided the claim on is absorbed before anything is planned:
         // insert-and-fail on the facts' own keys, so what the Build topic delivers too changes nothing.
@@ -384,10 +384,10 @@ impl RunDoor {
         }
         let (log, created) = self.runs.begin(build_id, attempt);
         if !created {
-            let (replay, tail) = log.attach();
-            return Attached::Live { disposition: Disposition::Reattached, replay, tail };
+            let (replay, reader) = log.attach();
+            return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
-        let tail = log.tail();
+        let reader = log.reader();
         let (exec, runs, build_id, context) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone());
         let run = log.clone();
         let task = tokio::spawn(
@@ -402,7 +402,7 @@ impl RunDoor {
             .with_current_subscriber(),
         );
         runs.track(task.abort_handle());
-        Attached::Live { disposition: Disposition::Started, replay: Vec::new(), tail }
+        Attached::Live { disposition: Disposition::Started, replay: Vec::new(), reader }
     }
 
     /// The attempt has its verdict and no run here: its `Complete` receipts, then its terminal.
@@ -485,25 +485,25 @@ mod tests {
         log.blocked("create-node:mesh2.rpc.1", "WaitForNodeReady", "authority not ready");
         log.blocked("create-node:mesh2.rpc.1", "WaitForNodeReady", "authority not ready");
         log.blocked("create-node:mesh2.rpc.1", "WaitForNodeReady", "pulling the accepting authority");
-        let mut first = log.tail();
+        let mut first = log.reader();
         let mut seen = Vec::new();
         for _ in 0..3 {
             seen.push(first.next().await.unwrap());
         }
         assert_eq!(names(&seen), vec!["step", "blocked", "blocked"], "a repeated step and a repeated blocker make no frame");
 
-        let (replay, mut tail) = log.attach();
+        let (replay, mut reader) = log.attach();
         assert_eq!(names(&replay), vec!["step", "blocked"], "a Step per Complete receipt, then only the current Blocked");
         assert!(matches!(&replay[1], BuildReply::Blocked { reason, .. } if reason == "pulling the accepting authority"));
 
         log.step("create-node:mesh2.rpc.1", "WaitForNodeReady");
-        assert!(matches!(tail.next().await.unwrap(), BuildReply::Step { step, .. } if step == "WaitForNodeReady"), "live frames follow the replay");
+        assert!(matches!(reader.next().await.unwrap(), BuildReply::Step { step, .. } if step == "WaitForNodeReady"), "live frames follow the replay");
         let (replay, _) = log.attach();
         assert_eq!(names(&replay), vec!["step", "step"], "the step that completed cleared its blocker");
 
         log.finish(BuildReply::Complete { build_id: id().0, attempt: 3 });
-        assert_eq!(tail.next().await.unwrap().name(), "complete");
-        assert!(tail.next().await.is_none(), "nothing follows the terminal");
+        assert_eq!(reader.next().await.unwrap().name(), "complete");
+        assert!(reader.next().await.is_none(), "nothing follows the terminal");
     }
 
     /// CONTRACT: the terminal frame of a failed attempt names the step the failed receipt names
@@ -570,18 +570,18 @@ mod tests {
     async fn a_step_frame_follows_its_appended_receipt_and_never_precedes_or_replaces_it() {
         let runs = Arc::new(AttemptRuns::default());
         let (log, _) = runs.begin(&id(), 1);
-        let mut tail = log.tail();
+        let mut reader = log.reader();
         let memory = Arc::new(MemoryBuildStateAdapter::new());
         let ok = FramedBuilds::new(memory.clone(), runs.clone());
         ok.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
-        assert!(matches!(tail.next().await.unwrap(), BuildReply::Step { step, .. } if step == "AllocateIdentity"));
+        assert!(matches!(reader.next().await.unwrap(), BuildReply::Step { step, .. } if step == "AllocateIdentity"));
         assert_eq!(memory.facts().await.unwrap().len(), 1, "the receipt was appended before the frame was readable");
 
         let failing = FramedBuilds::new(Arc::new(FailingAppend(memory.clone())), runs.clone());
         assert!(failing.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Complete)).await.is_err());
         ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::Failed { reason: "no port".into() })).await.unwrap();
         log.finish(BuildReply::Complete { build_id: id().0, attempt: 1 });
-        assert_eq!(tail.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
+        assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
         assert_eq!(log.last_failed_step(), Some(("create-node:mesh1.rpc.2".into(), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
     }
 
@@ -659,10 +659,10 @@ mod tests {
         let ctx = CallContext::default();
         // The fabric-primary won attempt 1 for this admin and died before calling it.
         memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        let Attached::Live { disposition, mut tail, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await else { panic!("the claimed attempt is started") };
+        let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[]).await else { panic!("the claimed attempt is started") };
         assert_eq!(disposition, Disposition::Started);
         let mut last = None;
-        while let Some(f) = tail.next().await {
+        while let Some(f) = reader.next().await {
             last = Some(f);
         }
         assert!(matches!(last, Some(BuildReply::Complete { attempt: 1, .. })), "{last:?}");

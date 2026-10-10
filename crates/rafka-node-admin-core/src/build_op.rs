@@ -14,8 +14,8 @@
 
 use crate::accepted::TopologyChange;
 use crate::build::{BuildId, FabricDesired, MeshDesired};
-use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Tailed, VerdictSink};
-use crate::build_run::{bounded_reason, Attached, RunDoor, RunTail};
+use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read, VerdictSink};
+use crate::build_run::{bounded_reason, Attached, RunDoor, RunReader};
 use crate::build_state::{AttemptReason, BuildFact, BuildState, BuildStateError, LocalBuildLog};
 use crate::http::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
@@ -152,7 +152,7 @@ impl BuildDoor {
                 };
                 let drive = self.drives.ensure(&self.env, &opened.build_id);
                 let sink = started(sink, BuildReply::Started { build_id: opened.build_id.0.clone(), attempt: opened.attempt, disposition: Disposition::Created }).await?;
-                relay(sink, drive.tail(opened.attempt)).await
+                stream_frames(sink, drive.reader(opened.attempt)).await
             }
             BuildSubmit::Resubmit { build_id, from_attempt } => self.resubmit(BuildId(build_id), from_attempt, sink).await,
         }
@@ -193,7 +193,7 @@ impl BuildDoor {
         // steps the receipts say completed are read, from the attempt the caller opened on.
         drive.replay_receipts(&p.steps, from_attempt, p.attempt + 1);
         let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
-        relay(sink, drive.tail(from_attempt)).await
+        stream_frames(sink, drive.reader(from_attempt)).await
     }
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
@@ -271,13 +271,13 @@ impl BuildDoor {
                 }
                 Ok(terminal)
             }
-            Attached::Live { disposition, replay, mut tail } => {
+            Attached::Live { disposition, replay, mut reader } => {
                 let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition }).await?;
                 for f in replay {
                     sink.data(f).await.map_err(gone)?;
                 }
                 // A cut call ends this stream and nothing else: the run is its own task.
-                while let Some(f) = tail.next().await {
+                while let Some(f) = reader.next().await {
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
                         terminal => return Ok(terminal),
@@ -299,12 +299,12 @@ async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Resul
 
 /// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream
 /// without a terminal: the caller sees it end `Indeterminate` and re-submits by build id.
-async fn relay(mut sink: ReplySink<Build, rafka_node_rpc::stream::Streaming>, mut tail: crate::build_drive::DriveTail) -> Result<BuildReply, HandlerFault> {
-    while let Some(t) = tail.next().await {
+async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
+    while let Some(t) = reader.next().await {
         match t {
-            Tailed::Frame(f) => sink.data(f).await.map_err(gone)?,
-            Tailed::Terminal(t) => return Ok(t),
-            Tailed::SeatLost(why) => return Err(HandlerFault::invariant_broken(format!("the fabric-primary seat moved off this admin; re-submit the Build by its id at the new seat: {why}"))),
+            Read::Frame(f) => sink.data(f).await.map_err(gone)?,
+            Read::Terminal(t) => return Ok(t),
+            Read::SeatLost(why) => return Err(HandlerFault::invariant_broken(format!("the fabric-primary seat moved off this admin; re-submit the Build by its id at the new seat: {why}"))),
         }
     }
     Err(HandlerFault::invariant_broken("the drive's frames ended without a terminal"))
@@ -329,15 +329,15 @@ pub fn serve(b: ServerBuilder, slot: BuildSlot) -> ServerBuilder {
 pub fn local_dispatched(attached: Attached) -> Dispatched {
     match attached {
         Attached::Refused(r) => Dispatched::Refused(r),
-        Attached::Ended { replay, terminal } => Dispatched::Stream(Box::new(LocalStream { replay: replay.into(), tail: None, terminal: Some(terminal) })),
-        Attached::Live { replay, tail, .. } => Dispatched::Stream(Box::new(LocalStream { replay: replay.into(), tail: Some(tail), terminal: None })),
+        Attached::Ended { replay, terminal } => Dispatched::Stream(Box::new(LocalStream { replay: replay.into(), reader: None, terminal: Some(terminal) })),
+        Attached::Live { replay, reader, .. } => Dispatched::Stream(Box::new(LocalStream { replay: replay.into(), reader: Some(reader), terminal: None })),
     }
 }
 
 /// The frames of a run held in this process.
 struct LocalStream {
     replay: VecDeque<BuildReply>,
-    tail: Option<RunTail>,
+    reader: Option<RunReader>,
     terminal: Option<BuildReply>,
 }
 
@@ -350,8 +350,8 @@ impl InnerStream for LocalStream {
         if let Some(t) = self.terminal.take() {
             return InnerItem::Frame(t);
         }
-        match &mut self.tail {
-            Some(tail) => match tail.next().await {
+        match &mut self.reader {
+            Some(reader) => match reader.next().await {
                 Some(f) => InnerItem::Frame(f),
                 None => InnerItem::Ended,
             },

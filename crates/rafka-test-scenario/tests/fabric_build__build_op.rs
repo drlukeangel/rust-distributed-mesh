@@ -149,15 +149,6 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     named(spans, name)
 }
 
-/// The trace id of the first `build` stream a node served (op 0x20).
-fn build_serve_traces(spans: &[Value]) -> Vec<(String, String)> {
-    spans_named(spans, "rdm.node_rpc.stream.serve.via-direct")
-        .into_iter()
-        .filter(|sp| s(&sp["attributes"]["op"]) == "32")
-        .map(|sp| (s(&sp["trace_id"]), s(&sp["span_id"])))
-        .collect()
-}
-
 /// CONTRACT (acceptance 1): `node.restart` over `0x20` is one call. The stream is `Started`, a frame
 /// per step as its `Complete` receipt becomes durable on the admin that wrote it, and `Complete`,
 /// pushed by the executor through the fabric-primary: the node is executed by `mesh2`'s own primary,
@@ -418,7 +409,6 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     assert_eq!(s(&run["attributes"]["executor"]), "mesh2.admin.1");
     assert_eq!(s(&run["attributes"]["outcome"]), "started");
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
-    let _ = build_serve_traces(&spans);
 }
 
 impl Caller {

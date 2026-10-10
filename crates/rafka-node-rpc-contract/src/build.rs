@@ -151,11 +151,11 @@ pub enum BuildRequest {
         executor: String,
         /// The attempt's observability context, as the claim returned it.
         context: CallContext,
-        /// The Build's intent as the fabric-primary holds it: its acceptance and every attempt it
-        /// opened, as postcard frames of the Build topic's message (the packing the topic's own
-        /// catch-up uses). The executor absorbs them before it plans, so the run never waits for the
-        /// Build topic to deliver what the claim was decided on. Empty when the fabric-primary runs
-        /// the attempt itself.
+        /// The Build as the fabric-primary decided the claim on it: its acceptance and every attempt
+        /// opened, claimed and ended (not its step receipts), as postcard frames of the Build topic's
+        /// message (the packing the topic's own catch-up uses). The executor absorbs them before it
+        /// folds and plans, so the run never waits for the Build topic to deliver what the claim was
+        /// decided on. Empty when the fabric-primary runs the attempt itself.
         intent: Vec<Vec<u8>>,
     },
     /// `build.get`: the Build and its receipts, for reattachment after a cut.

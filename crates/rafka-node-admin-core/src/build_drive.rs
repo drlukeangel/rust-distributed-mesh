@@ -5,7 +5,7 @@
 //!
 //! 1. claims the next attempt on its own log through the claim door, for the admin
 //!    [`crate::executor::lead_for`] names, or finds the attempt already claimed;
-//! 2. calls that admin with `build.attempt.run` (in process when the executor is itself) and relays
+//! 2. calls that admin with `build.attempt.run` (in process when the executor is itself) and passes on
 //!    the run's frames into the Build's [`Drive`];
 //! 3. on `HandedOff { to }` claims the next attempt for `to`; on `Complete` or `Failed` ends.
 //!
@@ -221,8 +221,8 @@ impl Drive {
     }
 
     /// The frames from attempt `from_attempt` on, from the first.
-    pub fn tail(self: &Arc<Self>, from_attempt: u32) -> DriveTail {
-        DriveTail { drive: self.clone(), cursor: 0, from_attempt, done: false }
+    pub fn reader(self: &Arc<Self>, from_attempt: u32) -> DriveReader {
+        DriveReader { drive: self.clone(), cursor: 0, from_attempt, done: false }
     }
 
     /// Whether a stall reason is new (the drive names a stall once, not on every pass).
@@ -242,7 +242,7 @@ impl Drive {
 
 /// What a caller reads from a drive.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Tailed {
+pub enum Read {
     /// A progress frame.
     Frame(BuildReply),
     /// The terminal frame.
@@ -252,16 +252,16 @@ pub enum Tailed {
 }
 
 /// A caller's read position in a [`Drive`].
-pub struct DriveTail {
+pub struct DriveReader {
     drive: Arc<Drive>,
     cursor: usize,
     from_attempt: u32,
     done: bool,
 }
 
-impl DriveTail {
+impl DriveReader {
     /// The next frame, the terminal, or the seat loss; `None` after the end.
-    pub async fn next(&mut self) -> Option<Tailed> {
+    pub async fn next(&mut self) -> Option<Read> {
         if self.done {
             return None;
         }
@@ -274,16 +274,16 @@ impl DriveTail {
                 while let Some(frame) = s.events.get(self.cursor) {
                     self.cursor += 1;
                     if frame_attempt(frame) >= self.from_attempt {
-                        return Some(Tailed::Frame(frame.clone()));
+                        return Some(Read::Frame(frame.clone()));
                     }
                 }
                 if let Some(t) = &s.terminal {
                     self.done = true;
-                    return Some(Tailed::Terminal(t.clone()));
+                    return Some(Read::Terminal(t.clone()));
                 }
                 if let Some(why) = &s.lost {
                     self.done = true;
-                    return Some(Tailed::SeatLost(why.clone()));
+                    return Some(Read::SeatLost(why.clone()));
                 }
             }
             notified.await;
@@ -587,16 +587,18 @@ impl DriveEnv {
         }
     }
 
-    /// The Build's intent as this log holds it: its acceptance and every attempt opened, packed as
-    /// the Build topic's catch-up packs facts. What an executor needs to plan, carried by the call.
+    /// The Build as the claim was decided on it: its acceptance and every attempt opened, claimed and
+    /// ended, packed as the Build topic's catch-up packs facts, but not its step receipts (those are
+    /// the recovery contract of the projection). What an executor needs to fold the same current
+    /// attempt and to plan, carried by the call, so a run never waits for the Build topic.
     async fn intent_of(&self, id: &BuildId) -> Vec<Vec<u8>> {
         let facts = match self.builds.facts().await {
-            Ok(f) => f.into_iter().filter(|f| f.build_id() == id && matches!(f, crate::build_state::BuildFact::Accepted(_) | crate::build_state::BuildFact::Opened(_))).collect::<Vec<_>>(),
+            Ok(f) => f.into_iter().filter(|f| f.build_id() == id && !matches!(f, crate::build_state::BuildFact::Step(_) | crate::build_state::BuildFact::Forget { .. })).collect::<Vec<_>>(),
             Err(_) => return Vec::new(),
         };
         let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
         for e in refused {
-            tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id, detail = %e).in_scope(|| tracing::info!("an intent fact fits no frame: the executor holds it only if the Build topic delivered it"));
+            tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id, detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
         }
         frames.into_iter().map(|b| b.to_vec()).collect()
     }

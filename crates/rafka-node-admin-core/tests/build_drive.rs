@@ -9,7 +9,7 @@
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, BuildOperation, MeshDesired};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
-use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, Gate, Tailed};
+use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, Gate, Read};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, BuildStateError, MemoryBuildStateAdapter};
 use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::http::ControlPlane;
@@ -108,8 +108,8 @@ async fn rig() -> Rig {
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }
 
-async fn next_within(tail: &mut rafka_node_admin_core::build_drive::DriveTail) -> Option<Tailed> {
-    tokio::time::timeout(Duration::from_millis(50), tail.next()).await.ok().flatten()
+async fn next_within(reader: &mut rafka_node_admin_core::build_drive::DriveReader) -> Option<Read> {
+    tokio::time::timeout(Duration::from_millis(50), reader.next()).await.ok().flatten()
 }
 
 /// CONTRACT: a fabric-primary that yielded its seat dispatches nothing. The Build log's sticky
@@ -121,7 +121,7 @@ async fn a_fabric_primary_that_yielded_its_seat_claims_and_dispatches_nothing() 
     let r = rig().await;
     r.switch.fenced.store(true, Ordering::SeqCst);
     let drive = Drive::detached(r.build.clone());
-    let mut tail = drive.tail(1);
+    let mut reader = drive.reader(1);
     match r.env.run(&drive).await {
         DriveEnd::SeatLost(why) => assert!(why.contains("yielded the fabric-primary seat"), "{why}"),
         other => panic!("a fenced seat ends the drive SeatLost: {other:?}"),
@@ -129,7 +129,7 @@ async fn a_fabric_primary_that_yielded_its_seat_claims_and_dispatches_nothing() 
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 0, "no attempt was claimed");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no executor was called");
     assert!(r.ran.0.lock().unwrap().is_empty());
-    assert!(matches!(next_within(&mut tail).await, Some(Tailed::SeatLost(why)) if why.contains("leaving")));
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(why)) if why.contains("leaving")));
 }
 
 /// CONTRACT: a cut-off view dispatches nothing. It authorizes no claim and no call; the drive
@@ -156,7 +156,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     let r = rig().await;
     r.dispatch.lose("mesh1.admin.2");
     let drive = Drive::detached(r.build.clone());
-    let mut tail = drive.tail(1);
+    let mut reader = drive.reader(1);
     for _ in 0..3 {
         match r.env.run(&drive).await {
             DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven"), "{why}"),
@@ -166,16 +166,16 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 is still the unreachable admin's");
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran on silence");
-    match next_within(&mut tail).await {
-        Some(Tailed::Frame(BuildReply::Blocked { attempt: 1, step, reason, .. })) => {
+    match next_within(&mut reader).await {
+        Some(Read::Frame(BuildReply::Blocked { attempt: 1, step, reason, .. })) => {
             assert_eq!(step, "departure-proof");
             assert!(reason.contains("mesh1.admin.2") && reason.contains("not proven"), "{reason}");
         }
         other => panic!("the drive says why it waits: {other:?}"),
     }
-    assert!(next_within(&mut tail).await.is_none(), "the same blocker is framed once, not on every pass");
+    assert!(next_within(&mut reader).await.is_none(), "the same blocker is framed once, not on every pass");
     // The proof arrives: the next attempt is claimed for the admin the view now names, and the
-    // caller's tail carries its frames to the terminal.
+    // caller's reader carries its frames to the terminal.
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
     {
         let mut v = r.env.topology.write().await;
