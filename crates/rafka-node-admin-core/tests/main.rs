@@ -36,6 +36,7 @@ mod container_proof;
 mod container_unsupported;
 mod control_routes;
 mod drift_convergence;
+mod fabric_handover;
 mod fabric_pointer_rows;
 mod i143_acceptance_2805;
 mod i143_acceptance_2892;

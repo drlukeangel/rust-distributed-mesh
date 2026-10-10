@@ -2713,8 +2713,9 @@ impl Backbone {
     /// its seat record is committed locally. Nothing repeats it: a joiner is replayed the seat
     /// record by a primary, like any seat.
     pub async fn announce_new_fabric_primary(&self, holder: SeatHolder, endpoint_id: String, transport_addr: std::net::SocketAddr, admin_api_base: Option<String>) {
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-new-fabric-primary", node = %self.node, holder = %holder, endpoint_id = %endpoint_id, transport_addr = %transport_addr, admin_api_base = admin_api_base.as_deref().unwrap_or(""));
         let frame = Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base };
-        let _ = self.channel.broadcast(&frame).await;
+        let _ = tracing::Instrument::instrument(self.channel.broadcast(&frame), span).await;
     }
 
     /// Say on the backbone that `seat`'s holder birth looks silent from here. A warning, once per
