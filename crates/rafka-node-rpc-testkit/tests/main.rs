@@ -4,6 +4,7 @@
 mod common;
 mod container_pipeline;
 mod i143_acceptance_2775;
+mod join_before_ready;
 mod pipeline_rerun;
 mod probe_endpoint_close;
 mod probe_root_span;

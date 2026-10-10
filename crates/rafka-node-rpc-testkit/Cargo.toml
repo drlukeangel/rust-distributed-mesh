@@ -28,7 +28,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.13.3", features = ["json"] }
 
+[features]
+# The launcher half of a functional fabric (`rig`), shared by test crates.
+rig = []
+
 [dev-dependencies]
+rafka-node-rpc-testkit = { path = ".", features = ["rig"] }
 libc = "0.2"
 tracing-subscriber = { workspace = true }
 # i143_acceptance_2775: the UNIT cell captures its own spans in an in-memory OTel exporter.

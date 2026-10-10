@@ -27,6 +27,7 @@ iroh = { workspace = true }
 
 [dev-dependencies]
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit", features = ["rig"] }
 
 [[test]]
 name = "main"
