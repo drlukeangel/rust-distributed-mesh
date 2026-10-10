@@ -4012,6 +4012,25 @@ mod tests {
         d
     }
 
+    /// CONTRACT (states.md): a mesh is ready-for-traffic when every node of the mesh is. A mesh with a
+    /// primary and a member not yet ready-for-traffic projects `pending`, and the mesh whose nodes
+    /// are all ready projects `ready-for-traffic`. Must NOT happen: a mesh ready because it has a
+    /// primary.
+    #[test]
+    fn a_mesh_with_a_node_not_ready_for_traffic_projects_pending() {
+        use MemberStatus::*;
+        let t = view(&[
+            with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000"),
+            with_id(digest("mesh1.rpc.1", Pending), "300000000000"),
+            with_id(digest("mesh2.admin.1", ReadyForTraffic), "400000000000"),
+            with_id(digest("mesh2.rpc.1", ReadyForTraffic), "500000000000"),
+        ]);
+        assert!(t.cohort_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has a primary");
+        let status = |m: &str| t.mesh_view(m).unwrap().status;
+        assert_eq!(status("mesh1"), ScopeStatus::Pending, "a node of mesh1 is not ready: the mesh is not");
+        assert_eq!(status("mesh2"), ScopeStatus::ReadyForTraffic, "every node of mesh2 is ready");
+    }
+
     /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
     /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the holder
     /// published, `degraded`, until the holder publishes ready. Must NOT happen: `ready-for-traffic`
