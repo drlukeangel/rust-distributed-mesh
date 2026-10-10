@@ -560,9 +560,21 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             }
             let blocked: Vec<&Value> = named(spans, "rdm.node_admin.runtime.reject.via-not-authority-capable")
                 .into_iter()
-                .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want) && span_start(s) < span_end(hold))
+                .filter(|s| attr(s, "node") == node && attr(s, "detail").contains(want))
                 .collect();
-            assert!(!blocked.is_empty(), "`{cut}`: {node} named its blocker (\"{want}\") before the release");
+            // The event that clears the blocker: for a mesh's first admin, the fabric primary's Pending
+            // hand-off at its mesh; otherwise the release of the cut that holds the admin.
+            let (cleared_by, cleared_at) = match c["handoff_mesh"].as_str() {
+                Some(mesh) => {
+                    let handoff: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|s| attr(s, "mesh") == mesh && attr(s, "outcome") == "applied").collect();
+                    assert_eq!(handoff.len(), 1, "`{cut}`: one applied Pending hand-off for {mesh}: {handoff:#?}");
+                    assert!(span_start(ready[0]) >= span_start(handoff[0]), "`{cut}`: {node} reached Ready only after the Pending hand-off applied");
+                    ("pending-handoff", span_start(handoff[0]))
+                }
+                None => ("release", span_end(hold)),
+            };
+            let blocked: Vec<&Value> = blocked.into_iter().filter(|s| span_start(s) < cleared_at).collect();
+            assert!(!blocked.is_empty(), "`{cut}`: {node} named its blocker (\"{want}\") before the {cleared_by}");
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "ready_span_id": ready[0]["span_id"], "ready_ms_after_release": (span_start(ready[0]) - span_end(hold)) / 1_000_000, "blocked_span_id": blocked[0]["span_id"], "blocked_detail": attr(blocked[0], "detail")});
         }
         _ => {}
@@ -781,7 +793,7 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     assert_eq!(pending["applied"], "Pending", "after the release the fabric primary applied the mesh's Pending at its first admin: {pending}");
     run.note_build(&build_id, 1);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": admin, "pipeline": "create", "attempt": 1, "steps": create_order, "held_step": step}));
-    run.span_check(json!({"kind": "ready-after", "cut": id, "node": admin, "blocked_detail": "Pending has not been applied"}));
+    run.span_check(json!({"kind": "ready-after", "cut": id, "node": admin, "blocked_detail": "Pending has not been applied", "handoff_mesh": "mesh2"}));
     run.push(row(h, "pending-gate", id, &spec, rel, after));
     build_id
 }
