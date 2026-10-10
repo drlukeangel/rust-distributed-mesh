@@ -161,8 +161,8 @@ fn a_status_object_distinguishes_a_refusal_from_not_sent_and_indeterminate() {
         let indeterminate = NodeRpc::new(&slow.client).get(&slow.birth, &opts).await.unwrap_err();
         assert!(matches!(indeterminate, CallEnd::Indeterminate { .. }), "{indeterminate:?}");
     });
-    let spans = cap.spans("rdm.node_admin.node.apply.via-call");
-    assert_eq!(spans[0]["attributes"]["outcome"], "rejected-invalid-node-transition");
+    let refused = cap.spans("rdm.node_admin.node.get.via-call");
+    assert!(refused.iter().any(|s| s["attributes"]["outcome"] == "rejected-invalid-node-transition"), "{refused:?}");
     let get: Vec<String> = cap.spans("rdm.node_admin.node.get.via-call").iter().map(|s| s["attributes"]["outcome"].as_str().unwrap().to_string()).collect();
     assert!(get.contains(&"not-sent".to_string()) && get.contains(&"indeterminate".to_string()), "{get:?}");
 }

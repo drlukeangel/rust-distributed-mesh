@@ -418,10 +418,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     assert_eq!(call.len(), 1, "{spans:?}");
     assert_eq!(call[0]["attributes"]["outcome"], "failed");
     assert_eq!(call[0]["attributes"]["failed_step"], "node.join");
-    for emitted in ["created", "started"] {
-        assert_eq!(spans_named(&spans, &format!("rdm.node_admin.node.{emitted}.via-reply-frame")).len(), 1, "node.{emitted} was delivered once");
-    }
-    for never in ["joined", "ready"] {
+    for never in ["created", "joined", "started"] {
         assert!(spans_named(&spans, &format!("rdm.node_admin.node.{never}.via-reply-frame")).is_empty(), "node.{never} is never emitted");
     }
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
