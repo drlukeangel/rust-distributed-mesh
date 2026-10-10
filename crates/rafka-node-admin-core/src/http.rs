@@ -80,8 +80,10 @@ pub struct ShutdownSeat {
 
 impl ControlPlane {
     /// A control plane for the admin `me` over its Build state, its accepted-Build store and an
-    /// initial `topology`.
-    pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology) -> Self {
+    /// initial `topology`, stamping with `time`: the rafka-time its process adopted. A control
+    /// plane is never built without one, because every Build, attempt and shutdown it opens is
+    /// stamped from it.
+    pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
         Self {
             builds,
             accepted,
@@ -96,14 +98,8 @@ impl ControlPlane {
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
-            time: rafka_mesh_transport::clock::RafkaTime::unadopted(),
+            time,
         }
-    }
-
-    /// This control plane stamping with `time`: the rafka-time its admin adopted.
-    pub fn with_rafka_time(mut self, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
-        self.time = time;
-        self
     }
 
     /// This control plane keeping attempt contexts in `contexts` (the admin's own data dir).

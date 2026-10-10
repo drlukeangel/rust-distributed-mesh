@@ -667,7 +667,7 @@ mod one_attempt_number {
     /// The fabric-primary's REST door over `builds`, on the estate's view and accepted Build.
     async fn door(e: &Estate, builds: Arc<dyn BuildStateAdapter>) -> Arc<ControlPlane> {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
-        let mut cp = ControlPlane::new(builds, e.accepted.clone(), me, e.view.read().await.clone()).with_rafka_time(crate::adopted_time());
+        let mut cp = ControlPlane::new(builds, e.accepted.clone(), me, e.view.read().await.clone(), crate::adopted_time());
         cp.topology = e.view.clone();
         Arc::new(cp)
     }

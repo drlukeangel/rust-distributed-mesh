@@ -1522,7 +1522,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "iroh"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=8bc873b796aed3ae6ec4fdf277ab71ef813162d2#8bc873b796aed3ae6ec4fdf277ab71ef813162d2"
+source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
 dependencies = [
  "backon",
  "blake3",
@@ -1571,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=8bc873b796aed3ae6ec4fdf277ab71ef813162d2#8bc873b796aed3ae6ec4fdf277ab71ef813162d2"
+source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -1589,7 +1589,7 @@ dependencies = [
 [[package]]
 name = "iroh-dns"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=8bc873b796aed3ae6ec4fdf277ab71ef813162d2#8bc873b796aed3ae6ec4fdf277ab71ef813162d2"
+source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -1611,7 +1611,7 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=989f3d7a6e6463e75e8346b0183649aaa7365e4c#989f3d7a6e6463e75e8346b0183649aaa7365e4c"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=c8fd82477b6da7c6ca19d2ba7669dcd1dbd0e9d1#c8fd82477b6da7c6ca19d2ba7669dcd1dbd0e9d1"
 dependencies = [
  "blake3",
  "bytes",
@@ -1664,7 +1664,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=8bc873b796aed3ae6ec4fdf277ab71ef813162d2#8bc873b796aed3ae6ec4fdf277ab71ef813162d2"
+source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
 dependencies = [
  "blake3",
  "bytes",
@@ -2186,7 +2186,7 @@ dependencies = [
 [[package]]
 name = "netwatch"
 version = "0.19.3"
-source = "git+https://github.com/drlukeangel/netwatch?rev=3b29b5338d8d5cca09867537b58fc954353ec393#3b29b5338d8d5cca09867537b58fc954353ec393"
+source = "git+https://github.com/drlukeangel/netwatch?rev=d3ee3c6f6a8350f3bbf9e25ee0b81536a97d87f9#d3ee3c6f6a8350f3bbf9e25ee0b81536a97d87f9"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2685,7 +2685,7 @@ dependencies = [
 [[package]]
 name = "portmapper"
 version = "0.19.3"
-source = "git+https://github.com/drlukeangel/netwatch?rev=3b29b5338d8d5cca09867537b58fc954353ec393#3b29b5338d8d5cca09867537b58fc954353ec393"
+source = "git+https://github.com/drlukeangel/netwatch?rev=d3ee3c6f6a8350f3bbf9e25ee0b81536a97d87f9#d3ee3c6f6a8350f3bbf9e25ee0b81536a97d87f9"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2891,6 +2891,7 @@ dependencies = [
  "rafka-chaos",
  "rafka-mesh-entity",
  "rafka-mesh-telemetry",
+ "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
  "reqwest",
@@ -2906,7 +2907,7 @@ dependencies = [
 [[package]]
 name = "rafka-chaos"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "libc",
  "serde",
@@ -2917,7 +2918,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-entity"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "blake3",
  "hex",
@@ -2930,7 +2931,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-telemetry"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2952,7 +2953,7 @@ dependencies = [
 [[package]]
 name = "rafka-mesh-transport"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2973,7 +2974,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-admin-client"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "rafka-mesh-entity",
  "reqwest",
@@ -2984,7 +2985,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-admin-core"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -3013,7 +3014,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-base"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "anyhow",
  "iroh",
@@ -3032,7 +3033,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3048,7 +3049,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-contract"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "postcard",
  "rafka-mesh-entity",
@@ -3058,7 +3059,7 @@ dependencies = [
 [[package]]
 name = "rafka-node-rpc-testkit"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=2109b643c2b18e688101c76496d7fef296cf9f35#2109b643c2b18e688101c76496d7fef296cf9f35"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=48549cc583c01b7b0c21682f4da999aa29e7269c#48549cc583c01b7b0c21682f4da999aa29e7269c"
 dependencies = [
  "anyhow",
  "async-trait",

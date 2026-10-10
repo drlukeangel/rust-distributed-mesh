@@ -2879,7 +2879,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let book = membership.book.clone();
     let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
     let control = Arc::new(
-        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records)).with_contexts(attempt_contexts.clone()).with_rafka_time(rafka_time.clone()),
+        ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()),
     );
     // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
     let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });

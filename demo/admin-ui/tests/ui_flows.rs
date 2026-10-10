@@ -48,7 +48,10 @@ async fn node_admin() -> (NodeAdminClient, Arc<ControlPlane>) {
     let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1")
         .await
         .unwrap();
-    let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), topology));
+    // The rafka-time this admin's process adopted; every Build it opens is stamped from it.
+    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    time.adopt(1_000_000);
+    let cp = Arc::new(ControlPlane::new(builds, accepted, "mesh1.admin.1".parse().unwrap(), topology, time));
     let app = rafka_node_admin_core::http::router(cp.clone(), axum::Router::new());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

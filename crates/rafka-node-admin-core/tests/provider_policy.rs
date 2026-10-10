@@ -31,7 +31,7 @@ async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuild
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1").await.unwrap();
-    (router(Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology).with_rafka_time(crate::adopted_time())), axum::Router::new()), builds)
+    (router(Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time())), axum::Router::new()), builds)
 }
 
 async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {

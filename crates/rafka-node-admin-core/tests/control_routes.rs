@@ -91,7 +91,7 @@ async fn harness(runtime_routes: Router) -> Harness {
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t).with_rafka_time(crate::adopted_time()));
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let app = router(cp.clone(), runtime_routes);
     Harness { cp, builds, app, spans, _guard: guard }
 }
@@ -353,7 +353,7 @@ async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_chan
     let t = mn();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let before = builds.facts().await.unwrap().len();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.2".parse().unwrap(), t).with_rafka_time(crate::adopted_time()));
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.2".parse().unwrap(), t, crate::adopted_time()));
     let app = router(cp, Router::new());
     for (method, uri, body) in [
         ("POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 5}]}))),
@@ -417,7 +417,7 @@ async fn a_build_the_store_refuses_is_never_named_by_fabric_build_id() {
     let t = mn();
     let accepted = AcceptedStore::seeded(&*mem, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let previous = accepted.build_id().await.expect("the seeded Build is named");
-    let cp = Arc::new(ControlPlane::new(Arc::new(RefusingAccept(mem.clone())), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t).with_rafka_time(crate::adopted_time()));
+    let cp = Arc::new(ControlPlane::new(Arc::new(RefusingAccept(mem.clone())), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let app = router(cp, Router::new());
     let (s, v) = call(&app, "POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))).await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
@@ -457,7 +457,7 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t).with_rafka_time(crate::adopted_time()));
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let app = router(cp.clone(), Router::new());
     {
         let mut topo = cp.topology.write().await;
@@ -520,7 +520,7 @@ async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_
     t.nodes.push(node("mesh2.rpc.1", false));
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     t.nodes.iter_mut().find(|n| n.name.to_string() == "mesh2.rpc.1").unwrap().status = NodeStatus::Dead;
-    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t).with_rafka_time(crate::adopted_time()));
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let h = heard.clone();
     let _ = cp.peer_mesh.set(Arc::new(move |mesh: &str| {
