@@ -27,6 +27,10 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
+fn flag(v: &Value) -> bool {
+    v == true || v == "true"
+}
+
 fn start(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
@@ -130,6 +134,82 @@ async fn a_two_mesh_fabric_is_ready_only_through_state_sync_state_commit_and_ope
         assert!(ups.iter().all(|u| u["attributes"]["outcome"] == "applied"), "{round}: every {completion} was applied: {ups:#?}");
         assert!(ups.iter().any(|u| s(&u["attributes"]["node"]) == fp && s(&u["attributes"]["sender"]).starts_with("mesh2.admin.")), "{round}: the fabric-primary took mesh2's {completion}");
     }
+
+    // The gossip hooks (gossip.md, "Fabric round gossip hooks"): each command is announced by its
+    // commanding authority on its mesh channel and the backbone before the call; each check-in by the
+    // subject (a node-admin on both channels, an ordinary node on its mesh channel, which its
+    // mesh-admin carries onto the backbone); and a peer mesh's primary forwards them.
+    let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+    let name_of: std::collections::BTreeMap<&String, &String> = id_of.iter().map(|(n, i)| (i, n)).collect();
+    let primary_of = |mesh: &str| primaries.iter().find(|p| p.starts_with(&format!("{mesh}."))).cloned().expect("a primary per mesh");
+    let hooks: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-round-hook").into_iter().filter(|h| start(h) >= start(root) && flag(&h["attributes"]["bound"])).collect();
+    let frames: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-round-frame").into_iter().filter(|f| start(f) >= start(root)).collect();
+    let mut firsts = Vec::new();
+    for (round, command_frame, completion, completion_frame) in [("commit-state", "state-committing", "state-committed", "state-committed"), ("open-traffic", "traffic-opening", "traffic-opened", "traffic-opened")] {
+        let sent = |hook: &str, subject: &str| -> Vec<&Value> { hooks.iter().copied().filter(|h| h["attributes"]["hook"] == hook && s(&h["attributes"]["subject_id"]) == id_of[subject]).collect() };
+        let mut cmd_at = Vec::new();
+        let mut done_at = Vec::new();
+        for subject in want.iter().filter(|n| **n != fp) {
+            let mesh = subject.split('.').next().unwrap();
+            let authority = if *subject == primary_of(mesh) { fp.clone() } else { primary_of(mesh) };
+            let cmd = sent(round, subject);
+            assert!(!cmd.is_empty(), "{round}: the commanding authority announced the command to {subject}");
+            assert!(cmd.iter().all(|h| s(&h["attributes"]["node"]) == authority && h["attributes"]["channels"] == "mesh,backbone"), "{round}: {subject} was announced by {authority} on its mesh channel and the backbone: {cmd:?}");
+            let done = sent(completion, subject);
+            assert!(!done.is_empty(), "{round}: {subject} announced its {completion} check-in");
+            let channels = if subject.contains(".admin.") { "mesh,backbone" } else { "mesh" };
+            assert!(done.iter().all(|h| s(&h["attributes"]["node"]) == *subject && h["attributes"]["channels"] == channels), "{round}: {subject} announced {completion} itself on {channels}: {done:?}");
+            assert!(start(cmd[0]) <= start(done[0]), "{round}: the command to {subject} was announced before its check-in");
+            cmd_at.push(start(cmd[0]));
+            done_at.push(start(done[0]));
+            // An ordinary node's check-in reaches the backbone through its mesh-admin; a node-admin's is its own.
+            if !subject.contains(".admin.") {
+                let carried = frames.iter().any(|f| f["attributes"]["kind"] == completion_frame && f["attributes"]["via"] == "backbone" && s(&f["attributes"]["subject_id"]) == id_of[subject.as_str()] && s(&f["attributes"]["forwarded_by"]) == authority);
+                assert!(carried, "{round}: {authority} carried {subject}'s {completion_frame} onto the backbone");
+            }
+            let heard_by_members = frames.iter().any(|f| f["attributes"]["kind"] == command_frame && f["attributes"]["via"] == "mesh-channel" && s(&f["attributes"]["subject_id"]) == id_of[subject.as_str()] && s(&f["attributes"]["forwarded_by"]).is_empty());
+            assert!(heard_by_members, "{round}: the {command_frame} for {subject} was heard on a mesh channel as its author sent it");
+        }
+        // A peer mesh's primary forwards the other mesh's hooks onto its own channel, the author unchanged.
+        for (from, to) in [("mesh1", "mesh2"), ("mesh2", "mesh1")] {
+            for kind in [command_frame, completion_frame] {
+                let forwarded = frames.iter().any(|f| {
+                    f["attributes"]["kind"] == kind
+                        && f["attributes"]["via"] == "mesh-channel"
+                        && s(&f["attributes"]["publisher"]).starts_with(&format!("{from}."))
+                        && s(&f["attributes"]["node"]).starts_with(&format!("{to}."))
+                        && s(&f["attributes"]["forwarded_by"]) == primary_of(to)
+                });
+                assert!(forwarded, "{kind} authored in {from} was forwarded onto {to}'s channel by {}", primary_of(to));
+            }
+        }
+        assert!(frames.iter().all(|f| name_of.contains_key(&s(&f["attributes"]["subject_id"]))), "every hook frame names a node of this fabric");
+        firsts.push((round, *cmd_at.iter().min().unwrap(), *done_at.iter().max().unwrap()));
+    }
+    assert!(firsts[0].1 <= firsts[0].2 && firsts[0].2 <= firsts[1].1 && firsts[1].1 <= firsts[1].2, "StateCommitting, StateCommitted, TrafficOpening, TrafficOpened came in that order: {firsts:?}");
+
+    // A command is sent again only on an eligible event (R-S2), named on the span that sends it: a birth
+    // is commanded once as `first`, a send after it carries the event that made it due, and nothing is
+    // sent again after the birth answered.
+    let mut sends: std::collections::BTreeMap<(String, String, String), Vec<&Value>> = std::collections::BTreeMap::new();
+    for c in named(&spans, "rdm.node_admin.fabric.update.via-round-command").into_iter().filter(|c| start(c) >= start(root)) {
+        sends.entry((s(&c["attributes"]["node"]), s(&c["attributes"]["round"]), s(&c["attributes"]["to"]))).or_default().push(c);
+    }
+    assert!(!sends.is_empty());
+    let mut resends = 0;
+    for ((from, round, to), calls) in &mut sends {
+        calls.sort_by_key(|c| start(c));
+        assert_eq!(calls.iter().filter(|c| c["attributes"]["event"] == "first").count(), 1, "{from} commanded {to} once as first in {round}: {calls:?}");
+        assert_eq!(calls[0]["attributes"]["event"], "first", "{from}'s first send to {to} in {round} is the first");
+        for (i, c) in calls.iter().enumerate().skip(1) {
+            resends += 1;
+            let event = s(&c["attributes"]["event"]);
+            assert!(["addressed", "destination-changed", "reachable-again", "state-changed"].contains(&event.as_str()), "{from} sent {round} to {to} again with no eligible event: {event}");
+            let before = s(&calls[i - 1]["attributes"]["outcome"]);
+            assert!(before != "applied" && before != "already-applied", "{from} sent {round} to {to} again after it answered {before}");
+        }
+    }
+    eprintln!("[rounds] {} commands to {} (round, birth) pairs, {resends} sent again on an eligible event", sends.values().map(Vec::len).sum::<usize>(), sends.len());
 
     // One trace: every call of the climb has its receiver's serve span under it, every mesh ran both
     // rounds in it, and mesh2's primary reported each round up in a new caller span of the same trace.

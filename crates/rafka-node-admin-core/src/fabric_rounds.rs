@@ -571,11 +571,11 @@ impl FabricRounds {
             self.mesh_book.open(key);
             self.spawn_mesh_driver(key.clone(), None, parent.clone());
         }
-        for (node_id, expected) in self.fabric_book.take_due(key, view) {
+        for (node_id, expected, event) in self.fabric_book.take_due(key, view) {
             if node_id == self.env.node_id {
                 continue;
             }
-            self.spawn_command(key.clone(), true, node_id, expected, parent.clone());
+            self.spawn_command(key.clone(), true, node_id, expected, event, parent.clone());
         }
         self.fabric_book.missing(key)
     }
@@ -606,11 +606,11 @@ impl FabricRounds {
 
     /// Send the down op of `key` to the planned birth `to`, on its own task. The book it was taken
     /// from commands it once per exact birth; an op the peer did not take waits for an eligible event.
-    fn spawn_command(self: &Arc<Self>, key: RoundKey, fabric_level: bool, to: NodeId, expected: Expected, parent: tracing::Span) {
+    fn spawn_command(self: &Arc<Self>, key: RoundKey, fabric_level: bool, to: NodeId, expected: Expected, event: &'static str, parent: tracing::Span) {
         let this = self.clone();
         tokio::spawn(async move {
             let book = if fabric_level { &this.fabric_book } else { &this.mesh_book };
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-round-command", node = %this.env.me, round = key.kind.command(), to = %expected.name, outcome = tracing::field::Empty, "otel.kind" = "internal");
+            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-round-command", node = %this.env.me, round = key.kind.command(), to = %expected.name, event, outcome = tracing::field::Empty, "otel.kind" = "internal");
             let req = key.kind.down(&key, to.clone(), expected.incarnation.clone());
             // The command hook runs in the path of the command it announces, before the call goes out.
             this.publish_hook(&key, false, &to, &expected.incarnation).instrument(span.clone()).await;
@@ -679,8 +679,8 @@ impl FabricRounds {
                 }
             }
             self.mesh_book.expect(key, planned, unresolved);
-            for (node_id, expected) in self.mesh_book.take_due(key, &view) {
-                self.spawn_command(key.clone(), false, node_id, expected, round_span.clone());
+            for (node_id, expected, event) in self.mesh_book.take_due(key, &view) {
+                self.spawn_command(key.clone(), false, node_id, expected, event, round_span.clone());
             }
             if !own_done {
                 match run_action(&*self.env.actions, &self.env.me, key.kind).await {

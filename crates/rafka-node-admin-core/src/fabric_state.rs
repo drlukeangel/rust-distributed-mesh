@@ -280,35 +280,47 @@ impl RoundBook {
     /// is deliverable in `view`. A command that was not delivered is due again only on an eligible
     /// event ([`eligible`], R-S2, and a change of the target's state): reading the checklist again
     /// is not one.
-    pub fn take_due(&self, key: &RoundKey, view: &Topology) -> Vec<(NodeId, Expected)> {
+    pub fn take_due(&self, key: &RoundKey, view: &Topology) -> Vec<(NodeId, Expected, &'static str)> {
         let mut rounds = self.rounds.lock().unwrap();
         let Some(r) = rounds.get_mut(key) else { return Vec::new() };
         let mut due = Vec::new();
         for (n, e) in &r.expected {
             let target = view.members().find(|t| &t.node_id == n);
             let slot = (n.clone(), e.incarnation.clone());
-            let go = match (r.commands.get_mut(&slot), target) {
-                (None, Some(t)) => deliverable(t),
-                (None, None) => false,
-                (Some(Command::Out { .. } | Command::Answered), _) => false,
+            // The event that makes the op due, named: `first` for a birth never commanded.
+            let event: Option<&'static str> = match (r.commands.get_mut(&slot), target) {
+                (None, Some(t)) => deliverable(t).then_some("first"),
+                (None, None) => None,
+                (Some(Command::Out { .. } | Command::Answered), _) => None,
                 (Some(Command::Undelivered { sent, .. }), None) => {
                     if !sent.typed {
                         sent.route_lost = true;
                     }
-                    false
+                    None
                 }
                 (Some(Command::Undelivered { sent, status, addressed }), Some(t)) => {
                     let ok = deliverable(t);
                     if !sent.typed && !ok {
                         sent.route_lost = true;
                     }
-                    eligible(Some(sent), &Destination::of(t), ok, *addressed) || (ok && t.status != *status)
+                    let now = Destination::of(t);
+                    if !(eligible(Some(sent), &now, ok, *addressed) || (ok && t.status != *status)) {
+                        None
+                    } else if *addressed {
+                        Some("addressed")
+                    } else if sent.to != now {
+                        Some("destination-changed")
+                    } else if !sent.typed && sent.route_lost {
+                        Some("reachable-again")
+                    } else {
+                        Some("state-changed")
+                    }
                 }
             };
-            if go {
+            if let Some(event) = event {
                 let t = target.expect("a due birth is in the view");
                 r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status });
-                due.push((n.clone(), e.clone()));
+                due.push((n.clone(), e.clone(), event));
             }
         }
         due
@@ -535,7 +547,7 @@ mod tests {
         let dead = Node { status: NodeStatus::Dead, ..n.clone() };
         assert!(book.take_due(&k, &view_of(vec![dead])).is_empty(), "a birth that is not live is not sent to");
         let view = view_of(vec![n.clone()]);
-        assert_eq!(book.take_due(&k, &view).len(), 1);
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
         assert!(book.take_due(&k, &view).is_empty(), "the call is out");
         book.answered(&k, &n.node_id, &a);
         assert!(book.take_due(&k, &view).is_empty(), "an answered op is not sent again");
@@ -568,7 +580,7 @@ mod tests {
             assert!(book.take_due(&k, &view_of(vec![gone.clone()])).is_empty(), "an unreachable target is sent nothing");
         }
         let back = view_of(vec![n.clone()]);
-        assert_eq!(book.take_due(&k, &back).len(), 1, "reachable again: sent again");
+        assert_eq!(book.take_due(&k, &back).iter().map(|d| d.2).collect::<Vec<_>>(), ["reachable-again"], "reachable again: sent again");
         assert!(book.take_due(&k, &back).is_empty(), "and once");
     }
 
@@ -579,10 +591,10 @@ mod tests {
         let (book, k, n, inc) = undelivered(true, NodeStatus::Pending);
         assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty());
         let ready = Node { status: NodeStatus::ReadyForTraffic, ..n.clone() };
-        assert_eq!(book.take_due(&k, &view_of(vec![ready])).len(), 1, "its state changed");
+        assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed");
         book.undelivered(&k, &n.node_id, &inc, true);
         let moved = Node { transport_addr: Some("127.0.0.1:9".parse().unwrap()), ..n.clone() };
-        assert_eq!(book.take_due(&k, &view_of(vec![moved])).len(), 1, "its destination moved");
+        assert_eq!(book.take_due(&k, &view_of(vec![moved])).iter().map(|d| d.2).collect::<Vec<_>>(), ["destination-changed"], "its destination moved");
     }
 
     /// CONTRACT (R-S2): a command not delivered is sent again when the target addressed this primary,
@@ -595,7 +607,7 @@ mod tests {
         book.heard_from(&NodeId::mint());
         assert!(book.take_due(&k, &view).is_empty(), "a stranger addressing this primary is not the target");
         book.heard_from(&n.node_id);
-        assert_eq!(book.take_due(&k, &view).len(), 1, "the target addressed this primary");
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the target addressed this primary");
     }
 
     #[test]
