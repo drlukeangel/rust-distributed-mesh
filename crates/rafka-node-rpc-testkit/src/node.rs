@@ -221,6 +221,9 @@ pub(crate) async fn start_with_clock(launch: &Launch, clock: rafka_mesh_transpor
 }
 
 async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::SharedClock, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder, boot: &tracing::Span) -> Result<RunningNode> {
+    // An ordinary node is admitted by the admin that launched it (`node-ready-for-traffic.md`
+    // step 1): a launch naming no launcher has nothing to be admitted by.
+    let launcher = launch.launcher.as_ref().ok_or_else(|| anyhow!("{} was launched with no launcher: a node joins through the admin that deployed it and is refused without one", launch.name))?;
     let identity_exists = launch.data_dir.join("node-key").exists();
     let step = if identity_exists {
         tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-identity-loaded", node = %launch.name)
@@ -338,31 +341,27 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
     };
     // The join: this node's first call after it binds. `JoinNode` carries the digest above to the
     // admin that deployed it; the admin verifies it against the deployment and answers what it
-    // holds. An admin that refuses the digest by name ends this node by that name.
-    let mut joined = None;
-    let join_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-join-admitted", node = %launch.name, launcher = launch.launcher.as_ref().map(|l| l.name.to_string()).unwrap_or_default());
-    if let (Some(launcher), Some(seed)) = (&launch.launcher, seeds.first()) {
-        let launcher_ref = rafka_node_rpc::ResolvedNode {
-            node_id: launcher.node_id.clone(),
-            name: launcher.name.clone(),
-            endpoint_id: seed.id,
-            transport_addr: seed.ip_addrs().next().copied().ok_or_else(|| anyhow!("the launching admin's seed names no address"))?,
-            incarnation: launcher.incarnation.clone(),
-        };
-        resolver.apply(launcher_ref, None);
-        let mut join_digest = digest.clone();
-        join_digest.status = MemberStatus::Pending;
-        match rafka_node_admin_core::join::call_join(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &seed.id.fmt_short().to_string(), &join_digest, 5).await {
-            Ok(answer) => joined = Some(answer),
-            Err(rafka_node_admin_core::join::JoinFailure::Refused(why)) => return Err(anyhow!("{} was refused its join by {}: {why}", launch.name, launcher.name)),
-            Err(e @ rafka_node_admin_core::join::JoinFailure::Unreached(_)) => tracing::warn!(node = %launch.name, error = %e, "the launching admin could not take the join: this node's view fills from gossip"),
-        }
-    }
-    // The mesh's id names its channel; the launching admin writes it.
-    let mesh_id = match (&launch.mesh_id, &joined) {
-        (Some(id), _) => id.clone(),
-        (None, _) => return Err(anyhow!("a node needs its mesh's id from its launch")),
+    // holds. A node whose join is not accepted ends by name, whether the admin refused the digest
+    // or could not take the join within the attempts: it is never ready for traffic.
+    let join_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-join-admitted", node = %launch.name, launcher = %launcher.name);
+    let seed = seeds.first().ok_or_else(|| anyhow!("{} names launcher {} but no seed to reach it at", launch.name, launcher.name))?;
+    let launcher_ref = rafka_node_rpc::ResolvedNode {
+        node_id: launcher.node_id.clone(),
+        name: launcher.name.clone(),
+        endpoint_id: seed.id,
+        transport_addr: seed.ip_addrs().next().copied().ok_or_else(|| anyhow!("the launching admin's seed names no address"))?,
+        incarnation: launcher.incarnation.clone(),
     };
+    resolver.apply(launcher_ref, None);
+    let mut join_digest = digest.clone();
+    join_digest.status = MemberStatus::Pending;
+    let joined = match rafka_node_admin_core::join::call_join(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &seed.id.fmt_short().to_string(), &join_digest, 5).await {
+        Ok(answer) => answer,
+        Err(rafka_node_admin_core::join::JoinFailure::Refused(why)) => return Err(anyhow!("{} was refused its join by {}: {why}", launch.name, launcher.name)),
+        Err(rafka_node_admin_core::join::JoinFailure::Unreached(why)) => return Err(anyhow!("{} could not join through {}: unreached: {why}", launch.name, launcher.name)),
+    };
+    // The mesh's id names its channel; the launching admin writes it.
+    let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
     drop(join_step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-membership-joined", node = %launch.name, mesh_id = %mesh_id, seeds = seeds.len());
     let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, clock, seeds).await?;
@@ -384,21 +383,20 @@ async fn start_booted(launch: &Launch, clock: rafka_mesh_transport::clock::Share
     // Take the launching admin's topology before marking ready: the join answered the control
     // state; `GetTopology` reads the topology from the same admin, installed per mesh only when
     // its snapshot is complete.
-    if let (Some(answer), Some(launcher)) = (joined, &launch.launcher) {
-        let _topology_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-topology-taken", node = %launch.name, launcher = %launcher.name);
-        membership.learn_statuses(&answer.statuses);
-        let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
-            .await
-            .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
-        let mesh_peers: Vec<EndpointAddr> = read
-            .installed
-            .iter()
-            .flat_map(|m| m.members.iter())
-            .filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name && d.node.name.mesh == launch.name.mesh)
-            .filter_map(rafka_mesh_transport::membership::gossip_addr)
-            .collect();
-        let _ = membership.join_peers(mesh_peers).await;
-    }
+    let _topology_step = tracing::info_span!(parent: boot, "rdm.mesh.node.update.via-topology-taken", node = %launch.name, launcher = %launcher.name);
+    membership.learn_statuses(&joined.statuses);
+    let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), &launcher.name.mesh, &membership, None, None)
+        .await
+        .map_err(|e| anyhow!("{} could not read the topology of {}: {e}", launch.name, launcher.name))?;
+    let mesh_peers: Vec<EndpointAddr> = read
+        .installed
+        .iter()
+        .flat_map(|m| m.members.iter())
+        .filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name && d.node.name.mesh == launch.name.mesh)
+        .filter_map(rafka_mesh_transport::membership::gossip_addr)
+        .collect();
+    let _ = membership.join_peers(mesh_peers).await;
+    drop(_topology_step);
     // A delta that does not follow what this node holds desynchronizes that source; the node tops
     // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
     {

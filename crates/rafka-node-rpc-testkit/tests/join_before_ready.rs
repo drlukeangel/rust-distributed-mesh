@@ -53,3 +53,31 @@ async fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_read
     assert_eq!(ready_spans, 0, "no via-ready span is emitted");
     assert!(!heard_ready, "ReadyForTraffic is never published");
 }
+
+/// CONTRACT: a launch that names no launcher is refused at start, the error naming the node and
+/// the missing launcher, before the node binds anything. What must NOT happen: the node comes up
+/// ready with no admin to admit it.
+#[tokio::test]
+async fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
+    let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+    let launch = Launch {
+        fabric: "fabric1".into(),
+        fabric_id: FabricId::mint(),
+        name: "mesh1.rpc.1".parse().unwrap(),
+        node_id: NodeId::mint(),
+        incarnation: IncarnationId::mint(),
+        supersedes: None,
+        bind_addr: "127.0.0.1:0".parse().unwrap(),
+        listeners: vec![],
+        seeds: vec![],
+        launcher: None,
+        data_dir: dir.clone(),
+        mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+    };
+    let started = node::start(&launch, |b, _| b).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    let why = started.err().expect("a launch with no launcher must be refused").to_string();
+    assert!(why.contains("mesh1.rpc.1") && why.contains("no launcher"), "the refusal names the node and the missing launcher: {why}");
+}

@@ -13,6 +13,7 @@ use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOu
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use rafka_node_rpc_testkit::node::{self, RunningNode};
+use rafka_node_rpc_testkit::rig::{admin_side, AdminSide, TEST_MESH_ID};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use std::time::Duration;
 /// written first, its one endpoint bound on a loopback port.
 struct RoleProcess {
     running: RunningNode,
+    _launcher: AdminSide,
     launch: Launch,
     key: SecretKey,
     _dir: tempdir::Dir,
@@ -29,24 +31,28 @@ async fn born(role: Role, name: &str) -> RoleProcess {
     let dir = tempdir::Dir::new();
     RuntimeFact::of_this_process("cell").unwrap().write_record(dir.path()).unwrap();
     let key = node::load_or_mint_key(dir.path()).unwrap();
+    // The admin that deployed this birth: it takes the node's JoinNode and serves its topology.
+    let fabric_id = FabricId::mint();
+    let launcher = admin_side("127.0.0.1".parse().unwrap(), &fabric_id).await;
     let launch = Launch {
         fabric: "fabric1".into(),
-        fabric_id: FabricId::mint(),
+        fabric_id,
         name: name.parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         listeners: vec![],
-        seeds: vec![],
-        launcher: None,
+        seeds: vec![launcher.seed.clone()],
+        launcher: Some(launcher.launcher.clone()),
         data_dir: dir.path().to_path_buf(),
-        mesh_id: Some(MeshId::mint()),
+        mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
     };
+    launcher.deployed(&launch, &key);
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();
     let running = node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver)).await.unwrap();
     let _ = oracles.declare_client.set(running.node_rpc.clone());
-    RoleProcess { running, launch, key, _dir: dir }
+    RoleProcess { running, _launcher: launcher, launch, key, _dir: dir }
 }
 
 impl RoleProcess {
@@ -211,7 +217,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     //    gateway still resolves and reaches the same birth.
     let (out, _) = client.call::<BrokerData>(&target, &append("c2"), &CallOptions::default()).await;
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "c2".into(), offset: 0, served_by: broker.launch.node_id.to_string() }), "{out:?}");
-    assert_eq!(client.pooled().len(), 1, "one pooled connection to the broker's one birth, kept through every outcome");
+    assert_eq!(client.pooled().iter().filter(|k| k.peer == broker.key.public()).count(), 1, "one pooled connection to the broker's one birth, kept through every outcome");
     gateway.running.stop(Duration::ZERO).await;
     broker.running.stop(Duration::ZERO).await;
 }
