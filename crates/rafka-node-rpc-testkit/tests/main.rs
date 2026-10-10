@@ -3,6 +3,7 @@
 
 mod common;
 mod container_pipeline;
+mod hydrate_before_ready;
 mod i143_acceptance_2775;
 mod join_before_ready;
 mod pipeline_rerun;

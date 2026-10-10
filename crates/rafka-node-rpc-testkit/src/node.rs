@@ -87,6 +87,11 @@ pub fn drain_deadline_from_env() -> Duration {
 }
 
 impl RunningNode {
+    /// Where this birth's `hydrate_before_ready` stands; `None` when no hook was registered.
+    pub fn hydration(&self) -> Option<rafka_node_admin_core::app_hydration::HydrationHandle> {
+        None
+    }
+
     /// Declare this birth's `state` to its authority (i143.e4.s11): the node-admins of its mesh
     /// it hears, tried in path order until one answers by name (the mesh-primary applies; another
     /// admin answers `RejectedNotAuthority: receiver-not-primary` and the next is tried). A
@@ -164,6 +169,13 @@ impl RunningNode {
             let _ = r.shutdown().await;
         }
     }
+}
+
+/// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
+/// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
+pub async fn start_hydrating(launch: &Launch, hydration: rafka_node_admin_core::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
+    let _ = hydration;
+    start_with_seams(launch, register).await
 }
 
 /// Bring the node up exactly as `launch` says.

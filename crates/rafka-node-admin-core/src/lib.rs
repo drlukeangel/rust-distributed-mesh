@@ -12,6 +12,7 @@
 pub mod entry;
 pub mod join;
 pub mod admin;
+pub mod app_hydration;
 pub mod accepted;
 pub mod build;
 pub mod build_claim;

@@ -2523,6 +2523,11 @@ pub struct DigestBook {
     /// changes, or a departure is accepted; a fresher digest of the same
     /// birth does not tick.
     births: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Ticks when a held member is first held, changes its birth or its status, or is heard again
+    /// after it had gone silent past the staleness floor: what a local waiter on "that node is
+    /// ready" or "that node is reachable again" wakes on. A local observation of the book; nothing
+    /// is sent.
+    heard: Arc<tokio::sync::watch::Sender<u64>>,
     /// Proven departures by NodeId, with when this book accepted each: held
     /// for `retention` of local age, then forgotten.
     departed: Arc<Mutex<HashMap<String, (LifecycleOp, Instant)>>>,
@@ -2600,6 +2605,7 @@ impl DigestBook {
         Self {
             inner: Arc::default(),
             births: Arc::new(tokio::sync::watch::Sender::new(0)),
+            heard: Arc::new(tokio::sync::watch::Sender::new(0)),
             departed: Arc::default(),
             in_flight: Arc::default(),
             retention,
@@ -2810,8 +2816,12 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.status != d.status || now.saturating_duration_since(*at) > self.staleness_floor);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Direct));
         drop(inner);
+        if heard_changed {
+            self.heard.send_modify(|v| *v += 1);
+        }
         if birth_changed {
             self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
@@ -2857,9 +2867,13 @@ impl DigestBook {
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
+        if heard_changed {
+            self.heard.send_modify(|v| *v += 1);
+        }
         if birth_changed {
             self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
@@ -2892,8 +2906,12 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
+        if heard_changed {
+            self.heard.send_modify(|v| *v += 1);
+        }
         if birth_changed {
             self.close_restarts(&d);
             self.births.send_modify(|v| *v += 1);
@@ -2906,6 +2924,14 @@ impl DigestBook {
     /// live resolver is fed from. A fresher digest of the same birth does not.
     pub fn birth_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.births.subscribe()
+    }
+
+    /// Ticks each time a member is first held, changes its birth or its status, or is heard again
+    /// after it had been silent past the staleness floor. The value is a count: a waiter that
+    /// recorded it before an event sees the count move after the event, however the two
+    /// interleave with its subscribing.
+    pub fn heard_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.heard.subscribe()
     }
 
     /// The digests heard within `fresh`.

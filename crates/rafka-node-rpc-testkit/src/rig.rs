@@ -107,10 +107,21 @@ pub struct AdminSide {
     pub joins: Arc<rafka_node_admin_core::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rafka_mesh_entity::launch::Launcher,
+    /// The digest this admin side publishes as itself.
+    digest: std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>,
     _router: Router,
 }
 
 impl AdminSide {
+    /// Say `status` as this admin side's own digest: how a test moves its authority from Pending
+    /// to ReadyForTraffic.
+    pub async fn publish_status(&self, status: rafka_mesh_entity::digest::MemberStatus) {
+        let mut d = self.digest.lock().unwrap().clone();
+        d.status = status;
+        *self.digest.lock().unwrap() = d.clone();
+        self.observer.membership.publish(&d).await.expect("the admin's digest publishes");
+    }
+
     /// Register the birth `launch` describes, as this admin deployed it, before the node starts:
     /// the node's own `JoinNode` is then verified against it. `key` is the node's fabric key.
     pub fn deployed(&self, launch: &rafka_mesh_entity::launch::Launch, key: &SecretKey) {
@@ -128,23 +139,29 @@ impl AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, None).await
+    admin_side_taking_joins(ip, fabric, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
 }
 
 /// [`admin_side`] whose rafka-time is `reference_ms` (adopted once, as a Day-0 root adopts its own
 /// clock) instead of the OS clock: a node it admits adopts that lineage, so a reading that matches
 /// it cannot have come from an OS clock.
 pub async fn admin_side_on_rafka_time(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: u64) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, Some(reference_ms)).await
+    admin_side_taking_joins(ip, fabric, true, Some(reference_ms), |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
+}
+
+/// [`admin_side`] that also serves what `serve` adds (an app's ops) and publishes itself as
+/// `status` to start with.
+pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status: rafka_mesh_entity::digest::MemberStatus, serve: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> AdminSide {
+    admin_side_taking_joins(ip, fabric, true, None, serve, status).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, false, None).await
+    admin_side_taking_joins(ip, fabric, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>) -> AdminSide {
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -232,7 +249,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             })
         }
     };
-    let rpc_server = serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone()))
+    let rpc_server = serve_app(serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())))
         .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
@@ -252,7 +269,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             supersedes: None,
             runtime: None,
         },
-        status: rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic,
+        status,
         admin_api_base: None,
         emitted_at_rafka_ms: now_ms,
         digest_seq: 1,
@@ -264,6 +281,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         gossip: None,
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    let admin_digest_for_status = admin_digest.clone();
     let _ = own_digest_slot.set(admin_digest.clone());
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
@@ -272,6 +290,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         seed: (admin_ep.id().to_string(), addr),
         joins,
         launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
+        digest: std::sync::Mutex::new(admin_digest_for_status),
         _router: router,
     }
 }

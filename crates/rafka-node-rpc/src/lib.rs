@@ -13,6 +13,7 @@ pub mod admission;
 pub mod client;
 pub mod endpoint;
 pub mod forward;
+pub mod hydration;
 pub mod live;
 pub mod pool;
 pub mod resolve;
@@ -25,6 +26,7 @@ pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 
 pub use client::{Budget, CallEvidence, CallOptions, ConnectionObserver, Decode, NodeRpcClient};
 pub use forward::CarrierEdges;
+pub use hydration::{CancelToken, HydrationGate};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};

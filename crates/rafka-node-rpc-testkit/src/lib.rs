@@ -8,6 +8,7 @@ pub use rafka_mesh_entity::launch;
 pub mod node;
 pub mod node_rpc;
 pub mod declare_probe;
+pub mod hydrate_probe;
 pub mod proof_store;
 pub mod resolve_probe;
 pub mod faults;
